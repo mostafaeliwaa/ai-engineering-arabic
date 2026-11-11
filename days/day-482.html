@@ -1,0 +1,403 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 54 · Paper Writer</span>
+  <h1>اليوم 482: الـ Paper Writer: ابني الهيكل الأول وبعدين املاه</h1>
+  <p class="lede">النهاردة هتبني <b>PaperWriter</b>: بتعلن الورقة كـ data (أقسام، figures، bibliography)، وتتحقق منها بـ gates، وتحقن الـ figures من نتايج التجارب، وتملا الأقسام بـ prose generator مزيّف (قابل للتبديل بموديل)، وتطلّع <b>paper.tex</b> و<b>references.bib</b> و<b>manifest.json</b> في عملية واحدة: كلهم أو ولا واحد.</p>
+  <div class="meta"><span>الوقت: <b>~٩٠ دقيقة</b></span><span>اللغة: <b>Python (وفيه نسخة TypeScript)</b></span><span>قبله: <b>Result Evaluator</b></span><span>بعده: <b>Critic Loop</b></span></div>
+  <div>
+    <span class="eyebrow">Phase 19 — 85 lessons</span>
+    <div class="roadmap" id="d482-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d482-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الدرس اللي فات؟</h2></div>
+  <p>امبارح بنيت الـ evaluator (درس ٥٣: Result Evaluator). جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex"><li>ليه paired t test؟<details><summary>الإجابة</summary>لأن نفس الـ seed بين candidate وbaseline بيلغي ضوضاء التهيئة، فالفرق المتبقي منسوب للتغيير.</details></li><li>إيه ترتيب بوابات الـ verdict؟<details><summary>الإجابة</summary>أولًا failed (أي terminal مش ok)، بعدين threshold الـ improvement (٢٪)، بعدين الـ significance (p ≤ 0.05)، وأخيرًا الإشارة تحدد improved أو regressed.</details></li><li>ليه بنعمل log للـ perplexity قبل المقارنة؟<details><summary>الإجابة</summary>لأنها أُسّية في الـ loss. الـ log بيخلّي threshold نسبي زي ٢٪ مفهوم مع الـ linear metrics، (32→28 بتبقى ≈ 0.039).</details></li></ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan"><div><b>5 min</b>التسخين</div><div><b>20 min</b>الهيكل والـ gates والـ injection</div><div><b>10 min</b>الـ prose والمخرجات</div><div><b>40 min</b>اكتب الـ writer وشغّل الـ demo</div><div><b>15 min</b>التمارين والكويز</div></div>
+</section>
+
+<section>
+  <div class="station-head"><span class="tag">01</span><h2>ليه Skeleton الأول؟ الهيكل هو العقد</h2></div>
+
+  <p>الـ LaTeX skeleton هو عقد بين الباحث والـ typesetter: لو العقد اتكسر الـ document مبيتعملوش compile، والفشل بيبقى عالي الصوت. فابني الهيكل الأول، وبعدين املاه.</p>
+  <p>المسودة اللي بتبدأ كنثر بتجمّع «دين هيكلي»: المقدمة تكبر تلات فقرات المفروض يبقوا في Related Work، وfigure بيتشاور عليه قبل ما يتعرّف، والـ bibliography يطلع فيها تلات keys لنفس الورقة. لما تاخد بالك، تكلفة إعادة الكتابة أكبر من تكلفة الكتابة.</p>
+  <div class="note"><strong>تشبيه:</strong> زي مهندس معماري: بيرسم الهيكل الخرساني (الأعمدة والبلاطات) الأول، وبعدين بيبني الحيطان والتشطيب. لو بدأت بالتشطيب من غير هيكل، أول دور تاني هيبوّظ كل حاجة.</div>
+  <p>الـ skeleton بيعكس ده: الهيكل يتعلن <b>كـ data</b> من الأول. الأقسام slots ليها أسماء وترتيب. الـ figures slots ليها ids وcaptions. الـ bibliography keys معلنة فوق مع الـ entries بتاعتها. وبعدين الـ prose بيتولّد في الـ slots واحد واحد. والـ harness يقدر يتأكد <b>قبل أي نثر</b> إن كل figure ليه slot، وكل citation ليه entry، وكل قسم في الفهرس.</p>
+  <div class="note ai"><strong>نفس الانضباط:</strong> زي ما الدروس اللي فاتت طبّقته على الـ plans والـ tool calls والـ traces: الهيكل هو العقد.</div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">02</span><h2>شكل الـ Paper: كله data عادية</h2></div>
+
+  <p>الـ <code>Paper</code> = metadata (عنوان، مؤلفين، abstract) + قائمة <b>sections</b> + قائمة <b>figures</b> + قائمة <b>bibliography</b>. كل ده Python data عادية. والـ renderer دالة pure من <code>Paper</code> لنص LaTeX. الـ harness يقدر يفحص الـ paper قبل الـ render: يعدّ الأقسام، يلاقي الـ figures الناقصة، يتأكد إن كل <span class="ltr">\cite{key}</span> ليها <code>BibEntry</code>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الـ dataclass</th><th>حقوله</th></tr>
+    <tr><td><code>Paper</code></td><td>title, authors, abstract, sections, figures, bibliography</td></tr>
+    <tr><td><code>Section</code></td><td>id, title, body, cites, figure_refs (والـ label = <span class="ltr">sec:&lt;id&gt;</span>)</td></tr>
+    <tr><td><code>Figure</code></td><td>id, path, caption, width (والـ label = <span class="ltr">fig:&lt;id&gt;</span>)</td></tr>
+    <tr><td><code>BibEntry</code></td><td>key, entry_type, fields</td></tr>
+  </table></div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">03</span><h2>عقد الـ Render وبوابات الـ Validation</h2></div>
+
+  <p>الـ renderer بيضمن <b>٣ حاجات</b>: كل figure slot بيطلّع <span class="ltr">\begin{figure}</span> بـ label ثابت <span class="ltr">fig:&lt;id&gt;</span>. وكل section بيطلّع <span class="ltr">\section{}</span> بـ label <span class="ltr">sec:&lt;id&gt;</span> عشان الـ cross-references تشتغل. وblock الـ <span class="ltr">\bibliography</span> بيشاور على <code>references.bib</code> فيه بالظبط الـ entries المعلنة على الـ paper، لا أكتر ولا أقل. كسر أي واحدة = render error مش warning.</p>
+  <p>والـ writer بيشغّل <b>بوابات</b> قبل ما يكتب أي ملف. الدرس بيعدّ ٤ في الشرح، والكود الفعلي بيفحص أكتر:</p>
+  <ol class="ex">
+    <li>الـ title مش فاضي.</li>
+    <li>الـ abstract مش فاضي.</li>
+    <li>كل figure id فريد (وكمان bibliography key فريد في الكود).</li>
+    <li>كل <code>cites</code> في أي section ليها key معلن في الـ bibliography (وكمان كل <code>figure_refs</code> ليها figure معلن).</li>
+  </ol>
+  <p>أي بوابة بتفشل بترمي <code>PaperValidationError</code> بسبب دقيق، من غير كتابة جزئية: <b>يا كل الملفات التلاتة يا ولا واحد</b>.</p>
+  <div class="note"><strong>ملحوظة:</strong> وجود ملف الـ figure على القرص مش بيتفحص هنا؛ الـ LaTeX compiler هو اللي بيتأكد منه بعدين.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: مسار الـ PaperWriter.write</h3>
+      <p>دوس على الخطوات: validate ثم fill prose ثم render ثم كتابة التلات ملفات. لاحظ إن الـ validation أول حاجة، لأن مفيش partial write.</p>
+    </div>
+    <div id="d482-flow"></div>
+  </div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: كسّر الـ Paper وشوف مين يوقفه</h3>
+      <p>فعّل (1) أي «عيب» وشوف رسالة الـ <code>PaperValidationError</code> المناسبة وهل الملفات اتكتبت. لاحظ إن الـ gates بتتفحص بالترتيب: أول فشل هو اللي بيظهر.</p>
+    </div>
+    <div id="d482-gates"></div>
+  </div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">04</span><h2>حقن الـ Figures من نتايج التجارب</h2></div>
+
+  <p>الدروس اللي فاتت طلّعت نتايج التجارب كـ JSON manifests. كل manifest فيه <code>name</code> وقائمة <code>artifacts</code> (كل واحد <code>path</code> و<code>caption</code>). الـ <code>read_experiment_manifest</code> بيحوّلهم لـ <code>Figure</code> records:</p>
+  <ul class="checklist">
+    <li><b>الـ id:</b> مشتق من اسم التجربة + عدّاد <b>تصاعدي عام</b> (monotonic) على كل الـ manifests، ومنضّف بـ regex: أي حاجة مش حرف أو رقم بتتحوّل <span class="ltr">-</span>، وبعدين lowercase.</li>
+    <li><b>الـ caption:</b> من الـ manifest (ولو فاضي بياخد اسم التجربة).</li>
+    <li><b>الـ path:</b> <code>os.path.relpath</code> بالنسبة لمجلد الـ paper، عشان الـ LaTeX يعمل compile حتى لو مخرجات التجربة في مكان تاني. أي artifact من غير path بيتتخطى.</li>
+  </ul>
+  <p>الحقن حتمي (deterministic): نفس الـ manifests = نفس الـ ids. وبكده بتقدر تجرّب بالـ tests.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: الـ ids والـ escaping</h3>
+      <p>الجزء الأول بيوري إزاي العدّاد التصاعدي بيطلّع الـ ids. والتاني بيوري <code>_escape_latex</code>: اكتب نص فيه رموز LaTeX الخاصة وشوف إزاي بتتهرّب. من غير ده الـ title اللي فيه <span class="ltr">%</span> أو <span class="ltr">_</span> هيكسر الـ compile.</p>
+    </div>
+    <div class="instrument" id="d482-slots">
+      <div class="mrow"><label><span id="d482-vA">artifacts per experiment = 2</span><input type="range" id="d482-a" min="1" max="3" value="2"></label></div>
+      <div class="formula" id="d482-ids" style="text-align:left"></div>
+      <label for="d482-in">اكتب نص للـ escaping:</label>
+      <input id="d482-in" type="text" dir="ltr" value="50% faster_loss & $5 #1 {x}" style="font:14px var(--f-mono);padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:100%">
+      <div class="formula" id="d482-esc" style="text-align:left"></div>
+    </div>
+  </div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">05</span><h2>الـ Prose Generator المزيّف (Mock) ومخرجات الـ Writer</h2></div>
+
+  <p>الدرس مبينادييش موديل. الـ <code>MockProseGenerator</code> بيقرا outline (جملة قصيرة لكل section) ويطلّع نثر حتمي: فقرتين، العنوان مضفّر فيهم. بيذكر الـ figures والـ citations بالظبط لما الـ outline يعلنهم. ده كفاية لاختبار كل سلوك في الـ writer.</p>
+  <p>الـ prose generator <b>callable بيتحقن</b> في <code>PaperWriter</code>: الـ test يحط الحتمي، والـ production يحط استدعاء موديل، والباقي بتاع الـ pipeline ميتغيّرش. دي قيمة الـ dependency injection.</p>
+  <p>والـ <code>write</code> بيطلّع <b>٣ ملفات</b> في الـ output directory:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الملف</th><th>فيه إيه</th></tr>
+    <tr><td><code>paper.tex</code></td><td>الـ LaTeX source (للقراءة البشرية)</td></tr>
+    <tr><td><code>references.bib</code></td><td>الـ entries المعلنة بالظبط</td></tr>
+    <tr><td><code>manifest.json</code></td><td>الأقسام والـ figures والـ cites والـ bibliography keys والمسارات (للأدوات)</td></tr>
+  </table></div>
+  <p><b>ليه الـ manifest جزء من العقد؟</b> الأدوات اللي بعده (critic loop، dashboards) بتقرا الـ manifest مش بتحلل LaTeX. هو الـ interface المستقر. الدرس الجاي (critic loop) بياخده كمدخل ويطلّع قائمة feedback.</p>
+  <h3>اتجاهات للتوسّع (من الدرس)</h3>
+  <p>اتنين: (١) <b>multi-format render</b>: نفس الـ <code>Paper</code> يتحوّل لـ Markdown (مدونة) أو HTML (معاينة)، يعني الـ renderer يبقى strategy. (٢) <b>citation enrichment</b>: الـ writer يجيب BibTeX من key بالاعتماد على cache محلي لـ DOIs. الاتنين يتضافوا من غير ما يتلمس عقد الـ skeleton. والخلاصة: «الـ skeleton هو الرهان».</p>
+
+</section>
+<section id="d482-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+
+  <p>من <b>root الريبو</b>، شغّل الأصل الأول:</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/54-paper-writer/code/main.py
+# بيكتب في فولدر مؤقت (tempfile) وبيطبع JSON فيه:
+#   "sections": 3, "figures": 2, "bib_keys": ["smith2020", "jones2021"], "tex_path": "..."
+# افتح paper.tex اللي في tex_path وشوف الهيكل. فيه نسخة TypeScript: code/main.ts</pre></div>
+  <p>اكتب بإيدك في <code>my_paper_writer.py</code> (stdlib بس). الـ tests: <span class="ltr">code/tests/test_paper_writer.py</span>.</p>
+  <h3>خطوة ١: الـ dataclasses</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>import json, os, re
+from dataclasses import dataclass, field
+from typing import Callable, Iterable
+
+class PaperValidationError(Exception):
+    pass
+
+@dataclass
+class BibEntry:
+    key: str
+    entry_type: str
+    fields: dict
+    def to_bibtex(self):
+        lines = [f"@{self.entry_type}{{{self.key},"]
+        for k, v in sorted(self.fields.items()):
+            safe = str(v).replace("{", "").replace("}", "")
+            lines.append(f"  {k} = {{{safe}}},")
+        lines.append("}")
+        return "\n".join(lines)
+
+@dataclass
+class Figure:
+    id: str
+    path: str
+    caption: str
+    width: str = "0.8\\textwidth"
+    @property
+    def label(self): return f"fig:{self.id}"
+
+@dataclass
+class Section:
+    id: str
+    title: str
+    body: str = ""
+    cites: list[str] = field(default_factory=list)
+    figure_refs: list[str] = field(default_factory=list)
+    @property
+    def label(self): return f"sec:{self.id}"
+
+@dataclass
+class Paper:
+    title: str
+    authors: list[str]
+    abstract: str
+    sections: list[Section] = field(default_factory=list)
+    figures: list[Figure] = field(default_factory=list)
+    bibliography: list[BibEntry] = field(default_factory=list)</pre></div>
+  <h3>خطوة ٢: بوابات الـ validation</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def _validate(paper):
+    if not paper.title.strip():    raise PaperValidationError("title is empty")
+    if not paper.abstract.strip(): raise PaperValidationError("abstract is empty")
+    fig_ids = set()
+    for fig in paper.figures:
+        if fig.id in fig_ids:
+            raise PaperValidationError(f"duplicate figure id: {fig.id}")
+        fig_ids.add(fig.id)
+    bib_keys = set()
+    for b in paper.bibliography:
+        if b.key in bib_keys:
+            raise PaperValidationError(f"duplicate bibliography key: {b.key}")
+        bib_keys.add(b.key)
+    for sec in paper.sections:
+        for key in sec.cites:                       # كل citation لازم ليها entry
+            if key not in bib_keys:
+                raise PaperValidationError(
+                    f"section {sec.id!r} cites unknown bibliography key {key!r}")
+        for fid in sec.figure_refs:                 # وكل figure ref لازم ليه slot
+            if fid not in fig_ids:
+                raise PaperValidationError(
+                    f"section {sec.id!r} references unknown figure id {fid!r}")</pre></div>
+  <h3>خطوة ٣: الـ escaping والـ render</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def _escape_latex(text):
+    repl = {"\\": r"\textbackslash{}", "&amp;": r"\&amp;", "%": r"\%", "$": r"\$", "#": r"\#",
+            "_": r"\_", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}",
+            "^": r"\textasciicircum{}"}
+    return "".join(repl.get(ch, ch) for ch in text)   # حرف حرف، فمفيش double-escape
+
+def render_latex(paper):
+    _validate(paper)                                  # الأول: لو فشل، مفيش render
+    lines = ["\\documentclass{article}", "\\usepackage{graphicx}", "\\usepackage{hyperref}",
+             "\\title{" + _escape_latex(paper.title) + "}",
+             "\\author{" + " \\and ".join(_escape_latex(a) for a in paper.authors) + "}",
+             "\\begin{document}", "\\maketitle",
+             "\\begin{abstract}", _escape_latex(paper.abstract), "\\end{abstract}"]
+    for sec in paper.sections:
+        lines.append("\\section{" + _escape_latex(sec.title) + "}")
+        lines.append("\\label{" + sec.label + "}")
+        lines.append(sec.body if sec.body else "% body pending")
+        for fid in sec.figure_refs: lines.append("See Figure~\\ref{fig:" + fid + "}.")
+        for cite in sec.cites:      lines.append("See~\\cite{" + cite + "}.")
+    for fig in paper.figures:
+        lines += ["\\begin{figure}", "\\centering",
+                  "\\includegraphics[width=" + fig.width + "]{" + fig.path + "}",
+                  "\\caption{" + _escape_latex(fig.caption) + "}",
+                  "\\label{" + fig.label + "}", "\\end{figure}"]
+    if paper.bibliography:
+        lines += ["\\bibliographystyle{plain}", "\\bibliography{references}"]
+    lines.append("\\end{document}")
+    return "\n".join(lines) + "\n"
+
+def render_bibtex(paper):
+    return "\n\n".join(b.to_bibtex() for b in paper.bibliography) + ("\n" if paper.bibliography else "")</pre></div>
+  <p>انتبه للـ backslashes: في ملفك استخدم <span class="ltr">"\\documentclass"</span> (backslash مزدوج) عشان Python يطلّع backslash واحد. الأصل في <span class="ltr">code/main.py</span> فتحه وقارن.</p>
+  <h3>خطوة ٤: الـ Mock prose وقراءة الـ manifest</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>class MockProseGenerator:
+    def __init__(self, outlines):
+        self.outlines = outlines
+    def __call__(self, section, paper):
+        seed = self.outlines.get(section.id, section.title)
+        first = f"In this section we discuss {section.title.lower()}: {seed}."
+        bits = []
+        for fid in section.figure_refs:
+            bits.append(f"Figure~\\ref{{fig:{fid}}} shows the relevant artifact.")
+        for c in section.cites:
+            bits.append(f"This builds on prior work~\\cite{{{c}}}.")
+        second = " ".join(bits) if bits else "We discuss implications below."
+        return first + "\n\n" + second
+
+def read_experiment_manifest(manifests, paper_dir):
+    figs, counter = [], 0
+    for m in manifests:
+        name = m.get("name", "exp")
+        for art in m.get("artifacts", []):
+            path, caption = art.get("path", ""), art.get("caption", "")
+            if not path:
+                continue                               # artifact من غير path: اتخطّاه
+            counter += 1                               # عدّاد عام تصاعدي
+            try:    rel = os.path.relpath(path, paper_dir)
+            except ValueError: rel = path
+            fid = re.sub(r"[^a-zA-Z0-9]+", "-", f"{name}-{counter}").strip("-").lower()
+            figs.append(Figure(id=fid, path=rel, caption=caption or name))
+    return figs</pre></div>
+  <h3>خطوة ٥: الـ PaperWriter</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class PaperWriter:
+    prose: Callable                                     # بيتحقن: mock أو موديل
+
+    def fill_prose(self, paper):
+        for sec in paper.sections:
+            if not sec.body:
+                sec.body = self.prose(sec, paper)
+        return paper
+
+    def write(self, paper, out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+        self.fill_prose(paper)
+        tex, bib = render_latex(paper), render_bibtex(paper)   # لو validation فشل هنا، مفيش ملفات
+        tex_path = os.path.join(out_dir, "paper.tex")
+        bib_path = os.path.join(out_dir, "references.bib")
+        man_path = os.path.join(out_dir, "manifest.json")
+        open(tex_path, "w", encoding="utf-8").write(tex)
+        open(bib_path, "w", encoding="utf-8").write(bib)
+        manifest = {"title": paper.title, "authors": list(paper.authors),
+            "sections": [{"id": s.id, "title": s.title, "cites": list(s.cites),
+                          "figure_refs": list(s.figure_refs), "body_chars": len(s.body)}
+                         for s in paper.sections],
+            "figures": [{"id": f.id, "path": f.path, "caption": f.caption, "label": f.label}
+                        for f in paper.figures],
+            "bibliography": [b.key for b in paper.bibliography],
+            "tex_path": tex_path, "bib_path": bib_path}
+        json.dump(manifest, open(man_path, "w", encoding="utf-8"), indent=2, sort_keys=True)
+        return manifest</pre></div>
+  <p>ملحوظة: الأصل بيستخدم <code>with open(...)</code> لكل ملف. استخدمه في نسختك عشان الملفات تتقفل صح. وطبّق <code>fill_prose</code> قبل الـ render زي ما هو، لأن الـ prose هو اللي بيحط <span class="ltr">\ref</span> و<span class="ltr">\cite</span> في الـ body.</p>
+  <h3>خطوة ٦: الـ demo</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>import tempfile
+out_dir = tempfile.mkdtemp(prefix="paper-writer-demo-")
+experiments = [
+    {"name": "loss-curve", "artifacts": [{"path": "figs/loss.pdf", "caption": "Training loss across epochs"}]},
+    {"name": "ablation",   "artifacts": [{"path": "figs/ablation.pdf", "caption": "Ablation over decoder width"}]},
+]
+figs = read_experiment_manifest(experiments, out_dir)
+paper = Paper(
+    title="Auto-Research Loop: Empirical Notes", authors=["Lab Bot"],
+    abstract="We describe a small experiment harness that emits LaTeX from structured outputs.",
+    sections=[Section(id="intro", title="Introduction", cites=["smith2020"]),
+              Section(id="method", title="Method", cites=["jones2021"], figure_refs=[figs[0].id]),
+              Section(id="results", title="Results", figure_refs=[figs[1].id])],
+    figures=figs,
+    bibliography=[BibEntry("smith2020", "article", {"title": "On harnesses", "author": "Smith", "year": "2020"}),
+                  BibEntry("jones2021", "article", {"title": "On loops", "author": "Jones", "year": "2021"})])
+writer = PaperWriter(prose=MockProseGenerator({"intro": "we motivate the auto-research loop",
+    "method": "we describe the skeleton-first writer", "results": "we present two ablations"}))
+manifest = writer.write(paper, out_dir)
+print(json.dumps({"sections": len(manifest["sections"]), "figures": len(manifest["figures"]),
+                  "bib_keys": manifest["bibliography"], "tex_path": manifest["tex_path"]}, indent=2))</pre></div>
+  <p>اللي هتلاقيه: ٣ sections و٢ figures وkeys <span class="ltr">smith2020</span> و<span class="ltr">jones2021</span>. الـ figure ids هتطلع <span class="ltr">loss-curve-1</span> و<span class="ltr">ablation-2</span> (من العدّاد التصاعدي).</p>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+
+  <p>الدرس مفيهوش تمارين مكتوبة؛ دي مبنية على الـ objectives وسيناريوهات الـ tests.</p>
+  <ol class="ex">
+    <li>اعمل Paper من غير sections (بس title وabstract) واعمل render. إيه اللي يحصل؟
+      <details><summary>تلميح / إجابة</summary>بيشتغل: الـ skeleton بيتولّد بالـ preamble والـ abstract بس. ده بالظبط سيناريو «skeleton render with no sections» في الـ tests.</details></li>
+    <li>خلّي section يعمل <span class="ltr">cites=["nobody2099"]</span> من غير ما تعلنه. إيه الـ error والملفات؟
+      <details><summary>تلميح / إجابة</summary><code>PaperValidationError: section 'x' cites unknown bibliography key 'nobody2099'</code>. ومفيش ملفات: الـ validation جوه <code>render_latex</code> قبل الكتابة. (الـ <code>os.makedirs</code> بيحصل قبله، فالفولدر ممكن يتعمل فاضي.)</details></li>
+    <li>اعمل figure ids مكررة. وبعدين اعمل title فاضي <span class="ltr">"   "</span>. أنهي error بيظهر أول؟
+      <details><summary>تلميح / إجابة</summary>الـ title الأول («title is empty») لأنه أول بوابة في الكود، حتى لو الـ figures مكررة.</details></li>
+    <li>غيّر الـ prose generator بحيث يرجّع <span class="ltr">"TODO"</span> لكل section. هل يحتاج تلمس الـ writer؟
+      <details><summary>تلميح / إجابة</summary>لأ. <code>PaperWriter(prose=lambda s, p: "TODO")</code>. ده معنى الـ injection: الـ writer مبيتغيّرش.</details></li>
+    <li>افتح <span class="ltr">manifest.json</span> واكتب script بيعدّ الـ figures اللي مفيش section بيشاور عليها.
+      <details><summary>تلميح / إجابة</summary><div class="ltr">used = {f for s in m["sections"] for f in s["figure_refs"]}
+unused = [f["id"] for f in m["figures"] if f["id"] not in used]</div>ده مثال على ليه الـ manifest أحسن من تحليل LaTeX: كلها data جاهزة.</details></li>
+    <li><b>تمرين إضافي مني (عملي):</b> اكتب <code>render_markdown(paper)</code> كـ strategy تانية لنفس الـ <code>Paper</code> (عنوان H1، abstract، H2 لكل section، وقائمة references). اتأكد إنها بتستخدم نفس <code>_validate</code>.
+      <details><summary>تلميح / إجابة</summary>ابدأ بـ <code>_validate(paper)</code> وبعدين <span class="ltr">"# " + title</span> وكل section بـ <span class="ltr">"## " + sec.title</span> وbody. الـ figures: <span class="ltr">![caption](path)</span>. ولاحظ إن مفيش تغيير في الـ dataclasses: ده المقصود بـ multi-format.</details></li>
+  </ol>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس مقالهوش</h2></div>
+
+  <div class="note ai"><strong>الحدس:</strong> فصل «إيه الهيكل» عن «إيه الكلام» هو نفس نمط الـ structured output في الـ LLMs: بتدّي الموديل schema (slots) وهو بيملاها، بدل ما تطلب نص حر وتحاول تظبطه بعدين. الـ validation قبل وبعد التوليد بيمسك الأخطاء بدري.</div>
+  <ul class="checklist">
+    <li><b>خطأ شائع ١: ننسى الـ escaping.</b> <span class="ltr">%</span> في LaTeX بداية comment، و<span class="ltr">_</span> بيكسر الـ compile برا math mode. الـ title والـ caption والـ abstract بيعدّوا من <code>_escape_latex</code>، لكن الـ <b>body</b> بيتحط زي ما هو (لأن فيه أوامر <span class="ltr">\ref</span> و<span class="ltr">\cite</span>). يعني الـ generator مسؤول عن نضافة نصه.</li>
+    <li><b>خطأ شائع ٢:</b> موديل حقيقي ممكن يخترع <span class="ltr">\cite{key}</span> مش موجودة. بوابة الـ cites بتمسك ده بس لو الـ citations معلنة في الـ section.cites. لو الـ prose فيه cite داخل النص، الـ validation مش هيشوفها: ممكن تزوّد gate تفحص الـ body نفسه.</li>
+    <li><b>«سلسلة الـ research loop»:</b> ٥٠ يولّد hypotheses، ٥١ يفلتر المحلول، ٥٢ يشغّل، ٥٣ يحكم، ٥٤ يكتب. الـ manifest والـ Verdict بيعدّوا بين الحلقات كـ data، مش كنص.</li>
+    <li><b>حدود:</b> الـ mock prose مش علم: الدرس بيختبر الـ harness. وأي ادعاء علمي في ورقة حقيقية لازم يتراجع بشريًا.</li>
+    <li><b>في الـ agents:</b> أي agent بيطلّع deliverable (تقرير، PR، ورقة) بينفع يتبني بنفس النمط: schema أولًا، generation في slots، validation gates، وmanifest بيقراه critic أو شخص.</li>
+  </ul>
+
+</section>
+
+<section id="d482-quiz">
+  <div class="station-head"><span class="tag">QZ</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d482-quizBox"></div>
+</section>
+
+<section id="d482-done">
+  <div class="station-head"><span class="tag">OK</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d482-checklist"><li><label><input type="checkbox" data-ck="1"> فاهم ليه الـ skeleton بيتكتب الأول كـ data</label></li><li><label><input type="checkbox" data-ck="2"> أقدر أعدّد بوابات الـ validation وأوضح ليه مفيش partial write</label></li><li><label><input type="checkbox" data-ck="3"> فاهم الـ figure injection وليه الـ ids حتمية</label></li><li><label><input type="checkbox" data-ck="4"> كتبت الـ PaperWriter وشغّلت الـ demo وفتحت paper.tex</label></li><li><label><input type="checkbox" data-ck="5"> حليت ٣ تمارين على الأقل</label></li><li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li></ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Schema قبل النثر</td><td>الـ structured outputs في الـ LLMs والـ function calling</td></tr><tr><td>Validation gates</td><td>أي pipeline بيطلّع deliverable من agent (تقرير، PR، SQL)</td></tr><tr><td>Dependency injection للـ generator</td><td>تبديل الموديل في الـ tests والـ production</td></tr><tr><td>Manifest.json كـ interface</td><td>الـ critic loops والـ dashboards بين مراحل الـ pipeline</td></tr><tr><td>Escaping</td><td>أي توليد كود أو markup من نص حر</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Critic Loop: بياخد الـ manifest بتاع الـ writer ويطلّع قائمة feedback على الورقة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F54-paper-writer" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/54-paper-writer</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=482,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt,L=AI.lab;
+const root=$('d482-roadmap').closest('.day');
+const rm=$('d482-roadmap');
+for(let i=1;i<=85;i++){const s=document.createElement('span');s.textContent=i;if(i===52)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: write pipeline
+L.flow($('d482-flow'),{label:'PaperWriter.write pipeline',height:300,
+ nodes:[{id:'paper',label:'Paper (data)',x:0,y:.5},{id:'val',label:'validate',x:.3,y:.5},{id:'err',label:'PaperValidationError',x:.5,y:.05},{id:'prose',label:'fill prose',x:.55,y:.5},{id:'tex',label:'paper.tex',x:1,y:.1},{id:'bib',label:'references.bib',x:1,y:.5},{id:'man',label:'manifest.json',x:1,y:.9}],
+ edges:[['paper','val'],['val','err','fail'],['val','prose','ok'],['prose','tex'],['prose','bib'],['prose','man']],
+ steps:[{active:['paper'],text:'١) الـ Paper كله data: sections وfigures وbibliography.'},{active:['val','err'],edges:[['val','err']],text:'٢) لو أي بوابة فشلت: <b>PaperValidationError</b> بسبب دقيق. مفيش ملفات.'},{active:['val','prose'],edges:[['val','prose']],text:'٣) البوابات عدّت: الـ prose generator بيملا الـ bodies الفاضية.'},{active:['prose','tex','bib','man'],edges:[['prose','tex'],['prose','bib'],['prose','man']],text:'٤) تلات ملفات بتتكتب: <b>paper.tex</b> و<b>references.bib</b> و<b>manifest.json</b>.'}]});
+
+// ---- Lab 2: validation gates
+L.calc($('d482-gates'),{params:[{k:'t',label:'1 = title فاضي',min:0,max:1,step:1,v:0},{k:'a',label:'1 = abstract فاضي',min:0,max:1,step:1,v:0},{k:'df',label:'1 = figure id مكرر',min:0,max:1,step:1,v:0},{k:'dk',label:'1 = bib key مكرر',min:0,max:1,step:1,v:0},{k:'mc',label:'1 = cite مش معلن',min:0,max:1,step:1,v:1},{k:'uf',label:'1 = figure ref مجهول',min:0,max:1,step:1,v:0}],
+ compute:p=>{const g=[[p.t,'title is empty'],[p.a,'abstract is empty'],[p.df,'duplicate figure id: loss-curve-1'],[p.dk,'duplicate bibliography key: smith2020'],[p.mc,"section 'intro' cites unknown bibliography key 'ghost2025'"],[p.uf,"section 'results' references unknown figure id 'nope'"]];
+  const first=g.find(x=>x[0]);return [['first failing gate',first?first[1]:'none'],['files written',first?'0 of 3':'3 of 3'],['gates failing',g.filter(x=>x[0]).length]]},
+ note:p=>(p.t||p.a||p.df||p.dk||p.mc||p.uf)?'الـ Error: أول بوابة تفشل (بالترتيب فوق) هي اللي بتتعرض. مفيش partial write.':'كله تمام: الـ render بيكمل ويكتب التلات ملفات.'});
+
+// ---- Lab 3: ids + escape
+const esc=t=>t.split('').map(ch=>({'\\':'\\textbackslash{}','&':'\\&','%':'\\%','$':'\\$','#':'\\#','_':'\\_','{':'\\{','}':'\\}','~':'\\textasciitilde{}','^':'\\textasciicircum{}'})[ch]||ch).join('');
+const slug=s=>s.replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-+|-+$/g,'').toLowerCase();
+function slots(){const a=+$('d482-a').value;$('d482-vA').textContent='artifacts per experiment = '+a;let k=0,out=[];['loss-curve','ablation'].forEach(n=>{for(let i=0;i<a;i++){k++;out.push(n+' → '+slug(n+'-'+k)+'   (fig:'+slug(n+'-'+k)+')')}});$('d482-ids').textContent=out.join('\n');$('d482-ids').style.whiteSpace='pre'}
+function escape_(){$('d482-esc').textContent=esc($('d482-in').value)}
+$('d482-a').addEventListener('input',slots);$('d482-in').addEventListener('input',escape_);slots();escape_();
+
+AI.quiz($('d482-quizBox'),[["ليه الـ writer بيعلن الأقسام والـ figures والـ citations كـ data قبل ما يتكتب أي نثر؟", ["لأن BibTeX مبيقدرش يحل الإشارات للأمام", "لأن LaTeX بيتطلب تعريف مسبق", "لأن الموديل محتاج system prompt", "لأن الهيكل هو العقد: الـ harness يقدر يتأكد من الاكتمال قبل توليد النثر"], 3, "الـ structure-first بيسمح للـ harness يتحقق من التفرد وتغطية الـ citations والـ figures قبل ما يستدعي الـ prose generator. الـ skeleton هو العقد."], ["خطوة الـ figure-injection بتطلّع إيه من الـ experiment manifest؟", ["قائمة Figure records بـ ids ثابتة ومسارات متحوّلة نسبة لمجلد الـ paper", "stub للـ bibliography", "PDF متجمّع من الـ artifacts", "prompt للموديل فيه وصف الـ figures"], 0, "الـ read_experiment_manifest بيرجّع Figure records. الـ ids حتمية، والمسارات مطبّعة، والـ captions من الـ manifest."], ["أنهي فشل بيرمي PaperValidationError قبل كتابة أي ملف؟", ["abstract أطول من ٢٠٠ كلمة", "عدد مؤلفين فردي", "section بيعمل cite لـ key مش معلن في الـ bibliography", "مسار figure مش موجود على القرص"], 2, "الـ bibliography key الناقص، والـ figure id المكرر، والـ title الفاضي، والـ abstract الفاضي، والـ figure ref المجهول كلهم بيرموا PaperValidationError. وجود الملف على القرص مش بيتفحص، لأن الـ LaTeX compiler هو اللي بيفحصه بعدين."], ["ليه الـ prose generator callable بيتحقن في PaperWriter مش method جواه؟", ["لأن الـ test يقدر يبدّل MockProseGenerator حتمي باستدعاء موديل من غير ما يلمس الـ writer", "لأن LaTeX بيتطلب callback", "لأن الـ dataclass مبتقدرش تشيل state", "لأن Python مبتسمحش لـ method ياخد Paper"], 0, "الـ writer بياخد الـ prose generator كـ dependency. الـ test يحط MockProseGenerator، والـ production يحط استدعاء موديل، والـ writer ثابت."], ["إيه التلات ملفات اللي PaperWriter.write بيكتبهم لما ينجح؟", ["paper.tex وreferences.bib وmanifest.json", "manifest.json وprose.txt وpaper.pdf", "paper.tex وpaper.pdf وreferences.bib", "outline.json وpaper.tex وfigures.tar"], 0, "الـ paper.tex هو الـ LaTeX source، والـ references.bib الـ bibliography، والـ manifest.json هو الـ artifact المنظّم اللي الـ critic loop بيقراه."], ["ليه الـ manifest جزء من عقد الـ writer مش بس ملف الـ LaTeX؟", ["لأن الأدوات اللي بعده (critics، dashboards) بتقرا manifests منظّمة مش LaTeX", "لأن manifest.json هو الملف الوحيد اللي BibTeX بيقبله", "لأن LaTeX كبير على إنه يتحلل", "لأن مترجمات LaTeX بترفض الأقسام من غير نوع"], 0, "الـ manifest هو الـ interface المستقر للمراحل اللي بعده. الـ LaTeX للقراءة البشرية، مش واجهة الآلة."], ["(سؤال مني) ليه الـ _escape_latex بيمشي حرف حرف بدل سلسلة str.replace متتابعة؟", ["لأنه أسرع بكتير", "لأن replace متتابعة ممكن تعمل double-escape (مثلًا بعد ما نحوّل \\ لـ \\textbackslash{} الأقواس اللي فيه تتحوّل تاني)", "لأن Python مبتدعمش replace", "مفيش فرق"], 1, "المرور حرف حرف بـ dict بيضمن إن كل حرف يتحوّل مرة واحدة بس. replace متتابعة ممكن تلمس ناتج الاستبدال اللي قبلها."], ["(سؤال مني) الـ id لـ artifact تاني في التجربة التانية هيطلع إيه لو التجربة الأولى فيها artifact واحد والتانية اسمها \"Ablation Run\"؟", ["ablation-run-1", "ablation-run-2", "Ablation Run-2", "ablation-2"], 1, "العدّاد عام وتصاعدي على كل الـ manifests (الأولى خدت 1)، والاسم بيتنضّف بالـ regex: المسافة بتتحوّل - والحروف lowercase، فالنتيجة ablation-run-2."]],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

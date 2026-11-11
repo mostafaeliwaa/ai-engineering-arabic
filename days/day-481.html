@@ -1,0 +1,392 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 53 · Result Evaluator</span>
+  <h1>اليوم 481: الـ Result Evaluator: تحسّن حقيقي ولا ضوضاء؟</h1>
+  <p class="lede">النهاردة هتبني الـ <b>evaluator</b>: بياخد نتايج الـ candidate والـ baseline عبر seeds متعددة، ويحسب التحسّن مع مراعاة الاتجاه والـ log scale، ويشغّل <b>paired t test من الصفر</b> (من غير scipy)، ويطلّع <b>verdict</b> من سطر واحد: improved أو regressed أو noise أو failed.</p>
+  <div class="meta"><span>الوقت: <b>~٩٠ دقيقة</b></span><span>اللغة: <b>Python</b></span><span>قبله: <b>Experiment Runner</b></span><span>بعده: <b>Paper Writer</b></span></div>
+  <div>
+    <span class="eyebrow">Phase 19 — 85 lessons</span>
+    <div class="roadmap" id="d481-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d481-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الدرس اللي فات؟</h2></div>
+  <p>امبارح بنيت الـ runner (درس ٥٢: Experiment Runner). جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex"><li>إيه الـ terminal labels الأربعة؟ وأنهي بياخد الأولوية؟<details><summary>الإجابة</summary><span class="ltr">ok | timeout | oom | crash</span>. الـ oom بياخد الأولوية، بعده timeout، بعده exit code.</details></li><li>ليه الـ memory cap اسمه soft؟<details><summary>الإجابة</summary>لأنه بالـ polling: spike قصير ممكن يعدّي بين نظرتين من غير ما يتشاف. والـ runner بيسجّل أعلى RSS اتلاحظ.</details></li><li>ليه الـ seed بيتمرر في config["__seed"]؟<details><summary>الإجابة</summary>عشان التشغيل يبقى deterministic: نفس الـ seed = نفس الـ metrics، فالـ evaluator يفرّق التغيير الحقيقي عن اختلاف التهيئة.</details></li></ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan"><div><b>5 min</b>التسخين</div><div><b>20 min</b>الـ paired test والـ improvement والـ log</div><div><b>15 min</b>الـ verdict path والمعامل</div><div><b>35 min</b>اكتب الـ evaluator وشغّل الـ demo</div><div><b>15 min</b>التمارين والكويز</div></div>
+</section>
+
+<section>
+  <div class="station-head"><span class="tag">01</span><h2>ليه Paired t test؟ الرقم الواحد مش دليل</h2></div>
+
+  <p>الـ runner طلّع أرقام. دلوقتي السؤال: الأرقام دي <b>تحسّن</b> ولا <b>تراجع</b> ولا مجرد <b>ضوضاء</b>؟ نفس الـ configuration بـ seed تاني بيدّي perplexity تاني. فرقم واحد لا يقول إن التغيير حقيقي.</p>
+  <div class="note"><strong>تشبيه:</strong> عايز تعرف لو دواء جديد بيخفّض الضغط. تقارن ضغط شخص بعد الدواء بضغط شخص تاني تمامًا؟ لأ. بتقارن <b>نفس الشخص</b> قبل وبعد. كل شخص عنده «خط أساس» مختلف، والمقارنة المزدوجة (paired) بتلغي الاختلاف ده. هنا الـ «الشخص» هو الـ seed.</div>
+  <p>المقارنة الصح: نفس الـ seeds ونفس الداتا، تتشغّل مرة بالـ candidate ومرة بالـ baseline. كل seed بيدّي <b>فرق</b>. متوسط الفروق = حجم التأثير (effect). والـ standard error بتاع الفروق = أرضية الضوضاء (noise floor).</p>
+  <div class="formula">diffs = [a_i - b_i for i in seeds]
+mean = sum(diffs) / n
+variance = sum((d - mean)**2 for d in diffs) / (n - 1)
+t_stat = mean / sqrt(variance / n)      df = n - 1
+p_value = two_sided_p(t_stat, df)</div>
+  <p>الدرس بيطبّق الاختبار من الصفر: مفيش <code>scipy.stats</code>. الرياضيات صغيرة وتتقرا في شاشة واحدة. الـ p value بيتحسب من <b>regularised incomplete beta function</b> بـ Lentz continued fraction (حوالي ٦٠ سطر stdlib).</p>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">02</span><h2>التحسّن مع مراعاة الاتجاه (Direction Aware)</h2></div>
+
+  <p>بعض الـ metrics بتتحسّن لما تزيد (accuracy، throughput)، وبعضها لما تقل (loss، perplexity، الوقت). فكل metric معاه حقل <code>direction</code>.</p>
+  <div class="formula">higher_is_better:  improvement = (candidate - baseline) / |baseline|
+lower_is_better:   improvement = (baseline - candidate) / |baseline|</div>
+  <p>الـ improvement <b>موقّع</b> (signed): سالب على metric من نوع higher_is_better معناه إن الـ candidate أسوأ. والـ verdict بيقرا الإشارة والحجم مع بعض. وفي كود الدرس لو الـ baseline = 0 بيستخدم قاسم 1 عشان ميقسمش على صفر.</p>
+  <p>وبعدين في <b>threshold ثابت</b> (<code>improvement_threshold = 0.02</code> يعني 2%). تحت الـ threshold الحكم «noise» مهما كان الـ p value، لأن الـ loop مش مهتم بتغيير المستخدم مش هيقدر يقيسه.</p>
+  <div class="note ai"><strong>لاحظ الترتيب:</strong> الـ threshold gate بيشتغل <b>قبل</b> الـ significance gate. تغيير دلالته إحصائية بس صغير جدًا = noise برضه.</div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">03</span><h2>معمل ١: الـ Improvement والـ Threshold والـ Log</h2></div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>حسّب التحسّن بإيدك</h3>
+      <p>غيّر الـ baseline والـ candidate، وبدّل الاتجاه (0 = lower is better زي perplexity، 1 = higher is better زي accuracy)، وبدّل الـ scale (0 = linear، 1 = log).</p>
+      <p>جرّب 32 → 28 على perplexity بـ log: هتلاقي 3.466 → 3.332 والتحسّن حوالي 0.039 يعدّي الـ 2%.</p>
+    </div>
+    <div id="d481-imp"></div>
+  </div>
+  <h3>الـ Log Normalisation: ليه؟</h3>
+  <p>الـ perplexity أُسّية في الـ loss: نزول 0.1 في الـ loss بيبقى نزول أكبر بكتير في الـ perplexity. للمقارنة بين الاتنين في تقرير واحد، أي metric <code>scale</code> بتاعها <span class="ltr">"log"</span> بنأخد <code>log</code> الطبيعي قبل ما نحسب الـ improvement، وبنطبّق الـ threshold في الـ log space. الـ linear بيعدّي من غير تحويل، والكود واحد للاتنين. وأي قيمة غير موجبة على scale لوغاريتمي بترمي <code>ValueError</code>.</p>
+  <div class="formula">scale == "log":  a = log(candidate), b = log(baseline)      else:  a = candidate, b = baseline</div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">04</span><h2>معمل ٢: الـ Paired Test في الفعل</h2></div>
+
+  <p>الـ evaluator بيجمّع نتيجة لكل seed للـ candidate ولل baseline، وبيزاوجهم بالـ seed (محفوظ في <span class="ltr">result.metrics["seed"]</span>). لو الـ seeds مش متطابقة بيرمي <code>PairingError</code> (والـ orchestrator يعيد التشغيل). وكمان بيرفض seed مكرر أو ناقص.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>ضوضاء الـ seeds مقابل الأثر الحقيقي</h3>
+      <p>كل seed ليه «صعوبة» خاصة بيه بتأثر على الـ baseline والـ candidate مع بعض (shared). الأعمدة بتوري <b>الفرق</b> لكل seed. كبّر الـ seed effect وشوف إن الفروق لسه ثابتة، وإن الـ t بيعتمد على نسبة الأثر لضوضاء الفروق بس.</p>
+      <p>صغّر عدد الـ seeds لـ 1: الـ p بيبقى None والحكم noise. وصغّر الأثر تحت الـ threshold: الحكم noise حتى لو الـ p صغير.</p>
+    </div>
+    <div id="d481-pt"></div>
+  </div>
+  <p>الـ p value بيرجع <b>None</b> لو n أقل من 2 (مفيش degrees of freedom ولا variance). ولو variance الفروق = 0: الـ p = 0 لو المتوسط مش صفر، و1 لو صفر.</p>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">05</span><h2>الـ Verdict: جدول القرار</h2></div>
+
+  <p>الـ evaluator بيشغّل ٣ حسابات مستقلة (normalise، improvement، paired t test) كلها pure functions من غير state مشترك، وبيجمعهم في الـ verdict path. نفس المدخلات = نفس الحكم دايمًا.</p>
+  <div class="tablewrap"><table>
+    <tr><th>#</th><th>الشرط</th><th>الحكم</th></tr>
+    <tr><td>1</td><td>أي نتيجة (candidate أو baseline في الكود) terminal مش <span class="ltr">ok</span></td><td><b>failed</b></td></tr>
+    <tr><td>2</td><td><span class="ltr">|improvement| &lt; improvement_threshold</span></td><td><b>noise</b></td></tr>
+    <tr><td>3</td><td>p_value is None أو أكبر من significance (0.05)</td><td><b>noise</b></td></tr>
+    <tr><td>4</td><td>improvement &gt; 0</td><td><b>improved</b></td></tr>
+    <tr><td>5</td><td>غير كده</td><td><b>regressed</b></td></tr>
+  </table></div>
+  <p>والـ <code>Verdict</code> بيشيل: <span class="ltr">hypothesis_id, metric, direction, scale, candidate_mean, baseline_mean, improvement, p_value, significance_threshold, improvement_threshold, verdict, rationale</span>. الـ rationale جملة واحدة مقروءة الـ orchestrator يسجّلها قدام الـ hypothesis id.</p>
+  <div class="note"><strong>ملحوظة من الكود:</strong> الدرس بيقول «أي candidate result» بس الكود الفعلي بيفحص الـ candidates <b>والـ baselines</b> مع بعض (<span class="ltr">[*candidates, *baselines]</span>). أي فشل في أي طرف = failed.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: مشي في شجرة القرار</h3>
+      <p>الـ flow ده بيوري المسار اللي كل verdict بيمشيه. دوس على الخطوات.</p>
+    </div>
+    <div id="d481-flow"></div>
+  </div>
+  <h3>مكانه في الـ Orchestrator</h3>
+  <p>الـ orchestrator (مش جزء من الدرس) بيربط ٥٠ → ٥١ → ٥٢ → ٥٣ من غير glue غير الـ dataclasses:</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>for hypothesis in queue:
+    literature = retrieval.search(hypothesis.text)
+    if literature_settles(hypothesis, literature):
+        attach(hypothesis, verdict="settled")
+        continue
+    candidates = runner.run_all(specs_for(hypothesis))
+    baselines  = runner.run_all(baseline_specs_for(hypothesis))
+    metric_spec = MetricSpec("perplexity", direction=LOWER, scale=LOG)
+    verdict = evaluator.evaluate(hypothesis.id, metric_spec, candidates, baselines)
+    attach(hypothesis, verdict)</pre></div>
+</section>
+<section id="d481-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+
+  <p>من <b>root الريبو</b>، شغّل الأصل الأول وشوف الـ Verdict:</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/53-result-evaluator/code/main.py
+# هيطبع Verdict واحد بصيغة JSON (٨ seeds، perplexity، lower_is_better، log)
+# الـ demo: candidate = 28 - 0.5*s + (s%3)*0.2  و baseline = 32 - 0.4*s + (s%3)*0.2
+# اتوقع verdict = "improved" بـ p_value صغير جدًا</pre></div>
+  <p>اكتب بإيدك في ملف <code>my_evaluator.py</code>. الأصل بيستخدم numpy للمتوسطات والـ variance بس، والـ t test نفسه stdlib. الـ tests: <span class="ltr">code/tests/test_evaluator.py</span>.</p>
+  <h3>خطوة ١: الـ dataclasses والـ ثوابت</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>import json, math
+from dataclasses import dataclass
+import numpy as np
+
+HIGHER, LOWER = "higher_is_better", "lower_is_better"
+LOG, LINEAR = "log", "linear"
+
+@dataclass
+class ExperimentResultLike:        # الجزء اللي الـ evaluator محتاجه من نتيجة الـ runner
+    spec_id: str
+    terminal: str
+    metrics: dict
+
+@dataclass
+class MetricSpec:
+    name: str
+    direction: str = HIGHER
+    scale: str = LINEAR
+    def validate(self):
+        if self.direction not in (HIGHER, LOWER): raise ValueError("bad direction")
+        if self.scale not in (LINEAR, LOG): raise ValueError("bad scale")
+
+class PairingError(ValueError):
+    pass</pre></div>
+  <h3>خطوة ٢: الـ incomplete beta بـ Lentz</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def _lentz_betacf(a, b, x, max_iter=200, eps=1e-12):
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    if abs(d) &lt; eps: d = eps
+    d = 1.0 / d
+    h = d
+    for m in range(1, max_iter + 1):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))     # الحد الزوجي
+        d = 1.0 + aa * d
+        if abs(d) &lt; eps: d = eps
+        c = 1.0 + aa / c
+        if abs(c) &lt; eps: c = eps
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))  # الحد الفردي
+        d = 1.0 + aa * d
+        if abs(d) &lt; eps: d = eps
+        c = 1.0 + aa / c
+        if abs(c) &lt; eps: c = eps
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) &lt; eps:                           # اتقارب
+            return h
+    return h
+
+def regularised_incomplete_beta(a, b, x):
+    if x &lt; 0.0 or x &gt; 1.0: raise ValueError("x out of [0, 1]")
+    if x == 0.0: return 0.0
+    if x == 1.0: return 1.0
+    log_bt = (math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+              + a * math.log(x) + b * math.log(1.0 - x))
+    bt = math.exp(log_bt)
+    if x &lt; (a + 1.0) / (a + b + 2.0):                        # استخدم التماثل للاستقرار
+        return bt * _lentz_betacf(a, b, x) / a
+    return 1.0 - bt * _lentz_betacf(b, a, 1.0 - x) / b</pre></div>
+  <h3>خطوة ٣: الـ p value والـ paired t test</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def two_sided_t_p_value(t_stat, df):
+    if df &lt;= 0: return 1.0
+    x = df / (df + t_stat * t_stat)                          # تحويل t إلى x في [0,1]
+    p = regularised_incomplete_beta(df / 2.0, 0.5, x)
+    return max(0.0, min(1.0, p))
+
+def paired_t_test(candidate, baseline):
+    if len(candidate) != len(baseline):
+        raise PairingError("candidate and baseline lengths disagree")
+    n = len(candidate)
+    if n &lt; 2:                                                # مفيش df: p = None
+        if n == 0: return 0.0, None, 0
+        return float(candidate[0] - baseline[0]), None, n
+    diffs = np.array(candidate) - np.array(baseline)
+    mean_diff = float(diffs.mean())
+    var_diff = float(diffs.var(ddof=1))                      # ddof=1 = n-1
+    if var_diff == 0.0:
+        return mean_diff, (0.0 if mean_diff != 0.0 else 1.0), n
+    t_stat = mean_diff / math.sqrt(var_diff / n)
+    return mean_diff, two_sided_t_p_value(t_stat, n - 1), n</pre></div>
+  <h3>خطوة ٤: الـ Pairing والـ improvement والـ log</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def _pair_by_seed(candidates, baselines, metric):
+    def to_map(results, who):
+        m = {}
+        for r in results:
+            seed = r.metrics.get("seed")
+            if seed is None: raise PairingError(f"{who} {r.spec_id} missing seed")
+            seed = int(seed)
+            if seed in m: raise PairingError(f"duplicate {who} seed {seed}")
+            m[seed] = float(r.metrics[metric])
+        return m
+    cm, bm = to_map(candidates, "candidate"), to_map(baselines, "baseline")
+    shared = sorted(set(cm) &amp; set(bm))                       # بس الـ seeds المشتركة
+    if not shared: raise PairingError("no shared seeds between candidate and baseline")
+    return [cm[s] for s in shared], [bm[s] for s in shared]
+
+def _improvement(cand_mean, base_mean, direction):
+    denom = abs(base_mean) if base_mean != 0.0 else 1.0
+    raw = (cand_mean - base_mean) / denom
+    return -raw if direction == LOWER else raw                # lower is better: اقلب الإشارة
+
+def _log_transform(values, scale):
+    if scale != LOG: return list(values)
+    out = []
+    for v in values:
+        if v &lt;= 0.0: raise ValueError(f"log scale metric must be positive, got {v}")
+        out.append(math.log(v))
+    return out</pre></div>
+  <h3>خطوة ٥: الـ Evaluator والـ verdict path</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class EvaluatorConfig:
+    improvement_threshold: float = 0.02
+    significance_threshold: float = 0.05
+
+class Evaluator:
+    def __init__(self, config=None):
+        self._cfg = config or EvaluatorConfig()
+
+    def evaluate(self, hypothesis_id, metric_spec, candidates, baselines):
+        metric_spec.validate()
+        bad = [r for r in [*candidates, *baselines] if r.terminal != "ok"]
+        if bad:                                              # البوابة ١: failed
+            return {"hypothesis_id": hypothesis_id, "verdict": "failed",
+                    "rationale": f"runs failed with terminals {sorted({r.terminal for r in bad})}"}
+        cand, base = _pair_by_seed(candidates, baselines, metric_spec.name)
+        cand_t = _log_transform(cand, metric_spec.scale)
+        base_t = _log_transform(base, metric_spec.scale)
+        _, p_value, n = paired_t_test(cand_t, base_t)
+        improvement = _improvement(float(np.mean(cand_t)), float(np.mean(base_t)),
+                                   metric_spec.direction)
+        verdict, why = self._verdict(improvement, p_value, n)
+        return {"hypothesis_id": hypothesis_id, "metric": metric_spec.name,
+                "improvement": round(improvement, 6),
+                "p_value": None if p_value is None else round(p_value, 6),
+                "verdict": verdict, "rationale": why}
+
+    def _verdict(self, improvement, p_value, n):
+        if abs(improvement) &lt; self._cfg.improvement_threshold:        # البوابة ٢
+            return "noise", f"improvement {improvement:.4f} is below threshold"
+        if p_value is None:                                           # البوابة ٣
+            return "noise", f"only {n} paired sample(s); cannot run significance test"
+        if p_value &gt; self._cfg.significance_threshold:
+            return "noise", f"p value {p_value:.4f} exceeds significance threshold"
+        if improvement &gt; 0:
+            return "improved", f"improvement {improvement:.4f} significant at p={p_value:.4f}"
+        return "regressed", f"regression {improvement:.4f} significant at p={p_value:.4f}"</pre></div>
+  <p>الأصل بيرجّع dataclass <code>Verdict</code> كامل بكل الحقول (بما فيهم <span class="ltr">candidate_mean</span> و<span class="ltr">baseline_mean</span> من القيم الأصلية مش الـ log)، بس النسخة دي مختصرة. كمّلها لتطابق الأصل.</p>
+  <h3>خطوة ٦: الـ demo</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def result(seed, perplexity):
+    return ExperimentResultLike(f"demo_{seed}", "ok",
+        {"seed": seed, "perplexity": perplexity, "final_loss": math.log(perplexity)})
+
+candidates = [result(s, 28.0 - 0.5 * s + (s % 3) * 0.2) for s in range(8)]
+baselines  = [result(s, 32.0 - 0.4 * s + (s % 3) * 0.2) for s in range(8)]
+spec = MetricSpec("perplexity", direction=LOWER, scale=LOG)
+print(json.dumps(Evaluator().evaluate(1, spec, candidates, baselines), indent=2))</pre></div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+
+  <p>الدرس مفيهوش تمارين مكتوبة؛ دي تمارين مبنية على الـ objectives والـ tests اللي الدرس بيغطيها.</p>
+  <ol class="ex">
+    <li>احسب بإيدك: perplexity من 32 لـ 28، lower is better وlog scale. إيه الـ improvement؟ يعدّي threshold 2%؟
+      <details><summary>تلميح / إجابة</summary><span class="ltr">(ln32 - ln28)/ln32 = (3.466 - 3.332)/3.466 ≈ 0.039</span>. أكبر من 0.02، يعني يعدّي الـ gate الأولى. (القرار النهائي لسه بيعتمد على الـ p value.)</details></li>
+    <li>شغّل الـ evaluator بـ seed واحد بس. إيه الـ verdict وليه؟
+      <details><summary>تلميح / إجابة</summary>الـ <code>p_value</code> = None لأن n أقل من 2، فالحكم <b>noise</b> برسالة «only 1 paired sample(s)». (طبعًا لو الـ improvement كان تحت الـ threshold كان هيتقفل في البوابة ٢ الأول.)</details></li>
+    <li>غيّر terminal في واحد من الـ baselines لـ <span class="ltr">"timeout"</span>. إيه اللي يحصل؟
+      <details><summary>تلميح / إجابة</summary>الحكم <b>failed</b> برسالة فيها <span class="ltr">['timeout']</span>. لأن الكود بيفحص candidates وbaselines مع بعض، مش بيحاول يكمّل.</details></li>
+    <li>اتنين results بـ seed نفسه في candidates، إيه اللي هيحصل؟ ولو الـ seeds مفيهاش أي تقاطع؟
+      <details><summary>تلميح / إجابة</summary>الأولى: <code>PairingError("duplicate candidate seed ...")</code>. التانية: <code>PairingError("no shared seeds between candidate and baseline")</code>. والـ orchestrator المفروض يعيد التشغيل.</details></li>
+    <li>ليه الـ threshold gate قبل الـ significance gate؟ اديني مثال بـ n كبير.
+      <details><summary>تلميح / إجابة</summary>مع n ضخم حتى فرق 0.1% بيطلع p صغير جدًا. بس مفيد عمليًا؟ لأ. الـ threshold بيفلتر الفروق الصغيرة اللي مش هتتقاس في الواقع.</details></li>
+    <li><b>تمرين إضافي مني (عملي):</b> اكتب test بـ reference value معروفة للـ t distribution: لـ <span class="ltr">df = 9</span> والـ <span class="ltr">t = 2.262</span> الـ two-sided p لازم يكون حوالي <span class="ltr">0.05</span>. اتأكد من <code>two_sided_t_p_value</code> عندك.
+      <details><summary>تلميح / إجابة</summary><div class="ltr">assert abs(two_sided_t_p_value(2.262, 9) - 0.05) &lt; 0.001</div>الـ 2.262 هي القيمة الحرجة الشهيرة لـ df=9 عند 5%. لو الاختبار فشل، راجع الـ symmetry branch في <code>regularised_incomplete_beta</code>.</details></li>
+  </ol>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس مقالهوش</h2></div>
+
+  <div class="note ai"><strong>الحدس:</strong> الـ p value مش بتقول «احتمال إن الفرضية صح». بتقول: لو مفيش تأثير حقيقي، قد إيه احتمال أشوف فرق بالحجم ده أو أكبر بالصدفة. والـ threshold بتاع الـ improvement بيجاوب سؤال تاني: هل الفرق كبير كفاية يهم؟ لازم الاتنين.</div>
+  <ul class="checklist">
+    <li><b>خطأ شائع ١: مقارنة متوسطين من غير pairing.</b> ضوضاء الـ seeds بتغطي على التأثير الحقيقي. المعمل ٢ بيوريك ده.</li>
+    <li><b>خطأ شائع ٢: n صغير جدًا.</b> مع ٢ أو ٣ seeds الـ t test ضعيف جدًا (df صغير). الدرس بيدّيك الأداة، بس قرار عدد الـ seeds عليك.</li>
+    <li><b>خطأ شائع ٣: اختبارات كتير.</b> لو قيّمت ٢٠ hypothesis بـ 0.05 هيطلع واحدة «improved» بالصدفة في المتوسط. في loop حقيقي محتاج تصحيح (زي Bonferroni) أو threshold أشد. الدرس مبيعملهوش، فخلّي بالك.</li>
+    <li><b>الـ paired test بيفترض إن الفروق موزّعة تقريبًا طبيعي.</b> ده مقبول للـ metrics الكبيرة، بس مش مضمون مع n صغير ومنحرف.</li>
+    <li><b>في الـ LLMs والـ agents:</b> أي مقارنة prompt أو موديل على benchmark بدون seeds متعددة وpairing = ادّعاء ضعيف. نفس الفكرة بتظهر في الـ eval harnesses (دروس ٦٤ و٧٣ في نفس الـ phase) وفي الـ A/B testing للـ agents.</li>
+  </ul>
+
+</section>
+
+<section id="d481-quiz">
+  <div class="station-head"><span class="tag">QZ</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d481-quizBox"></div>
+</section>
+
+<section id="d481-done">
+  <div class="station-head"><span class="tag">OK</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d481-checklist"><li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه paired t test بدل مقارنة رقمين</label></li><li><label><input type="checkbox" data-ck="2"> حسبت improvement بـ log بإيدي وطلع ≈ 0.039</label></li><li><label><input type="checkbox" data-ck="3"> فاهم ترتيب بوابات الـ verdict (failed ثم threshold ثم significance)</label></li><li><label><input type="checkbox" data-ck="4"> كتبت الـ evaluator وشغّلت الـ demo</label></li><li><label><input type="checkbox" data-ck="5"> حليت ٣ تمارين على الأقل</label></li><li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li></ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Paired test بالـ seed</td><td>مقارنة موديلين أو prompts على benchmark بعدة seeds</td></tr><tr><td>Direction + threshold</td><td>قرار «هل أرفع النسخة الجديدة؟» في الـ CI للـ evals</td></tr><tr><td>Log scale للـ perplexity</td><td>تقارير بتخلط loss وaccuracy وlatency</td></tr><tr><td>Verdict بـ rationale</td><td>الـ auto-research loops وأنظمة الـ agents اللي بتسجّل قراراتها</td></tr><tr><td>PairingError</td><td>تأكد إن المقارنات بنفس الداتا والـ seeds قبل الحكم</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Paper Writer: هنكتب skeleton بـ LaTeX كعقد بين الباحث والـ typesetter، وبعدين نملاه بالـ figures والـ citations.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F53-result-evaluator" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/53-result-evaluator</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=481,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt,L=AI.lab;
+const root=$('d481-roadmap').closest('.day');
+const rm=$('d481-roadmap');
+for(let i=1;i<=85;i++){const s=document.createElement('span');s.textContent=i;if(i===51)s.className='now';rm.appendChild(s)}
+
+const sigmaNote=null;
+// ---- JS port of the lesson's incomplete beta (Lentz) for the lab
+function cf(a,b,x){const eps=1e-12;let qab=a+b,qap=a+1,qam=a-1,c=1,d=1-qab*x/qap;if(Math.abs(d)<eps)d=eps;d=1/d;let h=d;
+ for(let m=1;m<=200;m++){const m2=2*m;let aa=m*(b-m)*x/((qam+m2)*(a+m2));d=1+aa*d;if(Math.abs(d)<eps)d=eps;c=1+aa/c;if(Math.abs(c)<eps)c=eps;d=1/d;h*=d*c;
+  aa=-(a+m)*(qab+m)*x/((a+m2)*(qap+m2));d=1+aa*d;if(Math.abs(d)<eps)d=eps;c=1+aa/c;if(Math.abs(c)<eps)c=eps;d=1/d;const dl=d*c;h*=dl;if(Math.abs(dl-1)<eps)return h}return h}
+function lg(z){const g=7,co=[0.99999999999980993,676.5203681218851,-1259.1392167224028,771.32342877765313,-176.61502916214059,12.507343278686905,-0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7];
+ if(z<.5)return Math.log(Math.PI/Math.sin(Math.PI*z))-lg(1-z);z-=1;let x=co[0];for(let i=1;i<g+2;i++)x+=co[i]/(z+i);const t=z+g+.5;return .5*Math.log(2*Math.PI)+(z+.5)*Math.log(t)-t+Math.log(x)}
+function ib(a,b,x){if(x<=0)return 0;if(x>=1)return 1;const bt=Math.exp(lg(a+b)-lg(a)-lg(b)+a*Math.log(x)+b*Math.log(1-x));
+ return x<(a+1)/(a+b+2)?bt*cf(a,b,x)/a:1-bt*cf(b,a,1-x)/b}
+const pval=(t,df)=>df<=0?1:Math.max(0,Math.min(1,ib(df/2,.5,df/(df+t*t))));
+window.__d481p=pval;
+
+// ---- Lab 1: improvement calc
+L.calc($('d481-imp'),{params:[{k:'base',label:'baseline',min:1,max:100,step:.5,v:32},{k:'cand',label:'candidate',min:1,max:100,step:.5,v:28},{k:'dir',label:'direction 0=lower 1=higher',min:0,max:1,step:1,v:0},{k:'log',label:'scale 0=linear 1=log',min:0,max:1,step:1,v:1},{k:'thr',label:'threshold %',min:0,max:10,step:.5,v:2}],
+ compute:p=>{const a=p.log?Math.log(p.cand):p.cand,b=p.log?Math.log(p.base):p.base;const raw=(a-b)/Math.abs(b||1);const imp=p.dir?raw:-raw;
+  return [['a (candidate)',a],['b (baseline)',b],['improvement',imp],['improvement %',imp*100],['passes threshold?',Math.abs(imp)*100>=p.thr?'yes':'no → noise']]},
+ note:p=>{const a=p.log?Math.log(p.cand):p.cand,b=p.log?Math.log(p.base):p.base;const raw=(a-b)/Math.abs(b||1);const imp=p.dir?raw:-raw;return imp>0?'الـ candidate أحسن (موجب).':imp<0?'الـ candidate أسوأ (سالب).':'مفيش فرق.'}});
+
+// ---- Lab 2: paired test
+(function(){
+const Z=[0.42,-1.1,0.83,-0.35,1.52,-0.77,0.1,-1.6,0.95,0.28,-0.5,1.2];   // ثابتة: seeds' difficulty
+const E=[0.3,-0.6,0.9,-0.2,0.5,-1.0,0.7,0.1,-0.4,0.8,-0.9,0.2];            // ثابتة: noise الفروق
+L.bars($('d481-pt'),{label:'per-seed differences',height:300,colors:['a'],
+ labels:p=>Array.from({length:p.n},(_,i)=>'s'+i),
+ params:[{k:'n',label:'seeds n',min:1,max:12,step:1,v:8},{k:'eff',label:'real effect (log units, x100)',min:-10,max:10,step:.5,v:4},{k:'sd',label:'seed difficulty sd (x100)',min:0,max:50,step:1,v:20},{k:'nz',label:'diff noise sd (x100)',min:1,max:20,step:.5,v:5}],
+ values:p=>Array.from({length:p.n},(_,i)=>-(p.eff/100+p.nz/100*E[i])),
+ readout:p=>{const d=Array.from({length:p.n},(_,i)=>p.eff/100+p.nz/100*E[i]);const n=d.length,m=d.reduce((a,b)=>a+b,0)/n;
+  const v=n>1?d.reduce((a,b)=>a+(b-m)*(b-m),0)/(n-1):0;const t=v>0?m/Math.sqrt(v/n):0;const pv=n<2?null:pval(t,n-1);
+  const raw=Array.from({length:n},(_,i)=>p.sd/100*Z[i]);const mr=raw.reduce((a,b)=>a+b,0)/n;const sr=Math.sqrt(raw.reduce((a,b)=>a+(b-mr)*(b-mr),0)/Math.max(1,n-1));
+  return [['mean diff',m],['sd of diffs',Math.sqrt(v)],['sd of raw seed values',sr],['t',t],['p (paired)',pv==null?'None':pv]]},
+ note:p=>{const d=Array.from({length:p.n},(_,i)=>p.eff/100+p.nz/100*E[i]);const n=d.length;if(n<2)return 'n < 2: مفيش p، الحكم noise.';
+  const m=d.reduce((a,b)=>a+b,0)/n;const v=d.reduce((a,b)=>a+(b-m)*(b-m),0)/(n-1);const pv=pval(v>0?m/Math.sqrt(v/n):0,n-1);const imp=Math.abs(m)/3.4;
+  return (imp<.02?'الأثر تحت الـ threshold 2%: noise. ':pv>.05?'p أكبر من 0.05: noise. ':(m<0?'improved. ':'regressed. '))+'(الأعمدة = baseline - candidate؛ موجب = candidate أقل = أحسن لـ lower is better). لاحظ إن sd الـ raw values كبير بس مش بيأثر على الـ paired.'}});
+})();
+
+// ---- Lab 3: verdict flow
+L.flow($('d481-flow'),{label:'verdict decision path',height:320,
+ nodes:[{id:'t',label:'terminal ok?',x:0,y:.5},{id:'f',label:'failed',x:.28,y:.05},{id:'th',label:'|imp| ≥ 2%?',x:.38,y:.5},{id:'n',label:'noise',x:.64,y:.95},{id:'p',label:'p ≤ 0.05?',x:.68,y:.5},{id:'s',label:'sign?',x:.9,y:.28},{id:'i',label:'improved',x:1,y:.05},{id:'r',label:'regressed',x:1,y:.6}],
+ edges:[['t','f','no'],['t','th','yes'],['th','n','no'],['th','p','yes'],['p','n','no / None'],['p','s','yes'],['s','i','> 0'],['s','r','< 0']],
+ steps:[{active:['t','f'],edges:[['t','f']],text:'١) أي run مش ok: <b>failed</b> فورًا.'},{active:['t','th','n'],edges:[['t','th'],['th','n']],text:'٢) الكل ok بس التحسّن أقل من الـ threshold: <b>noise</b>.'},{active:['th','p','n'],edges:[['th','p'],['p','n']],text:'٣) التحسّن كبير بس p كبير أو None: <b>noise</b>.'},{active:['p','s','i'],edges:[['p','s'],['s','i']],text:'٤) دلالة إحصائية والتحسّن موجب: <b>improved</b>.'},{active:['p','s','r'],edges:[['p','s'],['s','r']],text:'٥) دلالة إحصائية والتحسّن سالب: <b>regressed</b>.'}]});
+
+AI.quiz($('d481-quizBox'),[["ليه الـ evaluator بيستخدم paired t test بدل ما يقارن رقمين؟", ["لأن numpy بيتطلب arrays مزدوجة", "لأن الـ runner مبيقدرش يطلّع رقم واحد", "لأن مزاوجة نفس الـ seed بين candidate وbaseline بتعزل أثر التغيير عن ضوضاء التهيئة العشوائية", "لأن الـ t tests مطلوبة دايمًا"], 2, "المزاوجة بالـ seed بتلغي أثر التهيئة العشوائية. الفرق اللي بيفضل منسوب للتغيير في الـ configuration، وده اللي الاختبار بيقيسه."], ["ليه كل metric معاه حقل direction؟", ["لأن numpy محتاجه للـ variance", "لأن الـ accuracy والـ loss بيروحوا في اتجاهين عكس بعض، وإشارة التحسّن بتعتمد على أنهي اتجاه هو الأحسن", "لأن الـ runner بيطلبه", "لأن الـ parser بيتوقعه"], 1, "الـ higher is better بتتحسّن لما تزيد، والـ lower is better لما تقل. حقل الاتجاه بيقول لدالة الـ improvement أنهي إشارة تستخدم."], ["الـ verdict path بيرجّع إيه لما |improvement| أقل من الـ threshold حتى لو الـ p value معنوي؟", ["noise", "regressed", "failed", "improved"], 0, "تغيير دلالته الإحصائية معنوية بس أصغر من إنه يتعمل بيه حاجة = noise من وجهة نظر الـ loop. بوابة الـ threshold قبل بوابة الـ significance."], ["ليه الـ evaluator بيحوّل الـ metrics اللي scale بتاعها log قبل حساب الـ improvement؟", ["لأن الـ p value بتعتمد عليه", "لأن numpy logs أسرع", "لأن الـ runner بيطلّع log metrics بس", "لأن الـ perplexity بتنمو أُسّيًا مع الـ loss، فالتحويل لـ log space بيخلّي threshold زي 2% له معنى مع الـ linear metrics"], 3, "الـ perplexity = exp(loss). تغيير صغير في الـ loss بيبقى كبير في الـ perplexity. الـ log بيحافظ على إن التحسّن النسبي قابل للمقارنة تحت threshold واحد."], ["الـ paired t test helper بيرجّع p_value = None إمتى؟", ["لما الـ variance صفر", "لما المتوسطين متساويين", "لما الـ scale لوغاريتمي", "لما يبقى فيه أقل من ٢ عينة مزدوجة"], 3, "توزيع t محتاج درجة حرية واحدة على الأقل. مع n أقل من ٢ مفيش تقدير للـ variance، فبيرجّع None والـ verdict بيعتبرها noise."], ["لو حتى نتيجة واحدة terminal بتاعها مش ok، إيه اللي بيحصل؟", ["الـ evaluator بيرجّع verdict = failed ويسجّل الـ terminals الوحشة في الـ rationale", "بيشيل الـ seed ده ويكمّل", "بيعيد تشغيل الـ run", "بيرجع لـ one sided test"], 0, "الـ run الفاشل بيبطّل مجموعة الـ candidates. الـ evaluator بيقصّر الطريق ويرجّع failed، فمفيش استنتاج من run واقع."], ["(سؤال مني) candidate perplexity أعلى من baseline بفرق معنوي إحصائيًا (p = 0.001) وكبير (10%). الـ metric lower is better. الـ verdict؟", ["improved", "noise", "regressed", "failed"], 2, "الـ improvement = (baseline - candidate)/baseline سالب، والـ p أقل من 0.05، فبوابة الإشارة بترجّع regressed."], ["(سؤال مني) ليه تقييم ٢٠ hypothesis بـ significance 0.05 من غير تصحيح مشكلة؟", ["لأن الـ t test مبيشتغلش على ٢٠", "لأن احتمال واحدة على الأقل تطلع «معنوية» بالصدفة بيبقى كبير (تقريبًا 64%)", "لأن الـ p value بتبقى دايمًا أكبر", "لأن الـ threshold بيتغير"], 1, "احتمال ولا واحدة تطلع صدفة = 0.95^20 ≈ 0.36، فاحتمال واحدة على الأقل ≈ 0.64. ده multiple comparisons، ومحتاج تصحيح (Bonferroni مثلًا)."]],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

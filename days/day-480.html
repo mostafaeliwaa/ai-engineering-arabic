@@ -1,0 +1,408 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 52 · Experiment Runner</span>
+  <h1>اليوم 480: الـ Experiment Runner: شغّل التجربة في صندوق وارجع بأرقام تثق فيها</h1>
+  <p class="lede">النهاردة هتبني الـ <b>runner</b> اللي بياخد spec، يشغّله في <b>subprocess</b> بـ timeout صلب وmemory cap ناعم، ويرجّع result واحد فيه metrics وterminal label واضح. وهتبني كمان جدول <b>ablation</b> بمفتاح واحد في المرة. ده الأساس اللي الـ evaluator بتاع بكرة بيثق فيه.</p>
+  <div class="meta"><span>الوقت: <b>~٩٠ دقيقة</b></span><span>اللغة: <b>Python (وفيه نسخة TypeScript)</b></span><span>قبله: <b>Literature Retrieval</b></span><span>بعده: <b>Result Evaluator</b></span></div>
+  <div>
+    <span class="eyebrow">Phase 19 — 85 lessons</span>
+    <div class="roadmap" id="d480-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d480-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الدرس اللي فات؟</h2></div>
+  <p>امبارح بنيت الـ retrieval layer (درس ٥١: Literature Retrieval). جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex"><li>عملنا BM25 على الـ abstracts وإيه الفرق بين الـ lexical search والـ graph traversal؟<details><summary>الإجابة</summary><span class="ltr">BM25</span> بيلاقي الأبحاث اللي بتشارك نفس الكلمات مع الـ query. الـ citation graph بيوصّل لأبحاث استخدمت مصطلحات مختلفة أو تابعة لورقة معروفة (anchor).</details></li><li>ليه بنعمل الـ deduplicate بالـ paper id؟<details><summary>الإجابة</summary>لأن نفس الورقة ممكن تيجي من الـ BM25 ومن الـ graph ومن الـ mock API التاني. الـ id الثابت (زي <span class="ltr">p001</span>) بيخلّي الـ union مفيهوش تكرار.</details></li><li>ليه لفينا الـ mock APIs في client واحد؟<details><summary>الإجابة</summary>عشان نقطة الاستدعاء فوق متتغيرش لما الـ endpoints الحقيقية تيجي بدل الـ mock.</details></li></ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan"><div><b>5 min</b>التسخين</div><div><b>15 min</b>الـ spec والـ result، والـ lifecycle</div><div><b>15 min</b>الـ poller والـ stdout والـ ablation</div><div><b>40 min</b>اكتب الـ runner وشغّل الـ demo</div><div><b>15 min</b>التمارين والكويز</div></div>
+</section>
+
+<section>
+  <div class="station-head"><span class="tag">01</span><h2>ليه Subprocess؟ الـ Runner هو ضمير الـ Loop</h2></div>
+
+  <p>الـ research loop بيشغّل كود <b>مش مضمون</b>. الـ hypothesis جاية من sampler، والـ script جاي من نفس الطريق. لو شغّلته جوه نفس البروسيس بتاع الـ orchestrator، أول <code>crash</code> أو memory leak أو حلقة لا نهائية هيوقّع الـ orchestrator كله معاه.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيّل مطبخ مطعم. لو الطباخ الجديد بيجرّب وصفة في نفس الغاز اللي بيطبخ عليه طلبات الزباين وولّعت، المطبخ كله بيقف. الـ subprocess زي إنك تدّيله بوتاجاز لوحده في أوضة تانية وتفضل ماسك مفتاح الغاز: تقدر تقفل عليه في أي لحظة.</div>
+  <p>الـ subprocess أبسط عزل بتديه اللغة: بروسيس منفصل، address space مستقل، و«handle» في إيد الأب يقدر يعمل بيه <code>kill</code>. المهم: الدرس ده <b>مش sandbox كامل</b>. مفيش cgroup ولا seccomp ولا namespaces. اللي فيه هو العقد الأساسي اللي أي sandbox أكبر بيبني عليه: <b>wall clock timeout</b> + <b>memory poller</b> + <b>مسار kill</b> لو أي حد فيهم اتخطّى.</p>
+  <div class="note ai"><strong>الفكرة الكبيرة:</strong> «الـ loop مبيبقاش أمين غير بقدر أمانة قياساته». الـ runner لازم يطلّع blob أرقام الـ evaluator يقدر يثق فيه، حتى لو التجربة نفسها اتقتلت أو وقعت.</div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">02</span><h2>الـ ExperimentSpec والـ ExperimentResult: عقد الدخول والخروج</h2></div>
+
+  <p>التجربة بتتوصف كـ <b>spec</b> مكتوب بأنواع (typed)، يقدر الـ runner يحوّله لـ subprocess. وفي الآخر بيرجع <b>result</b> بشكل ثابت. الشكلين دول هما اللي بيربطوا الدروس ٥٠ و٥١ و٥٢ و٥٣ من غير أي glue.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحقل في الـ Spec</th><th>معناه</th></tr>
+    <tr><td><code>spec_id</code></td><td>id ثابت للتجربة، مثلًا <span class="ltr">exp_001</span></td></tr>
+    <tr><td><code>hypothesis_id</code></td><td>رقم بيرجّعك للـ queue بتاعة الدرس ٥٠</td></tr>
+    <tr><td><code>script_path</code></td><td>مسار سكربت Python اللي هيتشغّل</td></tr>
+    <tr><td><code>config</code></td><td>dict بيتبعت للسكربت كملف JSON واحد</td></tr>
+    <tr><td><code>seed</code></td><td>الـ seed اللي بيخلّي النتايج ثابتة (deterministic)</td></tr>
+    <tr><td><code>wall_timeout_s</code></td><td>الـ timeout الصلب: لو عدّى، البروسيس بيتقتل</td></tr>
+    <tr><td><code>memory_cap_mb</code></td><td>الـ cap «الناعم» للذاكرة: بيتعمله polling</td></tr>
+    <tr><td><code>metric_keys</code></td><td>الحقول اللي الـ evaluator هيقراها من الناتج</td></tr>
+  </table></div>
+  <p>الـ runner بيكتب الـ config في ملف مؤقت، والسكربت لازم يطبع <b>سطر JSON واحد</b> على stdout مفاتيحه تشمل كل الـ <code>metric_keys</code> (وأكتر لو حب). أي حاجة تانية على stdout بتتسجّل بس مبتتحسبش كـ metrics.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحقل في الـ Result</th><th>معناه</th></tr>
+    <tr><td><code>exit_code</code></td><td>كود الخروج. الـ runner <b>مبيرميش exception</b> لو مش صفر، بيسجّله بس</td></tr>
+    <tr><td><code>terminal</code></td><td>واحدة من: <span class="ltr">ok | timeout | oom | crash</span></td></tr>
+    <tr><td><code>wall_time_s</code></td><td>الوقت الفعلي اللي خدته التجربة</td></tr>
+    <tr><td><code>peak_rss_mb</code></td><td>أعلى استهلاك ذاكرة اتلاحظ (أو <span class="ltr">None</span> لو المنصة مش بتدعم)</td></tr>
+    <tr><td><code>metrics</code></td><td>الـ blob النهائي</td></tr>
+    <tr><td><code>intermediate_metrics</code></td><td>سطور JSON اللي قبل النهائي (لمنحنيات التعلّم)</td></tr>
+    <tr><td><code>stdout_tail / stderr_tail</code></td><td>آخر جزء من المخرجات والأخطاء</td></tr>
+  </table></div>
+  <div class="note"><strong>قاعدة مهمة:</strong> الـ evaluator بيبص على <code>terminal</code> الأول. لو أي حاجة غير <span class="ltr">"ok"</span> يبقى التجربة فشلت والحكم أوتوماتيك. ولو ok بس، الأرقام بتعدّي على الـ significance test (درس بكرة).</div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">03</span><h2>معمل ١: عمر الـ Run من الـ Spec للـ Result</h2></div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>الـ lifecycle بالكامل</h3>
+      <p>الـ runner بيمشي بالترتيب ده: يحوّل الـ config لملف مؤقت، يفتح subprocess، يشغّل <b>timer</b> و<b>memory poller</b> جنبه، وبعدين يا يتقتل البروسيس (timeout أو oom) يا يخلص ويتقرأ آخر JSON.</p>
+      <p>دوس «اللي بعدها» وشوف أربع سيناريوهات: نجاح، timeout، oom، crash. لاحظ إن <b>الـ label بيتحدد بترتيب ثابت</b>: oom الأول، بعدين timeout، بعدين exit code.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ crash بيتسمّى crash حتى لو السكربت طبع metrics قبل ما يقع. الـ partial run بيتعامل كفشل افتراضيًا.</div>
+    </div>
+    <div id="d480-flow"></div>
+  </div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">04</span><h2>الـ Memory Cap «الناعم» والـ Poller</h2></div>
+
+  <p>الـ cap الصلب محتاج <code>resource.setrlimit</code> وبيشتغل على POSIX بس. الدرس بيستخدم طريقة محمولة: thread صغير بيصحى كل <code>poll_interval</code> ويقرا الـ RSS (الذاكرة الفعلية المستخدمة) من <code>/proc/&lt;pid&gt;/status</code> (سطر <code>VmRSS</code>) أو من أمر <code>ps</code> لو مفيش /proc. لو عدّى الـ cap: <code>kill</code>.</p>
+  <p>اسمه «ناعم» لأن الـ poller بيصحى كل فترة، والبروسيس يقدر يعمل spike فوق الـ cap بين نظرتين وينزل تاني قبل ما يتشاف. الـ runner بيسجّل <b>أعلى RSS اتلاحظ</b> عشان الـ evaluator يعرف كانت قريبة من الحد قد إيه.</p>
+  <p>ولو المنصة مش بتديك أي طريقة تقرا الـ RSS، الـ poller بيطبع warning <b>مرة واحدة</b> ويقفل نفسه. الـ wall clock timeout يفضل شغال في كل الأحوال. (الدرس فيه اختبارات للمسارين.)</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: امسك الـ spike لو تقدر</h3>
+      <p>التجربة بتعمل spike في الذاكرة بيبدأ عند 400ms. النقط على الرسم هي نظرات الـ poller: <b>خضرا</b> = تحت الـ cap، <b>حمرا</b> = فوقه (يعني اتقتل).</p>
+      <p>صغّر مدة الـ spike وكبّر الـ poll interval، وشوف إزاي الـ spike بيعدّي من غير ما يتشاف. ده بالظبط معنى «soft».</p>
+    </div>
+    <div id="d480-poll"></div>
+  </div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">05</span><h2>تجميع الـ stdout والـ stderr والـ Final Metrics</h2></div>
+
+  <p>الـ runner بيقرا الـ pipes بعد ما البروسيس يخلص. الـ stdout بيتفحص سطر سطر: كل سطر بيبدأ بـ <code>{</code> وبيتحوّل JSON صالح (dict) ومفاتيحه تشمل كل الـ <code>metric_keys</code> بيتحسب «covering line». <b>آخر</b> covering line هو الـ metrics النهائي، وكل اللي قبله بيتحط في <code>intermediate_metrics</code>. وده اللي بيدّي الـ evaluator منحنى الـ loss.</p>
+  <p>الـ stderr بيتحفظ زي ما هو. والـ exit code اللي مش صفر = <code>crash</code>، وكمان صفر من غير metrics = <code>crash</code> (لأن مفيش نتيجة تتصدّق).</p>
+  <div class="note"><strong>تشبيه:</strong> زي مراقب لجنة بيجمع كراسات الإجابة: بيقرا الأوراق كلها بالترتيب، وآخر ورقة مكتملة هي الإجابة النهائية، والمسودات اللي قبلها بيحتفظ بيها كدليل.</div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">06</span><h2>الـ Ablation: مفتاح واحد في المرة</h2></div>
+
+  <p>الـ helper <code>ablate(base, knob, values)</code> بياخد spec أساسي ويرجّع spec لكل قيمة، فيها <code>config[knob]</code> متغيّرة فقط، و<code>spec_id</code> مشتق: <span class="ltr">f"{base.spec_id}_{knob}_{value}"</span>. والـ <code>AblationRunner</code> بيشغّلهم بالترتيب ويرجّع <code>AblationTable</code> مفتاحها قيمة الـ knob.</p>
+  <p><b>ليه knob واحد؟</b> الـ full factorial بيتفجّر أُسّيًا وبيطلّع جدول مش بتعرف تفسّره. مفتاح واحد بيدّيك محور نضيف الـ evaluator يرسمه. ولو عايز أكتر من knob، كرّر ablation لكل واحد وركّبهم بنفسك.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: ablation على k، وتكلفة الـ factorial</h3>
+      <p>الرسم الأول بيحاكي سكربت <code>sparsity_experiment.py</code> (من غير الـ noise): الـ loss بيقل مع الـ steps ومع الـ k. لاحظ إن k فوق 32 مبيفرقش، لأن السكربت بيستخدم <span class="ltr">min(k, 32)</span>.</p>
+      <p>الحاسبة اللي تحتها بتوريك ليه الـ factorial مش عملي.</p>
+    </div>
+    <div style="display:grid;gap:14px;min-width:0"><div id="d480-abl"></div><div id="d480-fact"></div></div>
+  </div>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">07</span><h2>الـ Determinism: ليه الـ Seed إجباري</h2></div>
+
+  <p>كل spec ليه seed، والـ runner بيمرره للسكربت عن طريق <code>config["__seed"] = spec.seed</code>. السكربت التجريبي بيستخدمه في <span class="ltr">np.random.default_rng(seed)</span>، فتشغيلتين بنفس الـ seed بيدّوا <b>أرقام متطابقة</b>.</p>
+  <p>ده شرط للـ evaluator بتاع الدرس ٥٣: من غير determinism، أي «regression» ممكن يطلع بس تهيئة عشوائية مختلفة. ومع ثبات الـ seed تقدر تفرّق بين تغيير حقيقي وضوضاء.</p>
+  <div class="note ai"><strong>السكربت التجريبي:</strong> بيقرا مسار ملف الـ config من <span class="ltr">argv</span>، ويحاكي تدريب صغير (loss curve + perplexity نهائي + wall time). بيدعم <code>sleep_s</code> لإجبار timeout، و<code>allocate_mb</code> لإجبار الـ memory poller. هو مش بيدرّب حاجة حقيقية: الدرس عن الـ runner مش عن التجربة.</div>
+
+</section>
+<section id="d480-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+
+  <p>الأوامر كلها من <b>root الريبو</b> (فولدر <span class="ltr">ai-engineering-from-scratch</span>). شغّل الأصل الأول وشوف الناتج، بعدين اكتب النسخة بتاعتك.</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/52-experiment-runner/code/main.py
+# هيطبع JSON واحد فيه: "base" (نتيجة التشغيل الأساسي) و "ablation" (٤ صفوف لـ k = 4, 8, 16, 32)
+# الدرس فيه كمان نسخة TypeScript: code/main.ts</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_runner.py</code> واكتب الخطوات دي بإيدك سطر سطر. متعملش Copy غير لو اتزنقت وعايز تقارن. الخطوات مختصرة من الأصل (stdlib بس).</p>
+  <h3>خطوة ١: الـ Spec والـ Result</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import json, os, subprocess, sys, tempfile, threading, time
+from dataclasses import dataclass, field
+
+@dataclass
+class ExperimentSpec:
+    spec_id: str
+    hypothesis_id: int
+    script_path: str
+    config: dict
+    seed: int = 0
+    wall_timeout_s: float = 30.0   # timeout صلب
+    memory_cap_mb: int = 512       # cap ناعم
+    metric_keys: list[str] = field(default_factory=list)
+
+@dataclass
+class ExperimentResult:
+    spec_id: str
+    hypothesis_id: int
+    exit_code: int
+    terminal: str                  # ok | timeout | oom | crash
+    wall_time_s: float
+    peak_rss_mb: float | None
+    metrics: dict
+    intermediate_metrics: list[dict]
+    stdout_tail: str
+    stderr_tail: str</pre></div>
+  <h3>خطوة ٢: قراءة الـ RSS والـ Poller</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def _rss_mb(pid):
+    path = f"/proc/{pid}/status"
+    if os.path.exists(path):                      # لينكس
+        with open(path) as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / 1024.0   # kB -&gt; MB
+        return 0.0
+    return None                                   # مش مدعوم (الأصل بيجرّب ps كمان)
+
+class _MemoryPoller(threading.Thread):
+    def __init__(self, proc, cap_mb, interval_s=0.05):
+        super().__init__(daemon=True)
+        self._proc, self._cap, self._interval = proc, cap_mb, interval_s
+        self._stop_event = threading.Event()
+        self.peak_rss_mb = None
+        self.killed_for_oom = False
+
+    def stop(self):
+        self._stop_event.set()
+
+    def run(self):
+        while not self._stop_event.is_set() and self._proc.poll() is None:
+            rss = _rss_mb(self._proc.pid)
+            if rss is None:                       # مفيش طريقة نقيس: اقفل الـ poller
+                return
+            self.peak_rss_mb = rss if self.peak_rss_mb is None else max(self.peak_rss_mb, rss)
+            if rss &gt; self._cap:                   # عدّى الـ cap: اقتله
+                self.killed_for_oom = True
+                self._proc.kill()
+                return
+            self._stop_event.wait(self._interval) # نام لحد النظرة الجاية</pre></div>
+  <h3>خطوة ٣: استخراج الـ metrics من الـ stdout</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def _scan_intermediates(stdout, metric_keys):
+    intermediates, final = [], {}
+    required = set(metric_keys)
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if required and not required.issubset(parsed.keys()):
+            continue                              # مش covering line
+        if final:
+            intermediates.append(final)           # القديم يبقى intermediate
+        final = parsed                            # الأحدث هو النهائي
+    return final, intermediates</pre></div>
+  <h3>خطوة ٤: الـ Runner نفسه والـ terminal label</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>class ExperimentRunner:
+    def __init__(self, python_path=None, poll_interval_s=0.05):
+        self._python = python_path or sys.executable
+        self._poll_interval = poll_interval_s
+
+    def run(self, spec):
+        with tempfile.TemporaryDirectory(prefix="exp_") as workdir:
+            cfg_path = os.path.join(workdir, "config.json")
+            cfg = dict(spec.config)
+            cfg["__seed"] = spec.seed             # الـ seed بيدخل من الـ config
+            with open(cfg_path, "w") as fh:
+                json.dump(cfg, fh)
+            return self._run_subprocess(spec, cfg_path)
+
+    def _run_subprocess(self, spec, cfg_path):
+        start = time.perf_counter()
+        proc = subprocess.Popen([self._python, spec.script_path, cfg_path],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        poller = _MemoryPoller(proc, spec.memory_cap_mb, self._poll_interval)
+        poller.start()
+        timed_out = False
+        try:
+            stdout, stderr = proc.communicate(timeout=spec.wall_timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            proc.kill()
+            stdout, stderr = proc.communicate(timeout=2.0)
+        finally:
+            poller.stop(); poller.join(timeout=1.0)
+        metrics, inter = _scan_intermediates(stdout, spec.metric_keys)
+        terminal = self._terminal_label(proc.returncode, timed_out,
+                                        poller.killed_for_oom, bool(metrics))
+        return ExperimentResult(spec.spec_id, spec.hypothesis_id, proc.returncode, terminal,
+                                time.perf_counter() - start, poller.peak_rss_mb,
+                                metrics, inter, stdout, stderr)
+
+    @staticmethod
+    def _terminal_label(exit_code, timed_out, oomed, have_metrics):
+        if oomed:     return "oom"                # الأولوية ١
+        if timed_out: return "timeout"            # ٢
+        if exit_code == 0 and have_metrics: return "ok"
+        return "crash"                            # أي حاجة تانية</pre></div>
+  <p>ملحوظة: الأصل بيتعامل كمان مع فشل <code>Popen</code> نفسه (<code>OSError</code>) وبيرجّع result بـ <span class="ltr">exit_code=-1</span> و<span class="ltr">terminal="crash"</span>. زوّد ده في نسختك.</p>
+  <h3>خطوة ٥: الـ ablate والـ AblationRunner</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def ablate(base, knob, values):
+    specs = []
+    for v in values:
+        cfg = dict(base.config)
+        cfg[knob] = v                              # مفتاح واحد بس بيتغير
+        specs.append(ExperimentSpec(
+            spec_id=f"{base.spec_id}_{knob}_{v}",
+            hypothesis_id=base.hypothesis_id, script_path=base.script_path,
+            config=cfg, seed=base.seed, wall_timeout_s=base.wall_timeout_s,
+            memory_cap_mb=base.memory_cap_mb, metric_keys=list(base.metric_keys)))
+    return specs
+
+class AblationRunner:
+    def __init__(self, runner):
+        self._runner = runner
+    def sweep(self, base, knob, values):
+        values = list(values)
+        rows = [(v, self._runner.run(s)) for v, s in zip(values, ablate(base, knob, values))]
+        return rows</pre></div>
+  <h3>خطوة ٦: السكربت التجريبي (اللي بيتشغّل جوه الـ subprocess)</h3>
+  <p>الأصل في <span class="ltr">code/experiments/sparsity_experiment.py</span> وبيستخدم numpy. دي نسخة مختصرة توضّح العقد (قراءة config، طباعة JSON لكل step، وسطر نهائي):</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>import json, sys, numpy as np
+
+cfg = json.load(open(sys.argv[1]))                # مسار الـ config جاي من argv
+rng = np.random.default_rng(int(cfg.get("__seed", 0)))
+k, steps = int(cfg.get("k", 8)), max(1, int(cfg.get("steps", 4)))
+losses = []
+for step in range(steps):
+    loss = 5.0 * (0.9 ** step) - 0.05 * min(k, 32) / 32.0 + float(rng.normal(0, 0.02))
+    losses.append(round(loss, 6))
+    print(json.dumps({"step": step, "loss": losses[-1],
+                      "perplexity": round(float(np.exp(losses[-1])), 6),
+                      "final_loss": losses[-1]}), flush=True)   # intermediate
+print(json.dumps({"perplexity": round(float(np.exp(losses[-1])), 6),
+                  "final_loss": losses[-1], "steps_completed": steps,
+                  "k": k, "seed": int(cfg.get("__seed", 0))}), flush=True)  # النهائي</pre></div>
+  <p>وبعدين جرّب الـ demo بتاعك بنفس الـ config: <span class="ltr">{"k": 16, "steps": 4, "sleep_s": 0.0}</span> و<span class="ltr">seed=7</span>، وقارن الشكل (مش لازم الأرقام تطابق لو شغّلت نسخة مختصرة). الـ tests الأصلية في <span class="ltr">code/tests/test_runner.py</span> (success / timeout / crash / ablation / determinism).</p>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+
+  <p>الدرس نفسه مفيهوش تمارين مكتوبة، فدي تمارين مبنية على الـ learning objectives وعلى الـ knobs اللي السكربت بيدعمها. جرّبهم على الـ runner الأصلي.</p>
+  <ol class="ex">
+    <li>شغّل التجربة بـ <span class="ltr">sleep_s=5</span> و<span class="ltr">steps=4</span> مع <span class="ltr">wall_timeout_s=2</span>. إيه الـ terminal المتوقع؟
+      <details><summary>تلميح / إجابة</summary>هيطلع <code>timeout</code>: الـ communicate هيرمي <code>TimeoutExpired</code> وبعدين <code>kill</code>. لاحظ إن الـ stdout ممكن يحتوي intermediate step أو اتنين اتطبعوا قبل الموت.</details></li>
+    <li>شغّل بـ <span class="ltr">allocate_mb=300</span> و<span class="ltr">memory_cap_mb=256</span>. إيه اللي هيحصل؟ وليه ممكن النتيجة تبقى مش دايمًا نفس الشيء؟
+      <details><summary>تلميح / إجابة</summary>المتوقع <code>oom</code> (الـ poller يشوف RSS فوق 256). بس الـ cap ناعم: لو السكربت خلّص بسرعة قبل أول نظرة، ممكن يعدّي <code>ok</code>. فكّر في <code>poll_interval_s</code> وفي إن الـ interpreter نفسه + numpy بياخدوا جزء من الـ RSS قبل الـ allocation.</details></li>
+    <li>شغّل <span class="ltr">experiments/crashing_experiment.py</span> (بيطبع JSON فيه step وnote وبيطلع بـ exit code 3). إيه الـ terminal، وليه حتى لو في JSON اتطبع؟
+      <details><summary>تلميح / إجابة</summary><code>crash</code>: الـ exit code مش صفر. وكمان سطر JSON اللي طبعه مفيهوش <span class="ltr">metric_keys</span> المطلوبة، فمش covering line. وstderr_tail هيحتوي <span class="ltr">trace: simulated failure</span>.</details></li>
+    <li>اعمل ablation على <code>steps</code> بالقيم <span class="ltr">[1, 2, 4, 8]</span> بدل k. ارسم (أو اطبع) الـ <code>final_loss</code> لكل قيمة. إيه شكل المنحنى ومنين جاي؟
+      <details><summary>تلميح / إجابة</summary>الـ loss بيقل مع الزيادة لأن الصيغة فيها <span class="ltr">5.0 * 0.9**step</span>: كل step بيضرب في 0.9. هتشوف تراجع سريع في الأول وبعدين بطيء.</details></li>
+    <li>ازاي تحوّل <code>_terminal_label</code> لجدول decision بدل if متتابعة؟ وليه ترتيب oom ثم timeout مهم؟
+      <details><summary>تلميح / إجابة</summary>لو البروسيس اتقتل بسبب oom، الـ <code>returncode</code> هيبقى سالب (signal) وممكن الـ timeout يتفعّل برضه. بنقدّم oom لأنه السبب الحقيقي للقتل. الترتيب هو اللي بيضمن label واحد ثابت.</details></li>
+    <li><b>تمرين إضافي مني (عملي):</b> اكتب <code>run_twice_and_compare(spec)</code> تشغّل نفس الـ spec مرتين وتتأكد إن <code>metrics</code> متطابقة (ماعدا <code>wall_time_s</code>). بعدين غيّر الـ seed في التشغيل التاني وأثبت إن الأرقام اتغيّرت.
+      <details><summary>تلميح / إجابة</summary><div class="ltr">r1, r2 = runner.run(spec), runner.run(spec)
+assert r1.metrics == r2.metrics
+spec2 = ExperimentSpec(**{**spec.__dict__, "seed": spec.seed + 1})
+assert runner.run(spec2).metrics != r1.metrics</div>الـ wall time مش جزء من الـ metrics، فمتقارنوش. ودي أساس درس بكرة.</details></li>
+  </ol>
+
+</section>
+<section>
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس مقالهوش</h2></div>
+
+  <p><b>إضافة مني:</b> حاجات الدرس مقالهاش صراحة وتفرق في الشغل الحقيقي.</p>
+  <div class="note ai"><strong>الحدس:</strong> الـ runner هو «الحد الفاصل بين الكلام والأرقام». أي إهمال في القياس (ذاكرة، وقت، seed) بيتحول في الآخر لحكم غلط في الـ evaluator. عشان كده الـ result مبيحذفش الفشل: بيسجّله بـ label واضح.</div>
+  <ul class="checklist">
+    <li><b>خطأ شائع ١: deadlock الـ pipes.</b> الأصل بيستخدم <code>communicate()</code> اللي بيقرا stdout وstderr في نفس الوقت. لو استخدمت <code>proc.wait()</code> وبعدين قرأت الـ pipes، والسكربت طبع كمية كبيرة، الـ pipe بيتملي والبروسيس بيعلّق للأبد.</li>
+    <li><b>خطأ شائع ٢: تكتب الـ seed في السكربت.</b> الـ seed لازم يجي من الـ spec، وإلا الـ ablation مبقاش قابل للمقارنة.</li>
+    <li><b>خطأ شائع ٣: تثق في الـ metrics بعد crash.</b> حتى لو في JSON، الـ exit code الغير صفر معناه إن التجربة مخلصتش. الأصل بيعتبرها failure.</li>
+    <li><b>حدود الدرس:</b> الـ poller بيقيس البروسيس الأب بس (الـ pid المباشر). لو السكربت فتح child processes، ذاكرتهم مش محسوبة. وده فرق بين «العقد» و«sandbox حقيقي» (cgroups).</li>
+    <li><b>في الـ LLMs والـ agents:</b> أي agent بينفّذ كود (code interpreter، SWE-agent، eval harness) محتاج نفس الثلاثية: timeout + memory limit + terminal reason واضح. وده نفس الأساس اللي في الـ code-execution metrics (دروس قدّام).</li>
+  </ul>
+
+</section>
+
+<section id="d480-quiz">
+  <div class="station-head"><span class="tag">QZ</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d480-quizBox"></div>
+</section>
+
+<section id="d480-done">
+  <div class="station-head"><span class="tag">OK</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d480-checklist"><li><label><input type="checkbox" data-ck="1"> فهمت ليه الـ subprocess أحسن من import في نفس البروسيس</label></li><li><label><input type="checkbox" data-ck="2"> أقدر أشرح الفرق بين الـ cap الصلب والناعم وجربت المعمل ٢</label></li><li><label><input type="checkbox" data-ck="3"> عارف أربع terminal labels وترتيب أولويتهم</label></li><li><label><input type="checkbox" data-ck="4"> كتبت الـ runner بإيدي وشغّلته على الـ demo</label></li><li><label><input type="checkbox" data-ck="5"> حليت ٣ تمارين على الأقل</label></li><li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li></ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>subprocess + kill</td><td>أي code interpreter أو SWE-agent أو eval harness بينفّذ كود مش مضمون</td></tr><tr><td>Terminal label (ok/timeout/oom/crash)</td><td>الـ eval runners اللي بتفرّق بين فشل الموديل وفشل البنية التحتية</td></tr><tr><td>Soft cap بالـ polling</td><td>أدوات الـ sandbox البسيطة قبل ما تتحول لـ cgroups</td></tr><tr><td>Ablation بمفتاح واحد</td><td>أي بحث عن تأثير hyperparameter أو مكوّن في موديل</td></tr><tr><td>Seed ثابت</td><td>كل مقارنة بين موديلين أو إعدادين</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Result Evaluator: الـ evaluator بياخد النتايج دي ويقرر هل التغيير تحسّن ولا ضوضاء، بـ paired t test من الصفر.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F52-experiment-runner" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/52-experiment-runner</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=480,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt,L=AI.lab;
+const root=$('d480-roadmap').closest('.day');
+const rm=$('d480-roadmap');
+for(let i=1;i<=85;i++){const s=document.createElement('span');s.textContent=i;if(i===50)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: lifecycle flow
+L.flow($('d480-flow'),{label:'lifecycle of a run',height:330,
+ nodes:[{id:'spec',label:'Spec',x:0,y:.5},{id:'cfg',label:'config.json',x:.2,y:.5},{id:'proc',label:'subprocess',x:.42,y:.5},
+  {id:'timer',label:'wall timer',x:.7,y:.06},{id:'kill',label:'kill',x:.7,y:.42},{id:'poll',label:'rss poller',x:.7,y:.78},
+  {id:'parse',label:'parse last JSON',x:.42,y:.94},{id:'res',label:'Result',x:1,y:.5}],
+ edges:[['spec','cfg'],['cfg','proc','spawn'],['proc','timer'],['proc','poll'],['timer','kill','late'],['poll','kill','> cap'],['proc','parse','stdout'],['kill','res','timeout/oom'],['parse','res','ok/crash']],
+ steps:[
+  {active:['spec','cfg','proc'],edges:[['spec','cfg'],['cfg','proc']],text:'١) الـ Spec بيتحوّل لـ config.json (مع <b>__seed</b>) وبيتفتح subprocess.'},
+  {active:['proc','parse','res'],edges:[['proc','parse'],['parse','res']],text:'٢) <b>نجاح:</b> السكربت خلّص بـ exit 0 وفيه covering JSON. الـ terminal = <b>ok</b>.'},
+  {active:['proc','timer','kill','res'],edges:[['proc','timer'],['timer','kill'],['kill','res']],text:'٣) <b>timeout:</b> الـ wall clock عدّى. <code>proc.kill()</code> والـ terminal = <b>timeout</b>.'},
+  {active:['proc','poll','kill','res'],edges:[['proc','poll'],['poll','kill'],['kill','res']],text:'٤) <b>oom:</b> الـ poller شاف RSS أكبر من الـ cap فقتل البروسيس. الـ terminal = <b>oom</b> (بياخد الأولوية على timeout).'},
+  {active:['proc','parse','res'],edges:[['proc','parse'],['parse','res']],text:'٥) <b>crash:</b> exit code مش صفر، أو صفر من غير metrics. الـ terminal = <b>crash</b>، والـ stderr متسجّل.'}
+ ]});
+
+// ---- Lab 2: soft memory cap
+(function(){
+const T0=400,BASE=60;
+const rss=(t,p)=>(t>=T0&&t<=T0+p.dur)?BASE+p.spike:BASE;
+L.plot($('d480-poll'),{label:'rss over time and poller samples',x:[0,1000],y:[0,900],height:320,
+ params:[{k:'spike',label:'spike MB',min:100,max:800,step:10,v:400},{k:'dur',label:'spike ms',min:10,max:300,step:5,v:60},{k:'poll',label:'poll ms',min:10,max:250,step:5,v:100},{k:'cap',label:'cap MB',min:128,max:512,step:16,v:256}],
+ curves:[{f:(x,p)=>rss(x,p),label:'RSS',color:'a'},{f:(x,p)=>p.cap,label:'cap',color:'bad',dash:1}],
+ points:p=>{const a=[];for(let t=0;t<=1000;t+=p.poll)a.push([t,rss(t,p),rss(t,p)>p.cap?'bad':'ok']);return a},
+ readout:p=>{let n=0,hit=0;for(let t=0;t<=1000;t+=p.poll){n++;if(rss(t,p)>p.cap)hit++}
+  return [['samples',n],['samples > cap',hit],['peak seen MB',(function(){let m=0;for(let t=0;t<=1000;t+=p.poll)m=Math.max(m,rss(t,p));return m})()],['real peak MB',BASE+p.spike]]},
+ note:p=>{let hit=false;for(let t=0;t<=1000;t+=p.poll)if(rss(t,p)>p.cap)hit=true;
+  if(BASE+p.spike<=p.cap)return 'الـ spike أصلًا تحت الـ cap: التجربة ok.';
+  return hit?'الـ poller شاف الـ spike: oom ويتقتل.':'الـ spike عدّى بين نظرتين ومتشافش! ده معنى cap ناعم.'}});
+})();
+
+// ---- Lab 3a: ablation bars
+L.bars($('d480-abl'),{label:'ablation over k',labels:['k=4','k=8','k=16','k=32','k=64'],
+ params:[{k:'steps',label:'steps',min:1,max:10,step:1,v:4}],
+ values:p=>[4,8,16,32,64].map(k=>Math.exp(5*Math.pow(.9,p.steps-1)-.05*Math.min(k,32)/32)),
+ colors:['a'],height:260,
+ readout:p=>[['final loss k=4',5*Math.pow(.9,p.steps-1)-.05*4/32],['final loss k=32',5*Math.pow(.9,p.steps-1)-.05],['k=64 = k=32 ?',(5*Math.pow(.9,p.steps-1)-.05)===(5*Math.pow(.9,p.steps-1)-.05)?'yes':'no']],
+ note:p=>'الأعمدة = perplexity النهائي (من غير noise). الفرق بين k صغير لأنه 0.05 بس، والـ steps هي اللي بتحرّك الـ loss.'});
+// ---- Lab 3b: factorial vs one-at-a-time
+L.calc($('d480-fact'),{params:[{k:'knobs',label:'knobs',min:1,max:6,step:1,v:3},{k:'vals',label:'values per knob',min:2,max:8,step:1,v:4},{k:'sec',label:'seconds per run',min:1,max:120,step:1,v:30}],
+ compute:p=>{const fac=Math.pow(p.vals,p.knobs),one=p.knobs*p.vals;return [['full factorial runs',fac],['one-at-a-time runs',one],['factorial minutes',Math.round(fac*p.sec/60*10)/10],['one-at-a-time minutes',Math.round(one*p.sec/60*10)/10]]},
+ note:p=>'الـ factorial بيزيد أُسّيًا ('+p.vals+'^'+p.knobs+')، والـ one-at-a-time بيزيد خطيًا.'});
+
+AI.quiz($('d480-quizBox'),[["ليه الـ runner بيفتح subprocess بدل ما يعمل import للسكربت في نفس البروسيس؟", ["لأن الـ subprocess أسرع من الـ import", "لأن البروسيس المنفصل بيدّي الـ runner handle يقتل بيه عند الـ timeout أو حد الذاكرة، وبيعزل الـ crash عن الـ orchestrator", "لأن Python مبتسمحش بـ import متداخل", "لأن شكل الـ metrics بيتطلب كده"], 1, "البروسيس المنفصل هو أبسط عزل: الأب عنده kill handle وaddress space مستقل، فتجربة بتقع مبتوقعش الـ orchestrator."], ["ليه الـ memory cap اسمه soft؟", ["لأنه بيطبّق على الـ heap بس مش الـ stack", "لأن الـ poller بيصحى كل فترة، فالبروسيس يقدر يعدّي الـ cap بين نظرتين وينزل قبل ما يتشاف", "لأن نظام التشغيل بيتجاهله دايمًا", "لأن numpy بيتجاهل الـ cap"], 1, "الـ cap بيتنفّذ بالـ polling مش بحد في الـ kernel. الـ poll interval هو دقة الـ cap، والـ spikes القصيرة ممكن تعدّي."], ["الـ runner بيرجّع أنهي terminal لما الـ stdout فيه metrics بس الـ exit code مش صفر؟", ["timeout", "crash", "ok", "oom"], 1, "الـ ok بس لما exit code صفر والـ metrics اتقرت. أي exit code مش صفر = crash حتى لو في metrics اتطبعت قبل الوقوع."], ["الـ runner بيحدد الـ final metrics جوه الـ stdout إزاي؟", ["بيدوّر على JSON في الـ stderr", "بيتوقع سطر واحد بالظبط", "بياخد آخر سطر JSON مفاتيحه تغطي كل الـ metric_keys، والسطور اللي قبله بتبقى intermediate metrics", "بياخد أول سطر JSON"], 2, "آخر covering line هو النهائي، والأقدم منه بيتحفظ كـ intermediate لمنحنيات التعلّم."], ["ليه الـ ablate بيغيّر knob واحد في المرة بدل full factorial؟", ["لأن ده بيدّي محور نضيف الـ evaluator يرسمه، والـ factorial بيتفجّر أُسّيًا ويصعّب التفسير", "لأن الـ seed بيتغير على knob واحد بس", "لأن الـ runner مبيقدرش يفتح أكتر من subprocess", "لأن numpy مبتدعمش الـ cartesian product"], 0, "الـ single knob بيحافظ على قابلية التفسير. الـ factorial تكلفته أُسّية في عدد الـ knobs."], ["إيه الضمان اللي بيدّيه تمرير spec.seed في config[\"__seed\"] للـ evaluator؟", ["استهلاك ذاكرة أقل", "وقت تشغيل أسرع", "significance test مجاني", "Determinism: نفس الـ seed يدّي نفس الـ metrics، فالـ evaluator يفرّق التغيير الحقيقي عن الضوضاء"], 3, "الـ seed بيثبّت التهيئة العشوائية، فتشغيلتين بنفس الـ seed متطابقتين."], ["(سؤال مني) سكربت اتقتل بـ timeout وكمان الـ poller شاف RSS فوق الـ cap قبلها بثواني. الـ terminal هيبقى إيه؟", ["timeout", "crash", "oom", "ok"], 2, "الـ _terminal_label بيفحص oom الأول. ده السبب الحقيقي للقتل، فبياخد الأولوية."], ["(سؤال مني) ليه مينفعش نستخدم proc.wait() وبعدين نقرا stdout لو السكربت بيطبع كتير؟", ["لأن wait() بيمسح الـ stdout", "لأن الـ pipe ممكن يتملي والبروسيس يعلّق للأبد (deadlock)، وcommunicate() بيقرا الاتنين أول بأول", "لأن wait() مبيشتغلش مع text=True", "مفيش مشكلة، ممكن عادي"], 1, "لو الـ pipe buffer امتلا والأب مش بيقرا، الابن بيتوقف عند الكتابة والأب مستني خروجه: deadlock."]],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>
