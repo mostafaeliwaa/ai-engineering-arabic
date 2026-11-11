@@ -1,0 +1,673 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 09 · Learning Rate Schedules and Warmup</span>
+  <h1>اليوم ٥٢: الـ Learning Rate مش رقم ثابت، ده خطة على طول التدريب</h1>
+  <p class="lede">النهاردة هتعرف ليه الـ <b>learning rate</b> هو أهم hyperparameter، وهتبني بإيدك ٥ schedules (constant، step decay، cosine، warmup + cosine، 1cycle)، وتشوف بعينك الكرة وهي بتنفجر أو بتزحف أو بتهتز حوالين القاع، وليه الـ <b>warmup</b> بيحمي Adam في أول التدريب.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Weight Initialization</b></span>
+    <span>بعده: <b>Build Your Own Mini Framework</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d52-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d52-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح اتكلمنا عن الـ weight initialization: إزاي تبدأ الأوزان صح عشان الإشارة ما تنفجرش ولا تختفي وهي معدية في ٥٠ layer. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه لو بدأت كل الأوزان بصفر الشبكة مش بتتعلم؟</summary>بسبب الـ symmetry: كل neuron بيحسب نفس الحاجة، وبياخد نفس الـ gradient، وبيتحدّث بنفس الطريقة. فـ 512 neuron بيبقوا 512 نسخة من نفس الـ neuron. الـ random init بيكسر التماثل ده.</details>
+  <details><summary>٢. Xavier ولا Kaiming مع ReLU؟ وليه؟</summary>Kaiming/He: <span class="ltr">Var(w) = 2/fan_in</span>. الـ ReLU بتصفّر نص القيم تقريبًا، فبنضاعف الـ variance عشان نعوّض. Xavier <span class="ltr">2/(fan_in + fan_out)</span> مناسب لـ sigmoid/tanh.</details>
+  <details><summary>٣. لو Var(w)=1 و fan_in=512، إيه اللي يحصل للإشارة بعد ١٠ layers؟</summary>الـ variance بتتضرب في 512 كل layer، يعني <span class="ltr">512¹⁰ ≈ 1.2×10²⁷</span>: الإشارة انفجرت. النهاردة هنشوف نفس فكرة «الخطوة الكبيرة زيادة بتفجر» بس في الـ learning rate.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ init</div>
+    <div><b>15 min</b>المشكلة + الـ ٥ schedules</div>
+    <div><b>20 min</b>المعامل: شكل الـ schedule، الكرة، الـ warmup</div>
+    <div><b>30 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+    <div><b>5 min</b>الـ checklist</div>
+  </div>
+</section>
+
+<!-- STATION 1: problem -->
+<section id="d52-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: رقم واحد بيحدد تنجح ولا تفشل</h2></div>
+  <p>الـ learning rate هو الرقم اللي بنضربه في الـ gradient عشان نعرف نحرك الأوزان قد إيه في كل خطوة. الدرس بيقولها صريحة: لو مش هتظبط غير حاجة واحدة، ظبط ده. مش الـ architecture، مش حجم الداتا، مش الـ activation.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الـ LR</th><th>اللي بيحصل</th><th>التشبيه</th></tr>
+    <tr><td class="ltr">0.1</td><td>الـ loss بيطير لـ infinity في ٣ خطوات (divergence)</td><td>بتنزل سلم وبتنط ١٠ درجات مرة واحدة فبتقع</td></tr>
+    <tr><td class="ltr">0.0001</td><td>بعد ١٠٠ epoch الموديل لسه تقريبًا مكانه (stalling)</td><td>ماشي بخطوة النملة، هتوصل بعد سنة</td></tr>
+    <tr><td class="ltr">0.01</td><td>شغال ٥٠ epoch، وبعدين الـ loss بيهتز حوالين القاع ومش بيوصله (oscillation)</td><td>عايز تركن العربية بس دايس بنزين جامد، فبتعدي المكان كل مرة</td></tr>
+  </table></div>
+  <p>الحل: الـ LR الأحسن <b>بيتغير</b> أثناء التدريب. في الأول عايز خطوات كبيرة تغطي مسافة بسرعة، وفي الآخر خطوات صغيرة عشان تستقر في قاع حاد. والفرق بين موديل 90% وموديل 95% كتير بيبقى الـ schedule بس.</p>
+  <div class="note ai"><strong>أرقام حقيقية:</strong> Llama 3 استخدم peak <span class="ltr">lr=3e-4</span> مع 2000 warmup step وcosine decay لحد <span class="ltr">3e-5</span>. GPT-3 استخدم <span class="ltr">lr=6e-4</span> مع warmup على 375 مليون token. الأرقام دي جت من sweeps كلفت ملايين الدولارات، والـ defaults مش هتشتغل على مشكلتك، فلازم تفهم.</div>
+</section>
+
+<!-- STATION 2: schedules + lab -->
+<section id="d52-schedules">
+  <div class="station-head"><span class="tag">02</span><h2>الـ ٥ schedules: خمس خطط لسرعة المشي</h2></div>
+  <p>الـ schedule ببساطة <b>function</b> بتاخد رقم الخطوة <span class="ltr">t</span> وترجعلك الـ LR في الخطوة دي.</p>
+
+  <h3>١. Constant</h3>
+  <div class="formula">lr(t) = lr₀</div>
+  <p>أبسط حاجة. نادرًا ما بيبقى الأحسن: يا إما عالي زيادة في الآخر (يهتز)، يا إما واطي زيادة في الأول (بيضيع compute). كويس للموديلات الصغيرة وللـ debugging، ووحش لأي تدريب أطول من ساعة.</p>
+
+  <h3>٢. Step Decay</h3>
+  <div class="formula">lr(t) = lr₀ · γ^⌊epoch / step_size⌋</div>
+  <p>طريقة أيام الـ ResNet: كل فترة ثابتة اقسم الـ LR على رقم (غالبًا ١٠، يعني <span class="ltr">γ = 0.1</span>). ResNet-50: بدأ بـ 0.1 ونزّل ×0.1 عند epoch 30 و60 و90. المشكلة: أماكن النزول بتعتمد على الداتا والـ architecture، فلو غيرت المشكلة لازم تظبطها من الأول. والنزول مفاجئ، فالـ loss ممكن يعمل spike لما الـ rate يتغير فجأة.</p>
+
+  <h3>٣. Cosine Annealing</h3>
+  <div class="formula">lr(t) = lr_min + 0.5 · (lr_max − lr_min) · (1 + cos(π t / T))</div>
+  <p>عند <span class="ltr">t=0</span> الـ cos بيساوي 1 فالـ LR = <span class="ltr">lr_max</span>. عند <span class="ltr">t=T</span> الـ cos بيساوي −1 فالـ LR = <span class="ltr">lr_min</span>. النزول هادي في الأول، بيسرع في النص، وبيهدى تاني في الآخر. تشبيه: عربية بتفرمل بنعومة قبل الإشارة. ده الـ default لأغلب التدريب الحديث، ومفيش غير <span class="ltr">lr_max</span> و<span class="ltr">lr_min</span> تظبطهم. والشكل ده ماشي مع الملاحظة إن أغلب التعلم بيحصل في نص التدريب، فعايز خطوات معقولة هناك.</p>
+
+  <h3>٤. Warmup + Cosine (الـ default الحديث)</h3>
+  <div class="formula">t &lt; W:  lr = lr_max · t/W      else:  cosine من lr_max لـ lr_min على باقي الخطوات</div>
+  <p>اطلع خطي من صفر لحد <span class="ltr">lr_max</span> في أول W خطوة، وبعدين انزل بالـ cosine. ده اللي Llama وGPT وPaLM وأغلب الـ transformers بيستخدموه. الـ warmup بيمنع عدم الاستقرار في الأول، والـ cosine بيخلي الموديل يستقر في قاع كويس. هنفهم الـ warmup بالتفصيل في المحطة ٠٤.</p>
+
+  <h3>٥. 1cycle (Leslie Smith، 2018)</h3>
+  <div class="formula">0 → T/2:  lr_max/25 → lr_max        T/2 → T:  lr_max → lr_max/10000</div>
+  <p>الغريب إنك بـ<b>تعلّي</b> الـ LR في نص التدريب الأول. الفكرة: الـ LR العالي بيضيف noise للمسار، والـ noise ده بيشتغل كـ regularization، فالموديل بيستكشف مساحة أكبر من الـ loss landscape ويلاقي «وديان» أحسن. النص التاني بينزل ويظبط جوه أحسن وادي لقاه. غالبًا بيدرب أسرع من الـ cosine لنفس الـ compute، بس لازم تعرف عدد الخطوات الكلي من الأول.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ارسم الـ schedule بنفسك</h3>
+      <p>اختار الـ schedule وحرّك الـ sliders. الرسمة بتوري الـ LR على طول التدريب (T = 20,000 خطوة = 100 epoch × 200 نقطة، زي <code>schedule_trajectory</code> في كود الدرس، فالأرقام اللي تحت هتطابق ناتجها لما lr_max = 0.05 والـ warmup = 5%).</p>
+      <p>شغّل «قارن الكل» تشوف الخمسة فوق بعض. لاحظ: الـ 1cycle بيوصل الذروة في النص بالظبط، والـ warmup + cosine بيبدأ من صفر.</p>
+      <div class="note"><strong>جرب:</strong> في Step Decay صغّر الـ step_size وشوف السلم بيبقى كتير وحاد. ده النزول المفاجئ اللي ممكن يعمل spike في الـ loss.</div>
+    </div>
+    <div class="instrument">
+      <label style="display:flex;gap:8px;align-items:center">الـ schedule:
+        <select id="d52-sch">
+          <option value="constant">Constant</option>
+          <option value="step">Step Decay</option>
+          <option value="cosine">Cosine</option>
+          <option value="wcos" selected>Warmup + Cosine</option>
+          <option value="onecycle">1cycle</option>
+          <option value="all">قارن الكل</option>
+        </select>
+      </label>
+      <canvas id="d52-schCanvas" width="520" height="300" aria-label="رسمة الـ learning rate على طول التدريب"></canvas>
+      <div class="mrow">
+        <label>lr_max <span id="d52-vLr">0.05</span><input type="range" id="d52-lr" min="0.005" max="0.1" step="0.005" value="0.05"></label>
+        <label>warmup % <span id="d52-vW">5</span><input type="range" id="d52-w" min="0" max="30" step="1" value="5"></label>
+        <label>step_size (steps) <span id="d52-vSs">5000</span><input type="range" id="d52-ss" min="1000" max="10000" step="500" value="5000"></label>
+        <label>gamma <span id="d52-vG">0.5</span><input type="range" id="d52-g" min="0.1" max="0.9" step="0.1" value="0.5"></label>
+      </div>
+      <div class="readout">
+        <div><small>Step 0</small><b id="d52-r0">0</b></div>
+        <div><small>T/4</small><b id="d52-r1">0</b></div>
+        <div><small>T/2</small><b id="d52-r2">0</b></div>
+        <div><small>3T/4</small><b id="d52-r3">0</b></div>
+        <div><small>T</small><b id="d52-r4">0</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: failure modes lab -->
+<section id="d52-fail">
+  <div class="station-head"><span class="tag">03</span><h2>معمل ٢: الكرة في الوادي — تنفجر، تزحف، ولا تهتز؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>دي loss بسيطة على شكل وادي <span class="ltr">L(w) = w²</span>، والكرة هي الوزن بتاعك. كل خطوة: <span class="ltr">w ← w − lr · gradient</span>. الـ gradient هنا فيه noise زي الـ SGD الحقيقي (كل mini-batch بيدي gradient مختلف شوية).</p>
+      <ul class="checklist" style="gap:4px">
+        <li>• LR كبير (أكبر من 1 هنا): كل خطوة بتعدي القاع لبعيد أكتر → <b>divergence</b>.</li>
+        <li>• LR صغير جدًا: الكرة بتزحف ومش بتوصل → <b>stalling</b>.</li>
+        <li>• LR معقول بس ثابت ومعاه noise: بتوصل قريب وتفضل تهتز → <b>oscillation</b>.</li>
+        <li>• فعّل «cosine decay»: الخطوات بتصغر بالتدريج فالكرة بتستقر جوه القاع.</li>
+      </ul>
+      <div class="note ai"><strong>لاحظ:</strong> مع الـ decay، نفس الـ LR الابتدائي اللي كان بيهتز بقى بيوصل. ده بالظبط ليه الـ schedules موجودة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d52-ballCanvas" width="520" height="300" aria-label="كرة بتنزل في وادي الـ loss"></canvas>
+      <canvas id="d52-lossCanvas" width="520" height="110" aria-label="منحنى الـ loss"></canvas>
+      <div class="mrow">
+        <label>lr <span id="d52-vBl">0.3</span><input type="range" id="d52-bl" min="0.005" max="1.1" step="0.005" value="0.3"></label>
+        <label>noise <span id="d52-vBn">1</span><input type="range" id="d52-bn" min="0" max="3" step="0.1" value="1"></label>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d52-run">شغّل ١٠٠ خطوة</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d52-decay"> cosine decay</label>
+        <button type="button" data-d52b="1.05">كبير زيادة</button>
+        <button type="button" data-d52b="0.005">صغير زيادة</button>
+        <button type="button" data-d52b="0.3">معقول</button>
+      </div>
+      <div class="readout">
+        <div><small>الخطوة</small><b id="d52-bStep">0</b></div>
+        <div><small>w</small><b id="d52-bW">2.6</b></div>
+        <div><small>loss</small><b id="d52-bL">6.76</b></div>
+        <div><small>lr الحالي</small><b id="d52-bLr">0.3</b></div>
+      </div>
+      <div class="verdict" id="d52-bVerdict">دوس شغّل</div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: warmup lab -->
+<section id="d52-warmup">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Warmup: ليه تبدأ بخطوات صغيرة؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>Adam والـ adaptive optimizers بيشيلوا متوسطات جارية لمتوسط الـ gradient والـ variance بتاعه (فاكر الدرس ٠٦). المتوسطات دي بتبدأ <b>بصفر</b> عند الخطوة 0. فأول كام update مبنيين على إحصائيات «زبالة» لسه ما اتجمعتش من عينات كفاية. لو الـ LR كبير في الفترة دي، الموديل بياخد خطوات ضخمة في اتجاه مش مضبوط.</p>
+      <p>التشبيه: داخل أوضة ضلمة. أول ثواني عينك لسه ما اتعودتش، فبتمشي بالراحة. لما تشوف كويس تبدأ تمشي عادي.</p>
+      <div class="formula">lr(t) = lr_max · t / warmup_steps     لـ t &lt; warmup_steps</div>
+      <p>الـ warmup المعتاد: <b>1–5% من خطوات التدريب</b>. Llama 3 درب على ~1.8 تريليون token وعمل warmup 2000 خطوة.</p>
+      <div class="note"><strong>المعمل:</strong> الخط الرمادي هو «الاتجاه الحقيقي» للـ gradient، والنقط هي الـ gradients الـ noisy. الخط الأزرق هو تقدير المتوسط (m) اللي بيبدأ من صفر ويتعلم بالتدريج. الرسمة اللي تحت بتوري <b>حجم الخطوة الغلط</b> = lr × (التقدير − الحقيقة). شغّل وطفّي الـ warmup وقارن المساحة الحمرا.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d52-wuCanvas" width="520" height="200" aria-label="تقدير الـ gradient بيتحسن مع الوقت"></canvas>
+      <canvas id="d52-wuErr" width="520" height="140" aria-label="حجم الخطوة الغلط"></canvas>
+      <div class="mrow">
+        <label>warmup steps <span id="d52-vWs">40</span><input type="range" id="d52-ws" min="0" max="120" step="5" value="40"></label>
+        <label>β1 (momentum) <span id="d52-vB1">0.9</span><input type="range" id="d52-b1" min="0.5" max="0.99" step="0.01" value="0.9"></label>
+      </div>
+      <div class="btns"><button type="button" id="d52-wuNew">gradients جديدة</button></div>
+      <div class="readout">
+        <div><small>الخطأ الكلي (بـ warmup)</small><b id="d52-eW">0</b></div>
+        <div><small>الخطأ الكلي (من غير)</small><b id="d52-eN">0</b></div>
+        <div><small>التوفير</small><b id="d52-eP">0%</b></div>
+      </div>
+    </div>
+  </div>
+  <p style="font-size:15px;color:var(--muted)">المعمل ده تبسيط مني للفكرة (متوسط جاري بسيط من غير bias correction) عشان تشوف ليه الخطوات الأولى خطيرة؛ مش محاكاة كاملة لـ Adam.</p>
+</section>
+
+<!-- STATION 5: choosing -->
+<section id="d52-choose">
+  <div class="station-head"><span class="tag">05</span><h2>تختار أنهي schedule؟</h2></div>
+  <p>دي الشجرة اللي الدرس بيقترحها:</p>
+  <ol class="ex">
+    <li><b>مش عارف عدد الخطوات الكلي؟</b> → constant LR مع decay يدوي.</li>
+    <li><b>عارف، والـ budget كبير (أيام/أسابيع)</b> → Warmup + Cosine (default الـ Llama/GPT)، والـ warmup = 1–5% من الخطوات.</li>
+    <li><b>budget صغير (ساعات)</b> → 1cycle (أسرع convergence)، ولاقي الـ lr_max بالـ LR range test.</li>
+    <li><b>متوسط</b> → Cosine annealing (default آمن)، وخلّي <span class="ltr">lr_min = lr_max / 10</span>.</li>
+  </ol>
+  <h3>إعدادات موديلات منشورة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الموديل</th><th>Peak LR</th><th>Warmup</th><th>الـ Schedule</th></tr>
+    <tr><td>Llama 3 (405B)</td><td class="ltr">3e-4</td><td>2000 steps</td><td>Cosine لحد <span class="ltr">3e-5</span></td></tr>
+    <tr><td>GPT-3 (175B)</td><td class="ltr">6e-4</td><td>375M tokens</td><td>Cosine لحد 0</td></tr>
+    <tr><td>ResNet-50</td><td class="ltr">0.1</td><td>مفيش</td><td>Step decay ×0.1 عند 30، 60، 90</td></tr>
+    <tr><td>BERT (340M)</td><td class="ltr">1e-4</td><td>10K steps</td><td>Linear decay</td></tr>
+  </table></div>
+</section>
+
+<!-- CODE -->
+<section id="d52-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جذر الريبو شغّل الملف الأصلي عشان تشوف الصورة الكاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/03-deep-learning-core/09-learning-rate-schedules/code/main.py</pre></div>
+  <p><b>القاعدة:</b> ما تعملش copy-paste. افتح ملف جديد <code>my_schedules.py</code> واكتب كل خطوة بإيدك، وبص على الأصل بس لو اتزنقت. التدريب في الخطوات ٣–٥ pure Python فهياخد شوية وقت، استنى.</p>
+
+  <h3>خطوة ١: الـ schedule functions</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+
+def constant_schedule(step, lr=0.01, **kwargs):
+    return lr                                   <span class="c"># نفس الرقم دايمًا</span>
+
+
+def step_decay_schedule(step, lr=0.1, step_size=100, gamma=0.1, **kwargs):
+    return lr * (gamma ** (step // step_size))  <span class="c"># سلم: كل step_size اضرب في gamma</span>
+
+
+def cosine_schedule(step, lr=0.01, total_steps=1000, lr_min=1e-5, **kwargs):
+    if step >= total_steps:
+        return lr_min
+    <span class="c"># من lr لـ lr_min على شكل نص موجة cos</span>
+    return lr_min + 0.5 * (lr - lr_min) * (1 + math.cos(math.pi * step / total_steps))
+
+
+def warmup_cosine_schedule(step, lr=0.01, total_steps=1000, warmup_steps=100, lr_min=1e-5, **kwargs):
+    if total_steps &lt;= warmup_steps:
+        return lr * (step / max(warmup_steps, 1))
+    if step &lt; warmup_steps:
+        return lr * step / warmup_steps         <span class="c"># طلوع خطي من صفر</span>
+    progress = (step - warmup_steps) / (total_steps - warmup_steps)
+    return lr_min + 0.5 * (lr - lr_min) * (1 + math.cos(math.pi * progress))
+
+
+def one_cycle_schedule(step, lr=0.01, total_steps=1000, **kwargs):
+    mid = max(total_steps // 2, 1)
+    if step &lt; mid:
+        return (lr / 25) + (lr - lr / 25) * step / mid      <span class="c"># طالع: lr/25 → lr</span>
+    else:
+        progress = (step - mid) / max(total_steps - mid, 1)
+        return lr * (1 - progress) + (lr / 10000) * progress <span class="c"># نازل: lr → lr/10000</span></pre></div>
+
+  <h3>خطوة ٢: ارسمهم في الترمينال</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def visualize_schedule(name, schedule_fn, total_steps=500, **kwargs):
+    steps = list(range(0, total_steps, total_steps // 20))   <span class="c"># ~20 نقطة</span>
+    if total_steps - 1 not in steps:
+        steps.append(total_steps - 1)
+
+    lrs = [schedule_fn(s, total_steps=total_steps, **kwargs) for s in steps]
+    max_lr = max(lrs) if max(lrs) > 0 else 1.0
+
+    print(f"\n{name}:")
+    for s, lr_val in zip(steps, lrs):
+        bar = "#" * int(lr_val / max_lr * 40)           <span class="c"># طول الشريط = نسبة من الأقصى</span>
+        print(f"  Step {s:4d}: lr={lr_val:.6f} {bar}")
+
+visualize_schedule("Warmup + Cosine", warmup_cosine_schedule, lr=0.05, warmup_steps=50, lr_min=1e-5)</pre></div>
+
+  <h3>خطوة ٣: شبكة صغيرة على الـ circle dataset</h3>
+  <p>نفس الشبكة بتاعة الدروس اللي فاتت (2 → 8 ReLU → sigmoid)، والفرق الوحيد إن الـ LR بيتحسب كل خطوة من الـ schedule.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+
+
+def sigmoid(x):
+    x = max(-500, min(500, x))
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+def relu(x):
+    return max(0.0, x)
+
+
+def relu_deriv(x):
+    return 1.0 if x > 0 else 0.0
+
+
+def make_circle_data(n=200, seed=42):
+    random.seed(seed)
+    data = []
+    for _ in range(n):
+        x = random.uniform(-2, 2)
+        y = random.uniform(-2, 2)
+        label = 1.0 if x * x + y * y &lt; 1.5 else 0.0   <span class="c"># جوه الدايرة = 1</span>
+        data.append(([x, y], label))
+    return data
+
+
+def train_with_schedule(schedule_fn, schedule_name, data, epochs=300, base_lr=0.05, **kwargs):
+    random.seed(0)
+    hidden_size = 8
+    total_steps = epochs * len(data)
+
+    std = math.sqrt(2.0 / 2)                       <span class="c"># Kaiming init من درس امبارح</span>
+    w1 = [[random.gauss(0, std) for _ in range(2)] for _ in range(hidden_size)]
+    b1 = [0.0] * hidden_size
+    w2 = [random.gauss(0, std) for _ in range(hidden_size)]
+    b2 = 0.0
+
+    step = 0
+    epoch_losses = []
+
+    for epoch in range(epochs):
+        total_loss = 0
+        correct = 0
+
+        for x, target in data:
+            lr = schedule_fn(step, lr=base_lr, total_steps=total_steps, **kwargs)  <span class="c"># ← هنا السر</span>
+
+            z1 = []
+            h = []
+            for i in range(hidden_size):
+                z = w1[i][0] * x[0] + w1[i][1] * x[1] + b1[i]
+                z1.append(z)
+                h.append(relu(z))
+
+            z2 = sum(w2[i] * h[i] for i in range(hidden_size)) + b2
+            out = sigmoid(z2)
+
+            error = out - target
+            d_out = error * out * (1 - out)
+
+            for i in range(hidden_size):
+                d_h = d_out * w2[i] * relu_deriv(z1[i])
+                w2[i] -= lr * d_out * h[i]
+                for j in range(2):
+                    w1[i][j] -= lr * d_h * x[j]
+                b1[i] -= lr * d_h
+            b2 -= lr * d_out
+
+            total_loss += (out - target) ** 2
+            if (out >= 0.5) == (target >= 0.5):
+                correct += 1
+            step += 1
+
+        avg_loss = total_loss / len(data)
+        accuracy = correct / len(data) * 100
+        epoch_losses.append(avg_loss)
+
+    return epoch_losses</pre></div>
+
+  <h3>خطوة ٤: قارن الخمسة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def compare_schedules(data):
+    configs = [
+        ("Constant", constant_schedule, {}),
+        ("Step Decay", step_decay_schedule, {"step_size": 15000, "gamma": 0.1}),
+        ("Cosine", cosine_schedule, {"lr_min": 1e-5}),
+        ("Warmup+Cosine", warmup_cosine_schedule, {"warmup_steps": 3000, "lr_min": 1e-5}),
+        ("1cycle", one_cycle_schedule, {}),
+    ]
+
+    print(f"\n{'Schedule':&lt;20} {'Start Loss':>12} {'Mid Loss':>12} {'End Loss':>12} {'Best Loss':>12}")
+    print("-" * 70)
+
+    for name, schedule_fn, extra_kwargs in configs:
+        losses = train_with_schedule(schedule_fn, name, data, epochs=300, base_lr=0.05, **extra_kwargs)
+        mid_idx = len(losses) // 2
+        best = min(losses)
+        print(f"{name:&lt;20} {losses[0]:>12.6f} {losses[mid_idx]:>12.6f} {losses[-1]:>12.6f} {best:>12.6f}")</pre></div>
+
+  <h3>خطوة ٥: الـ LR عالي ولا واطي؟</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def lr_sensitivity(data):
+    learning_rates = [1.0, 0.1, 0.05, 0.01, 0.001, 0.0001]
+
+    print(f"\n{'LR':>10} {'Start Loss':>12} {'End Loss':>12} {'Status':>15}")
+    print("-" * 52)
+
+    for lr in learning_rates:
+        losses = train_with_schedule(constant_schedule, f"lr={lr}", data, epochs=100, base_lr=lr)
+        start = losses[0]
+        end = losses[-1]
+
+        if math.isnan(end) or end > 1.0:        <span class="c"># انفجر</span>
+            status = "DIVERGED"
+        elif end > start * 0.9:                 <span class="c"># نزل أقل من 10%</span>
+            status = "BARELY MOVED"
+        elif end &lt; 0.15:
+            status = "CONVERGED"
+        else:
+            status = "LEARNING"
+
+        end_str = f"{end:.6f}" if not math.isnan(end) else "NaN"
+        print(f"{lr:>10.4f} {start:>12.6f} {end_str:>12} {status:>15}")</pre></div>
+
+  <h3>خطوة ٦: أثر طول الـ warmup ومسار الـ LR</h3>
+  <p>الملف الأصلي فيه كمان <code>warmup_impact</code> (بيجرب warmup 0%، 1%، 5%، 10%، 20%) و<code>schedule_trajectory</code> (بيطبع الـ LR عند نقط مهمة). اكتبهم وشغّل الكل:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def warmup_impact(data):
+    warmup_fractions = [0.0, 0.01, 0.05, 0.10, 0.20]
+    total_steps = 300 * len(data)
+    for frac in warmup_fractions:
+        warmup_steps = int(total_steps * frac)
+        losses = train_with_schedule(warmup_cosine_schedule, f"warmup={frac}", data,
+                                     epochs=300, base_lr=0.05,
+                                     warmup_steps=warmup_steps, lr_min=1e-5)
+        print(f"{frac*100:>9.0f}% {warmup_steps:>14d} {losses[-1]:>12.6f} {min(losses):>12.6f}")
+
+
+def schedule_trajectory(data):
+    total_steps = 100 * len(data)             <span class="c"># 20,000 خطوة</span>
+    schedules = [
+        ("Constant", constant_schedule, {"lr": 0.05}),
+        ("Cosine", cosine_schedule, {"lr": 0.05, "lr_min": 1e-5}),
+        ("Warmup+Cosine", warmup_cosine_schedule, {"lr": 0.05, "warmup_steps": int(total_steps * 0.05), "lr_min": 1e-5}),
+        ("1cycle", one_cycle_schedule, {"lr": 0.05}),
+    ]
+    for name, fn, kw in schedules:
+        vals = [fn(s, total_steps=total_steps, **kw)
+                for s in [0, total_steps // 4, total_steps // 2, 3 * total_steps // 4, total_steps - 1]]
+        print(f"  {name:&lt;20}", " ".join(f"{v:>10.6f}" for v in vals))
+
+
+if __name__ == "__main__":
+    data = make_circle_data()
+    lr_sensitivity(data)
+    compare_schedules(data)
+    warmup_impact(data)
+    schedule_trajectory(data)</pre></div>
+  <details><summary>الناتج المتوقع لـ schedule_trajectory (حساب رياضي مباشر، مش عشوائي)</summary>
+<pre class="term">  Constant               0.050000   0.050000   0.050000   0.050000   0.050000
+  Cosine                 0.050000   0.042679   0.025005   0.007331   0.000010
+  Warmup+Cosine          0.000000   0.044730   0.027069   0.008076   0.000010
+  1cycle                 0.002000   0.026000   0.050000   0.025003   0.000010</pre>
+  أرقام الـ loss في باقي الخطوات بتعتمد على التدريب نفسه، فشغّل وشوف بنفسك. ركّز: أنهي LR طلع DIVERGED وأنهي BARELY MOVED؟ وأنهي schedule طلع أقل End Loss؟</details>
+
+  <h3>خطوة ٧: نفس الكلام في PyTorch وHuggingFace</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR, StepLR
+
+model = nn.Sequential(nn.Linear(10, 64), nn.ReLU(), nn.Linear(64, 1))
+optimizer = optim.Adam(model.parameters(), lr=3e-4)
+
+scheduler = CosineAnnealingLR(optimizer, T_max=1000, eta_min=1e-5)
+
+for step in range(1000):
+    loss = train_step(model, optimizer)   <span class="c"># دالتك انت</span>
+    scheduler.step()                      <span class="c"># حدّث الـ LR بعد كل خطوة</span>
+
+<span class="c"># warmup + cosine جاهزة من HuggingFace (اللي أغلب سكريبتات fine-tuning Llama/GPT بتستخدمه)</span>
+from transformers import get_cosine_schedule_with_warmup
+
+scheduler = get_cosine_schedule_with_warmup(
+    optimizer,
+    num_warmup_steps=2000,
+    num_training_steps=100000,
+)</pre></div>
+  <div class="note"><strong>نصيحة الدرس:</strong> لو مش متأكد، استخدم warmup + cosine والـ warmup = 3–5% من الخطوات. بيشتغل مع كل حاجة تقريبًا.</div>
+  <p>الدرس كمان بيطلّع <code>outputs/prompt-lr-schedule-advisor.md</code>: prompt بيقترحلك الـ schedule والـ hyperparameters المناسبة لإعداد التدريب بتاعك. بص عليه في الريبو.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d52-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة (١ و٣ الأسهل)، والباقي كمّله في الـ warm-up بكرة.</p>
+  <ol class="ex">
+    <li><b>Exponential decay:</b> <span class="ltr">lr(t) = lr₀ · γ^t</span> مع <span class="ltr">γ = 0.999</span>. قارنه بالـ cosine على الـ circle dataset.
+      <details><summary>تلميح</summary><code>def exp_schedule(step, lr=0.01, gamma=0.999, **kw): return lr * gamma ** step</code>. خلي بالك: الـ step هنا بيعد كل sample، و<span class="ltr">0.999^20000</span> رقم صغير جدًا، فالـ LR هيموت بدري جدًا. جرّب γ أقرب للـ 1 (زي 0.9999) وقارن.</details></li>
+    <li><b>LR range test (Leslie Smith):</b> درّب كام مية خطوة والـ LR بيزيد exponentially من <span class="ltr">1e-7</span> لـ 1. ارسم الـ loss مقابل الـ LR. أحسن max LR هو اللي قبل ما الـ loss يبدأ يطلع.
+      <details><summary>تلميح</summary>في خطوة i من N: <span class="ltr">lr = 1e-7 * (1/1e-7) ** (i/N)</span>. احفظ (lr, loss) وارسمهم بـ log scale على محور الـ LR، أو اطبع جدول. وقّف لو الـ loss بقى أكبر من 4× أقل قيمة شفتها.</details></li>
+    <li><b>طول الـ warmup:</b> جرّب 0%، 1%، 5%، 10%، 20% ولاقي النقطة اللي التدريب فيها أكتر استقرار.
+      <details><summary>تلميح</summary>ده بالظبط <code>warmup_impact</code>. قارن الـ End Loss والـ Best Loss. لو الـ warmup طويل زيادة بتضيّع خطوات بـ LR واطي، ولو صفر ممكن البداية تبقى متلخبطة.</details></li>
+    <li><b>Cosine with warm restarts (SGDR):</b> رجّع الـ LR لـ <span class="ltr">lr_max</span> كل T خطوة وانزل تاني. قارنه بالـ cosine العادي على تدريب أطول.
+      <details><summary>تلميح</summary>استخدم <span class="ltr">t_cycle = step % T</span> في معادلة الـ cosine بدل <span class="ltr">step</span>. في PyTorch في <code>CosineAnnealingWarmRestarts</code> لو عايز تتأكد من شكلك.</details></li>
+    <li><b>Schedule surgeon:</b> نظام بيراقب الـ loss وبيحوّل تلقائي من warmup لـ cosine لما الـ loss يستقر، ويقلّل الـ LR لو الـ loss وقف يتحسن لفترة طويلة.
+      <details><summary>تلميح</summary>احفظ آخر k قيمة loss. «استقر» = الانحراف المعياري بتاعهم أقل من حد معين. «plateau» = أحسن loss ما اتحسنش من p epoch → اضرب الـ LR في 0.5. ده شبه <code>ReduceLROnPlateau</code> في PyTorch.</details></li>
+    <li><b>إضافة مني · خطة fine-tuning حقيقية:</b> عندك 12,000 مثال، batch size 16، و3 epochs لعمل fine-tune لموديل لغة بـ Adam. احسب <code>num_training_steps</code>، واختار <code>num_warmup_steps</code> على قاعدة 3–5%، واكتب سطر <code>get_cosine_schedule_with_warmup</code>. وبعدين: لو غيرت الـ batch لـ 32، إيه اللي يتغير؟
+      <details><summary>الإجابة</summary>خطوات لكل epoch = 12000/16 = 750، يعني 2250 خطوة. 3–5% = حوالي 68–113 خطوة (مثلًا 100). لو الـ batch بقى 32: 375 خطوة لكل epoch = 1125 خطوة، فلازم تعيد حساب الخطوات والـ warmup (حوالي 34–56). الدرس نفسه بيقول إن زيادة الـ batch size بتغيّر فترة الـ warmup المطلوبة، ودي غلطة شائعة: تسيب الأرقام زي ما هي.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d52-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>الإحساس (intuition)</h3>
+  <p>فكّر في الـ LR كـ «درجة حرارة» البحث. حرارة عالية = الكرة بتتنطط كتير وبتعدي التلال الصغيرة وتستكشف. حرارة واطية = بتهدى وتستقر في أقرب قاع. الـ schedule هو إنك تبرّد بالتدريج: تستكشف الأول، وتستقر في الآخر. ودي نفس فكرة الـ simulated annealing، ومنها جه اسم «cosine annealing».</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist">
+    <li>• <b>تنسى <code>scheduler.step()</code></b> أو تحطها في المكان الغلط (مرة كل epoch وانت مظبط الـ schedule بعدد الخطوات): الـ LR مش هيتغير زي ما انت فاكر. اطبع <code>optimizer.param_groups[0]["lr"]</code> كل كام خطوة واتأكد.</li>
+    <li>• <b>total_steps غلط:</b> لو حطيت عدد epochs مكان عدد الخطوات، الـ cosine هيخلص في أول epoch والـ LR هيفضل عند <span class="ltr">lr_min</span> باقي التدريب.</li>
+    <li>• <b>تستخدم LR بتاع training from scratch في fine-tuning:</b> الدرس بيقول الـ schedule الصح للـ fine-tuning مختلف. الموديل المدرب أصلًا قريب من قاع كويس، وLR كبير ممكن يبوّظ اللي اتعلمه.</li>
+    <li>• <b>تلوم الـ schedule على كل spike:</b> لو التدريب باظ عند خطوة 10,000، اتأكد الأول: هل الـ LR فعلًا كان عالي ساعتها؟ ولا المشكلة في الداتا أو الـ init؟</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <p>أي fine-tuning أو LoRA هتعمله لموديل لغة (عشان agent متخصص مثلًا) هيكون فيه سطر <code>lr_scheduler_type</code> و<code>warmup_ratio</code> أو <code>warmup_steps</code> في إعدادات الـ Trainer. ولما تقرا model card أو paper لموديل جديد، هتلاقي جدول فيه peak LR والـ warmup والـ schedule، دلوقتي بقيت تفهمه.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d52-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d52-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d52-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d52-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الـ ٣ failure modes: divergence وstalling وoscillation</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أكتب معادلة الـ cosine وأشرح قيمتها عند t=0 وt=T</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه الـ warmup مهم مع Adam، وإنه عادة 1–5% من الخطوات</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ ٥ schedules بإيدي وشغّلت main.py</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Warmup + Cosine</td><td>pretraining وfine-tuning لـ Llama وGPT وPaLM ومعظم الـ transformers</td></tr>
+    <tr><td>Warmup</td><td>أي تدريب بـ Adam/AdamW، وخصوصًا مع batch كبير</td></tr>
+    <tr><td>Step decay</td><td>موديلات الـ CNN القديمة زي ResNet</td></tr>
+    <tr><td>1cycle</td><td>تدريب سريع بـ budget صغير (ساعات)</td></tr>
+    <tr><td>LR range test</td><td>اختيار الـ lr_max قبل التدريب</td></tr>
+    <tr><td>Linear decay</td><td>BERT</td></tr>
+    <tr><td><code>get_cosine_schedule_with_warmup</code></td><td>سكريبتات HuggingFace للـ fine-tuning</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Build Your Own Mini Framework. هتجمع كل اللي اتعلمته (layers، loss، optimizers، init، schedules) في framework صغير بتاعك، ونبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F09-learning-rate-schedules" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/09-learning-rate-schedules</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI,css=A.css,f=A.fmt,$=id=>document.getElementById(id);
+
+// roadmap
+const rm=$('d52-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===9)s.className='now';rm.appendChild(s)}
+
+// ---------- schedules (same math as the lesson) ----------
+const T=20000;
+function sched(name,t,p){
+  const lr=p.lr,lmin=1e-5,W=Math.round(T*p.w/100);
+  if(name==='constant')return lr;
+  if(name==='step')return lr*Math.pow(p.g,Math.floor(t/p.ss));
+  if(name==='cosine')return t>=T?lmin:lmin+0.5*(lr-lmin)*(1+Math.cos(Math.PI*t/T));
+  if(name==='wcos'){if(T<=W)return lr*t/Math.max(W,1);if(t<W)return lr*t/W;const pr=(t-W)/(T-W);return lmin+0.5*(lr-lmin)*(1+Math.cos(Math.PI*pr))}
+  if(name==='onecycle'){const m=Math.max(Math.floor(T/2),1);if(t<m)return lr/25+(lr-lr/25)*t/m;const pr=(t-m)/Math.max(T-m,1);return lr*(1-pr)+lr/10000*pr}
+  return lr;
+}
+const sc=$('d52-schCanvas'),sctx=A.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+const names=['constant','step','cosine','wcos','onecycle'],labels={constant:'Constant',step:'Step',cosine:'Cosine',wcos:'Warmup+Cos',onecycle:'1cycle'};
+function colors(){return {constant:css('--muted'),step:css('--bad'),cosine:css('--ok'),wcos:css('--vec-a'),onecycle:css('--vec-b')}}
+function params(){return {lr:+$('d52-lr').value,w:+$('d52-w').value,ss:+$('d52-ss').value,g:+$('d52-g').value}}
+function drawSch(){
+  const p=params(),sel=$('d52-sch').value,C=colors();
+  $('d52-vLr').textContent=f(p.lr,3);$('d52-vW').textContent=p.w;$('d52-vSs').textContent=p.ss;$('d52-vG').textContent=f(p.g,1);
+  const L=40,R=12,Tp=14,B=30,pw=SW-L-R,ph=SH-Tp-B,ymax=0.1;
+  sctx.clearRect(0,0,SW,SH);
+  sctx.strokeStyle=css('--grid');sctx.lineWidth=1;
+  for(let i=0;i<=4;i++){const y=Tp+ph*i/4;sctx.beginPath();sctx.moveTo(L,y);sctx.lineTo(L+pw,y);sctx.stroke()}
+  for(let i=0;i<=4;i++){const x=L+pw*i/4;sctx.beginPath();sctx.moveTo(x,Tp);sctx.lineTo(x,Tp+ph);sctx.stroke()}
+  sctx.fillStyle=css('--muted');sctx.font='11px JetBrains Mono, monospace';sctx.textAlign='right';
+  for(let i=0;i<=4;i++)sctx.fillText(f(ymax*(1-i/4),3),L-4,Tp+ph*i/4+4);
+  sctx.textAlign='center';['0','T/4','T/2','3T/4','T'].forEach((s,i)=>sctx.fillText(s,L+pw*i/4,SH-10));sctx.textAlign='left';
+  const list=sel==='all'?names:[sel];
+  list.forEach(n=>{sctx.strokeStyle=C[n];sctx.lineWidth=list.length>1?2:3;sctx.beginPath();
+    for(let i=0;i<=400;i++){const t=Math.round(T*i/400),v=sched(n,Math.min(t,T-1),p),x=L+pw*i/400,y=Tp+ph*(1-Math.min(v,ymax)/ymax);i?sctx.lineTo(x,y):sctx.moveTo(x,y)}sctx.stroke()});
+  if(sel==='all'){let x=L+6;names.forEach(n=>{sctx.fillStyle=C[n];sctx.fillRect(x,Tp+4,10,10);sctx.fillStyle=css('--ink');sctx.fillText(labels[n],x+14,Tp+13);x+=sctx.measureText(labels[n]).width+28})}
+  const n0=sel==='all'?'wcos':sel,pts=[0,T/4,T/2,3*T/4,T-1];
+  pts.forEach((t,i)=>{$('d52-r'+i).textContent=sched(n0,t,p).toFixed(6)});
+}
+['d52-sch','d52-lr','d52-w','d52-ss','d52-g'].forEach(id=>$(id).addEventListener('input',drawSch));
+drawSch();
+
+// ---------- ball in the valley ----------
+const bc=$('d52-ballCanvas'),bctx=A.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+const lc=$('d52-lossCanvas'),lctx=A.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+let bw=2.6,hist=[],bstep=0,timer=null,seed=7;
+const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
+const gauss=()=>{let u=rnd()||1e-9,v=rnd();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)};
+const XR=3.2,toX=w=>BW/2+w/XR*(BW/2-20),toY=l=>BH-24-Math.min(l,11)/11*(BH-50);
+function drawBall(){
+  bctx.clearRect(0,0,BW,BH);
+  bctx.strokeStyle=css('--muted');bctx.lineWidth=2;bctx.beginPath();
+  for(let i=0;i<=200;i++){const w=-XR+2*XR*i/200,x=toX(w),y=toY(w*w);i?bctx.lineTo(x,y):bctx.moveTo(x,y)}bctx.stroke();
+  bctx.fillStyle=css('--muted');bctx.font='12px JetBrains Mono, monospace';bctx.fillText('L(w) = w²',10,18);
+  const tr=hist.slice(-25);
+  bctx.strokeStyle=css('--vec-b');bctx.globalAlpha=.5;bctx.lineWidth=1.5;bctx.beginPath();
+  tr.forEach((h,i)=>{const w=Math.max(-XR,Math.min(XR,h.w)),x=toX(w),y=toY(w*w);i?bctx.lineTo(x,y):bctx.moveTo(x,y)});bctx.stroke();bctx.globalAlpha=1;
+  const w=Math.max(-XR,Math.min(XR,bw));
+  bctx.fillStyle=Math.abs(bw)>XR?css('--bad'):css('--vec-a');bctx.beginPath();bctx.arc(toX(w),toY(w*w)-8,9,0,7);bctx.fill();
+  lctx.clearRect(0,0,LW,LH);
+  lctx.fillStyle=css('--muted');lctx.font='11px JetBrains Mono, monospace';lctx.fillText('log loss',6,12);
+  if(hist.length>1){lctx.strokeStyle=css('--vec-a');lctx.lineWidth=2;lctx.beginPath();
+    hist.forEach((h,i)=>{const v=Math.log10(Math.max(h.w*h.w,1e-6)),x=6+(LW-12)*i/100,y=LH-6-(Math.min(Math.max(v,-6),4)+6)/10*(LH-20);i?lctx.lineTo(x,y):lctx.moveTo(x,y)});lctx.stroke()}
+  const cur=hist.length?hist[hist.length-1].lr:+$('d52-bl').value;
+  $('d52-bStep').textContent=bstep;$('d52-bW').textContent=Math.abs(bw)>1e6?bw.toExponential(1):f(bw,3);
+  $('d52-bL').textContent=Math.abs(bw)>1e3?(bw*bw).toExponential(1):f(bw*bw,4);$('d52-bLr').textContent=f(cur,4);
+}
+function verdict(){
+  const v=$('d52-bVerdict'),L=bw*bw,start=2.6*2.6;
+  if(!isFinite(L)||L>start*1.5){v.textContent='DIVERGED: الخطوات أكبر من الوادي، كل مرة بتبعد أكتر';v.style.color=css('--bad');return}
+  if(L>start*0.9){v.textContent='BARELY MOVED: الخطوات صغيرة جدًا';v.style.color=css('--muted');return}
+  const last=hist.slice(-20).map(h=>h.w*h.w),avg=last.reduce((a,b)=>a+b,0)/last.length;
+  if(avg>0.01){v.textContent='OSCILLATION: وصلت قريب بس بتهتز حوالين القاع ('+f(avg,3)+')';v.style.color=css('--vec-b')}
+  else{v.textContent='CONVERGED: استقرت جوه القاع ('+f(avg,4)+')';v.style.color=css('--ok')}
+}
+function run(){
+  clearInterval(timer);bw=2.6;hist=[];bstep=0;seed=7;
+  const lr0=+$('d52-bl').value,noise=+$('d52-bn').value,dec=$('d52-decay').checked;
+  const fast=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  const tick=()=>{
+    const lr=dec?1e-4+0.5*(lr0-1e-4)*(1+Math.cos(Math.PI*bstep/100)):lr0;
+    const g=2*bw+noise*gauss();
+    bw=bw-lr*g;if(!isFinite(bw))bw=1e9;bstep++;hist.push({w:bw,lr});
+    if(bstep>=100){clearInterval(timer);verdict()}
+  };
+  if(fast){while(bstep<100)tick();drawBall();return}
+  timer=setInterval(()=>{if(!document.body.contains(bc)){clearInterval(timer);return}tick();tick();drawBall()},40);
+  $('d52-bVerdict').textContent='بيجري…';$('d52-bVerdict').style.color='';
+}
+$('d52-run').addEventListener('click',run);
+$('d52-bl').addEventListener('input',()=>{$('d52-vBl').textContent=f(+$('d52-bl').value,3)});
+$('d52-bn').addEventListener('input',()=>{$('d52-vBn').textContent=f(+$('d52-bn').value,1)});
+document.querySelectorAll('[data-d52b]').forEach(b=>b.addEventListener('click',()=>{$('d52-bl').value=b.dataset.d52b;$('d52-vBl').textContent=b.dataset.d52b;run()}));
+drawBall();
+
+// ---------- warmup lab ----------
+const wc=$('d52-wuCanvas'),wctx=A.setupCanvas(wc),WW=+wc.dataset.w,WH=+wc.dataset.h;
+const ec=$('d52-wuErr'),ectx=A.setupCanvas(ec),EW=+ec.dataset.w,EH=+ec.dataset.h;
+const N=200,TRUE=1;let G=[],wseed=11;
+const wr=()=>{wseed=(wseed*16807)%2147483647;return wseed/2147483647};
+function newG(){G=[];for(let i=0;i<N;i++){let u=wr()||1e-9,v=wr();G.push(TRUE+1.5*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v))}}
+function drawWu(){
+  const ws=+$('d52-ws').value,b1=+$('d52-b1').value;
+  $('d52-vWs').textContent=ws;$('d52-vB1').textContent=f(b1,2);
+  let m=0;const M=[];G.forEach(g=>{m=b1*m+(1-b1)*g;M.push(m)});
+  const lrW=t=>ws>0&&t<ws?t/ws:1;
+  wctx.clearRect(0,0,WW,WH);
+  const gy=v=>WH/2-v*(WH/2-10)/4;
+  wctx.fillStyle=css('--muted');wctx.globalAlpha=.45;G.forEach((g,i)=>{wctx.fillRect(6+(WW-12)*i/N,gy(Math.max(-4,Math.min(4,g)))-1,2,2)});wctx.globalAlpha=1;
+  wctx.strokeStyle=css('--muted');wctx.setLineDash([5,4]);wctx.beginPath();wctx.moveTo(6,gy(TRUE));wctx.lineTo(WW-6,gy(TRUE));wctx.stroke();wctx.setLineDash([]);
+  wctx.strokeStyle=css('--vec-a');wctx.lineWidth=2.5;wctx.beginPath();M.forEach((v,i)=>{const x=6+(WW-12)*i/N;i?wctx.lineTo(x,gy(v)):wctx.moveTo(x,gy(v))});wctx.stroke();
+  if(ws>0){wctx.fillStyle=css('--vec-b');wctx.globalAlpha=.12;wctx.fillRect(6,0,(WW-12)*ws/N,WH);wctx.globalAlpha=1}
+  wctx.fillStyle=css('--ink');wctx.font='11px JetBrains Mono, monospace';wctx.fillText('m (estimate) vs true gradient',8,14);
+  // error plot
+  ectx.clearRect(0,0,EW,EH);
+  const eW=[],eN=[];M.forEach((v,i)=>{const e=Math.abs(v-TRUE);eN.push(e);eW.push(e*lrW(i))});
+  const mx=Math.max(...eN,0.01),ey=v=>EH-8-v/mx*(EH-24);
+  const area=(arr,col,alpha)=>{ectx.fillStyle=col;ectx.globalAlpha=alpha;ectx.beginPath();ectx.moveTo(6,EH-8);arr.forEach((v,i)=>ectx.lineTo(6+(EW-12)*i/N,ey(v)));ectx.lineTo(EW-6,EH-8);ectx.closePath();ectx.fill();ectx.globalAlpha=1};
+  area(eN,css('--bad'),.35);area(eW,css('--ok'),.6);
+  ectx.strokeStyle=css('--vec-b');ectx.lineWidth=2;ectx.beginPath();for(let i=0;i<N;i++){const x=6+(EW-12)*i/N,y=EH-8-lrW(i)*(EH-24);i?ectx.lineTo(x,y):ectx.moveTo(x,y)}ectx.stroke();
+  ectx.fillStyle=css('--ink');ectx.font='11px JetBrains Mono, monospace';ectx.fillText('red: lr × error (no warmup)   green: with warmup   orange: lr(t)',8,14);
+  const sW=eW.slice(0,60).reduce((a,b)=>a+b,0),sN=eN.slice(0,60).reduce((a,b)=>a+b,0);
+  $('d52-eW').textContent=f(sW,1);$('d52-eN').textContent=f(sN,1);$('d52-eP').textContent=f(sN?(1-sW/sN)*100:0,0)+'%';
+}
+$('d52-ws').addEventListener('input',drawWu);$('d52-b1').addEventListener('input',drawWu);
+$('d52-wuNew').addEventListener('click',()=>{newG();drawWu()});
+newG();drawWu();
+
+// ---------- quiz ----------
+const Q=[
+ ['ليه الـ constant learning rate غالبًا مش الأحسن؟',['بياكل memory كتير','يا إما عالي زيادة في آخر التدريب (يهتز) يا إما واطي زيادة في أوله (يضيع compute)','بيعمل overfitting','بيشتغل مع SGD بس'],1,'حجم الخطوة المناسب بيتغير: في الأول خطوات كبيرة تغطي مسافة، وفي الآخر خطوات صغيرة تستقر. رقم ثابت ما يقدرش يخدم الاتنين.'],
+ ['الـ learning rate warmup هدفه إيه؟',['إن إحصائيات الـ optimizer (momentum والـ variance) تستقر قبل ما ناخد خطوات كبيرة','نمنع الـ overfitting','نكبّر الـ batch size بالتدريج','نعمل initialization للأوزان'],0,'تقديرات Adam بتبدأ بصفر، فأول updates مبنية على إحصائيات مش موثوقة. الـ warmup بيبدأ بـ LR صغير ويطلع بالتدريج.'],
+ ['Llama 3 وGPT-3 ومعظم الـ LLMs الحديثة بيستخدموا أنهي schedule؟',['Constant','Step decay كل 30 epoch','Exponential decay','Linear warmup وبعده cosine decay'],3,'ده الـ standard في تدريب الـ transformers. Llama 3: 2000 warmup step وcosine من 3e-4 لـ 3e-5، ومن غير ما تظبط milestones.'],
+ ['إيه اللي بيميّز الـ 1cycle policy؟',['مش محتاج أي tuning','بيشتغل مع SGD بس','LR ثابت','بيطلّع الـ LR في النص الأول وبعدين ينزّله، ومرحلة الـ LR العالي بتشتغل كـ regularization'],3,'Leslie Smith: من واطي لعالي في النص الأول، ومن عالي لواطي جدًا في التاني. الـ LR العالي بيخلي الموديل يستكشف الـ loss landscape قبل ما يستقر في أحسن وادي.'],
+ ['الـ training loss فجأة عمل spike وانفجر. أغلب الظن مشكلة الـ LR إيه؟',['الـ LR واطي زيادة','الـ LR عالي زيادة والـ optimizer بيعدّي القاع','الـ warmup طويل زيادة','الـ schedule بينزل ببطء'],1,'LR عالي = خطوات أكبر من الوادي، فبتعدي القاع والـ loss يطلع بدل ما ينزل.'],
+ ['(سؤال مني) في معادلة الـ cosine annealing، الـ LR بيبقى كام عند t = T/2؟',['lr_max','lr_min','(lr_max + lr_min) / 2','صفر'],2,'عند T/2 الـ cos(π/2) = 0، فالـ LR = lr_min + 0.5·(lr_max − lr_min) = المتوسط. شفتها في المعمل ١: مع lr=0.05 طلعت ≈ 0.025.'],
+ ['(سؤال مني) بتعمل fine-tune بـ HuggingFace وقررت تضاعف الـ batch size وانت مثبّت عدد الـ epochs. إيه اللي لازم تراجعه؟',['ولا حاجة','num_training_steps والـ warmup، لأن عدد الخطوات اتغير','نوع الـ activation','الـ weight init'],1,'الـ batch الأكبر = خطوات أقل لنفس الـ epochs. لو سبت num_training_steps زي ما هي، الـ cosine مش هيكمّل نزوله. والدرس بيقول إن الـ warmup كمان محتاج يتغير مع الـ batch size.']
+];
+A.quiz($('d52-quizBox'),Q,5,()=>{const c=document.querySelector('#d52-checklist input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(52,$('d52-checklist'));
+
+// theme redraw
+A.onTheme(()=>{if(!document.body.contains(sc))return false;drawSch();drawBall();drawWu()});
+})();
+</script>

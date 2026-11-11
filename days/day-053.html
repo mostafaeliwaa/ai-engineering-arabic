@@ -1,0 +1,925 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 10 · Build Your Own Mini Framework</span>
+  <h1>اليوم ٥٣: ابني الـ PyTorch بتاعك (نسخة صغيرة)</h1>
+  <p class="lede">عندك من الدروس اللي فاتت قطع كتير متفرقة: layers، backprop، activations، losses، optimizers، regularization، init، LR schedules. النهاردة هتجمعهم في <b>framework</b> واحد (~500 سطر Python من غير numpy)، وتدرّب بيه شبكة ٤ طبقات تفرّق النقط اللي جوه دايرة من اللي برّاها. ده مشروع التخرج بتاع الفيز التالتة.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>النوع: <b>Build (مشروع)</b></span>
+    <span>اللغة: <b>Python خام</b></span>
+    <span>بعده: <b>Introduction to PyTorch</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d53-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d53-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر امبارح</h2></div>
+  <p>امبارح اتكلمنا عن الـ Learning Rate Schedules. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه Adam محتاج warmup في أول التدريب؟</summary>لأن تقديرات الـ mean والـ variance بتاعة الـ gradient بتبدأ من صفر، فأول كام خطوة مبنيين على إحصائيات «زبالة». لو الـ lr كبير ساعتها الموديل ياخد خطوات ضخمة في اتجاه غلط. الـ warmup بيبدأ بـ lr صغير ويطلع خطي لحد <code>lr_max</code> لحد ما الإحصائيات تستقر.</details>
+  <details><summary>٢. إيه الـ schedule اللي معظم الـ transformers الحديثة بتستخدمه؟</summary>Linear warmup + cosine decay: يطلع خطي في الأول، وبعدين ينزل على شكل منحنى cosine لحد <code>lr_min</code>. Llama و GPT و PaLM ماشيين بيه.</details>
+  <details><summary>٣. lr ثابت كبير شوية: إيه اللي بيحصل في آخر التدريب؟</summary>الـ loss بيفضل يتذبذب حوالين الـ minimum ومش قادر يوصله، لأن الخطوات كبيرة. علشان كده بنعمل decay. النهاردة في تمرين ٢ هتوصّل الـ cosine schedule ده بالـ optimizer بتاعك.</details>
+</section>
+
+<section>
+  <h2>خطة الساعتين</h2>
+  <div class="plan">
+    <div><b>15 min</b>الفكرة: Module، Sequential، train/eval، Optimizer، DataLoader</div>
+    <div><b>20 min</b>العب في المعامل التلاتة تحت</div>
+    <div><b>55 min</b>ابني الـ framework بإيدك على ٦ مراحل (milestones)</div>
+    <div><b>15 min</b>قارن بـ PyTorch + الكويز</div>
+    <div><b>15 min</b>تمرين أو اتنين</div>
+  </div>
+</section>
+
+<!-- CONCEPTS -->
+<section id="d53-module">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: قطع غيار من غير عربية</h2></div>
+  <p>لحد دلوقتي عشان تدرّب شبكة كنت بتعمل copy-paste من ٥ دروس: الـ <code>Value</code> من هنا، الـ training loop من هناك، الـ init في ملف، والـ schedule في ملف تاني. ده بالظبط اللي الـ frameworks بتحلّه. PyTorch بيديك <code>nn.Module</code> و<code>nn.Sequential</code> و<code>optim.Adam</code> و<code>DataLoader</code>، وTensorFlow بيديك <code>keras.Layer</code> و<code>keras.Sequential</code> و<code>keras.optimizers.Adam</code>.</p>
+  <div class="note"><strong>الفكرة المهمة:</strong> الحاجات دي مش سحر. هي <b>أنماط تنظيم</b> (organizational patterns) بتخليك تعرّف وتدرّب وتقيّم شبكة من غير ما تعيد بناء «السباكة» كل مرة. لما تخلّص النهاردة هتفهم ليه <code>model.train()</code> و<code>model.eval()</code> موجودين، وليه <code>optimizer.zero_grad()</code> نداء لوحده.</div>
+
+  <h3>الـ Module: الواجهة الموحدة</h3>
+  <p>فكّر في الـ Module زي <b>فيشة الكهربا الموحّدة</b>: أي جهاز (Linear، ReLU، Dropout، BatchNorm) لازم يبقى ليه نفس الفيشة عشان يدخل في أي بريزة. عند كل Module ٣ مسؤوليات:</p>
+  <ol class="ex">
+    <li><code>forward()</code>: احسب الخرج من الدخل.</li>
+    <li><code>parameters()</code>: رجّع كل الأوزان اللي تتدرب.</li>
+    <li><code>backward()</code>: احسب الـ gradients. في PyTorch الـ autograd بيعملها لوحده، عندنا هنكتبها بإيدنا.</li>
+  </ol>
+  <p>وكمان كل Module عنده flag اسمه <code>training</code> بيتقلب بـ <code>train()</code> و<code>eval()</code>.</p>
+
+  <h3>الـ Sequential: موديول جواه موديولز</h3>
+  <p>الـ Sequential زي <b>خط إنتاج في مصنع</b>: الحاجة بتعدّي على محطة ١ وبعدين ٢ وبعدين ٣ (forward). ولما تلاقي عيب في الآخر، بترجع تسأل المحطات بالعكس: ٣ وبعدين ٢ وبعدين ١ (backward). والمهم إن الـ Sequential نفسه Module: ليه <code>forward</code> و<code>backward</code> و<code>parameters</code>. ده اسمه <b>composite pattern</b>: مجموعة Modules متسلسلة هي نفسها Module، فتقدر تحط Sequential جوه Sequential.</p>
+
+  <h3>وضع التدريب ووضع التقييم</h3>
+  <p>فيه طبقات بتتصرف بشكل مختلف وقت التدريب عن وقت الاستخدام:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الطبقة</th><th>في <code>train()</code></th><th>في <code>eval()</code></th></tr>
+    <tr><td>Dropout</td><td>بتصفّر نيورونات عشوائيًا وتكبّر الباقي بـ <span class="ltr">1/(1−p)</span></td><td>بتعدّي كل حاجة زي ما هي</td></tr>
+    <tr><td>BatchNorm</td><td>بتستخدم mean و variance الـ batch الحالي وتحدّث الـ running averages</td><td>بتستخدم الـ running averages اللي اتجمعت</td></tr>
+  </table></div>
+  <p>تشبيه: الـ Dropout زي مدرب كورة بيقعّد لاعيبة عشوائي في التمرين عشان الفريق ميعتمدش على نجم واحد. لكن في الماتش الحقيقي (eval) بيلعب بالتشكيلة كاملة.</p>
+
+  <h3>الـ Optimizer: مش عارف حاجة عن الشبكة</h3>
+  <p>الـ optimizer بيشوف <b>قايمة مسطحة</b> من الباراميترز والـ gradients بتاعتهم، وبس. مش عارف فين Linear وفين BatchNorm. SGD: <code>param -= lr * grad</code>. Adam: بيحتفظ بتقدير للـ momentum والـ variance لكل باراميتر وبعدين يحدّث. الفصل ده هو اللي بيخليك تبدّل SGD بـ Adam في سطر واحد.</p>
+
+  <h3>الـ DataLoader: التغذية على دفعات</h3>
+  <p>الـ batching مهم لسببين: (١) في المشاكل الكبيرة مش هتقدر تحط الداتا كلها في الميموري مرة واحدة، (٢) الـ mini-batch gradient descent بيضيف «دوشة» بتساعد تهرب من الـ local minima. الـ DataLoader بيقسم الداتا لـ batches وممكن يخلطها (shuffle) في أول كل epoch.</p>
+
+  <h3>الصورة الكاملة</h3>
+  <div class="formula">DataLoader → batch → Model.forward → Loss → Loss.backward → Model.backward → Optimizer.step → zero_grad</div>
+  <p>Modules (Linear، ReLU، Sigmoid، Dropout، BatchNorm) جوه Container (Sequential)، وجنبهم Losses (MSELoss، BCELoss) و Optimizers (SGD، Adam) و Data (DataLoader). الـ Linear والـ ReLU والـ Sequential كلهم بيورثوا من Module.</p>
+</section>
+
+<!-- LAB 1 -->
+<section id="d53-lab1">
+  <div class="station-head"><span class="tag">02</span><h2>معمل ١: لفة واحدة في الـ training loop</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>دوس «الخطوة الجاية» وتابع الترتيب: <b>zero_grad ← forward ← loss ← backward ← step</b>. لاحظ إن الـ forward ماشي شمال لليمين في الصورة (من الـ DataLoader للـ Loss)، والـ backward راجع بالعكس.</p>
+      <p>العمود اللي تحت هو الـ gradient المتخزن في وزن واحد. في كل iteration الـ backward بيعمل <code>+=</code> عليه (زي <code>self.weight_grads[i][j] +=</code> في الكود).</p>
+      <div class="note"><strong>جرب:</strong> علّم على «انسى zero_grad» ولف كذا iteration. هتلاقي الـ gradient بيكبر ويكبر لأنه بيجمع القديم على الجديد، والـ step بيبقى أكبر من المفروض. ده من أشهر الـ bugs.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d53-loop" width="520" height="300" aria-label="رسم متحرك لخطوات الـ training loop"></canvas>
+      <div class="readout">
+        <div><small>iteration</small><b id="d53-it">0</b></div>
+        <div><small>المرحلة</small><b id="d53-phase">—</b></div>
+        <div><small>grad المتخزن</small><b id="d53-gval">0</b></div>
+      </div>
+      <div class="verdict" id="d53-loopv">ابدأ بالخطوة الجاية</div>
+      <div class="btns">
+        <button type="button" class="primary" id="d53-next">الخطوة الجاية</button>
+        <button type="button" id="d53-auto">شغّل لوحده</button>
+        <button type="button" id="d53-reset1">من الأول</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d53-forget"> انسى zero_grad</label>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- LAB 2 -->
+<section id="d53-lab2">
+  <div class="station-head"><span class="tag">03</span><h2>معمل ٢: Dropout في train ضد eval</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>دي طبقة فيها ١٢ نيورون. العمود الرمادي هو الدخل، والملوّن هو الخرج بعد الـ Dropout.</p>
+      <p>في <b>train</b> كل نيورون بيتصفّر باحتمال <code>p</code>، واللي فاضل بيتضرب في <span class="ltr">1/(1−p)</span>. ليه؟ عشان <b>القيمة المتوقعة</b> (expected value) للخرج تفضل زي الدخل، فالطبقة اللي بعدها متتفاجئش لما نروح eval.</p>
+      <p>دوس «١٠٠٠ mask» وشوف متوسط الخرج على ١٠٠٠ مرة: بيقرب جدًا من متوسط الدخل.</p>
+      <div class="note"><strong>جرب:</strong> حوّل لـ eval. الـ mask بيختفي والخرج = الدخل بالظبط. لو نسيت <code>model.eval()</code> قبل الاختبار، نتايجك هتبقى عشوائية كل مرة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d53-drop" width="520" height="260" aria-label="نيورونات قبل وبعد الـ Dropout"></canvas>
+      <label style="display:grid;gap:2px">p = <b class="mono" id="d53-pv">0.30</b><input type="range" id="d53-p" min="0" max="0.9" step="0.05" value="0.3"></label>
+      <div class="readout">
+        <div><small>متوسط الدخل</small><b id="d53-min">0</b></div>
+        <div><small>متوسط الخرج (المرة دي)</small><b id="d53-mout">0</b></div>
+        <div><small>متوسط ١٠٠٠ mask</small><b id="d53-mavg">—</b></div>
+        <div><small>scale</small><b id="d53-scale">1.43</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" id="d53-mode" class="primary">الوضع: train</button>
+        <button type="button" id="d53-newmask">mask جديد</button>
+        <button type="button" id="d53-many">١٠٠٠ mask</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- LAB 3 -->
+<section id="d53-lab3">
+  <div class="station-head"><span class="tag">04</span><h2>معمل ٣: درّب framework صغير قدام عينك</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>ده نفس المشروع بتاع النهاردة بس مصغّر ومكتوب JavaScript جوه الصفحة: شبكة <span class="ltr">2 → 8 → 8 → 1</span> (ReLU في النص و Sigmoid في الآخر) و BCE loss، على ٣٠٠ نقطة في المربع <span class="ltr">[−2, 2]</span>. النقطة label بتاعها 1 لو <span class="ltr">x² + y² &lt; 1.5</span>.</p>
+      <p>الخلفية بتوري الشبكة شايفة إيه: أزرق = «جوه»، برتقالي = «بره». شغّل وشوف الحدود بتتحول من خط عشوائي لدايرة.</p>
+      <p>قارن Adam (lr=0.01) بـ SGD (lr=0.1)، نفس الأرقام اللي في <code>main.py</code>. التحديث per-sample زي كود الدرس.</p>
+      <div class="note ai"><strong>لاحظ:</strong> نفس الشبكة ونفس الداتا، والفرق الوحيد هو الـ optimizer. ده معنى إن الـ optimizer «مش عارف حاجة عن الشبكة»: بتبدّله ببساطة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d53-train" width="520" height="420" aria-label="حدود قرار الشبكة على داتا الدايرة"></canvas>
+      <div class="readout">
+        <div><small>epoch</small><b id="d53-ep">0</b></div>
+        <div><small>loss</small><b id="d53-loss">—</b></div>
+        <div><small>train acc</small><b id="d53-acc">—</b></div>
+        <div><small>parameters</small><b id="d53-np">105</b></div>
+      </div>
+      <canvas id="d53-curve" width="520" height="90" aria-label="منحنى الـ loss"></canvas>
+      <div class="btns">
+        <select id="d53-opt" aria-label="الـ optimizer"><option value="adam">Adam · lr 0.01</option><option value="sgd">SGD · lr 0.1</option></select>
+        <button type="button" class="primary" id="d53-run">شغّل</button>
+        <button type="button" id="d53-reset3">ابدأ من جديد</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PROJECT PLAN -->
+<section id="d53-code">
+  <div class="station-head"><span class="tag">05</span><h2>المشروع: ابني الـ framework على ٦ مراحل</h2></div>
+  <p>اعمل ملف جديد <code>my_framework.py</code> واكتب كل حاجة <b>بإيدك</b>. متعملش copy-paste. بعد كل مرحلة فيه <b>check</b> لازم يعدّي قبل ما تكمّل. لو اتزنقت بص على <code>code/main.py</code> في الريبو.</p>
+  <p>عشان تشغّل النسخة الأصلية من الريبو (من الفولدر الرئيسي):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+git pull
+python3 phases/03-deep-learning-core/10-mini-framework/code/main.py</pre></div>
+
+  <h3>المرحلة ١ · الأساس: Module + Linear</h3>
+  <p>كل layer هيورث من الكلاس ده. الـ default بتاع <code>parameters()</code> قايمة فاضية (الـ ReLU مثلًا ملهوش أوزان).</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Module:
+    def __init__(self):
+        self.training = True          <span class="c"># كل موديول عنده flag للـ train/eval</span>
+
+    def forward(self, x):             <span class="c"># احسب الخرج</span>
+        raise NotImplementedError
+
+    def backward(self, grad):         <span class="c"># رجّع الـ gradient للي قبلك</span>
+        raise NotImplementedError
+
+    def parameters(self):             <span class="c"># الأوزان اللي تتدرب (افتراضيًا: مفيش)</span>
+        return []
+
+    def train(self):
+        self.training = True
+
+    def eval(self):
+        self.training = False</pre></div>
+  <p>الـ Linear بيحسب <span class="ltr">Wx + b</span> وبيستخدم He init (<span class="ltr">std = √(2/fan_in)</span>) من درس الـ initialization. لاحظ ٣ حاجات: بيحفظ <code>self.input</code> عشان الـ backward، والـ gradients بتتجمع بـ <code>+=</code>، و<code>parameters()</code> بترجع tuples بالشكل <span class="ltr">(container, i, j, grad_container)</span> عشان الـ optimizer يقدر يعدّل المكان ده بالظبط.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+
+
+class Linear(Module):
+    def __init__(self, fan_in, fan_out):
+        super().__init__()
+        std = math.sqrt(2.0 / fan_in)  <span class="c"># He init من درس 08</span>
+        self.weights = [[random.gauss(0, std) for _ in range(fan_in)] for _ in range(fan_out)]
+        self.biases = [0.0] * fan_out
+        self.weight_grads = [[0.0] * fan_in for _ in range(fan_out)]
+        self.bias_grads = [0.0] * fan_out
+        self.fan_in = fan_in
+        self.fan_out = fan_out
+        self.input = None
+
+    def forward(self, x):
+        self.input = x                 <span class="c"># احفظ الدخل عشان الـ backward</span>
+        output = []
+        for i in range(self.fan_out):
+            val = self.biases[i]
+            for j in range(self.fan_in):
+                val += self.weights[i][j] * x[j]
+            output.append(val)
+        return output
+
+    def backward(self, grad):
+        input_grad = [0.0] * self.fan_in
+        for i in range(self.fan_out):
+            self.bias_grads[i] += grad[i]                          <span class="c"># += يعني بيتراكم</span>
+            for j in range(self.fan_in):
+                self.weight_grads[i][j] += grad[i] * self.input[j]
+                input_grad[j] += grad[i] * self.weights[i][j]      <span class="c"># ده اللي بيرجع للي قبله</span>
+        return input_grad
+
+    def parameters(self):
+        params = []                    <span class="c"># كل باراميتر = (المكان, i, j, مكان الـ grad)</span>
+        for i in range(self.fan_out):
+            for j in range(self.fan_in):
+                params.append((self.weights, i, j, self.weight_grads))
+            params.append((self.biases, i, None, self.bias_grads))
+        return params</pre></div>
+  <div class="note"><strong>Check ١:</strong> <code>Linear(2, 16).parameters()</code> لازم يرجع <span class="ltr">2×16 + 16 = 48</span> عنصر. و<code>Linear(2,3).forward([1.0, 2.0])</code> يرجع قايمة طولها 3.</div>
+
+  <h3>المرحلة ٢ · الـ Activations</h3>
+  <p>كل activation بيحفظ اللي محتاجه للـ backward: الـ ReLU بيحفظ mask (مين كان موجب)، والـ Sigmoid والـ Tanh بيحفظوا الخرج لأن المشتقة بتتكتب بيه: <span class="ltr">σ(1−σ)</span> و <span class="ltr">1−tanh²</span>.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class ReLU(Module):
+    def __init__(self):
+        super().__init__()
+        self.mask = None
+
+    def forward(self, x):
+        self.mask = [1.0 if v &gt; 0 else 0.0 for v in x]   <span class="c"># افتكر مين كان موجب</span>
+        return [max(0.0, v) for v in x]
+
+    def backward(self, grad):
+        return [g * m for g, m in zip(grad, self.mask)]
+
+
+class Sigmoid(Module):
+    def __init__(self):
+        super().__init__()
+        self.output = None
+
+    def forward(self, x):
+        self.output = []
+        for v in x:
+            v = max(-500, min(500, v))   <span class="c"># حماية من overflow في exp</span>
+            self.output.append(1.0 / (1.0 + math.exp(-v)))
+        return self.output
+
+    def backward(self, grad):
+        return [g * o * (1 - o) for g, o in zip(grad, self.output)]
+
+
+class Tanh(Module):
+    def __init__(self):
+        super().__init__()
+        self.output = None
+
+    def forward(self, x):
+        self.output = [math.tanh(v) for v in x]
+        return self.output
+
+    def backward(self, grad):
+        return [g * (1 - o * o) for g, o in zip(grad, self.output)]</pre></div>
+  <div class="note"><strong>Check ٢:</strong> <code>ReLU().forward([-1, 2])</code> = <span class="ltr">[0.0, 2]</span>، وبعدها <code>backward([5, 5])</code> = <span class="ltr">[0.0, 5.0]</span>. و<code>Sigmoid().forward([0])</code> = <span class="ltr">[0.5]</span>.</div>
+
+  <h3>المرحلة ٣ · Dropout و BatchNorm (الطبقات اللي بتفرق بين train و eval)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Dropout(Module):
+    def __init__(self, p=0.5):
+        super().__init__()
+        self.p = p
+        self.mask = None
+
+    def forward(self, x):
+        if not self.training:            <span class="c"># في الـ eval: عدّي كل حاجة زي ما هي</span>
+            return x
+        self.mask = [0.0 if random.random() &lt; self.p else 1.0 / (1 - self.p) for _ in x]
+        return [v * m for v, m in zip(x, self.mask)]
+
+    def backward(self, grad):
+        if self.mask is None:
+            return grad
+        return [g * m for g, m in zip(grad, self.mask)]</pre></div>
+  <p>الـ BatchNorm بيعمل normalize لكل feature على مستوى الـ batch: يطرح الـ mean ويقسم على الـ std، وبعدين يضرب في <code>gamma</code> ويزوّد <code>beta</code> (دول بيتعلموا). وقت التدريب بيحدّث <code>running_mean</code> و<code>running_var</code> بـ momentum، ووقت الـ eval بيستخدمهم بدل إحصائيات الـ batch.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class BatchNorm(Module):
+    def __init__(self, size, momentum=0.1, eps=1e-5):
+        super().__init__()
+        self.size = size
+        self.gamma = [1.0] * size        <span class="c"># scale بيتعلم</span>
+        self.beta = [0.0] * size         <span class="c"># shift بيتعلم</span>
+        self.gamma_grads = [0.0] * size
+        self.beta_grads = [0.0] * size
+        self.running_mean = [0.0] * size <span class="c"># للـ eval</span>
+        self.running_var = [1.0] * size
+        self.momentum = momentum
+        self.eps = eps
+        self.x_norm = None
+        self.std_inv = None
+        self.batch_input = None
+
+    def forward_batch(self, batch):
+        batch_size = len(batch)
+        output_batch = []
+        if self.training:
+            mean = [0.0] * self.size     <span class="c"># متوسط كل feature على الـ batch</span>
+            for sample in batch:
+                for j in range(self.size):
+                    mean[j] += sample[j]
+            mean = [m / batch_size for m in mean]
+            var = [0.0] * self.size
+            for sample in batch:
+                for j in range(self.size):
+                    var[j] += (sample[j] - mean[j]) ** 2
+            var = [v / batch_size for v in var]
+            self.std_inv = [1.0 / math.sqrt(v + self.eps) for v in var]
+            self.x_norm = []
+            self.batch_input = batch
+            for sample in batch:
+                normed = [(sample[j] - mean[j]) * self.std_inv[j] for j in range(self.size)]
+                self.x_norm.append(normed)
+                output = [self.gamma[j] * normed[j] + self.beta[j] for j in range(self.size)]
+                output_batch.append(output)
+            for j in range(self.size):   <span class="c"># حدّث المتوسط الجاري</span>
+                self.running_mean[j] = (1 - self.momentum) * self.running_mean[j] + self.momentum * mean[j]
+                self.running_var[j] = (1 - self.momentum) * self.running_var[j] + self.momentum * var[j]
+        else:                            <span class="c"># الـ eval: استخدم الـ running stats</span>
+            std_inv = [1.0 / math.sqrt(v + self.eps) for v in self.running_var]
+            for sample in batch:
+                normed = [(sample[j] - self.running_mean[j]) * std_inv[j] for j in range(self.size)]
+                output = [self.gamma[j] * normed[j] + self.beta[j] for j in range(self.size)]
+                output_batch.append(output)
+        return output_batch
+
+    def forward(self, x):
+        result = self.forward_batch([x])
+        return result[0]
+
+    def backward(self, grad):
+        if self.x_norm is None:
+            return grad
+        for j in range(self.size):
+            self.gamma_grads[j] += self.x_norm[0][j] * grad[j]
+            self.beta_grads[j] += grad[j]
+        return [grad[j] * self.gamma[j] * self.std_inv[j] for j in range(self.size)]
+
+    def parameters(self):
+        params = []
+        for j in range(self.size):
+            params.append((self.gamma, j, None, self.gamma_grads))
+            params.append((self.beta, j, None, self.beta_grads))
+        return params</pre></div>
+  <div class="note"><strong>Check ٣:</strong> بعد <code>d = Dropout(0.5); d.eval()</code> لازم <code>d.forward([1, 2, 3])</code> يرجع نفس القايمة. وفي train، كل عنصر يا إما 0 يا إما متضاعف (×2).</div>
+
+  <h3>المرحلة ٤ · الـ Sequential</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Sequential(Module):
+    def __init__(self, *modules):
+        super().__init__()
+        self.modules = list(modules)
+
+    def forward(self, x):
+        for module in self.modules:            <span class="c"># شمال ← يمين</span>
+            x = module.forward(x)
+        return x
+
+    def backward(self, grad):
+        for module in reversed(self.modules):  <span class="c"># بالعكس: من الآخر للأول</span>
+            grad = module.backward(grad)
+        return grad
+
+    def parameters(self):
+        params = []
+        for module in self.modules:            <span class="c"># لم الأوزان من كل الموديولز</span>
+            params.extend(module.parameters())
+        return params
+
+    def train(self):
+        self.training = True
+        for module in self.modules:
+            module.train()
+
+    def eval(self):
+        self.training = False
+        for module in self.modules:
+            module.eval()
+
+    def count_parameters(self):               <span class="c"># موجودة في code/main.py</span>
+        return len(self.parameters())</pre></div>
+  <div class="note"><strong>Check ٤:</strong> الشبكة <span class="ltr">2→16→16→8→1</span> لازم <code>count_parameters()</code> يطلع <b>465</b>: <span class="ltr">48 + 272 + 136 + 9</span>. وبعد <code>model.eval()</code> اتأكد إن كل موديول جواه <code>training == False</code>.</div>
+
+  <h3>المرحلة ٥ · Losses و Optimizers</h3>
+  <p>الـ loss بيرجع رقم، و<code>backward()</code> بتاعه بيرجع أول gradient في السلسلة كلها. الـ BCE بيقص الـ prediction بين <span class="ltr">1e-7</span> و <span class="ltr">1−1e-7</span> عشان <code>log(0)</code> ميطلعش لانهائي.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MSELoss:
+    def __call__(self, predicted, target):
+        self.predicted = predicted
+        self.target = target
+        n = len(predicted)
+        self.loss = sum((p - t) ** 2 for p, t in zip(predicted, target)) / n
+        return self.loss
+
+    def backward(self):                  <span class="c"># أول gradient في السلسلة كلها</span>
+        n = len(self.predicted)
+        return [2 * (p - t) / n for p, t in zip(self.predicted, self.target)]
+
+
+class BCELoss:
+    def __call__(self, predicted, target):
+        self.predicted = predicted
+        self.target = target
+        eps = 1e-7
+        n = len(predicted)
+        self.loss = 0
+        for p, t in zip(predicted, target):
+            p = max(eps, min(1 - eps, p))  <span class="c"># ممنوع log(0)</span>
+            self.loss += -(t * math.log(p) + (1 - t) * math.log(1 - p))
+        self.loss /= n
+        return self.loss
+
+    def backward(self):
+        eps = 1e-7
+        n = len(self.predicted)
+        grads = []
+        for p, t in zip(self.predicted, self.target):
+            p = max(eps, min(1 - eps, p))
+            grads.append((-t / p + (1 - t) / (1 - p)) / n)
+        return grads</pre></div>
+  <p>الـ optimizer بياخد القايمة المسطحة ويمشي عليها. لو <code>j</code> مش None يبقى وزن في مصفوفة <code>[i][j]</code>، غير كده يبقى عنصر في قايمة <code>[i]</code> (bias أو gamma/beta).</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class SGD:
+    def __init__(self, parameters, lr=0.01):
+        self.params = parameters
+        self.lr = lr
+
+    def step(self):
+        for container, i, j, grad_container in self.params:
+            if j is not None:                     <span class="c"># وزن في مصفوفة</span>
+                container[i][j] -= self.lr * grad_container[i][j]
+            else:                                 <span class="c"># bias أو gamma/beta</span>
+                container[i] -= self.lr * grad_container[i]
+
+    def zero_grad(self):
+        for container, i, j, grad_container in self.params:
+            if j is not None:
+                grad_container[i][j] = 0.0
+            else:
+                grad_container[i] = 0.0
+
+
+class Adam:
+    def __init__(self, parameters, lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
+        self.params = parameters
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.eps = eps
+        self.t = 0
+        self.m = [0.0] * len(parameters)          <span class="c"># momentum لكل باراميتر</span>
+        self.v = [0.0] * len(parameters)          <span class="c"># variance لكل باراميتر</span>
+
+    def step(self):
+        self.t += 1
+        for idx, (container, i, j, grad_container) in enumerate(self.params):
+            g = grad_container[i][j] if j is not None else grad_container[i]
+            self.m[idx] = self.beta1 * self.m[idx] + (1 - self.beta1) * g
+            self.v[idx] = self.beta2 * self.v[idx] + (1 - self.beta2) * g * g
+            m_hat = self.m[idx] / (1 - self.beta1 ** self.t)   <span class="c"># bias correction</span>
+            v_hat = self.v[idx] / (1 - self.beta2 ** self.t)
+            update = self.lr * m_hat / (math.sqrt(v_hat) + self.eps)
+            if j is not None:
+                container[i][j] -= update
+            else:
+                container[i] -= update
+
+    def zero_grad(self):
+        for container, i, j, grad_container in self.params:
+            if j is not None:
+                grad_container[i][j] = 0.0
+            else:
+                grad_container[i] = 0.0</pre></div>
+  <div class="note"><strong>Check ٥:</strong> اعمل باراميتر واحد قيمته 1 والـ grad بتاعه 2، وSGD بـ lr=0.1: بعد <code>step()</code> لازم يبقى 0.8. وبعد <code>zero_grad()</code> الـ grad يرجع 0.</div>
+
+  <h3>المرحلة ٦ · DataLoader + التدريب</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class DataLoader:
+    def __init__(self, data, batch_size=32, shuffle=True):
+        self.data = data
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+
+    def __iter__(self):
+        indices = list(range(len(self.data)))
+        if self.shuffle:
+            random.shuffle(indices)              <span class="c"># ترتيب جديد كل epoch</span>
+        for start in range(0, len(indices), self.batch_size):
+            batch_indices = indices[start:start + self.batch_size]
+            batch = [self.data[i] for i in batch_indices]
+            inputs = [item[0] for item in batch]
+            targets = [item[1] for item in batch]
+            yield inputs, targets                <span class="c"># generator: batch ورا batch</span>
+
+    def __len__(self):
+        return (len(self.data) + self.batch_size - 1) // self.batch_size  <span class="c"># تقريب لفوق</span></pre></div>
+  <p>دلوقتي وصّل كل حاجة. ٥٠٠ نقطة، ٨٠٪ تدريب و٢٠٪ اختبار، batch_size=16، Adam بـ lr=0.01، ١٠٠ epoch:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_circle_data(n=500, seed=42):
+    random.seed(seed)
+    data = []
+    for _ in range(n):
+        x = random.uniform(-2, 2)
+        y = random.uniform(-2, 2)
+        label = 1.0 if x * x + y * y &lt; 1.5 else 0.0   <span class="c"># جوه الدايرة = 1</span>
+        data.append(([x, y], [label]))
+    return data
+
+
+def train():
+    random.seed(42)
+    model = Sequential(
+        Linear(2, 16), ReLU(),
+        Linear(16, 16), ReLU(),
+        Linear(16, 8), ReLU(),
+        Linear(8, 1), Sigmoid(),
+    )
+    criterion = BCELoss()
+    optimizer = Adam(model.parameters(), lr=0.01)
+
+    data = make_circle_data(500)
+    split = int(len(data) * 0.8)                 <span class="c"># 80% تدريب / 20% اختبار</span>
+    train_data, test_data = data[:split], data[split:]
+    loader = DataLoader(train_data, batch_size=16, shuffle=True)
+
+    model.train()                                <span class="c"># وضع التدريب</span>
+    for epoch in range(100):
+        total_loss = total_correct = total_samples = 0
+        for batch_inputs, batch_targets in loader:
+            for x, t in zip(batch_inputs, batch_targets):
+                pred = model.forward(x)          <span class="c"># 1. forward</span>
+                loss = criterion(pred, t)        <span class="c"># 2. loss</span>
+                total_loss += loss
+                optimizer.zero_grad()            <span class="c"># 3. امسح القديم</span>
+                grad = criterion.backward()      <span class="c"># 4. أول gradient</span>
+                model.backward(grad)             <span class="c"># 5. backward في كل الطبقات</span>
+                optimizer.step()                 <span class="c"># 6. حدّث الأوزان</span>
+                if (1.0 if pred[0] &gt;= 0.5 else 0.0) == t[0]:
+                    total_correct += 1
+                total_samples += 1
+        if epoch % 10 == 0 or epoch == 99:
+            print(f"Epoch {epoch:3d} | Loss: {total_loss/total_samples:.6f} | "
+                  f"Train Accuracy: {total_correct/total_samples*100:.1f}%")
+
+    model.eval()                                 <span class="c"># وضع التقييم</span>
+    correct = 0
+    for x, t in test_data:
+        pred = model.forward(x)
+        if (1.0 if pred[0] &gt;= 0.5 else 0.0) == t[0]:
+            correct += 1
+    print(f"Test Accuracy: {correct/len(test_data)*100:.1f}% ({correct}/{len(test_data)})")
+    return model</pre></div>
+  <div class="note"><strong>Check ٦ (الأخير):</strong> الـ loss لازم ينزل مع الـ epochs، والـ train accuracy تطلع. لو الـ loss ثابت: اتأكد إن <code>zero_grad</code> قبل <code>backward</code>، وإن الـ backward في Sequential ماشي <code>reversed</code>.</div>
+
+  <h3>الناتج المتوقع</h3>
+  <p>الملف الأصلي بيعمل ٣ تجارب: Adam، وSGD (lr=0.1) بنفس الشبكة، وAdam مع Dropout(0.3)، وبعدين جدول مقارنة. السطور الثابتة اللي هتظهر أكيد (الأرقام اللي مكانها <code>...</code> هتشوفها لما تشغّل عندك):</p>
+  <pre class="term">======================================================================
+MINI FRAMEWORK -- Phase 3 Capstone
+======================================================================
+
+----------------------------------------------------------------------
+EXPERIMENT 1: Adam Optimizer (4-layer network)
+----------------------------------------------------------------------
+Model: 4 linear layers (2-&gt;16-&gt;16-&gt;8-&gt;1)
+Total parameters: 465
+Optimizer: Adam (lr=0.01)
+Loss: Binary Cross-Entropy
+Data: 500 samples (80/20 train/test split)
+
+  Epoch   0 | Loss: ... | Train Accuracy: ...%
+  ...
+  Test Accuracy: ...% (.../100)
+
+  Sample Predictions: ...
+EXPERIMENT 2: SGD Optimizer ...   -&gt;  SGD Test Accuracy: ...%
+EXPERIMENT 3: With Dropout (p=0.3) -&gt; Dropout Test Accuracy: ...%
+COMPARISON / FRAMEWORK COMPONENTS</pre>
+
+  <h3>نفس الكلام بـ PyTorch</h3>
+  <p>البنية متطابقة: <code>Sequential</code>، <code>Linear</code>، <code>ReLU</code>، <code>Sigmoid</code>، <code>BCELoss</code>، <code>Adam</code>، <code>zero_grad</code>، <code>backward</code>، <code>step</code>، <code>train</code>، <code>eval</code>. الفرق إن PyTorch عنده autograd (مش محتاج تكتب backward لكل موديول)، وبيشتغل على GPU، ومتعمّله optimization سنين. بس العضم واحد.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
+model = nn.Sequential(
+    nn.Linear(2, 16), nn.ReLU(),
+    nn.Linear(16, 16), nn.ReLU(),
+    nn.Linear(16, 8), nn.ReLU(),
+    nn.Linear(8, 1), nn.Sigmoid(),
+)
+criterion = nn.BCELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+for epoch in range(100):
+    model.train()
+    for inputs, targets in dataloader:
+        optimizer.zero_grad()
+        predictions = model(inputs)
+        loss = criterion(predictions, targets)
+        loss.backward()                  <span class="c"># autograd بيعمل الـ backward لوحده</span>
+        optimizer.step()
+
+    model.eval()
+    with torch.no_grad():                <span class="c"># من غير ما يبني graph للـ gradients</span>
+        test_predictions = model(test_inputs)</pre></div>
+  <div class="tablewrap"><table>
+    <tr><th>بتاعك</th><th>PyTorch</th></tr>
+    <tr><td class="ltr">Module</td><td class="ltr">nn.Module</td></tr>
+    <tr><td class="ltr">Sequential(...)</td><td class="ltr">nn.Sequential(...)</td></tr>
+    <tr><td class="ltr">model.backward(criterion.backward())</td><td class="ltr">loss.backward()</td></tr>
+    <tr><td class="ltr">Adam(model.parameters(), lr)</td><td class="ltr">torch.optim.Adam(model.parameters(), lr)</td></tr>
+    <tr><td class="ltr">DataLoader(data, batch_size, shuffle)</td><td class="ltr">torch.utils.data.DataLoader</td></tr>
+    <tr><td class="ltr">model.train() / model.eval()</td><td class="ltr">model.train() / model.eval()</td></tr>
+  </table></div>
+  <p>الدرس كمان بيطلّع <code>outputs/prompt-framework-architect.md</code>: prompt بيساعدك تصمم architecture باستخدام نفس الـ abstractions دي (Module، Sequential، losses، optimizers).</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d53-exercises">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <p>اختار اتنين النهاردة. تمرين ٥ هو الأهم لأنه بيصلّح حاجة في الـ loop نفسه.</p>
+  <ol class="ex">
+    <li><b>SoftmaxCrossEntropyLoss:</b> لـ multi-class. اعمل softmax للـ predictions، احسب الـ cross-entropy، واعمل الـ backward المدموج. جرّبه على spiral dataset بـ ٣ classes.
+      <details><summary>تلميح</summary>المشتقة المدموجة بتاعة softmax + cross-entropy بالنسبة للـ logits بسيطة جدًا: <span class="ltr">p − one_hot</span>. فبلاش Sigmoid في الآخر؛ آخر طبقة Linear بـ ٣ مخارج.
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>def softmax(z):
+    m = max(z)                                  <span class="c"># اطرح الأكبر عشان الثبات العددي</span>
+    e = [math.exp(v - m) for v in z]
+    s = sum(e)
+    return [v / s for v in e]
+
+class SoftmaxCrossEntropyLoss:
+    def __call__(self, logits, target_index):
+        self.p = softmax(logits)
+        self.t = target_index
+        return -math.log(max(1e-12, self.p[target_index]))
+
+    def backward(self):                         <span class="c"># المشتقة المدموجة: p - one_hot</span>
+        return [p - (1.0 if k == self.t else 0.0) for k, p in enumerate(self.p)]</pre></div></details></li>
+    <li><b>LR scheduling:</b> ضيف <code>set_lr()</code> للـ optimizer ووصّل الـ cosine schedule من امبارح. درّب بـ warmup + cosine وقارن بالـ lr الثابت.
+      <details><summary>تلميح</summary><code>def set_lr(self, lr): self.lr = lr</code>. في الـ loop عدّ الخطوات (<code>step += 1</code>) وقبل كل <code>optimizer.step()</code> نادي <code>optimizer.set_lr(warmup_cosine_schedule(step, lr=0.01, total_steps=..., warmup_steps=...))</code>. الـ total_steps = عدد الـ epochs × عدد العينات (لأن التحديث per-sample).</details></li>
+    <li><b>save() و load():</b> احفظ كل الأوزان في JSON ورجّعها، واتأكد إن الموديل المحمّل بيطلّع نفس الـ predictions.
+      <details><summary>تلميح</summary>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>import json
+
+def save(model, path):
+    state = []
+    for m in model.modules:
+        if isinstance(m, Linear):
+            state.append({"w": m.weights, "b": m.biases})
+        elif isinstance(m, BatchNorm):
+            state.append({"gamma": m.gamma, "beta": m.beta,
+                          "rm": m.running_mean, "rv": m.running_var})
+        else:
+            state.append(None)                  <span class="c"># ReLU و Dropout ملهمش أوزان</span>
+    with open(path, "w") as f:
+        json.dump(state, f)</pre></div>
+      الـ load بيمشي بنفس الترتيب ويكتب القيم. متنساش الـ running stats بتاعة BatchNorm، ونادي <code>eval()</code> قبل المقارنة عشان الـ Dropout ميبوّظش المقارنة.</details></li>
+    <li><b>Weight decay في Adam:</b> ضيف <code>weight_decay</code> يقرّب الأوزان من الصفر كل خطوة. قارن decay=0 بـ decay=0.01.
+      <details><summary>تلميح</summary>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># جوه Adam.step() قبل ما تحسب m و v:</span>
+g = g + self.weight_decay * w     <span class="c"># L2: زوّد الوزن نفسه على الـ gradient</span>
+<span class="c"># أو (AdamW): بعد التحديث</span>
+w -= self.lr * self.weight_decay * w</pre></div>
+      الطريقتين مش نفس الحاجة مع Adam. (الـ AdamW اتشرح في درس الـ optimizers.) الأفضل متطبقش الـ decay على الـ biases.</details></li>
+    <li><b>Mini-batch بجد:</b> بدل التحديث بعد كل عينة، جمّع الـ gradients على الـ batch كله، اقسم على حجمه، وخد خطوة واحدة. شوف هل سرعة الـ convergence اتغيرت.
+      <details><summary>تلميح</summary>الـ <code>+=</code> اللي في الـ Linear هو اللي بيخلي ده ممكن. ده كمان سبب إن <code>zero_grad</code> منفصل عن <code>step</code>.
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># تمرين 5: gradient accumulation على مستوى الـ batch</span>
+for batch_inputs, batch_targets in loader:
+    optimizer.zero_grad()                       <span class="c"># مرة واحدة في أول الـ batch</span>
+    for x, t in zip(batch_inputs, batch_targets):
+        pred = model.forward(x)
+        criterion(pred, t)
+        grad = criterion.backward()
+        grad = [g / len(batch_inputs) for g in grad]   <span class="c"># اقسم على حجم الـ batch</span>
+        model.backward(grad)                    <span class="c"># الـ += جوه Linear بيجمع</span>
+    optimizer.step()                            <span class="c"># خطوة واحدة للـ batch كله</span></pre></div></details></li>
+    <li><b>إضافة مني · موديول مراقبة:</b> في الشغل الحقيقي أول سؤال لما التدريب يبوظ: «الـ activations والـ gradients شكلها إيه؟». اعمل Module شفاف (forward و backward بيرجعوا نفس اللي جالهم) بس بيسجّل min/max ونسبة الأصفار في الـ forward، والـ norm بتاع الـ gradient في الـ backward. حطه بعد كل ReLU واطبع القيم كل ١٠ epochs. ده نفس فكرة الـ forward/backward hooks في PyTorch، وهتحتاجه في درس Debugging Neural Networks.
+      <details><summary>تلميح</summary>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># تمرين إضافي: موديول مراقبة (زي forward hooks في PyTorch)</span>
+class Monitor(Module):
+    """موديول شفاف بيطبع إحصائيات الـ activations والـ gradients"""
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
+    def forward(self, x):
+        dead = sum(1 for v in x if v == 0) / len(x)   <span class="c"># نسبة الـ dead ReLUs</span>
+        self.last = (min(x), max(x), dead)
+        return x                                      <span class="c"># مش بيغيّر حاجة</span>
+
+    def backward(self, grad):
+        gnorm = sum(g * g for g in grad) ** 0.5
+        self.last_grad = gnorm
+        return grad
+
+model = Sequential(Linear(2, 16), ReLU(), Monitor("h1"),
+                   Linear(16, 1), Sigmoid())</pre></div>
+      لو نسبة الأصفار بعد ReLU قربت من 1، عندك dead ReLUs. لو الـ grad norm بيصغر جدًا كل ما ترجع لورا، عندك vanishing gradients.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d53-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: حاجات الدرس مقالهاش صريح</h2></div>
+  <div class="note"><strong>١. الـ loop ده فعليًا batch_size = 1.</strong> لو بصيت على الكود، <code>zero_grad</code> و<code>step</code> بيتنادوا جوه الـ loop بتاع العينات. يعني الـ DataLoader هنا بيعمل shuffle بس، والتحديث بيحصل بعد كل عينة. تمرين ٥ هو اللي بيحوّله لـ mini-batch حقيقي.</div>
+  <div class="note"><strong>٢. الـ BatchNorm هنا تعليمي.</strong> الـ <code>forward(x)</code> بينادي <code>forward_batch([x])</code> بعينة واحدة، ومع عينة واحدة الـ mean = العينة نفسها والـ variance = 0، فالخرج المتنرمل بيبقى أصفار. كمان الـ backward بيعامل الـ mean والـ variance كأنهم ثوابت. علشان كده تجارب الملف مش بتستخدم BatchNorm. لو عايز تستخدمه بجد لازم تمرر الـ batch كله مرة واحدة وتكتب الـ backward الكامل.</div>
+  <div class="note"><strong>٣. أخطاء بتحصل لكل الناس:</strong> نسيان <code>model.eval()</code> قبل الاختبار (Dropout شغال)، نسيان <code>zero_grad</code> (gradients بتتراكم)، إنك تعمل <code>Adam(model.parameters())</code> قبل ما تبني كل الطبقات (الـ optimizer مش هيشوف الأوزان الجديدة)، وإنك تنسى <code>reversed</code> في الـ backward.</div>
+  <div class="note ai"><strong>٤. فين ده في الـ LLMs؟</strong> أي LLM في PyTorch هو شجرة Modules: الموديل جواه Sequential/ModuleList من transformer blocks، وكل block جواه attention و MLP و LayerNorm، وكلهم بنفس الواجهة اللي بنيتها. الـ gradient accumulation (تمرين ٥) بيُستخدم في تدريب و fine-tuning الموديلات الكبيرة عشان تحاكي batch كبير على GPU صغير. و<code>parameters()</code> هو اللي بيخليك تعمل freeze لجزء من الموديل وتدرّب جزء (زي الـ LoRA): بتدي الـ optimizer قايمة باراميترز أصغر.</div>
+</section>
+
+<!-- QUIZ -->
+<section id="d53-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d53-quizbox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d53-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d53-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح الـ Module بمسؤولياته التلاتة، وليه Sequential نفسه Module</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فهمت ليه train/eval موجودين (Dropout و BatchNorm)</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> بنيت المراحل الست بإيدي وكل الـ checks عدّت</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> شغّلت main.py وقارنت Adam و SGD و Dropout</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c6" id="d53-ckquiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Module (forward / backward / parameters)</td><td><code>nn.Module</code> في PyTorch، <code>keras.Layer</code>، أي LLM هو شجرة modules</td></tr>
+    <tr><td>Sequential / composite pattern</td><td>MLP block جوه الـ transformer، <code>nn.ModuleList</code> للـ layers</td></tr>
+    <tr><td>train / eval</td><td>Dropout في التدريب، inference من غير dropout</td></tr>
+    <tr><td>zero_grad منفصل عن step</td><td>gradient accumulation في تدريب و fine-tuning الموديلات الكبيرة</td></tr>
+    <tr><td>Optimizer على قايمة باراميترز</td><td>freeze لأجزاء من الموديل، تدريب adapters زي LoRA</td></tr>
+    <tr><td>DataLoader</td><td>تغذية الداتا بـ batches و shuffle في أي pipeline تدريب</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Introduction to PyTorch. هتشوف كل اللي بنيته النهاردة جاهز ومعاه autograd و GPU، ونبدأ بمراجعة ٥ دقايق على الـ framework بتاعك.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F10-mini-framework" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/10-mini-framework</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css, f=AI.fmt;
+const $=id=>document.getElementById(id);
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// roadmap
+const rm=$('d53-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===10)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: training loop ----------
+const lc=$('d53-loop'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+const phases=['zero_grad','forward','loss','backward','step'];
+const boxes=['DataLoader','Linear','ReLU','Linear','Sigmoid','BCELoss'];
+let ph=-1,it=0,gStore=0,wVal=1,loopTimer=null;
+const gNew=0.6;
+function drawLoop(){
+  lx.clearRect(0,0,LW,LH);
+  // phase chips
+  const cw=(LW-20)/5;
+  phases.forEach((p,i)=>{const x=10+i*cw;lx.fillStyle=i===ph?css('--vec-a'):css('--soft');lx.fillRect(x+2,10,cw-4,28);
+    lx.fillStyle=i===ph?css('--paper'):css('--muted');lx.font='12px JetBrains Mono, monospace';lx.textAlign='center';lx.fillText((i+1)+'. '+p,x+cw/2,29)});
+  // module boxes
+  const bw=74,gap=(LW-20-bw*6)/5,by=80,bh=44;
+  const bx=i=>10+i*(bw+gap);
+  const active=i=>{if(ph===1)return i<=4;if(ph===2)return i===5;if(ph===3)return i>=1;return false};
+  boxes.forEach((b,i)=>{lx.strokeStyle=active(i)?(ph===3?css('--vec-b'):css('--vec-a')):css('--line');lx.lineWidth=active(i)?2.5:1.2;
+    lx.fillStyle=css('--panel');lx.fillRect(bx(i),by,bw,bh);lx.strokeRect(bx(i),by,bw,bh);
+    lx.fillStyle=css('--ink');lx.font='11.5px JetBrains Mono, monospace';lx.textAlign='center';lx.fillText(b,bx(i)+bw/2,by+bh/2+4)});
+  for(let i=0;i<5;i++){
+    if(ph===1&&i<5)AI.arrow(lx,bx(i)+bw+2,by+14,bx(i+1)-2,by+14,css('--vec-a'),2);
+    else if(ph===3&&i>=1)AI.arrow(lx,bx(i+1)-2,by+bh-12,bx(i)+bw+2,by+bh-12,css('--vec-b'),2);
+    else{lx.strokeStyle=css('--line');lx.lineWidth=1;lx.beginPath();lx.moveTo(bx(i)+bw,by+bh/2);lx.lineTo(bx(i+1),by+bh/2);lx.stroke()}
+  }
+  // optimizer box
+  const ox=LW/2-80,oy=160;lx.strokeStyle=(ph===0||ph===4)?css('--ok'):css('--line');lx.lineWidth=(ph===0||ph===4)?2.5:1.2;
+  lx.fillStyle=css('--panel');lx.fillRect(ox,oy,160,36);lx.strokeRect(ox,oy,160,36);
+  lx.fillStyle=css('--ink');lx.fillText('Optimizer (Adam/SGD)',ox+80,oy+23);
+  if(ph===4){AI.arrow(lx,ox+80,oy,ox+80,by+bh+4,css('--ok'),2)}
+  // grad bar
+  const gy=220,max=4;lx.textAlign='left';lx.fillStyle=css('--muted');lx.font='12px JetBrains Mono, monospace';
+  lx.fillText('weight_grads[i][j]',10,gy+14);
+  lx.fillStyle=css('--soft');lx.fillRect(150,gy,LW-160,20);
+  const over=gStore>gNew+1e-9;
+  lx.fillStyle=over?css('--bad'):css('--vec-b');lx.fillRect(150,gy,Math.min(1,gStore/max)*(LW-160),20);
+  lx.strokeStyle=css('--ink');lx.setLineDash([4,3]);const xr=150+gNew/max*(LW-160);lx.beginPath();lx.moveTo(xr,gy-4);lx.lineTo(xr,gy+24);lx.stroke();lx.setLineDash([]);
+  lx.fillStyle=css('--muted');lx.fillText('الصح',xr-14,gy+40);
+  lx.fillText('weight = '+f(wVal,3),10,gy+62);
+  lx.textAlign='left';
+}
+function stepLoop(){
+  ph=(ph+1)%5;if(ph===0)it++;
+  const forget=$('d53-forget').checked,v=$('d53-loopv');
+  if(ph===0){if(!forget)gStore=0;v.textContent=forget?'اتنسى zero_grad: القديم لسه متخزن':'اتمسح الـ gradient القديم';v.style.color=forget?css('--bad'):css('--ok')}
+  if(ph===1){v.textContent='الدخل ماشي في الطبقات بالترتيب';v.style.color=''}
+  if(ph===2){v.textContent='الـ loss اتحسب: رقم واحد';v.style.color=''}
+  if(ph===3){gStore+=gNew;v.textContent='الـ gradient راجع بالعكس، وبيتعمل += في المخزن';v.style.color=gStore>gNew+1e-9?css('--bad'):''}
+  if(ph===4){wVal-=0.1*gStore;v.textContent=gStore>gNew+1e-9?'الخطوة أكبر من المفروض: gradient متراكم ×'+f(gStore/gNew,1):'الوزن اتحدّث: w -= lr · grad';v.style.color=gStore>gNew+1e-9?css('--bad'):css('--ok')}
+  $('d53-it').textContent=it;$('d53-phase').textContent=phases[ph];$('d53-gval').textContent=f(gStore,2);
+  drawLoop();
+}
+$('d53-next').addEventListener('click',stepLoop);
+$('d53-auto').addEventListener('click',()=>{if(loopTimer){clearInterval(loopTimer);loopTimer=null;$('d53-auto').textContent='شغّل لوحده';return}
+  loopTimer=setInterval(()=>{if(!document.body.contains(lc)){clearInterval(loopTimer);return}stepLoop()},reduce?1400:800);$('d53-auto').textContent='وقّف'});
+$('d53-reset1').addEventListener('click',()=>{ph=-1;it=0;gStore=0;wVal=1;$('d53-it').textContent=0;$('d53-phase').textContent='—';$('d53-gval').textContent=0;$('d53-loopv').textContent='ابدأ بالخطوة الجاية';$('d53-loopv').style.color='';drawLoop()});
+drawLoop();
+
+// ---------- Lab 2: dropout ----------
+const dc=$('d53-drop'),dx=AI.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+const N=12;let seed=7;const rnd=()=>{seed=(seed*1103515245+12345)%2147483648;return seed/2147483648};
+const inp=Array.from({length:N},()=>0.3+0.6*rnd());
+let train=true,mask=[];
+function newMask(){const p=+$('d53-p').value;mask=inp.map(()=>Math.random()<p?0:1/(1-p))}
+function drawDrop(){
+  const p=+$('d53-p').value,out=train?inp.map((v,i)=>v*mask[i]):inp.slice();
+  dx.clearRect(0,0,DW,DH);
+  const base=DH-30,sc=(DH-60)/3.5,cw=(DW-20)/N;
+  dx.strokeStyle=css('--line');dx.beginPath();dx.moveTo(10,base);dx.lineTo(DW-10,base);dx.stroke();
+  for(let i=0;i<N;i++){const x=10+i*cw;
+    dx.fillStyle=css('--muted');dx.globalAlpha=.35;dx.fillRect(x+4,base-inp[i]*sc,cw/2-6,inp[i]*sc);dx.globalAlpha=1;
+    const dead=out[i]===0;dx.fillStyle=dead?css('--bad'):css('--vec-a');
+    if(dead){dx.font='bold 14px JetBrains Mono, monospace';dx.textAlign='center';dx.fillText('×',x+cw*0.75-1,base-6)}
+    else dx.fillRect(x+cw/2,base-Math.min(3.4,out[i])*sc,cw/2-6,Math.min(3.4,out[i])*sc);
+  }
+  dx.fillStyle=css('--muted');dx.font='12px JetBrains Mono, monospace';dx.textAlign='left';
+  dx.fillText(train?'train: mask × 1/(1−p)':'eval: out = in',10,18);
+  const mi=inp.reduce((a,b)=>a+b,0)/N,mo=out.reduce((a,b)=>a+b,0)/N;
+  $('d53-pv').textContent=p.toFixed(2);$('d53-min').textContent=f(mi,3);$('d53-mout').textContent=f(mo,3);
+  $('d53-scale').textContent=train?f(1/(1-p),2):'1';
+}
+function many(){const p=+$('d53-p').value;if(!train){$('d53-mavg').textContent=f(inp.reduce((a,b)=>a+b,0)/N,3);return}let s=0;
+  for(let k=0;k<1000;k++)for(let i=0;i<N;i++)s+=Math.random()<p?0:inp[i]/(1-p);$('d53-mavg').textContent=f(s/1000/N,3)}
+$('d53-p').addEventListener('input',()=>{newMask();$('d53-mavg').textContent='—';drawDrop()});
+$('d53-newmask').addEventListener('click',()=>{newMask();drawDrop()});
+$('d53-many').addEventListener('click',many);
+$('d53-mode').addEventListener('click',()=>{train=!train;$('d53-mode').textContent='الوضع: '+(train?'train':'eval');$('d53-mavg').textContent='—';drawDrop()});
+newMask();drawDrop();
+
+// ---------- Lab 3: live training ----------
+const tc=$('d53-train'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+const cc=$('d53-curve'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+let s3=42;const r3=()=>{s3=(s3*1103515245+12345)%2147483648;return s3/2147483648};
+const gauss=()=>{let u=0,v=0;while(!u)u=r3();v=r3();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)};
+const DATA=[];for(let k=0;k<300;k++){const x=-2+4*r3(),y=-2+4*r3();DATA.push([x,y,x*x+y*y<1.5?1:0])}
+function layer(i,o){const std=Math.sqrt(2/i),W=new Float64Array(i*o);for(let k=0;k<W.length;k++)W[k]=gauss()*std;
+  return {i,o,W,b:new Float64Array(o),gW:new Float64Array(i*o),gb:new Float64Array(o),mW:new Float64Array(i*o),vW:new Float64Array(i*o),mb:new Float64Array(o),vb:new Float64Array(o)}}
+let net,t3,epoch,running=false,hist=[],raf=null;
+function init3(){s3=1234;net=[layer(2,8),layer(8,8),layer(8,1)];t3=0;epoch=0;hist=[];$('d53-ep').textContent=0;$('d53-loss').textContent='—';$('d53-acc').textContent='—'}
+function fwd(x){const acts=[x];let a=x;net.forEach((L,li)=>{const z=new Float64Array(L.o);for(let o=0;o<L.o;o++){let s=L.b[o];for(let i=0;i<L.i;i++)s+=L.W[o*L.i+i]*a[i];z[o]=li<net.length-1?Math.max(0,s):1/(1+Math.exp(-Math.max(-500,Math.min(500,s))))}a=z;acts.push(z)});return acts}
+function trainSample(x,t,opt){
+  const acts=fwd(x),p=Math.min(1-1e-7,Math.max(1e-7,acts[acts.length-1][0]));
+  net.forEach(L=>{L.gW.fill(0);L.gb.fill(0)});
+  let g=new Float64Array([p-t]); // BCE + sigmoid
+  for(let li=net.length-1;li>=0;li--){const L=net[li],a=acts[li],gi=new Float64Array(L.i);
+    for(let o=0;o<L.o;o++){L.gb[o]+=g[o];for(let i=0;i<L.i;i++){L.gW[o*L.i+i]+=g[o]*a[i];gi[i]+=g[o]*L.W[o*L.i+i]}}
+    if(li>0)for(let i=0;i<L.i;i++)gi[i]*=a[i]>0?1:0;g=gi}
+  t3++;
+  net.forEach(L=>{
+    if(opt==='sgd'){for(let k=0;k<L.W.length;k++)L.W[k]-=0.1*L.gW[k];for(let k=0;k<L.o;k++)L.b[k]-=0.1*L.gb[k];return}
+    const b1=.9,b2=.999,lr=.01,c1=1-Math.pow(b1,t3),c2=1-Math.pow(b2,t3);
+    const up=(P,G,M,V,k)=>{M[k]=b1*M[k]+(1-b1)*G[k];V[k]=b2*V[k]+(1-b2)*G[k]*G[k];P[k]-=lr*(M[k]/c1)/(Math.sqrt(V[k]/c2)+1e-8)};
+    for(let k=0;k<L.W.length;k++)up(L.W,L.gW,L.mW,L.vW,k);for(let k=0;k<L.o;k++)up(L.b,L.gb,L.mb,L.vb,k)});
+  return [-(t*Math.log(p)+(1-t)*Math.log(1-p)),(p>=.5?1:0)===t];
+}
+const toPx=(x,y)=>[(x+2)/4*TW,(2-y)/4*TH];
+function drawTrain(){
+  const n=40,cwid=TW/n,chei=TH/n,A=css('--vec-a'),B=css('--vec-b');
+  tx.clearRect(0,0,TW,TH);
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++){const x=-2+(i+.5)*4/n,y=2-(j+.5)*4/n,p=fwd([x,y])[3][0];
+    tx.fillStyle=p>=.5?A:B;tx.globalAlpha=.12+.3*Math.abs(p-.5)*2;tx.fillRect(i*cwid,j*chei,cwid+.5,chei+.5)}
+  tx.globalAlpha=1;
+  tx.strokeStyle=css('--ink');tx.setLineDash([5,4]);tx.lineWidth=1.2;tx.beginPath();const [ox,oy]=toPx(0,0);tx.arc(ox,oy,Math.sqrt(1.5)/4*TW,0,7);tx.stroke();tx.setLineDash([]);
+  DATA.forEach(([x,y,l])=>{const [px,py]=toPx(x,y);tx.fillStyle=l?A:B;tx.beginPath();tx.arc(px,py,3.2,0,7);tx.fill();tx.strokeStyle=css('--panel');tx.lineWidth=1;tx.stroke()});
+  cx.clearRect(0,0,CW,CH);cx.fillStyle=css('--soft');cx.fillRect(0,0,CW,CH);
+  if(hist.length>1){const mx=Math.max(...hist,0.1);cx.strokeStyle=css('--vec-a');cx.lineWidth=2;cx.beginPath();
+    hist.forEach((v,k)=>{const x=k/(Math.max(100,hist.length)-1)*CW,y=CH-6-v/mx*(CH-14);k?cx.lineTo(x,y):cx.moveTo(x,y)});cx.stroke()}
+  cx.fillStyle=css('--muted');cx.font='11px JetBrains Mono, monospace';cx.textAlign='left';cx.fillText('loss / epoch',6,13);
+}
+function epochRun(){
+  const opt=$('d53-opt').value,idx=DATA.map((_,k)=>k);
+  for(let k=idx.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));[idx[k],idx[j]]=[idx[j],idx[k]]}
+  let L=0,c=0;idx.forEach(k=>{const [x,y,l]=DATA[k],r=trainSample([x,y],l,opt);L+=r[0];c+=r[1]?1:0});
+  epoch++;hist.push(L/DATA.length);
+  $('d53-ep').textContent=epoch;$('d53-loss').textContent=f(L/DATA.length,4);$('d53-acc').textContent=f(c/DATA.length*100,1)+'%';
+}
+function loop3(){if(!document.body.contains(tc)){running=false;return}if(!running)return;
+  epochRun();drawTrain();if(epoch>=100){running=false;$('d53-run').textContent='شغّل';return}raf=setTimeout(()=>requestAnimationFrame(loop3),reduce?200:30)}
+$('d53-run').addEventListener('click',()=>{running=!running;$('d53-run').textContent=running?'وقّف':'شغّل';if(running){if(epoch>=100)init3();loop3()}});
+$('d53-reset3').addEventListener('click',()=>{running=false;clearTimeout(raf);$('d53-run').textContent='شغّل';init3();drawTrain()});
+$('d53-opt').addEventListener('change',()=>{running=false;clearTimeout(raf);$('d53-run').textContent='شغّل';init3();drawTrain()});
+init3();drawTrain();
+
+// ---------- quiz ----------
+const Q=[
+ ['إيه المسؤوليات التلاتة بتاعة الـ Module في أي deep learning framework؟',['تحميل الداتا، تجهيزها، عمل augmentation','forward() للحساب، backward() للـ gradients، parameters() للأوزان اللي تتدرب','compile، optimize، deploy','tokenize، embed، decode'],1,'كل Module بيعمل forward للخرج، وbackward عشان يرجّع الـ gradients، وparameters عشان يطلّع الأوزان. الواجهة الموحدة دي بتخلي أي موديول يتركّب مع أي موديول.'],
+ ['ليه الـ Sequential بيمشي على الموديولز بالعكس في الـ backward؟',['العكس بياخد ميموري أقل','الـ gradients بتمشي من الـ loss لورا، فآخر طبقة بتحسب الـ gradients بتاعتها الأول','عشان يمنع الـ gradient explosion','مش فارقة، أي اتجاه شغال'],1,'الـ backward بيبدأ من الـ loss ويرجع ناحية الدخل. آخر طبقة بتستقبل gradient الـ loss الأول، تحسب الـ gradients بتاعتها، وتبعت للي قبلها.'],
+ ['ليه optimizer.zero_grad() نداء منفصل ومش بيحصل أوتوماتيك؟',['عشان تقدر تجمّع gradients على أكتر من batch قبل ما تاخد خطوة واحدة','عشان الـ debugging يبقى أسهل','عشان يوفّر ميموري','غلطة في تصميم PyTorch'],0,'فصل zero_grad عن step بيسمح بالـ gradient accumulation: تعمل backward كذا مرة وتجمع، وبعدين step. ده بيحاكي batch أكبر.'],
+ ['إيه الترتيب الصح في الـ training loop؟',['backward، forward، zero_grad، step','forward، loss، zero_grad، backward، step','forward، zero_grad، backward، loss، step','zero_grad، forward، loss، backward، step'],3,'الترتيب القياسي: zero_grad (امسح القديم)، forward (التوقعات)، loss (رقم واحد)، backward (الـ gradients)، step (حدّث). لو غلطت في الترتيب هتطلعلك bugs خفية. (في كود الدرس zero_grad جاي بعد الـ loss وقبل backward مباشرة، وده برضه سليم لأن المهم إنه قبل الـ backward.)'],
+ ['إيه دور الـ DataLoader في الـ framework؟',['بيقسم الداتا لـ batches وممكن يخلطها بين الـ epochs عشان الـ mini-batch gradient descent','بيحسب الـ loss','بيعمل init للأوزان','بيدرّب الموديل'],0,'الـ DataLoader بيحل مشكلتين عمليتين: الـ batching (مش هتقدر تحط كل الداتا في الميموري) والـ shuffling (الترتيب العشوائي بيمنع الموديل يحفظ ترتيب الداتا).'],
+ ['Dropout بـ p=0.25 في وضع train. النيورون اللي ماتصفّرش بيتضرب في كام؟',['0.25','0.75','1.33 تقريبًا (1/0.75)','مش بيتضرب في حاجة'],2,'1/(1−p) = 1/0.75 ≈ 1.33. كده القيمة المتوقعة للخرج = الدخل، فوقت الـ eval منحتاجش نعدّل أي حاجة.'],
+ ['في كود الدرس zero_grad و step جوه loop العينات. ده معناه إيه؟',['الـ batch_size الفعلي 16','التحديث بيحصل بعد كل عينة، يعني فعليًا batch size = 1 والـ DataLoader بيعمل shuffle بس','الـ gradients بتتراكم على الـ epoch كله','الـ optimizer مش بيشتغل'],1,'كل عينة: zero_grad ثم backward ثم step. تمرين ٥ بيحوّله لـ mini-batch حقيقي بإنك تعمل zero_grad مرة و step مرة لكل batch.']
+];
+AI.quiz($('d53-quizbox'),Q,5,()=>{const c=$('d53-ckquiz');c.checked=true;AI.store.set('aiefs-d53-c6','1')});
+
+AI.checklist(53,$('d53-checklist'));
+
+AI.onTheme(()=>{if(!document.body.contains(lc))return false;drawLoop();drawDrop();drawTrain()});
+})();
+</script>

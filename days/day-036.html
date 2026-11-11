@@ -1,0 +1,610 @@
+<div class="day" id="d36-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 14 · Naive Bayes</span>
+  <h1>اليوم ٣٦: فرضية غلط… وبتكسب برضه</h1>
+  <p class="lede">النهاردة هنبني <b>Naive Bayes</b>: classifier بيعدّ الكلمات ويجمع «أدلة» لكل class. هتحسب بإيدك مثال الـ spam من الدرس وتغيّر الـ smoothing وتشوف كلمة واحدة بتقتل الـ prediction، وتشوف الكمبيوتر بيقول إن الاحتمال «صفر» وهو مش صفر (underflow)، وتحط نقط بإيدك وتشوف الـ Gaussian NB بيرسم حدوده وبيفشل في الـ XOR.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>ML Pipelines</b></span>
+    <span>بعده: <b>Time Series Fundamentals</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d36-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d36-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 35) بنينا <b>ML Pipelines</b>. جاوب في دماغك الأول.</p>
+  <details><summary>١. على الـ test set بتنادي <code>fit_transform</code> ولا <code>transform</code>؟ وليه؟</summary><code>transform</code> بس. الـ <code>fit</code> بيتعلم إحصائيات (mean، median، vocabulary)، ولو اتعلمها من الـ test يبقى leakage. الـ test بيتحوّل بالمحفوظ من التدريب.</details>
+  <details><summary>٢. إيه اللي بيعمله <code>handle_unknown="ignore"</code> في الـ OneHotEncoder؟</summary>لما تيجي category جديدة في الـ production، بيطلّع vector كله أصفار بدل ما يعمل crash.</details>
+  <details><summary>٣. النهاردة هنستخدم <code>CountVectorizer</code> (بيبني vocabulary من الكلمات). المفروض يتعمله fit على إيه؟</summary>على نصوص الـ train بس، وجوه <code>Pipeline</code> مع الموديل. الـ vocabulary نفسها حاجة «اتعلمت من الداتا»، وكلمات الـ test الجديدة هتتجاهل وقت الـ transform.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ pipelines</div>
+    <div><b>20 min</b>Bayes والفرضية الساذجة وليه بتشتغل</div>
+    <div><b>20 min</b>المعامل الثلاثة: spam، underflow، Gaussian</div>
+    <div><b>20 min</b>اكتب MultinomialNB و GaussianNB</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d36-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: آلاف الـ features وداتا قليلة</h2></div>
+  <p>عايز تصنّف نصوص: إيميلات spam ولا لأ، reviews إيجابية ولا سلبية، tickets الدعم حسب النوع. عندك feature لكل كلمة (آلاف) وداتا تدريب محدودة. معظم الـ classifiers بتتخنق هنا:</p>
+  <ul class="checklist">
+    <li>• الـ <b>Logistic Regression</b> محتاجة عينات كفاية عشان تقدّر آلاف الـ weights بثقة.</li>
+    <li>• الـ <b>Decision Trees</b> بتقسم على كلمة واحدة كل مرة وبتعمل overfitting جامد.</li>
+    <li>• الـ <b>KNN</b> في 10,000 بُعد ملوش معنى، لأن كل النقط بتبقى بعيدة عن بعض تقريبًا بنفس المسافة.</li>
+  </ul>
+  <p>الـ Naive Bayes بيتعامل مع ده. بيعمل فرضية غلط رياضيًا (إن كل feature مستقلة عن التانية بشرط معرفة الـ class)، ومع ذلك غالبًا بيكسب موديلات «أذكى» في تصنيف النصوص، خصوصًا بداتا قليلة. بيتدرب في لفة واحدة على الداتا، بيستحمل ملايين الـ features، وبيطلّع احتمالات (بس غالبًا مش متظبطة، هنرجعلها).</p>
+  <div class="note"><strong>الدرس الأهم النهاردة:</strong> أحسن موديل مش هو «الأصح» نظريًا، هو اللي عنده أحسن bias-variance tradeoff للداتا اللي معاك. (فاكر Day 32؟)</div>
+</section>
+
+<!-- STATION 2: Bayes -->
+<section id="d36-bayes">
+  <div class="station-head"><span class="tag">02</span><h2>نظرية Bayes بسرعة، والفرضية الساذجة</h2></div>
+  <p>نظرية Bayes بتقلب الاحتمال الشرطي:</p>
+  <div class="formula">P(class | features) = P(features | class) · P(class) / P(features)</div>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>اسمه</th><th>معناه بالبلدي</th></tr>
+    <tr><td class="ltr">P(class | features)</td><td>Posterior</td><td>اللي عايزينه: احتمال إن الإيميل spam بعد ما شفنا كلماته</td></tr>
+    <tr><td class="ltr">P(features | class)</td><td>Likelihood</td><td>لو الإيميل spam، احتمال نشوف الكلمات دي قد إيه؟</td></tr>
+    <tr><td class="ltr">P(class)</td><td>Prior</td><td>قبل ما نقرا حاجة: الـ spam منتشر قد إيه أصلًا؟</td></tr>
+    <tr><td class="ltr">P(features)</td><td>Evidence</td><td>نفسه لكل الـ classes، فبنتجاهله واحنا بنقارن</td></tr>
+  </table></div>
+  <p>الـ class اللي ليها أعلى posterior هي اللي بتكسب.</p>
+
+  <h3>ليه «Naive»؟</h3>
+  <p>عشان تحسب <span class="ltr">P(features | class)</span> بالظبط، محتاج التوزيع المشترك لكل الكلمات مع بعض. بـ vocabulary فيها 10,000 كلمة، ده توزيع على <span class="ltr">2<sup>10,000</sup></span> توليفة. مستحيل.</p>
+  <p>الفرضية الساذجة: كل feature مستقلة <b>بشرط</b> معرفة الـ class:</p>
+  <div class="formula">P(w₁, w₂, …, wₙ | class) = P(w₁ | class) · P(w₂ | class) · … · P(wₙ | class)</div>
+  <p>بدل توزيع واحد مستحيل، بتقدّر <span class="ltr">n</span> توزيعات بسيطة، كل واحد محتاج «عدّ» بس.</p>
+  <p>تشبيه: محقق بيقرا قضية. بدل ما يفكر في كل الأدلة مع بعض وعلاقاتها، بيدّي كل دليل نقطة لوحده (البصمة +٣ للمتهم الأول، الشاهد +١…) ويجمع. هو عارف إن الأدلة مرتبطة ببعض، بس الطريقة البسيطة بتوصّل للمتهم الصح في أغلب الأحوال.</p>
+  <p>الفرضية غلط بشكل واضح: كلمتين زي <span class="ltr">"machine"</span> و<span class="ltr">"learning"</span> مش مستقلين في أي document. بس الـ classifier مش محتاج احتمالات صح؛ محتاج <b>ترتيب</b> صح: مين الـ class الأعلى.</p>
+
+  <h3>ليه بتشتغل؟ ٣ أسباب + سبب عملي</h3>
+  <ol class="ex">
+    <li><b>الترتيب أهم من الـ calibration.</b> لو قال <span class="ltr">P(spam) = 0.99999</span> والحقيقي 0.7، لسه اختار spam صح. احنا عايزين الكسبان الصح، مش الرقم الصح.</li>
+    <li><b>High bias, low variance.</b> فرضية الاستقلال قيد قوي بيمنع الـ overfitting. بداتا قليلة، موديل غلط شوية بس ثابت بيكسب موديل صح نظريًا بس متقلب.</li>
+    <li><b>التكرار بيلغي نفسه.</b> الـ features المرتبطة بتدي دليل مكرر، والـ NB بيعدّه مرتين، بس بيعدّه مرتين للـ class الصح كمان. لو "machine" و"learning" دايمًا مع بعض، الاتنين بيزقوا ناحية "tech".</li>
+    <li><b>سريع جدًا.</b> التدريب لفة واحدة بتعدّ تكرارات، والـ prediction ضرب مصفوفات. مليون document في ثواني، فتقدر تجرب features وتجارب أكتر.</li>
+  </ol>
+</section>
+
+<!-- STATION 3: worked example + Lab 1 -->
+<section id="d36-math">
+  <div class="station-head"><span class="tag">03</span><h2>الحساب خطوة بخطوة: مثال الـ spam</h2></div>
+  <p>من الدرس: classين (spam وnot-spam) وvocabulary من ٣ كلمات. داتا التدريب:</p>
+  <div class="tablewrap"><table>
+    <tr><th></th><th class="ltr">free</th><th class="ltr">money</th><th class="ltr">meeting</th><th>المجموع</th><th>Prior</th></tr>
+    <tr><td>Spam</td><td class="ltr">80</td><td class="ltr">60</td><td class="ltr">10</td><td class="ltr">150</td><td class="ltr">0.4</td></tr>
+    <tr><td>Not-spam</td><td class="ltr">5</td><td class="ltr">10</td><td class="ltr">100</td><td class="ltr">115</td><td class="ltr">0.6</td></tr>
+  </table></div>
+  <p>بـ Laplace smoothing (<span class="ltr">α = 1</span>):</p>
+  <div class="formula">P(free | spam) = (80 + 1) / (150 + 3) = 81/153 = 0.529<br>P(free | not-spam) = (5 + 1) / (115 + 3) = 6/118 = 0.051</div>
+  <p>إيميل جديد فيه: "free" مرتين، "money" مرة، "meeting" صفر:</p>
+  <div class="formula">log P(spam | email) = log 0.4 + 2·log 0.529 + 1·log 0.399 + 0·log 0.072 = −3.109<br>log P(not-spam | email) = log 0.6 + 2·log 0.051 + 1·log 0.093 + 0·log 0.856 = −8.838</div>
+  <p>الـ spam كسب بفرق كبير؛ "free" مرتين دليل قوي. ولاحظ إن "meeting" الغايبة بتساهم بـ <b>صفر</b> في الاتنين (<span class="ltr">0 · log P</span>): في الـ Multinomial NB الكلمات الغايبة ملهاش تأثير. الـ Bernoulli هو اللي بيحسب غياب الكلمة.</p>
+  <p class="note">الـ log هنا طبيعي (<span class="ltr">ln</span>). والأرقام دي «scores» قبل التطبيع، مش احتمالات حقيقية لأننا شلنا الـ evidence. عشان تحوّلها لاحتمال: <span class="ltr">exp</span> لكل واحد وقسّم على المجموع.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: آلة حاسبة للـ spam</h3>
+      <p>القيم الافتراضية هي مثال الدرس بالظبط، لازم تطلع <span class="ltr">−3.109</span> و<span class="ltr">−8.838</span>. بعدين العب:</p>
+      <ol class="ex">
+        <li>زوّد "meeting" في الإيميل وشوف الكفة بتتقلب إمتى.</li>
+        <li>نزّل عدد "meeting" في تدريب الـ spam لـ <b>0</b>، وخلّي <span class="ltr">α = 0</span>، وحط "meeting" مرة واحدة في الإيميل. كلمة واحدة قتلت كل أدلة الـ spam.</li>
+        <li>نزّل الـ prior بتاع الـ spam لـ 0.01 (spam نادر جدًا). الـ prior بيسحب القرار قد إيه؟</li>
+      </ol>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>free في الإيميل <span id="d36-fv">2</span><input type="range" id="d36-f" min="0" max="6" step="1" value="2"></label>
+        <label>money في الإيميل <span id="d36-mv">1</span><input type="range" id="d36-m" min="0" max="6" step="1" value="1"></label>
+        <label>meeting في الإيميل <span id="d36-gv">0</span><input type="range" id="d36-g" min="0" max="6" step="1" value="0"></label>
+        <label>meeting في تدريب spam <span id="d36-tv">10</span><input type="range" id="d36-t" min="0" max="60" step="1" value="10"></label>
+        <label>alpha <span id="d36-av">1</span><input type="range" id="d36-a" min="0" max="6" step="1" value="3"></label>
+        <label>P(spam) prior <span id="d36-pv">0.40</span><input type="range" id="d36-p" min="0.01" max="0.99" step="0.01" value="0.4"></label>
+      </div>
+      <div class="tablewrap"><table id="d36-ptab"></table></div>
+      <canvas id="d36-c1" width="520" height="200" aria-label="مساهمة كل كلمة في الـ log score"></canvas>
+      <div class="readout">
+        <div><small>log score spam</small><b id="d36-ls">-</b></div>
+        <div><small>log score not-spam</small><b id="d36-lh">-</b></div>
+        <div><small>P(spam | email)</small><b id="d36-post">-</b></div>
+      </div>
+      <div class="verdict" id="d36-v1"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: variants -->
+<section id="d36-variants">
+  <div class="station-head"><span class="tag">04</span><h2>تلات نسخ من الـ Naive Bayes</h2></div>
+  <p>الفرق بينهم في طريقة نمذجة <span class="ltr">P(feature | class)</span>:</p>
+  <h3>Multinomial: الـ feature عدد</h3>
+  <div class="formula">P(wordᵢ | class) = (count of wordᵢ in class + α) / (total words in class + α · vocab_size)</div>
+  <p>ده الحصان الشغّال في تصنيف النصوص (word counts أو TF-IDF).</p>
+  <h3>Gaussian: الـ feature رقم متصل</h3>
+  <div class="formula">P(xᵢ | class) = 1/√(2π·var) · exp(−(xᵢ − mean)² / (2·var))</div>
+  <p>كل class ليها mean وvariance لكل feature. بيشتغل كويس لما الـ feature فعلًا شكلها bell curve جوه كل class (هتجربه في المعمل ٣).</p>
+  <h3>Bernoulli: الـ feature موجودة ولا لأ</h3>
+  <div class="formula">P(wordᵢ | class) = (docs in class containing wordᵢ + α) / (total docs in class + 2α)</div>
+  <p>عكس الـ Multinomial، الـ Bernoulli <b>بيعاقب غياب الكلمة</b>. لو "free" عادةً موجودة في الـ spam وغايبة من الإيميل ده، ده بيتحسب دليل ضد الـ spam. (ليه <span class="ltr">2α</span>؟ عشان فيه حالتين بس: موجودة أو مش موجودة.)</p>
+  <div class="tablewrap"><table>
+    <tr><th>النسخة</th><th>نوع الـ feature</th><th>أحسن في</th><th>مثال</th></tr>
+    <tr><td>Multinomial</td><td>counts أو frequencies</td><td>تصنيف النصوص، bag-of-words</td><td>spam الإيميل، تصنيف المواضيع</td></tr>
+    <tr><td>Gaussian</td><td>قيم متصلة</td><td>داتا tabular شبه normal</td><td>Iris، داتا sensors</td></tr>
+    <tr><td>Bernoulli</td><td>binary 0/1</td><td>نصوص قصيرة، presence/absence</td><td>SMS spam</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 5: smoothing + log space + Lab 2 -->
+<section id="d36-smooth">
+  <div class="station-head"><span class="tag">05</span><h2>Laplace Smoothing و الحساب في الـ log</h2></div>
+  <h3>مشكلة الصفر</h3>
+  <p>كلمة ظهرت في الـ test وعمرها ما ظهرت في تدريب class معينة؟ من غير smoothing: <span class="ltr">P(word | class) = 0/N = 0</span>. صفر واحد مضروب في الحاصل كله بيخلّي <span class="ltr">P(class | features) = 0</span> مهما كانت باقي الأدلة. كلمة واحدة بتهد الـ prediction كله (جربتها في المعمل ١).</p>
+  <p>الـ Laplace smoothing بيزوّد عدد صغير <span class="ltr">α</span> (عادة 1) لكل كلمة:</p>
+  <div class="formula">P(wordᵢ | class) = (count(wordᵢ, class) + α) / (total_words_in_class + α · vocab_size)</div>
+  <p>بـ <span class="ltr">α = 1</span> كل كلمة بتاخد احتمال صغير. كلمة غريبة زي "discombobulate" مبقتش تقتل احتمال الـ spam. وليها تفسير Bayesian: كأنك حاطط <b>uniform Dirichlet prior</b> على توزيع الكلمات (يعني قبل ما تشوف داتا، بتفترض كل الكلمات ليها فرصة).</p>
+  <div class="tablewrap"><table>
+    <tr><th>Alpha</th><th>التأثير</th><th>إمتى</th></tr>
+    <tr><td class="ltr">0.001</td><td>smoothing تقريبًا صفر، صدّق الداتا</td><td>داتا تدريب ضخمة ومش متوقع كلمات جديدة</td></tr>
+    <tr><td class="ltr">0.1</td><td>smoothing خفيف</td><td>داتا كبيرة</td></tr>
+    <tr><td class="ltr">1.0</td><td>Laplace القياسي</td><td>نقطة البداية</td></tr>
+    <tr><td class="ltr">10.0</td><td>smoothing تقيل، التوزيعات بتتسطح</td><td>داتا صغيرة جدًا وكلمات جديدة كتير</td></tr>
+  </table></div>
+  <p><span class="ltr">α</span> hyperparameter بتظبطه (بطرق Day 34). كبيرة أوي = كل الكلمات شبه بعض والموديل نسي اللي اتعلمه.</p>
+
+  <h3>الـ Underflow: الكمبيوتر بيقول صفر وهو مش صفر</h3>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>ضرب مئات الاحتمالات (كل واحد أقل من 1) بيعمل <b>floating-point underflow</b>: الحاصل بيبقى صفر في الكمبيوتر رغم إن قيمته الحقيقية رقم موجب صغير جدًا. الـ float64 مبيقدرش يمثل أصغر من حوالي <span class="ltr">5e-324</span>.</p>
+      <p>الحل: اشتغل في الـ log. بدل ما تضرب احتمالات، اجمع الـ logs:</p>
+      <div class="formula">log P(class | x) = log P(class) + Σᵢ log P(xᵢ | class)</div>
+      <p>وده بيحوّل الـ prediction لـ dot product:</p>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>log_scores = X @ log_feature_probs.T + log_class_priors
+prediction = argmax(log_scores)</pre></div>
+      <p>ضرب مصفوفات. وده سبب سرعة الـ NB: نفس عملية linear model بـ layer واحدة.</p>
+    </div>
+    <div class="instrument">
+      <h3>معمل ٢: امتى الحاصل يبقى صفر؟</h3>
+      <p style="font-size:15px">كل كلمة احتمالها <span class="ltr">p</span>. بنضرب في JavaScript (float64، نفس numpy) كلمة ورا كلمة، وجنبه بنجمع الـ logs.</p>
+      <canvas id="d36-c2" width="520" height="240" aria-label="الضرب المباشر ضد مجموع الـ logs"></canvas>
+      <label style="display:grid;gap:2px">احتمال كل كلمة p = <b class="mono" id="d36-qv">0.01</b><input type="range" id="d36-q" min="-3" max="-0.3" step="0.05" value="-2"></label>
+      <label style="display:grid;gap:2px">عدد الكلمات في الـ document = <b class="mono" id="d36-wv">200</b><input type="range" id="d36-w" min="10" max="1000" step="10" value="200"></label>
+      <div class="readout">
+        <div><small>الضرب المباشر</small><b id="d36-prod">-</b></div>
+        <div><small>مجموع الـ logs</small><b id="d36-lsum">-</b></div>
+        <div><small>بقى صفر عند كلمة رقم</small><b id="d36-zero">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6: NB vs LR + pipeline -->
+<section id="d36-vslr">
+  <div class="station-head"><span class="tag">06</span><h2>Naive Bayes ضد Logistic Regression</h2></div>
+  <p>الاتنين linear classifiers للنصوص. الفرق في إيه اللي بيتعمله model:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الجانب</th><th>Naive Bayes</th><th>Logistic Regression</th></tr>
+    <tr><td>النوع</td><td>Generative (بيعمل model لـ <span class="ltr">P(X | Y)</span>)</td><td>Discriminative (بيعمل model لـ <span class="ltr">P(Y | X)</span> مباشرة)</td></tr>
+    <tr><td>التدريب</td><td>عدّ تكرارات</td><td>optimize لـ loss function</td></tr>
+    <tr><td>داتا قليلة</td><td>أحسن (الـ prior القوي بيساعد)</td><td>أسوأ (مفيش كفاية لتقدير الـ weights)</td></tr>
+    <tr><td>داتا كتير</td><td>أسوأ (الفرضية الغلط بتأذي)</td><td>أحسن (حد قرار مرن)</td></tr>
+    <tr><td>الـ features</td><td>بيفترض الاستقلال</td><td>بيتعامل مع الـ correlations</td></tr>
+    <tr><td>السرعة</td><td>لفة واحدة، سريع جدًا</td><td>optimization متكرر</td></tr>
+    <tr><td>الـ Calibration</td><td>احتمالات وحشة</td><td>احتمالات أحسن</td></tr>
+  </table></div>
+  <p><b>قاعدة عملية:</b> ابدأ بالـ Naive Bayes. لو عندك داتا كفاية والـ NB وقف عن التحسن، انقل للـ logistic regression. (الدرس بيشاور على ورقة Ng &amp; Jordan 2001 اللي بتوضح إن الـ NB بيقرّب من أحسن أداء ليه بداتا أقل من الـ LR.)</p>
+  <h3>الـ pipeline بتاع التصنيف</h3>
+  <div class="formula">Raw Text → Tokenize → Build Vocabulary → Count Words → Smoothing → Log Probabilities → argmax</div>
+  <p>وزي ما اتفقنا امبارح: كل ده بيتحط في <code>Pipeline</code> واحد.</p>
+</section>
+
+<!-- STATION 7: Gaussian + Lab 3 + failures -->
+<section id="d36-gauss">
+  <div class="station-head"><span class="tag">07</span><h2>Gaussian NB بعينك، وإمتى الـ NB يفشل</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>في الـ Gaussian NB كل class بتتعلم <b>mean وvariance لكل محور لوحده</b>. يعني شكل كل class «بيضاوي» على المحاور (axis-aligned)، ومش بيقدر يتميّل، لأن الميل معناه إن المحورين مرتبطين، وده عكس فرضية الاستقلال.</p>
+      <p>الـ NB بيفشل لما الفرضية تبوّظ <b>الترتيب</b> نفسه، مش بس الاحتمالات:</p>
+      <ol class="ex">
+        <li><b>Feature interactions قوية:</b> لو الـ class بتعتمد على توليفة featureين ومش على كل واحدة لوحدها (زي XOR)، الـ NB مش هيشوفها خالص: كل feature لوحدها مفيهاش دليل، والـ NB مبيعرفش يجمعهم non-linearly.</li>
+        <li><b>Features مرتبطة جدًا بأدلة متعاكسة:</b> لو A بتقول spam وB بتقول not-spam، وهما في الحقيقة دايمًا متفقين، الـ NB هيشوف تعارض مش موجود.</li>
+        <li><b>داتا تدريب ضخمة جدًا:</b> الموديلات الـ discriminative بتتعلم الحد الحقيقي وبتكسب؛ الفرضية اللي ساعدت مع الداتا القليلة بقت قيد.</li>
+      </ol>
+      <p>عمليًا الحالات دي نادرة في النصوص: الـ features كتير وكل واحدة ضعيفة، والأخطاء بتلغي بعض. بس في داتا tabular فيها features قليلة ومرتبطة جامد، جرّب logistic regression أو الأشجار الأول.</p>
+      <div class="note"><strong>جرّب:</strong> اختار class واضغط على الـ canvas تحط نقط. بعدين جرّب preset «XOR» وشوف الـ accuracy بتقع لحوالي 50%، وpreset «مايلين» وبص على البيضاوي اللي مش راضي يتميّل.</div>
+    </div>
+    <div class="instrument">
+      <h3>معمل ٣: Gaussian NB في بُعدين</h3>
+      <canvas id="d36-c3" width="520" height="400" aria-label="نقط بتتحط بالضغط ومناطق قرار الـ Gaussian NB"></canvas>
+      <div class="btns" id="d36-cls">
+        <button type="button" data-c="0" class="primary">class A</button>
+        <button type="button" data-c="1">class B</button>
+        <button type="button" data-c="2">class C</button>
+      </div>
+      <div class="btns">
+        <button type="button" data-pre="blobs">٣ مجموعات</button>
+        <button type="button" data-pre="xor">XOR</button>
+        <button type="button" data-pre="tilt">مايلين</button>
+        <button type="button" data-pre="clear">امسح</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d36-ell" checked> ورّيني 1σ و2σ</label>
+      </div>
+      <div class="readout">
+        <div><small>عدد النقط</small><b id="d36-np">0</b></div>
+        <div><small>Training accuracy</small><b id="d36-acc">-</b></div>
+      </div>
+      <div class="verdict" id="d36-v3"></div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d36-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: MultinomialNB و GaussianNB من الصفر</h2></div>
+  <p>من جوه فولدر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/14-naive-bayes/code/naive_bayes.py</pre></div>
+  <p>الملف محتاج <code>numpy</code> بس. اكتبه بإيدك في <code>my_nb.py</code>، مش copy-paste.</p>
+
+  <h3>خطوة ١: MultinomialNB.fit = عدّ + smoothing + log</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+class MultinomialNB:
+    def __init__(self, alpha=1.0):
+        self.alpha = alpha
+        self.classes_ = None
+        self.class_log_prior_ = None
+        self.feature_log_prob_ = None
+
+    def fit(self, X, y):
+        if np.any(X &lt; 0):                                 <span class="c"># counts مينفعش تبقى سالبة</span>
+            raise ValueError("MultinomialNB requires non-negative feature values")
+        self.classes_ = np.unique(y)
+        n_classes, n_features = len(self.classes_), X.shape[1]
+        self.class_log_prior_ = np.zeros(n_classes)
+        self.feature_log_prob_ = np.zeros((n_classes, n_features))
+
+        for i, c in enumerate(self.classes_):
+            X_c = X[y == c]
+            self.class_log_prior_[i] = np.log(X_c.shape[0] / X.shape[0])   <span class="c"># log prior</span>
+            counts = X_c.sum(axis=0) + self.alpha                         <span class="c"># عدّ كل كلمة + α</span>
+            self.feature_log_prob_[i] = np.log(counts / counts.sum())     <span class="c"># المقام = total + α·V</span>
+        return self</pre></div>
+  <p>لاحظ: <code>counts.sum()</code> بعد إضافة α لكل كلمة = <span class="ltr">total + α · vocab_size</span>، نفس المعادلة بالظبط.</p>
+
+  <h3>خطوة ٢: الـ prediction = ضرب مصفوفات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def predict_log_proba(self, X):
+        return X @ self.feature_log_prob_.T + self.class_log_prior_   <span class="c"># (n,d)@(d,k) + (k,)</span>
+
+    def predict_proba(self, X):
+        log_proba = self.predict_log_proba(X)
+        log_proba -= log_proba.max(axis=1, keepdims=True)   <span class="c"># اطرح الأكبر قبل exp عشان مايحصلش underflow</span>
+        proba = np.exp(log_proba)
+        proba /= proba.sum(axis=1, keepdims=True)           <span class="c"># طبّع لمجموع 1</span>
+        return proba
+
+    def predict(self, X):
+        return self.classes_[np.argmax(self.predict_log_proba(X), axis=1)]
+
+    def score(self, X, y):
+        return np.mean(self.predict(X) == y)</pre></div>
+  <p>سطر <code>log_proba -= max</code> مهم: لو الـ scores كانت <span class="ltr">−1000</span> و<span class="ltr">−1002</span>، الـ <code>exp</code> المباشر هيطلع صفرين. لما تطرح الأكبر بتبقى <span class="ltr">0</span> و<span class="ltr">−2</span>، والنسبة بينهم ما اتغيرتش. اسمها <b>log-sum-exp trick</b> وهتقابلها في الـ softmax بتاع كل LLM.</p>
+
+  <h3>خطوة ٣: GaussianNB</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class GaussianNB:
+    def __init__(self, var_smoothing=1e-9):
+        self.var_smoothing = var_smoothing
+
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        k, d = len(self.classes_), X.shape[1]
+        self.means_, self.vars_, self.priors_ = np.zeros((k, d)), np.zeros((k, d)), np.zeros(k)
+        for i, c in enumerate(self.classes_):
+            X_c = X[y == c]
+            self.means_[i] = X_c.mean(axis=0)
+            self.vars_[i] = X_c.var(axis=0) + self.var_smoothing   <span class="c"># متقسمش على صفر</span>
+            self.priors_[i] = X_c.shape[0] / X.shape[0]
+        return self
+
+    def _log_likelihood(self, X):
+        log_proba = np.zeros((X.shape[0], len(self.classes_)))
+        for i in range(len(self.classes_)):
+            diff = X - self.means_[i]
+            log_pdf = -0.5 * np.log(2 * np.pi * self.vars_[i]) - 0.5 * diff**2 / self.vars_[i]
+            log_proba[:, i] = log_pdf.sum(axis=1) + np.log(self.priors_[i])   <span class="c"># جمع = ضرب مستقل</span>
+        return log_proba
+
+    def predict(self, X):
+        return self.classes_[np.argmax(self._log_likelihood(X), axis=1)]</pre></div>
+  <p>والأصل فيه كمان <code>predict_proba</code> و<code>score</code> بنفس طريقة الـ Multinomial.</p>
+
+  <h3>خطوة ٤: الداتا الصناعية والـ demos</h3>
+  <p><code>make_text_data</code> بتعمل ٢٠٠ «كلمة»: الكلمات 0–39 كتير في tech وقليل في sports، 80–119 العكس، و40–79 متوسطة في الاتنين (noise). كل document هو counts من Poisson بالأوزان دي. و<code>make_continuous_data</code> بتعمل داتا شبه Iris: ٣ classes و٤ features متوزعة Gaussian.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الـ demo</th><th>بيوريك إيه</th></tr>
+    <tr><td class="ltr">demo_multinomial</td><td>train/test accuracy، احتمالات أول ٥ عينات، ومقارنة α من 0.01 لـ 10</td></tr>
+    <tr><td class="ltr">demo_gaussian</td><td>الـ means والـ vars والـ priors اللي اتعلمها لكل class</td></tr>
+    <tr><td class="ltr">demo_comparison</td><td>Multinomial ضد Gaussian على نصوص وعلى داتا متصلة</td></tr>
+    <tr><td class="ltr">demo_training_size</td><td>الـ accuracy من 20 لـ 1600 عينة تدريب</td></tr>
+    <tr><td class="ltr">demo_confusion_matrix</td><td>confusion matrix وprecision/recall/F1 لكل class</td></tr>
+  </table></div>
+  <p>أنا ما شغّلتش الملف هنا، فالأرقام سجّلها بنفسك. اللي <b>لازم</b> تلاحظه: في <code>demo_training_size</code> الـ NB بيوصل لـ accuracy كويسة بعدد عينات صغير جدًا، ودي ميزته الأساسية. وفي <code>demo_comparison</code> الأصل بيزق الداتا المتصلة لفوق الصفر (<code>- min + 0.01</code>) عشان الـ Multinomial يقبلها.</p>
+
+  <h3>خطوة ٥: sklearn (اللي هتستخدمه فعلًا)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.naive_bayes import GaussianNB, MultinomialNB, BernoulliNB
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.pipeline import Pipeline
+from sklearn.calibration import CalibratedClassifierCV
+
+<span class="c"># نصوص: عدّ الكلمات + Multinomial</span>
+text_clf = Pipeline([
+    ("vectorizer", CountVectorizer()),
+    ("classifier", MultinomialNB(alpha=1.0)),
+])
+text_clf.fit(train_texts, train_labels)
+print(text_clf.score(test_texts, test_labels))
+
+<span class="c"># TF-IDF + Multinomial: من أقوى الـ baselines</span>
+tfidf_clf = Pipeline([("tfidf", TfidfVectorizer()), ("classifier", MultinomialNB(alpha=0.1))])
+
+<span class="c"># نصوص قصيرة (SMS، tweets): Bernoulli مع binary=True</span>
+short_clf = Pipeline([("vectorizer", CountVectorizer(binary=True)), ("classifier", BernoulliNB(alpha=1.0))])
+
+<span class="c"># محتاج احتمالات تعتمد عليها؟ calibrate</span>
+calibrated_nb = CalibratedClassifierCV(MultinomialNB(), cv=5, method="sigmoid")
+calibrated_nb.fit(X_train, y_train)
+proba = calibrated_nb.predict_proba(X_test)</pre></div>
+  <ul class="checklist">
+    <li>• <b>TF-IDF:</b> الـ counts الخام بتدي كل كلمة نفس الوزن، و"the" و"is" موجودين في كل class ومفيهمش معلومة. الـ TF-IDF بيقلل وزن الكلمات الشائعة ويرفع النادرة المميِّزة. قيمه موجبة فبتشتغل مع الـ Multinomial، والتوليفة دي غالبًا بتكسب موديلات أعقد على داتا أقل من 10,000 عينة.</li>
+    <li>• <b>Bernoulli للنص القصير:</b> الـ counts في الرسايل القصيرة noisy، فالـ presence/absence أوثق. <code>binary=True</code> بيحوّل الـ counts لـ 0/1؛ من غيره الـ Bernoulli بيشوف counts مش متصمم ليها.</li>
+    <li>• <b>Calibration:</b> لما الـ NB يقول 0.95، الحقيقي ممكن يكون 0.7. <code>CalibratedClassifierCV</code> بيدرّب logistic regression فوق scores الـ NB بالـ CV، والاحتمالات بتقرب من الحقيقة. مهم لو هتحط threshold أو تجمع مع موديلات تانية.</li>
+  </ul>
+
+  <h3>Gotchas</h3>
+  <ol class="ex">
+    <li><b>قيم سالبة:</b> الـ MultinomialNB محتاج قيم موجبة. features standardized؟ استخدم GaussianNB أو حرّك القيم لفوق.</li>
+    <li><b>Variance صفر:</b> لو feature كلها نفس القيمة جوه class، الـ Gaussian بيقسم على صفر. علشان كده الـ <span class="ltr">1e-9</span>.</li>
+    <li><b>Class imbalance:</b> لو 99% مش spam، الـ prior 0.99 ممكن يغطي على الأدلة. تقدر تحدد الـ priors بإيدك (<code>class_prior</code> في sklearn).</li>
+    <li><b>Feature scaling:</b> الاتنين مش محتاجينه (counts، أو إحصائيات لكل feature). ميزة على الـ LR والـ SVM.</li>
+  </ol>
+</section>
+
+<!-- EXERCISES -->
+<section id="d36-exercises">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>تجربة الـ smoothing:</b> درّب بـ α = 0.01، 0.1، 1، 10، 100 وارسم accuracy ضد α. الذروة فين؟ وليه α الكبيرة جدًا بتأذي؟
+      <details><summary>تلميح</summary>استخدم <code>make_text_data</code> و<code>np.logspace(-2, 2, 5)</code>. α كبيرة جدًا بتغرق الـ counts الحقيقية: لو كلمة اتكررت 5 مرات وα=100، كل الكلمات بقت شبه بعض والموديل بيقرب من «اختار حسب الـ prior».</details></li>
+    <li><b>اختبار الاستقلال:</b> خد كلمتين مرتبطين ("machine" و"learning") واحسب <span class="ltr">P(w₁|c)·P(w₂|c)</span> وقارنه بـ <span class="ltr">P(w₁ AND w₂|c)</span>. الفرضية غلط قد إيه؟ وده أثّر على الـ accuracy؟
+      <details><summary>تلميح</summary>احسبها على مستوى الـ documents (نسبة الـ docs اللي فيها الكلمة). غالبًا الحقيقي أكبر بكتير من الحاصل، يعني الفرضية غلط جامد، ومع ذلك الـ accuracy ممكن متتأثرش. ده بالظبط «الترتيب أهم من الـ calibration».</details></li>
+    <li><b>BernoulliNB من الصفر:</b> حوّل الـ counts لـ binary وقارن بالـ Multinomial. إمتى الـ Bernoulli يكسب؟
+      <details><summary>تلميح</summary><code>p = ((X_c &gt; 0).sum(0) + α) / (n_c + 2α)</code>. والـ score: <code>X_bin @ log(p).T + (1 - X_bin) @ log(1 - p).T + log_prior</code>. الجزء التاني ده هو «عقاب الغياب». غالبًا بيكسب في الـ documents القصيرة.</details></li>
+    <li><b>NB ضد LR:</b> درّب الاتنين من 100 لـ 10,000 عينة وارسم الـ accuracy. LR بيعدّي NB إمتى؟
+      <details><summary>تلميح</summary><code>make_text_data(n_samples=12000)</code> وخلّي آخر 2000 test ثابت. استخدم <code>sklearn.linear_model.LogisticRegression(max_iter=1000)</code>. توقع إن NB يبدأ أعلى وLR يلحقه ويعديه مع الداتا الكبيرة (أو يقربوا من بعض لو الداتا الصناعية قريبة من فرضية NB، لأن الكلمات هنا متولدة مستقلة فعلًا).</details></li>
+    <li><b>Spam filter كامل:</b> tokenize، vocabulary، bag-of-words، MultinomialNB، وقيّم بـ precision وrecall مش accuracy بس. ليه؟
+      <details><summary>الإجابة</summary>لو 90% من الإيميلات مش spam، موديل بيقول «مش spam» دايمًا accuracy بتاعته 90% وهو عديم الفايدة. والغلطتين مش بنفس التمن: إيميل شغل مهم راح الـ spam (false positive) أوحش بكتير من spam عدّى. فبتبص على precision الـ spam بالذات (Day 31).</details></li>
+    <li><b>إضافة مني · router رخيص قبل الـ LLM:</b> اكتب ٣٠ رسالة دعم قصيرة بإيدك بـ ٣ labels (<code>billing</code>، <code>bug</code>، <code>other</code>). درّب <code>TfidfVectorizer + MultinomialNB</code> في Pipeline. لكل رسالة جديدة: لو أعلى احتمال (بعد <code>CalibratedClassifierCV</code>) فوق threshold، وجّهها للفريق مباشرة؛ لو أقل، ابعتها لـ LLM يصنّفها. احسب كام رسالة وفّرت عليها نداء LLM.
+      <details><summary>تلميح</summary>مع ٣٠ رسالة بس استخدم <code>cv=3</code> في الـ calibration. جرّب thresholds 0.6 و0.8 و0.9 وشوف الـ tradeoff بين التوفير والغلط. ده pattern حقيقي: موديل صغير سريع قدام موديل كبير غالي.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d36-extra">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس مقالوش صريح</h2></div>
+  <h3>الـ NB هو linear model متنكر</h3>
+  <p>في حالة classين، القرار هو: هل <span class="ltr">log P(spam|x) − log P(ham|x) &gt; 0</span>؟ ده بيطلع <span class="ltr">Σ xᵢ · log(P(wᵢ|spam)/P(wᵢ|ham)) + log(prior ratio)</span>: مجموع موزون للـ counts + bias، يعني نفس شكل الـ logistic regression بالظبط. الفرق الوحيد إن الـ weights جاية من «عدّ» مش من optimization. علشان كده الجدول قال «الاتنين linear classifiers».</p>
+  <h3>أخطاء بتحصل كتير</h3>
+  <ul class="checklist">
+    <li>• GaussianNB على word counts: الـ counts مش bell curve (أغلبها أصفار). استخدم Multinomial.</li>
+    <li>• تستخدم <code>predict_proba</code> بتاع NB كأنه ثقة حقيقية وتحط عليه threshold من غير calibration.</li>
+    <li>• تبني الـ vocabulary على كل النصوص قبل التقسيم (leakage امبارح بالظبط). خلي <code>CountVectorizer</code> جوه الـ Pipeline.</li>
+    <li>• تنسى إن الـ Multinomial بيتجاهل الكلمات الغايبة، وتستغرب ليه الإيميل القصير «ملوش رأي».</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li>• <b>الـ log-probs:</b> احتمال جملة كاملة من LLM = حاصل ضرب احتمالات الـ tokens، وفي الممارسة بيتحسب <b>مجموع log-probs</b> لنفس سبب المعمل ٢. لما API يرجعلك <code>logprobs</code>، ده هو.</li>
+    <li>• <b>log-sum-exp</b> اللي في <code>predict_proba</code> هو نفس الحيلة اللي جوه الـ softmax في كل Transformer.</li>
+    <li>• <b>Smoothing:</b> الـ n-gram language models القديمة كانت بتواجه نفس مشكلة «الكلمة اللي ما اتشافتش = صفر» وبتحلها بنفس فكرة الـ Laplace.</li>
+    <li>• <b>Routers وguardrails:</b> classifier صغير (NB أو LR على TF-IDF) قدام الـ LLM بيفلتر spam أو بيوجّه الطلب، بتكلفة شبه صفر (تمرين ٦).</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d36-quiz">
+  <div class="station-head"><span class="tag">11</span><h2>كويز</h2></div>
+  <div class="quiz" id="d36-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d36-done">
+  <div class="station-head"><span class="tag">12</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح prior وlikelihood وposterior وليه بنتجاهل الـ evidence</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> حسبت مثال الـ spam (−3.109 و−8.838) وشفت كلمة واحدة بتقتل الـ prediction من غير smoothing</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> فهمت الـ underflow وليه بنشتغل في الـ log</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> أقدر أختار بين Multinomial وGaussian وBernoulli، وشفت الـ NB بيفشل في الـ XOR</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> كتبت MultinomialNB وGaussianNB بإيدي وشغّلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c7" id="d36-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Bayes theorem</td><td>تحديث الثقة مع الأدلة، spam filters، تشخيص</td></tr>
+    <tr><td>Multinomial NB + TF-IDF</td><td>baseline قوي لأي تصنيف نصوص، routers قبل الـ LLM</td></tr>
+    <tr><td>Laplace smoothing</td><td>n-gram language models، أي تقدير من counts</td></tr>
+    <tr><td>Log-space</td><td>logprobs بتاعة الـ LLMs، perplexity</td></tr>
+    <tr><td>log-sum-exp</td><td>الـ softmax في كل neural network</td></tr>
+    <tr><td>Generative vs discriminative</td><td>الفرق بين نماذج بتولّد الداتا ونماذج بتفصل بس</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Time Series Fundamentals. داتا مترتبة بالوقت، وكل اللي اتعلمناه عن الـ random split والـ CV هيتقلب: هنتعلم الـ walk-forward validation وlag features والـ stationarity. وهنبدأ بتسخين ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F14-naive-bayes" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/14-naive-bayes</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d36-root');
+
+const rm=$('d36-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===14)s.className='now';rm.appendChild(s)}
+
+function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+// ================= Lab 1: spam calculator =================
+const ALPHAS=[0,0.01,0.1,1,5,10,100],WORDS=['free','money','meeting'];
+const c1=$('d36-c1'),x1=AI.setupCanvas(c1),W1=+c1.dataset.w,H1=+c1.dataset.h;
+let L1=null;
+function calc1(){
+  const e=[+$('d36-f').value,+$('d36-m').value,+$('d36-g').value];
+  const tMeet=+$('d36-t').value,a=ALPHAS[+$('d36-a').value],ps=+$('d36-p').value;
+  $('d36-fv').textContent=e[0];$('d36-mv').textContent=e[1];$('d36-gv').textContent=e[2];$('d36-tv').textContent=tMeet;$('d36-av').textContent=a;$('d36-pv').textContent=ps.toFixed(2);
+  const spam=[80,60,tMeet],ham=[5,10,100],V=3;
+  const prob=cnt=>{const tot=cnt.reduce((s,v)=>s+v,0);return cnt.map(c=>(c+a)/(tot+a*V))};
+  const Ps=prob(spam),Ph=prob(ham);
+  const contrib=(P,prior)=>[['prior',Math.log(prior)]].concat(WORDS.map((w,i)=>[w+'×'+e[i],e[i]===0?0:e[i]*Math.log(P[i])]));
+  const cs=contrib(Ps,ps),ch=contrib(Ph,1-ps);
+  const ls=cs.reduce((s,v)=>s+v[1],0),lh=ch.reduce((s,v)=>s+v[1],0);
+  const t=$('d36-ptab');
+  t.innerHTML='<tr><th></th>'+WORDS.map(w=>'<th class="ltr">P('+w+'|c)</th>').join('')+'</tr>'+
+    '<tr><td>spam</td>'+Ps.map(p=>'<td class="ltr">'+(p===0?'<b style="color:var(--bad)">0</b>':f(p,3))+'</td>').join('')+'</tr>'+
+    '<tr><td>not-spam</td>'+Ph.map(p=>'<td class="ltr">'+f(p,3)+'</td>').join('')+'</tr>';
+  const show=v=>v===-Infinity?'−∞':f(v,3);
+  $('d36-ls').textContent=show(ls);$('d36-lh').textContent=show(lh);
+  let post;if(ls===-Infinity&&lh===-Infinity)post=NaN;else if(ls===-Infinity)post=0;else if(lh===-Infinity)post=1;else{const m=Math.max(ls,lh);post=Math.exp(ls-m)/(Math.exp(ls-m)+Math.exp(lh-m))}
+  $('d36-post').textContent=isNaN(post)?'?':(post>0.9999?'>0.9999':f(post,4));
+  const v=$('d36-v1');
+  if(ls===-Infinity){v.textContent='log(0) = −∞: كلمة واحدة ما اتشافتش في تدريب الـ spam قتلت كل أدلته. زوّد alpha.';v.style.color=css('--bad')}
+  else if(ls>lh){v.textContent='Spam كسب بفرق '+f(ls-lh,2)+' في الـ log score';v.style.color=css('--bad')}
+  else{v.textContent='Not-spam كسب بفرق '+f(lh-ls,2)+' في الـ log score';v.style.color=css('--ok')}
+  L1={cs,ch};draw1();
+}
+function draw1(){
+  if(!L1)return;const {cs,ch}=L1;x1.clearRect(0,0,W1,H1);
+  const fin=r=>r.reduce((s,v)=>s+(isFinite(v[1])?-v[1]:0),0),hasInf=cs.concat(ch).some(v=>!isFinite(v[1]));
+  const span=Math.max(fin(cs),fin(ch),1)*(hasInf?1.35:1);
+  const PL=80,PR=10,sc=(W1-PL-PR)/span;
+  const cols=[css('--muted'),css('--vec-a'),css('--vec-b'),css('--ok')];
+  [['spam',cs,45],['not-spam',ch,125]].forEach(([lab,arr,yy])=>{
+    x1.fillStyle=css('--ink');x1.font='bold 13px JetBrains Mono, monospace';x1.textAlign='left';x1.fillText(lab,4,yy+5);
+    let x=W1-PR;
+    arr.forEach(([n,v],i)=>{
+      if(v===0)return;
+      if(!isFinite(v)){x1.fillStyle=css('--bad');x1.fillRect(PL,yy-14,x-PL,28);x1.fillStyle=css('--paper');x1.font='bold 12px JetBrains Mono, monospace';x1.textAlign='center';x1.fillText(n+' = log(0) = −∞',(PL+x)/2,yy+4);x=PL;return}
+      const w=-v*sc;x1.fillStyle=cols[i];x1.fillRect(x-w,yy-14,w-1,28);
+      if(w>34){x1.fillStyle=css('--paper');x1.font='11px JetBrains Mono, monospace';x1.textAlign='center';x1.fillText(n,x-w/2,yy-1);x1.fillText(f(v,2),x-w/2,yy+11)}
+      x-=w;
+    });
+  });
+  x1.textAlign='right';x1.fillStyle=css('--muted');x1.font='12px "IBM Plex Sans Arabic", sans-serif';
+  x1.fillText('كل شريحة = مساهمة سالبة في الـ log score. الأقصر = الأحسن',W1-6,H1-10);x1.textAlign='left';
+}
+['d36-f','d36-m','d36-g','d36-t','d36-a','d36-p'].forEach(id=>$(id).addEventListener('input',calc1));
+calc1();
+
+// ================= Lab 2: underflow =================
+const c2=$('d36-c2'),x2=AI.setupCanvas(c2),W2=+c2.dataset.w,H2=+c2.dataset.h;
+function draw2(){
+  const p=Math.pow(10,+$('d36-q').value),n=+$('d36-w').value;
+  $('d36-qv').textContent=p<0.01?p.toExponential(1):f(p,3);$('d36-wv').textContent=n;
+  let prod=1,zeroAt=null;const pts=[];
+  for(let i=1;i<=n;i++){prod*=p;if(prod===0&&zeroAt===null)zeroAt=i;pts.push(prod)}
+  const lsum=n*Math.log(p);
+  $('d36-prod').textContent=prod===0?'0.0':prod.toExponential(3);
+  $('d36-lsum').textContent=f(lsum,2);
+  $('d36-zero').textContent=zeroAt===null?'لسه ما حصلش':zeroAt;
+  $('d36-prod').style.color=prod===0?css('--bad'):'';
+  x2.clearRect(0,0,W2,H2);
+  const PL=52,PB=28,PT=10,PR=10,minL=Math.min(-340,n*Math.log10(p)*1.05);
+  const xp=i=>PL+(i/n)*(W2-PL-PR),yp=l=>PT+(l/minL)*(H2-PB-PT);
+  x2.strokeStyle=css('--grid');x2.lineWidth=1;x2.fillStyle=css('--muted');x2.font='11px JetBrains Mono, monospace';x2.textAlign='right';
+  const stepL=minL<-1500?-500:-100;
+  for(let l=0;l>=minL;l+=stepL){const y=yp(l);x2.beginPath();x2.moveTo(PL,y);x2.lineTo(W2-PR,y);x2.stroke();x2.fillText('1e'+l,PL-4,y+4)}
+  x2.strokeStyle=css('--bad');x2.setLineDash([5,4]);x2.beginPath();x2.moveTo(PL,yp(-323.3));x2.lineTo(W2-PR,yp(-323.3));x2.stroke();x2.setLineDash([]);
+  x2.textAlign='left';x2.fillStyle=css('--bad');x2.fillText('float64 floor ≈ 5e-324',PL+6,yp(-323.3)-5);
+  // true log line
+  x2.strokeStyle=css('--vec-a');x2.lineWidth=2.5;x2.beginPath();x2.moveTo(xp(0),yp(0));x2.lineTo(xp(n),yp(n*Math.log10(p)));x2.stroke();
+  // direct product
+  x2.strokeStyle=css('--vec-b');x2.lineWidth=2.5;x2.beginPath();
+  pts.forEach((v,i)=>{const l=v===0?null:Math.log10(v);const X=xp(i+1),Y=l===null?H2-PB:yp(l);i?x2.lineTo(X,Y):x2.moveTo(X,Y)});x2.stroke();
+  if(zeroAt){x2.fillStyle=css('--bad');x2.beginPath();x2.arc(xp(zeroAt),H2-PB,5,0,7);x2.fill()}
+  x2.fillStyle=css('--vec-a');x2.fillText('log-sum (صح)',W2-110,PT+14);x2.fillStyle=css('--vec-b');x2.fillText('الضرب المباشر',W2-110,PT+30);
+  x2.fillStyle=css('--muted');x2.textAlign='center';x2.fillText('عدد الكلمات',(PL+W2)/2,H2-8);x2.textAlign='left';
+}
+['d36-q','d36-w'].forEach(id=>$(id).addEventListener('input',draw2));
+draw2();
+
+// ================= Lab 3: Gaussian NB 2D =================
+const c3=$('d36-c3'),x3=AI.setupCanvas(c3),W3=+c3.dataset.w,H3=+c3.dataset.h;
+let P3=[],cur=0,M3=null;
+const COL=()=>[css('--vec-a'),css('--vec-b'),css('--ok')];
+const toW=(x,y)=>[(x/W3)*10-5,((H3-y)/H3)*8-4],toP=(a,b)=>[(a+5)/10*W3,H3-(b+4)/8*H3];
+function fitNB(){
+  const cls=[0,1,2].filter(c=>P3.some(p=>p[2]===c));
+  if(cls.length<2){M3=null;return}
+  M3=cls.map(c=>{const pts=P3.filter(p=>p[2]===c),n=pts.length;
+    const m=[0,1].map(j=>pts.reduce((s,p)=>s+p[j],0)/n);
+    const v=[0,1].map(j=>pts.reduce((s,p)=>s+(p[j]-m[j])**2,0)/n+0.02);
+    return {c,m,v,lp:Math.log(n/P3.length)}});
+}
+function predNB(a,b){let best=-Infinity,bc=-1;M3.forEach(k=>{const s=k.lp-0.5*(Math.log(2*Math.PI*k.v[0])+(a-k.m[0])**2/k.v[0])-0.5*(Math.log(2*Math.PI*k.v[1])+(b-k.m[1])**2/k.v[1]);if(s>best){best=s;bc=k.c}});return bc}
+function draw3(){
+  fitNB();x3.clearRect(0,0,W3,H3);const C=COL();
+  if(M3){const S=8;for(let x=0;x<W3;x+=S)for(let y=0;y<H3;y+=S){const [a,b]=toW(x+S/2,y+S/2);x3.fillStyle=C[predNB(a,b)];x3.globalAlpha=.16;x3.fillRect(x,y,S,S)}x3.globalAlpha=1;
+    if($('d36-ell').checked)M3.forEach(k=>{[1,2].forEach(z=>{const [cx,cy]=toP(k.m[0],k.m[1]);x3.strokeStyle=C[k.c];x3.lineWidth=z===1?2:1;x3.setLineDash(z===1?[]:[5,4]);x3.beginPath();x3.ellipse(cx,cy,z*Math.sqrt(k.v[0])*W3/10,z*Math.sqrt(k.v[1])*H3/8,0,0,7);x3.stroke()});x3.setLineDash([]);
+      const [cx,cy]=toP(k.m[0],k.m[1]);x3.fillStyle=C[k.c];x3.font='bold 16px JetBrains Mono, monospace';x3.textAlign='center';x3.fillText('+',cx,cy+5);x3.textAlign='left'})}
+  // axes
+  const [ox,oy]=toP(0,0);x3.strokeStyle=css('--muted');x3.lineWidth=1;x3.beginPath();x3.moveTo(0,oy);x3.lineTo(W3,oy);x3.moveTo(ox,0);x3.lineTo(ox,H3);x3.stroke();
+  let ok=0;P3.forEach(p=>{const [x,y]=toP(p[0],p[1]);x3.fillStyle=C[p[2]];x3.beginPath();x3.arc(x,y,5,0,7);x3.fill();x3.strokeStyle=css('--paper');x3.lineWidth=1.2;x3.stroke();if(M3&&predNB(p[0],p[1])===p[2])ok++});
+  $('d36-np').textContent=P3.length;
+  const acc=M3?ok/P3.length:null;$('d36-acc').textContent=acc===null?'-':f(acc,2);
+  const v=$('d36-v3');
+  if(!M3){v.textContent='حط نقط من classين على الأقل.';v.style.color=css('--muted')}
+  else if(acc<0.65){v.textContent='الـ NB تايه: كل محور لوحده مفيهوش دليل. ده الـ interaction اللي مبيشوفهوش.';v.style.color=css('--bad')}
+  else{v.textContent='البيضاوي دايمًا موازي للمحاور: ده شكل فرضية الاستقلال.';v.style.color=css('--ok')}
+}
+c3.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(c3,e);const [a,b]=toW(x,y);P3.push([a,b,cur]);draw3()});
+$('d36-cls').querySelectorAll('[data-c]').forEach(b=>b.addEventListener('click',()=>{cur=+b.dataset.c;$('d36-cls').querySelectorAll('[data-c]').forEach(o=>o.classList.toggle('primary',o===b))}));
+function preset(k){
+  const r=rng(k==='xor'?3:k==='tilt'?9:5);P3=[];
+  if(k==='blobs'){[[-2.5,1.5,0],[2,1.8,1],[0,-2,2]].forEach(([mx,my,c],i)=>{for(let j=0;j<25;j++)P3.push([mx+gauss(r)*(i===1?1.1:0.7),my+gauss(r)*(i===2?0.5:0.8),c])})}
+  if(k==='xor'){[[-2,2,0],[2,-2,0],[2,2,1],[-2,-2,1]].forEach(([mx,my,c])=>{for(let j=0;j<20;j++)P3.push([mx+gauss(r)*0.7,my+gauss(r)*0.7,c])})}
+  if(k==='tilt'){for(let j=0;j<40;j++){const t=gauss(r)*1.8,s=gauss(r)*0.3;P3.push([t*0.8-s*0.6-0.6,t*0.6+s*0.8+0.6,0]);const t2=gauss(r)*1.8,s2=gauss(r)*0.3;P3.push([t2*0.8-s2*0.6+0.6,t2*0.6+s2*0.8-0.6,1])}}
+  draw3();
+}
+document.querySelectorAll('#d36-gauss [data-pre]').forEach(b=>b.addEventListener('click',()=>preset(b.dataset.pre)));
+$('d36-ell').addEventListener('change',draw3);
+preset('blobs');
+
+// ================= Quiz =================
+const Q=[
+ ['إيه هي الفرضية «الساذجة» في الـ Naive Bayes؟',['الـ prior بتاع كل class متساوي','كل الـ features مستقلة عن بعض بشرط معرفة الـ class','الداتا متوزعة normal','الموديل ملوش بارامترات يتعلمها'],1,'الـ NB بيفترض كل feature مستقلة عن التانية بمعلومية الـ class. ده غلط رياضيًا (machine وlearning بيظهروا مع بعض) بس بيشتغل كويس عمليًا.'],
+ ['الـ Laplace smoothing بيمنع إيه في الـ Naive Bayes؟',['احتمالات صفر لكلمات ما ظهرتش في class معينة وقت التدريب','الـ class imbalance','بطء التدريب على داتا كتير الأبعاد','الـ overfitting على داتا كبيرة'],0,'من غير smoothing، كلمة ما ظهرتش في إيميلات الـ spam هتاخد P = 0، والحاصل كله يبقى صفر مهما كانت باقي الأدلة. الـ Laplace بيزود 1 لكل count.'],
+ ['الفرضية الساذجة غلط بوضوح في النصوص. ليه الـ NB لسه بيصنّف كويس؟',['بيشتغل بس مع vocabulary صغيرة جدًا الاستقلال فيها صح','بيشتغل بس لما الـ features مستقلة فعلًا','الـ implementations الحديثة بتشيل الفرضية في السر','التصنيف محتاج ترتيب صح للـ classes مش احتمالات دقيقة، والفرضية بتعمل أخطاء ثابتة بتأثر على كل الـ classes بشكل متشابه'],3,'الـ NB محتاج يرتّب الـ classes صح. الفرضية high bias وlow variance فبتبقى ثابتة مع داتا قليلة، والـ features المرتبطة بتعدّ الدليل مرتين للـ class الصح كمان.'],
+ ['إمتى تستخدم Multinomial NB وإمتى Gaussian NB؟',['Multinomial للـ counts/frequencies بتاعة الكلمات، Gaussian للـ features المتصلة','هما نفس الحاجة، استخدم الأسرع','Multinomial للداتا الـ binary، Gaussian للـ multi-class','Multinomial للـ regression، Gaussian للـ classification'],0,'الـ Multinomial بيعمل model لـ counts (تكرار الكلمات). الـ Gaussian بيفترض الـ features normal، مناسب للقياسات وقراءات الـ sensors.'],
+ ['إيميل فيه free مرتين وmoney مرة. في الـ Multinomial NB بالـ log، الـ spam score بيتحسب إزاي؟',['P(spam) * P(free|spam) * P(money|spam)','log P(spam) * 2 * log P(free|spam)','log P(spam) + log P(free|spam) + log P(money|spam)','log P(spam) + 2 * log P(free|spam) + 1 * log P(money|spam)'],3,'الـ Multinomial بيضرب احتمال الكلمة مرفوع لعدد مرات ظهورها، وفي الـ log الأس بيبقى ضرب: log P(spam) + 2·log P(free|spam) + 1·log P(money|spam).'],
+ ['(سؤال مني) ضربت 400 احتمال كل واحد 0.01 في numpy والناتج طلع 0.0. ده معناه إيه؟',['الاحتمال الحقيقي صفر فعلًا','حصل underflow؛ القيمة الحقيقية 1e-800 والـ float64 مش قادر يمثلها، والحل نجمع الـ logs','لازم نستخدم float32','الـ smoothing ناقص'],1,'0.01 أس 400 = 1e-800، أصغر بكتير من أصغر float64 (حوالي 5e-324). مجموع الـ logs = 400 × ln(0.01) ≈ −1842 ومفيهوش أي مشكلة. شفتها في المعمل ٢.'],
+ ['(سؤال مني) داتا فيها class بتعتمد على إن x وy ليهم نفس الإشارة (XOR). الـ Gaussian NB هيعمل إيه؟',['هيتعلمها بسهولة','هيقرب من التخمين العشوائي لأن كل feature لوحدها مفيهاش دليل','هيعمل overfitting','هيحتاج smoothing أكتر'],1,'الـ means والـ variances لكل محور متشابهة في الـ classين، فالـ NB مش لاقي فرق. الـ interaction بين الـ features هي بالظبط اللي فرضية الاستقلال بتمسحها.']
+];
+AI.quiz($('d36-quizBox'),Q,5,()=>{const c=$('d36-ckq');if(!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(36,root);
+
+AI.onTheme(()=>{if(!document.body.contains(c1))return false;draw1();draw2();draw3()});
+})();
+</script>

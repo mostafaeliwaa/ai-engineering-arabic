@@ -1,0 +1,676 @@
+<div class="day" id="d37-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 15 · Time Series Fundamentals</span>
+  <h1>اليوم ٣٧: لما الترتيب يبقى هو المعلومة</h1>
+  <p class="lede">النهاردة الداتا مترتبة بالوقت، وكل عاداتك من الـ ML العادي (random split، الـ K-fold) هتبقى <b>غلط</b>. هتفكك series لـ trend وseasonality وnoise وتعمل differencing بإيدك، وتشوف الـ ACF بيكشف الأسبوع جوه الداتا، وتقارن الـ random split بالـ <b>walk-forward</b> وبـ baselines بسيطة لازم تكسبها، وبعدين تبني AR model من الصفر.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Naive Bayes</b></span>
+    <span>بعده: <b>Anomaly Detection</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d37-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d37-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 36) اتعلمنا <b>Naive Bayes</b>. جاوب في دماغك الأول.</p>
+  <details><summary>١. ليه بنجمع الـ logs بدل ما نضرب الاحتمالات؟</summary>عشان ضرب مئات الأرقام الصغيرة بيعمل underflow ويطلع صفر في الكمبيوتر. مجموع الـ logs بيدّي نفس الترتيب من غير المشكلة دي، وكمان بيحوّل الـ prediction لضرب مصفوفات.</details>
+  <details><summary>٢. إيه اللي بيحصل من غير Laplace smoothing لو كلمة ما ظهرتش في تدريب class؟</summary>احتمالها صفر، والـ log بتاعه −∞، فالـ class دي بتخسر مهما كانت باقي الأدلة.</details>
+  <details><summary>٣. الـ NB بيفترض إن الـ features مستقلة. النهاردة الداتا بالعكس تمامًا: قيمة النهاردة بتعتمد على امبارح. تفتكر ده هيغير إيه في طريقة التقسيم والتقييم؟</summary>مينفعش نخلط العينات عشوائيًا، لأن ده بيدّي الموديل «المستقبل» وهو بيتدرب. هنقسم بالوقت: ندرّب على الماضي ونختبر على اللي بعده. ده موضوع النهاردة.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ Naive Bayes</div>
+    <div><b>20 min</b>i.i.d. والمكونات والـ stationarity والـ ACF</div>
+    <div><b>20 min</b>المعامل الثلاثة</div>
+    <div><b>10 min</b>Lag features والـ walk-forward والـ ARIMA</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d37-iid">
+  <div class="station-head"><span class="tag">01</span><h2>ليه الـ Time Series مختلفة؟</h2></div>
+  <p>عندك داتا مترتبة بالوقت: مبيعات يومية، حرارة كل ساعة، استهلاك CPU كل دقيقة، أسعار أسبوعية. وعايز تتوقع اللي جاي. لو مسكت الأدوات العادية (random split، cross-validation، feature matrix) <b>كل خطوة هتبقى غلط</b>.</p>
+  <p>الـ ML العادي بيفترض <b>i.i.d.</b>: كل عينة مستقلة عن التانية (independent) وكلهم من نفس التوزيع (identically distributed). الـ time series بتكسر الاتنين:</p>
+  <ul class="checklist">
+    <li>• <b>مش مستقلة:</b> سعر السهم النهاردة بيعتمد على امبارح، ومبيعات الأسبوع ده مرتبطة باللي فات.</li>
+    <li>• <b>مش نفس التوزيع:</b> التوزيع بيتحرك مع الوقت. مبيعات ديسمبر شكلها غير مارس.</li>
+  </ul>
+  <p>في الـ ML العادي العينات زي كوتشينة: اخلطها ومفيش حاجة اتغيرت. في الـ time series العينات زي مشاهد فيلم: لو خلطتها الحكاية ضاعت. الترتيب هو المعلومة.</p>
+  <div class="note"><strong>الرقم اللي يخوّف:</strong> الدرس بيقول إن موديل بيجيب 95% بالـ random CV ممكن يجيب 55% لما يتقيّم صح بالوقت. الفرق ده مش تفصيلة؛ ده الفرق بين موديل شغال على الورق وموديل شغال في الـ production.</div>
+</section>
+
+<!-- STATION 2: components + stationarity + Lab 1 -->
+<section id="d37-comp">
+  <div class="station-head"><span class="tag">02</span><h2>المكونات والـ Stationarity والـ Differencing</h2></div>
+  <p>أي time series عبارة عن تلات حاجات فوق بعض:</p>
+  <div class="tablewrap"><table>
+    <tr><th>المكون</th><th>معناه</th><th>مثال</th></tr>
+    <tr><td>Trend</td><td>الاتجاه على المدى الطويل: طالع، نازل، ثابت</td><td>إيرادات بتزيد 10% في السنة</td></tr>
+    <tr><td>Seasonality</td><td>نمط بيتكرر على فترات ثابتة: يومي، أسبوعي، سنوي</td><td>المبيعات بتعلى في ديسمبر، التكييف في يوليو</td></tr>
+    <tr><td>Residual</td><td>اللي فاضل بعد ما تشيل الاتنين</td><td>لو شكله white noise، يبقى التفكيك مسك الإشارة</td></tr>
+  </table></div>
+
+  <h3>الـ Stationarity</h3>
+  <p>الـ series تبقى <b>stationary</b> لو خصائصها الإحصائية (المتوسط، الـ variance، الـ autocorrelation) مش بتتغير مع الوقت. معظم طرق الـ forecasting بتفترضها.</p>
+  <p><b>ليه مهمة؟</b> لو المتوسط بيزحف، موديل اتعلم متوسط يناير هيغلط بشكل منتظم في فبراير. تشبيه: بتتعلم تصطاد في نهر مستواه ثابت، وفجأة المية بتعلى كل يوم.</p>
+  <p><b>تكشفها إزاي؟</b> احسب rolling mean وrolling std على شبابيك. لو بيتحركوا، الـ series مش stationary. الكود كمان بيقارن النص الأول بالنص التاني: لو الفرق في المتوسط أكبر من نص الانحراف المعياري، أو نسبة الـ variance أكبر من 2، يبقى مش stationary.</p>
+  <p><b>تصلحها إزاي؟</b> <b>Differencing</b>: بدل ما تعمل model للقيمة نفسها، اعمل model للتغيير:</p>
+  <div class="formula">diff[t] = value[t] − value[t−1]</div>
+  <div class="formula">Original: [100, 102, 106, 112, 120]<br>1st diff: [2, 4, 6, 8]      ← لسه طالع<br>2nd diff: [2, 2, 2]         ← ثابت = stationary</div>
+  <p>الأصل كان فيه trend تربيعي: الـ diff الأول حوّله لـ linear، والتاني سطّحه. عمليًا نادرًا ما تحتاج أكتر من مرتين.</p>
+  <p><b>الاختبار الرسمي:</b> الـ Augmented Dickey-Fuller (ADF). الـ null hypothesis إن الـ series <b>مش</b> stationary، فلو الـ p-value أقل من 0.05 بترفضها وتقول stationary. الدرس مش بيبنيه من الصفر (محتاج جداول توزيعات)، والـ rolling statistics بتديك فحص عملي.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ركّب series وفككها</h3>
+      <p>الـ series هنا نفس معادلة <code>make_synthetic_series</code>: <span class="ltr">50 + trend·t + A·sin(2πt/P) + noise</span>. الخط الغامق = rolling mean (شباك 50)، والشريط = ±1 rolling std.</p>
+      <ol class="ex">
+        <li>صفّر الـ trend والـ seasonality: الـ series stationary؟</li>
+        <li>رجّع الـ trend: المتوسط بيزحف. دوس <b>diff 1</b> وشوفه بيتسطح.</li>
+        <li>فعّل trend تربيعي: الـ diff 1 لسه مايل؟ جرّب diff 2.</li>
+        <li>لاحظ: كل diff زيادة بيزوّد الـ noise (الشريط بيعرض). علشان كده تقف أول ما توصل.</li>
+      </ol>
+    </div>
+    <div class="instrument">
+      <canvas id="d37-c1" width="520" height="300" aria-label="series مع rolling mean و rolling std"></canvas>
+      <div class="mrow">
+        <label>trend slope <span id="d37-trv">0.05</span><input type="range" id="d37-tr" min="0" max="0.2" step="0.01" value="0.05"></label>
+        <label>season A <span id="d37-av">10</span><input type="range" id="d37-a" min="0" max="20" step="1" value="10"></label>
+        <label>period P <span id="d37-pv">30</span><input type="range" id="d37-p" min="5" max="60" step="1" value="30"></label>
+        <label>noise σ <span id="d37-nv">2</span><input type="range" id="d37-n" min="0" max="6" step="0.5" value="2"></label>
+      </div>
+      <div class="btns" id="d37-dbtns">
+        <button type="button" data-d="0" class="primary">الأصل</button>
+        <button type="button" data-d="1">diff 1</button>
+        <button type="button" data-d="2">diff 2</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d37-quad"> trend تربيعي</label>
+      </div>
+      <div class="readout">
+        <div><small>mean shift</small><b id="d37-ms">-</b></div>
+        <div><small>0.5 × std</small><b id="d37-hs">-</b></div>
+        <div><small>var ratio</small><b id="d37-vr">-</b></div>
+      </div>
+      <div class="verdict" id="d37-v1"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: ACF + Lab 2 -->
+<section id="d37-acf">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Autocorrelation: الـ series فاكرة قد إيه؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ autocorrelation بتقيس قيمة اللحظة <span class="ltr">t</span> مرتبطة قد إيه بالقيمة من <span class="ltr">k</span> خطوة فاتت. لما ترسمها لكل <span class="ltr">k</span> بتاخد الـ <b>ACF</b>.</p>
+      <div class="formula">ACF[k] = mean((x[t] − x̄)(x[t+k] − x̄)) / var(x)</div>
+      <p>الـ ACF بيقولك:</p>
+      <ul class="checklist">
+        <li>• <b>الذاكرة قد إيه:</b> لو نزل لصفر بعد lag 5، القيم الأقدم من 5 خطوات ملهاش لازمة.</li>
+        <li>• <b>فيه seasonality؟</b> لو فيه spike عند lag 12 في داتا شهرية، فيه نمط سنوي.</li>
+        <li>• <b>كام lag feature تعمل:</b> لحد ما الـ ACF يبقى مهمل.</li>
+      </ul>
+      <p>الـ <b>PACF</b> (Partial ACF) بيشيل الارتباط غير المباشر. لو النهاردة مرتبط بأول امبارح بس عشان الاتنين مرتبطين بامبارح، الـ PACF عند lag 3 هيبقى صفر والـ ACF لأ. تشبيه: إنك شبه جدك ممكن يكون كله «عن طريق» أبوك.</p>
+      <div class="note"><strong>جرّب:</strong> الـ series هنا زي <code>make_seasonal_series</code>: trend + موجة أسبوعية + موجة شهرية + noise. الخطوط المتقطعة = حد الأهمية <span class="ltr">±1.96/√n</span>. الأعمدة المضلّلة = مضاعفات الـ period. اقفل «diff الأول» وشوف الـ trend بيخلّي كل الـ lags عالية وبيخبّي النمط.</div>
+    </div>
+    <div class="instrument">
+      <h3>معمل ٢: الـ ACF بيكشف الأسبوع</h3>
+      <canvas id="d37-c2" width="520" height="280" aria-label="أعمدة الـ ACF لكل lag"></canvas>
+      <label style="display:grid;gap:2px">الـ period الأسبوعي = <b class="mono" id="d37-sp">7</b><input type="range" id="d37-s" min="4" max="12" step="1" value="7"></label>
+      <label style="display:grid;gap:2px">قوة الموجة الأسبوعية = <b class="mono" id="d37-wv">5</b><input type="range" id="d37-w" min="0" max="10" step="0.5" value="5"></label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d37-dif" checked> diff الأول (زي الكود)</label>
+      <div class="readout">
+        <div><small>أعلى lag (غير 0)</small><b id="d37-top">-</b></div>
+        <div><small>حد الأهمية</small><b id="d37-thr">-</b></div>
+        <div><small>lags مهمة من 1..30</small><b id="d37-sig">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: lag features -->
+<section id="d37-lags">
+  <div class="station-head"><span class="tag">04</span><h2>Lag Features: حوّل الـ time series لـ supervised learning</h2></div>
+  <p>الموديلات العادية محتاجة <span class="ltr">X</span> و<span class="ltr">y</span>، والـ time series عمود واحد. الكوبري هو الـ <b>lag features</b>. خد <span class="ltr">[10, 12, 14, 13, 15]</span> واعمل lag-1 وlag-2:</p>
+  <div class="tablewrap"><table>
+    <tr><th class="ltr">lag_2</th><th class="ltr">lag_1</th><th class="ltr">target</th></tr>
+    <tr><td class="ltr">10</td><td class="ltr">12</td><td class="ltr">14</td></tr>
+    <tr><td class="ltr">12</td><td class="ltr">14</td><td class="ltr">13</td></tr>
+    <tr><td class="ltr">14</td><td class="ltr">13</td><td class="ltr">15</td></tr>
+  </table></div>
+  <p>دلوقتي ده regression عادي، وأي موديل (linear، random forest، gradient boosting) يقدر يتوقع الـ target من الـ lags.</p>
+  <h3>features تانية تقدر تعملها</h3>
+  <ul class="checklist">
+    <li>• <b>Rolling statistics:</b> mean، std، min، max لآخر k قيم.</li>
+    <li>• <b>Calendar:</b> يوم الأسبوع، الشهر، is_holiday، is_weekend.</li>
+    <li>• <b>Differenced values:</b> التغيير من الخطوة اللي فاتت.</li>
+    <li>• <b>Expanding statistics:</b> المتوسط التراكمي، المجموع التراكمي.</li>
+    <li>• <b>Ratios:</b> القيمة الحالية ÷ الـ rolling mean (بعيدة عن المعتاد قد إيه).</li>
+    <li>• <b>Interactions:</b> <span class="ltr">lag_1 × day_of_week</span> (الزخم بيختلف حسب اليوم).</li>
+  </ul>
+  <p><b>كام lag؟</b> من الـ ACF. لو مهم لحد lag 10، استخدم 10 على الأقل. لو فيه seasonality أسبوعية، ضيف lag 7 (وممكن 14). lags أكتر = تاريخ أكتر بس features أكتر وخطر overfitting أكبر.</p>
+  <div class="note"><strong>فخ محاذاة الـ target:</strong> الـ target هو القيمة عند <span class="ltr">t</span>، وكل الـ features لازم تكون من <span class="ltr">t−1</span> أو أقدم. لو دخلت قيمة <span class="ltr">t</span> كـ feature بالغلط، عندك predictor مثالي… وموديل ملوش أي لازمة. ده أشهر bug في الـ time series feature engineering.</div>
+</section>
+
+<!-- STATION 5: walk-forward + Lab 3 -->
+<section id="d37-wf">
+  <div class="station-head"><span class="tag">05</span><h2>Walk-Forward Validation (أهم حاجة النهاردة)</h2></div>
+  <p>الـ K-fold العادي بيوزّع العينات عشوائيًا، فبيحط المستقبل في التدريب. الـ walk-forward:</p>
+  <ol class="ex">
+    <li>درّب على الداتا لحد <span class="ltr">t</span>.</li>
+    <li>توقّع <span class="ltr">t+1</span> (أو <span class="ltr">t+1 … t+k</span>).</li>
+    <li>زق الشباك لقدام.</li>
+    <li>كرر.</li>
+  </ol>
+  <p>كل test fold بييجي <b>بعد</b> كل داتا التدريب. مفيش تسريب من المستقبل، والتقدير صادق لأداء الـ deployment.</p>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>التدريب</th><th>إمتى</th></tr>
+    <tr><td>Expanding window</td><td>كل التاريخ، والشباك بيكبر</td><td>لو الداتا القديمة لسه مفيدة</td></tr>
+    <tr><td>Sliding window</td><td>طول ثابت، والشباك بيتزحلق</td><td>لو الدنيا بتتغير والقديم بيأذي</td></tr>
+  </table></div>
+
+  <h3>Baselines لازم تكسبها</h3>
+  <ol class="ex">
+    <li><b>Last value (persistence):</b> بكرة = النهاردة. صعب تكسبه في series كتير.</li>
+    <li><b>Seasonal naive:</b> النهاردة = نفس اليوم من الأسبوع (أو السنة) اللي فات.</li>
+    <li><b>Moving average:</b> متوسط آخر k قيم. بيهدّي الـ noise بس مبيلحقش التغييرات المفاجئة.</li>
+  </ol>
+  <p>لو الموديل الشيك خسر قدام الـ seasonal naive يبقى عندك bug: غالبًا leakage في الـ features، أو طريقة تقييم غلط، أو الـ series عشوائية فعلًا.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: walk-forward ضد random split</h3>
+      <p>الـ series هي <code>make_synthetic_series(n=400)</code> (trend + موجة كل 30 خطوة + noise)، والموديل <b>AR(k)</b> = linear regression على k lags، محسوب بالـ least squares هنا في المتصفح. الشرايط تحت الرسمة = الـ folds: أزرق train، برتقالي test.</p>
+      <ul class="checklist">
+        <li>• قارن الـ MSE بتاع الـ random split بالـ walk-forward. الكود الأصلي بيطبع نفس المقارنة وبيقول إن الفرق ممكن يطلع صغير لو الـ series قريبة من stationary. هنا انت شايف الرقم الحقيقي.</li>
+        <li>• بص على الـ baselines: الـ AR بيكسبهم؟</li>
+        <li>• فعّل الـ forecast: AR بيتوقع ٢٠ خطوة recursive (كل توقع بيدخل input للي بعده). لاحظ الخطأ بيتراكم.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d37-c3" width="520" height="320" aria-label="series و folds الـ walk-forward و forecast"></canvas>
+      <label style="display:grid;gap:2px">عدد الـ lags k = <b class="mono" id="d37-kv">10</b><input type="range" id="d37-k" min="1" max="30" step="1" value="10"></label>
+      <div class="btns">
+        <button type="button" id="d37-exp" class="primary">Expanding</button>
+        <button type="button" id="d37-sld">Sliding (100)</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d37-fc"> forecast recursive ٢٠ خطوة من t=250</label>
+      </div>
+      <div class="readout">
+        <div><small>Random 80/20 MSE</small><b id="d37-rm">-</b></div>
+        <div><small>Walk-forward MSE</small><b id="d37-wm">-</b></div>
+        <div><small>Persistence MSE</small><b id="d37-pm">-</b></div>
+        <div><small>Seasonal naive (30) MSE</small><b id="d37-sm">-</b></div>
+        <div><small>Forecast MAE (20)</small><b id="d37-fm">-</b></div>
+      </div>
+      <div class="verdict" id="d37-v3"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6: ARIMA etc -->
+<section id="d37-arima">
+  <div class="station-head"><span class="tag">06</span><h2>ARIMA بالحدس، وتختار إيه إمتى</h2></div>
+  <p><b>ARIMA(p, d, q)</b> هو الموديل الكلاسيكي، وكل حرف فيه مكوّن:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحرف</th><th>الاسم</th><th>بيعمل إيه</th></tr>
+    <tr><td class="ltr">AR(p)</td><td>Autoregressive</td><td>يتوقع من آخر p قيم (ده الـ SimpleAR بتاعنا)</td></tr>
+    <tr><td class="ltr">I(d)</td><td>Integrated</td><td>d مرات differencing عشان يبقى stationary</td></tr>
+    <tr><td class="ltr">MA(q)</td><td>Moving Average</td><td>يتوقع من آخر q أخطاء توقع</td></tr>
+  </table></div>
+  <p>بتختار p وd وq من تحليل الـ ACF/PACF أو بحث أوتوماتيك (auto-ARIMA). الدرس مش بيبنيه من الصفر لأنه محتاج numerical optimization؛ المهم تفهم كل جزء عشان تقرا نتايجه.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from statsmodels.tsa.arima.model import ARIMA
+
+model = ARIMA(train_series, order=(5, 1, 2))   <span class="c"># p=5 lags، d=1 diff، q=2 errors</span>
+fitted = model.fit()
+forecast = fitted.forecast(steps=30)</pre></div>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>أحسن في</th><th>Seasonality</th><th>Features خارجية</th></tr>
+    <tr><td>Lag features + ML</td><td>Tabular فيها features خارجية كتير</td><td>بالـ calendar features</td><td>أيوه</td></tr>
+    <tr><td>ARIMA</td><td>series واحدة، مدى قصير</td><td>نسخة SARIMA</td><td>لأ (ARIMAX محدود)</td></tr>
+    <tr><td>Exponential smoothing</td><td>trend + seasonality بسيطة</td><td>أيوه (Holt-Winters)</td><td>لأ</td></tr>
+    <tr><td>Prophet</td><td>forecasting للبيزنس والأجازات</td><td>أيوه (Fourier terms)</td><td>محدود</td></tr>
+    <tr><td>Neural nets (LSTM، Transformer)</td><td>sequences طويلة، series كتير</td><td>بيتعلمها</td><td>أيوه</td></tr>
+  </table></div>
+  <p>للمشاكل العملية: <b>lag features + gradient boosting</b> أقوى نقطة بداية. بيتعامل مع الـ features الخارجية، مش محتاج stationarity، وسهل تعمله debug.</p>
+
+  <h3>التوقع لكذا خطوة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الاستراتيجية</th><th>إزاي</th><th>الميزة / العيب</th></tr>
+    <tr><td>Recursive</td><td>توقّع خطوة، واستخدمها input للي بعدها</td><td>بسيطة، بس الأخطاء بتتراكم (شفتها في المعمل ٣)</td></tr>
+    <tr><td>Direct</td><td>موديل منفصل لكل horizon (Model-1 لـ t+1، Model-5 لـ t+5)</td><td>مفيش تراكم، بس كل موديل عينات أقل ومش بيشاركوا معلومة</td></tr>
+    <tr><td>Multi-output</td><td>موديل واحد يطلّع كل الـ horizons</td><td>بيشارك المعلومة، بس محتاج موديل يدعم multiple outputs</td></tr>
+  </table></div>
+  <p>ابدأ بالـ recursive للمدى القصير (1–5 خطوات) والـ direct للأطول.</p>
+
+  <h3>المقاييس</h3>
+  <ul class="checklist">
+    <li>• <b>MAE:</b> متوسط <span class="ltr">|y_true − y_pred|</span>، بنفس وحدة الداتا: «في المتوسط غلطانين 3.2 درجة».</li>
+    <li>• <b>RMSE:</b> جذر متوسط مربع الخطأ؛ بيعاقب الأخطاء الكبيرة أكتر. لما غلطة كبيرة أوحش من غلطات صغيرة كتير.</li>
+    <li>• <b>MAPE:</b> متوسط <span class="ltr">|error / true| × 100</span>؛ مستقل عن الـ scale ويقارن series مختلفة، بس مش معرّف لو فيه قيم حقيقية = صفر (الكود بيشيلها).</li>
+    <li>• <b>قارن دايمًا بالـ baseline</b>، زي ما عملنا في المعمل ٣.</li>
+  </ul>
+
+  <h3>الأخطاء المشهورة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الغلطة</th><th>ليه بتحصل</th><th>الحل</th></tr>
+    <tr><td>Random train/test split</td><td>عادة من الـ ML العادي</td><td>walk-forward أو temporal split</td></tr>
+    <tr><td>Features من المستقبل</td><td>قيمة t دخلت بالغلط</td><td>راجع محاذاة كل feature</td></tr>
+    <tr><td>Overfitting على الـ seasonality</td><td>الموديل حفظ التقويم</td><td>سيب دورة كاملة في الـ test</td></tr>
+    <tr><td>تجاهل تغيّر الـ scale</td><td>الإيرادات اتضاعفت والنمط زي ما هو</td><td>اعمل model للنسبة المئوية</td></tr>
+    <tr><td>lags كتير أوي</td><td>«تاريخ أكتر أحسن»</td><td>استخدم الـ ACF</td></tr>
+    <tr><td>من غير differencing</td><td>«الموديل هيفهم لوحده»</td><td>الأشجار بتتعامل مع الـ trend؛ الـ linear محتاج stationarity</td></tr>
+  </table></div>
+
+  <h3>نصايح عملية</h3>
+  <ol class="ex">
+    <li><b>ارسم الأول.</b> نظرة ٣٠ ثانية على الـ series (trend، seasonality، outliers، structural breaks) بتقولك أكتر من ساعة تحليل أوتوماتيك.</li>
+    <li><b>Difference الأول، model بعدين.</b> لو فيه trend واضح اعمل diff قبل الـ lags. وقف أول ما توصل stationary؛ كل diff زيادة بيضيف noise وبيرمي معلومة المستوى.</li>
+    <li><b>سيب دورة seasonal كاملة على الأقل في الـ test</b>: أسبوع كامل لو weekly، شهر لو monthly.</li>
+    <li><b>راقب في الـ production.</b> الموديلات دي بتبوظ مع الوقت. تابع الأخطاء rolling، ولما تعلى اعمل retrain على الداتا الجديدة.</li>
+    <li><b>خلي بالك من الـ regime changes.</b> موديل اتدرب قبل الجايحة مش هيتوقع اللي بعدها. ضيف مؤشرات للتغييرات المعروفة أو استخدم sliding window.</li>
+    <li><b>Log للـ series المايلة.</b> الإيرادات والأسعار والـ counts غالبًا right-skewed. الـ log بيثبّت الـ variance ويحوّل الأنماط الضربية لجمع. توقّع في الـ log وبعدين <span class="ltr">exp</span>.</li>
+  </ol>
+</section>
+
+<!-- CODE -->
+<section id="d37-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: lags و walk-forward و AR من الصفر</h2></div>
+  <p>من جوه فولدر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/15-time-series/code/time_series.py</pre></div>
+  <p>الملف محتاج <code>numpy</code> بس. اكتبه بإيدك في <code>my_ts.py</code>.</p>
+
+  <h3>خطوة ١: series صناعية</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def make_synthetic_series(n=500, seed=42):
+    rng = np.random.RandomState(seed)
+    t = np.arange(n, dtype=float)
+    trend = 0.05 * t                                  <span class="c"># طالع ببطء</span>
+    seasonality = 10 * np.sin(2 * np.pi * t / 30)     <span class="c"># موجة كل 30 خطوة</span>
+    noise = rng.normal(0, 2, n)
+    return 50 + trend + seasonality + noise
+
+def make_seasonal_series(n=365, period=7, seed=42):
+    rng = np.random.RandomState(seed)
+    t = np.arange(n, dtype=float)
+    return (100 + 0.02 * t
+            + 5 * np.sin(2 * np.pi * t / period)      <span class="c"># أسبوعي</span>
+            + 3 * np.sin(2 * np.pi * t / 30)          <span class="c"># شهري</span>
+            + rng.normal(0, 1.5, n))</pre></div>
+
+  <h3>خطوة ٢: differencing وفحص الـ stationarity</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def difference(series, order=1):
+    result = series.copy()
+    for _ in range(order):
+        result = result[1:] - result[:-1]            <span class="c"># كل خطوة بتقصّر الـ series بواحد</span>
+    return result
+
+def check_stationarity(series, window=50):
+    n = len(series)
+    rolling_mean, rolling_std = np.zeros(n), np.zeros(n)
+    for i in range(n):
+        seg = series[max(0, i - window + 1):i + 1]   <span class="c"># آخر window قيمة لحد i</span>
+        rolling_mean[i] = seg.mean()
+        rolling_std[i] = seg.std() if len(seg) &gt; 1 else 0.0
+
+    h = n // 2
+    mean_shift = abs(series[:h].mean() - series[h:].mean())
+    v1, v2 = series[:h].var(), series[h:].var()
+    var_ratio = max(v1, v2) / max(min(v1, v2), 1e-10)
+    is_stationary = mean_shift &lt; 0.5 * series.std() and var_ratio &lt; 2.0
+    return rolling_mean, rolling_std, is_stationary</pre></div>
+
+  <h3>خطوة ٣: الـ ACF</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def autocorrelation(series, max_lag=20):
+    n, mean, var = len(series), series.mean(), series.var()
+    acf = np.zeros(max_lag + 1)
+    for k in range(max_lag + 1):
+        if k &gt;= n:
+            break
+        cov = np.mean((series[:n - k] - mean) * (series[k:] - mean))   <span class="c"># الـ series مع نسخة متزحلقة k</span>
+        acf[k] = cov / var if var &gt; 0 else 0.0
+    return acf</pre></div>
+  <p>في <code>demo_autocorrelation</code> بيطبع الـ lags اللي فوق <span class="ltr">1.96/√n</span> بـ <code>***</code>، والمتوقع spikes عند 7 و14 (زي معمل ٢).</p>
+
+  <h3>خطوة ٤: lag features</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_lag_features(series, n_lags):
+    n = len(series)
+    X = np.full((n, n_lags), np.nan)
+    for lag in range(1, n_lags + 1):
+        X[lag:, lag - 1] = series[:-lag]       <span class="c"># العمود 0 = lag 1، العمود 1 = lag 2…</span>
+    valid = ~np.isnan(X).any(axis=1)           <span class="c"># أول n_lags صفوف ناقصة، اشطبها</span>
+    return X[valid], series[valid]             <span class="c"># الـ target = القيمة عند t نفسها</span></pre></div>
+  <p>لاحظ إن الـ target هو <code>series[valid]</code> والـ features كلها من <span class="ltr">series[:-lag]</span>، يعني أقدم. ده اللي بيحمي من فخ المحاذاة.</p>
+
+  <h3>خطوة ٥: walk-forward split</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def walk_forward_split(n_samples, n_splits=5, min_train=50):
+    if n_samples &lt;= min_train:
+        return
+    step = max(1, (n_samples - min_train) // n_splits)
+    for i in range(n_splits):
+        train_end = min_train + i * step
+        test_end = min(train_end + step, n_samples)
+        if train_end &gt;= n_samples:
+            break
+        yield slice(0, train_end), slice(train_end, test_end)   <span class="c"># الـ train دايمًا قبل الـ test</span></pre></div>
+  <p>ده expanding window: الـ train بيبدأ من 0 دايمًا وبيكبر.</p>
+
+  <h3>خطوة ٦: SimpleAR = linear regression على الـ lags</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class SimpleAR:
+    def __init__(self, n_lags=5):
+        self.n_lags = n_lags
+
+    def fit(self, X, y):
+        X_b = np.column_stack([np.ones(len(X)), X])            <span class="c"># عمود 1 للـ bias</span>
+        theta = np.linalg.lstsq(X_b, y, rcond=None)[0]         <span class="c"># least squares (Day 24)</span>
+        self.bias, self.weights = theta[0], theta[1:]
+        return self
+
+    def predict(self, X):
+        return X @ self.weights + self.bias
+
+    def fit_series(self, series):
+        X, y = make_lag_features(series, self.n_lags)
+        return self.fit(X, y)
+
+    def forecast(self, last_values, n_steps):
+        if len(last_values) &lt; self.n_lags:
+            raise ValueError(f"Need at least {self.n_lags} history points, got {len(last_values)}")
+        history = list(last_values[-self.n_lags:])
+        predictions = []
+        for _ in range(n_steps):
+            features = np.array(history[-self.n_lags:][::-1]).reshape(1, -1)   <span class="c"># اعكس: الأحدث = lag 1</span>
+            pred = self.predict(features)[0]
+            predictions.append(pred)
+            history.append(pred)                               <span class="c"># recursive: التوقع بقى تاريخ</span>
+        return np.array(predictions)</pre></div>
+  <p>الـ <code>[::-1]</code> مهم: الـ history مترتب من القديم للجديد، والـ features لازم تبدأ بـ lag 1 (الأحدث) زي ترتيب أعمدة <code>make_lag_features</code>.</p>
+
+  <h3>خطوة ٧: المقاييس والـ demos</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def mse(y_true, y_pred):  return np.mean((y_true - y_pred) ** 2)
+def mae(y_true, y_pred):  return np.mean(np.abs(y_true - y_pred))
+def mape(y_true, y_pred):
+    mask = y_true != 0                                         <span class="c"># MAPE مش معرّف عند الصفر</span>
+    return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100</pre></div>
+  <div class="tablewrap"><table>
+    <tr><th>الـ demo</th><th>بيوريك إيه</th></tr>
+    <tr><td class="ltr">demo_stationarity</td><td>الأصل مش stationary، وبعد diff واحد يتفحص تاني</td></tr>
+    <tr><td class="ltr">demo_autocorrelation</td><td>ACF على series أسبوعية بعد diff، والـ lags المهمة</td></tr>
+    <tr><td class="ltr">demo_lag_features</td><td>شكل المصفوفة وأوزان AR(10)</td></tr>
+    <tr><td class="ltr">demo_walk_forward</td><td>MSE وMAE لكل fold من 5</td></tr>
+    <tr><td class="ltr">demo_random_vs_walk_forward</td><td>المقارنة اللي في المعمل ٣</td></tr>
+    <tr><td class="ltr">demo_lag_comparison</td><td>عدد lags من 1 لـ 30 على series أسبوعية</td></tr>
+    <tr><td class="ltr">demo_forecasting</td><td>forecast ٢٠ خطوة recursive وMSE/MAE/MAPE</td></tr>
+  </table></div>
+  <p>أنا ما شغّلتش الملف هنا، فسجّل أرقامك. في <code>demo_lag_comparison</code> بص: هل فيه قفزة لما الـ lags توصل 7؟</p>
+
+  <h3>خطوة ٨: بـ sklearn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.linear_model import Ridge
+from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+
+X, y = make_lag_features(make_synthetic_series(400), n_lags=10)
+
+tscv = TimeSeriesSplit(n_splits=5)                 <span class="c"># walk-forward جاهز</span>
+for train_index, test_index in tscv.split(X):
+    model = Ridge(alpha=1.0)
+    model.fit(X[train_index], y[train_index])
+    print(model.score(X[test_index], y[test_index]))
+
+scores = cross_val_score(Ridge(alpha=1.0), X, y, cv=TimeSeriesSplit(n_splits=5))
+print(f"Mean score: {scores.mean():.4f} +/- {scores.std():.4f}")</pre></div>
+  <p class="note">إضافة مني للـ rolling features بـ pandas (الدرس بيذكر rolling mean/std/min/max بشبابيك 7 و14): لاحظ الـ <code>shift(1)</code> قبل الـ <code>rolling</code>، وإلا الشباك هيشمل قيمة النهاردة نفسها (leakage).</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import pandas as pd
+s = pd.Series(make_seasonal_series(365))
+df = pd.DataFrame({"y": s})
+for w in (7, 14):
+    past = s.shift(1).rolling(w)                   <span class="c"># لحد امبارح بس</span>
+    df[f"roll_mean_{w}"] = past.mean()
+    df[f"roll_std_{w}"] = past.std()
+    df[f"roll_min_{w}"] = past.min()
+    df[f"roll_max_{w}"] = past.max()
+df["lag_1"], df["lag_7"] = s.shift(1), s.shift(7)
+df = df.dropna()</pre></div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d37-exercises">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>تجربة الـ stationarity:</b> series بـ trend linear، افحصها، diff مرة، افحص تاني. والـ trend التربيعي محتاج كام مرة؟
+      <details><summary>الإجابة</summary>الـ linear محتاج مرة واحدة، والتربيعي مرتين (زي مثال 100، 102، 106…). جربته في المعمل ١. استخدم <code>check_stationarity</code> وارسم الـ rolling mean.</details></li>
+    <li><b>اختيار الـ lags:</b> احسب الـ ACF على series فيها period=7. أنهي lags أعلى؟ اعمل features من اللي عالي بس (مش متتالية) وقارن بـ lags 1..7.
+      <details><summary>تلميح</summary>عدّل <code>make_lag_features</code> عشان تاخد list زي <code>[1, 7, 14]</code>: <code>X[:, j] = series shifted by lags[j]</code>، واشطب أول <code>max(lags)</code> صف. قارن بالـ walk-forward مش بالـ random split.</details></li>
+    <li><b>Walk-forward ضد random:</b> Ridge على lag features، قيّم بالاتنين. الـ random بيبالغ قد إيه؟
+      <details><summary>تلميح</summary><code>demo_random_vs_walk_forward</code> بيعمل ده بالـ SimpleAR. بدّله بـ <code>Ridge</code> وجرّب series فيها trend أقوى (0.2 بدل 0.05) وشوف الفرق بيتغير إزاي. نفس اللي في المعمل ٣.</details></li>
+    <li><b>Feature engineering:</b> ضيف rolling mean(7) وrolling std(7) وday-of-week للـ lags، وقارن بالـ walk-forward.
+      <details><summary>تلميح</summary>day-of-week = <code>t % 7</code> (أو one-hot ليه). والـ rolling لازم يكون على قيم لحد <span class="ltr">t−1</span> بس (شوف كود الـ pandas بالـ <code>shift(1)</code>).</details></li>
+    <li><b>Multi-step:</b> توقّع ٥ خطوات: (أ) recursive، (ب) direct بموديل لكل horizon. مين أدق؟
+      <details><summary>تلميح</summary>الـ direct لـ horizon h: الـ target = <code>series[t + h - 1]</code> والـ features نفس lags لحد <span class="ltr">t−1</span>. اعمل 5 موديلات <code>SimpleAR</code>. غالبًا الـ direct أحسن في الـ horizons البعيدة لأن مفيش تراكم، بس قيس بنفسك بالـ walk-forward.</details></li>
+    <li><b>إضافة مني · توقّع استهلاك الـ tokens:</b> اعمل ١٢٠ يوم صناعية لاستهلاك LLM API: <span class="ltr">base·(1.01)^day</span> × (0.6 في الجمعة والسبت) × noise. ابني features: lag 1، lag 7، rolling mean 7 (shift 1)، day-of-week. درّب Ridge بالـ walk-forward (sliding 60 يوم) وقارن MAE وMAPE بالـ seasonal naive (lag 7). ده بالظبط الشغل اللي بيتعمل لتخطيط الـ budget والـ rate limits.
+      <details><summary>تلميح</summary>النمو ضربي، فاعمل model لـ <code>log(tokens)</code> وارجع بـ <code>exp</code> (نصيحة ٦). لو الموديل مكسبش الـ seasonal naive، دوّر على leakage أو feature ناقصة.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d37-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مقالوش صريح</h2></div>
+  <h3>سؤال واحد يحميك</h3>
+  <p>قبل أي feature أو تقسيم، اسأل: «في اللحظة اللي هتوقّع فيها في الـ production، القيمة دي هتبقى متاحة فعلًا؟» لو الإجابة لأ، ده leakage زمني. نفس فكرة الـ pipelines من Day 35، بس هنا المحور هو الوقت.</p>
+  <h3>أخطاء بتحصل كتير</h3>
+  <ul class="checklist">
+    <li>• <code>train_test_split</code> في sklearn بيعمل <b>shuffle افتراضيًا</b>. مع time series لازم <code>shuffle=False</code> أو <code>TimeSeriesSplit</code>.</li>
+    <li>• <code>rolling(7).mean()</code> من غير <code>shift(1)</code>: الشباك بيشمل قيمة الـ target نفسه.</li>
+    <li>• Scaling أو differencing بإحصائيات الـ series كلها قبل التقسيم (leakage امبارح التاني).</li>
+    <li>• Test set أقصر من دورة seasonal كاملة، فالموديل «باين» شاطر وهو ما اتختبرش على الأسبوع كله.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li>• <b>الـ LLM نفسه autoregressive:</b> بيتوقع الـ token الجاي من اللي قبله، وبيولّد recursive: كل token طالع بيدخل input للي بعده، زي <code>forecast</code> بالظبط. وفي التدريب بيشوف النص الحقيقي (teacher forcing) وفي التوليد بيشوف توقعاته هو، وده نفس فرق «الخطأ بيتراكم» اللي شفته في المعمل ٣ (اسمه exposure bias).</li>
+    <li>• <b>الـ causal mask</b> في الـ Transformer هو «فخ المحاذاة» متطبق بالرياضة: كل token ممنوع يشوف اللي بعده.</li>
+    <li>• <b>مراقبة الـ agents:</b> الـ latency والتكلفة ونسبة الأخطاء كلها time series، ودرس بكرة (Anomaly Detection) هو اللي بيكشف فيها الحاجات الغريبة.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d37-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d37-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d37-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح ليه الـ time series مش i.i.d. وليه الـ random split غلط</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فككت series لـ trend وseasonality وnoise وعملت differencing لحد ما بقت stationary</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> أقدر أقرا الـ ACF وأختار منه الـ lags</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> فاهم فخ محاذاة الـ target والـ walk-forward (expanding وsliding) والـ baselines</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> كتبت make_lag_features وwalk_forward_split وSimpleAR بإيدي وشغّلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c7" id="d37-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Walk-forward</td><td>أي تقييم لموديل بيتوقع المستقبل: طلب، أسعار، load</td></tr>
+    <tr><td>Lag features</td><td>forecasting بالـ gradient boosting، تخطيط السعة والتكلفة</td></tr>
+    <tr><td>Stationarity / differencing</td><td>ARIMA، تجهيز الداتا للموديلات الـ linear</td></tr>
+    <tr><td>ACF</td><td>اختيار الـ lags، اكتشاف الـ seasonality</td></tr>
+    <tr><td>Recursive forecasting</td><td>توليد النص في الـ LLMs token ورا token</td></tr>
+    <tr><td>Baselines (persistence، seasonal naive)</td><td>أول حاجة قبل أي موديل، وكشف الـ bugs</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Anomaly Detection. إزاي تلاقي النقط الغريبة (fraud، أعطال، قفزات في المتركس) من غير labels تقريبًا. وهنبدأ بتسخين ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F15-time-series" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/15-time-series</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d37-root');
+
+const rm=$('d37-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===15)s.className='now';rm.appendChild(s)}
+
+function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const mean=a=>a.reduce((s,v)=>s+v,0)/a.length;
+const vari=a=>{const m=mean(a);return a.reduce((s,v)=>s+(v-m)**2,0)/a.length};
+const diff=a=>a.slice(1).map((v,i)=>v-a[i]);
+function noiseArr(n,seed){const r=rng(seed);return Array.from({length:n},()=>gauss(r))}
+
+// ================= Lab 1 =================
+const c1=$('d37-c1'),x1=AI.setupCanvas(c1),W1=+c1.dataset.w,H1=+c1.dataset.h;
+const N1=300,NZ1=noiseArr(N1,42);let dOrd=0;
+function draw1(){
+  const tr=+$('d37-tr').value,A=+$('d37-a').value,P=+$('d37-p').value,ns=+$('d37-n').value,quad=$('d37-quad').checked;
+  $('d37-trv').textContent=tr;$('d37-av').textContent=A;$('d37-pv').textContent=P;$('d37-nv').textContent=ns;
+  let s=Array.from({length:N1},(_,t)=>50+(quad?tr*0.02*t*t:tr*t)+A*Math.sin(2*Math.PI*t/P)+ns*NZ1[t]);
+  for(let k=0;k<dOrd;k++)s=diff(s);
+  const n=s.length,w=50,rmn=[],rsd=[];
+  for(let i=0;i<n;i++){const seg=s.slice(Math.max(0,i-w+1),i+1);rmn.push(mean(seg));rsd.push(seg.length>1?Math.sqrt(vari(seg)):0)}
+  const h=n>>1,ms=Math.abs(mean(s.slice(0,h))-mean(s.slice(h))),sd=Math.sqrt(vari(s)),v1=vari(s.slice(0,h)),v2=vari(s.slice(h));
+  const vr=Math.max(v1,v2)/Math.max(Math.min(v1,v2),1e-10),stat=ms<0.5*sd&&vr<2;
+  $('d37-ms').textContent=f(ms,2);$('d37-hs').textContent=f(0.5*sd,2);$('d37-vr').textContent=f(vr,2);
+  const v=$('d37-v1');v.textContent=stat?'Stationary حسب قاعدة الكود ✓':'مش stationary: '+(ms>=0.5*sd?'المتوسط بيزحف':'الـ variance بتتغير');v.style.color=stat?css('--ok'):css('--bad');
+  x1.clearRect(0,0,W1,H1);
+  const lo=Math.min(...s.map((x,i)=>Math.min(x,rmn[i]-rsd[i]))),hi=Math.max(...s.map((x,i)=>Math.max(x,rmn[i]+rsd[i])));
+  const PL=40,PB=20,PT=10,PR=8,xp=i=>PL+i/(N1-1)*(W1-PL-PR),yp=y=>PT+(hi-y)/((hi-lo)||1)*(H1-PB-PT);
+  x1.strokeStyle=css('--grid');x1.lineWidth=1;x1.fillStyle=css('--muted');x1.font='11px JetBrains Mono, monospace';x1.textAlign='right';
+  for(let k=0;k<=4;k++){const y=lo+(hi-lo)*k/4;x1.beginPath();x1.moveTo(PL,yp(y));x1.lineTo(W1-PR,yp(y));x1.stroke();x1.fillText(f(y,0),PL-4,yp(y)+4)}
+  if(lo<0&&hi>0){x1.strokeStyle=css('--muted');x1.beginPath();x1.moveTo(PL,yp(0));x1.lineTo(W1-PR,yp(0));x1.stroke()}
+  x1.fillStyle=css('--vec-b');x1.globalAlpha=.18;x1.beginPath();
+  for(let i=0;i<n;i++)i?x1.lineTo(xp(i),yp(rmn[i]+rsd[i])):x1.moveTo(xp(i),yp(rmn[i]+rsd[i]));
+  for(let i=n-1;i>=0;i--)x1.lineTo(xp(i),yp(rmn[i]-rsd[i]));x1.closePath();x1.fill();x1.globalAlpha=1;
+  x1.strokeStyle=css('--vec-a');x1.lineWidth=1.2;x1.beginPath();s.forEach((y,i)=>i?x1.lineTo(xp(i),yp(y)):x1.moveTo(xp(i),yp(y)));x1.stroke();
+  x1.strokeStyle=css('--ink');x1.lineWidth=2.5;x1.beginPath();rmn.forEach((y,i)=>i?x1.lineTo(xp(i),yp(y)):x1.moveTo(xp(i),yp(y)));x1.stroke();
+  x1.strokeStyle=css('--muted');x1.setLineDash([4,4]);x1.beginPath();x1.moveTo(xp(h),PT);x1.lineTo(xp(h),H1-PB);x1.stroke();x1.setLineDash([]);
+  x1.textAlign='left';x1.fillStyle=css('--muted');x1.fillText(dOrd?'diff '+dOrd:'original',PL+4,PT+12);
+}
+['d37-tr','d37-a','d37-p','d37-n'].forEach(id=>$(id).addEventListener('input',draw1));
+$('d37-quad').addEventListener('change',draw1);
+$('d37-dbtns').querySelectorAll('[data-d]').forEach(b=>b.addEventListener('click',()=>{dOrd=+b.dataset.d;$('d37-dbtns').querySelectorAll('[data-d]').forEach(o=>o.classList.toggle('primary',o===b));draw1()}));
+draw1();
+
+// ================= Lab 2: ACF =================
+const c2=$('d37-c2'),x2=AI.setupCanvas(c2),W2=+c2.dataset.w,H2=+c2.dataset.h;
+const N2=365,NZ2=noiseArr(N2,7);
+function acf(s,K){const n=s.length,m=mean(s),v=vari(s),out=[];for(let k=0;k<=K;k++){let c=0;for(let t=0;t<n-k;t++)c+=(s[t]-m)*(s[t+k]-m);out.push(v>0?(c/(n-k))/v:0)}return out}
+function draw2(){
+  const P=+$('d37-s').value,Wk=+$('d37-w').value;$('d37-sp').textContent=P;$('d37-wv').textContent=Wk;
+  let s=Array.from({length:N2},(_,t)=>100+0.02*t+Wk*Math.sin(2*Math.PI*t/P)+3*Math.sin(2*Math.PI*t/30)+1.5*NZ2[t]);
+  if($('d37-dif').checked)s=diff(s);
+  const K=30,a=acf(s,K),thr=1.96/Math.sqrt(s.length);
+  let top=1;for(let k=2;k<=K;k++)if(a[k]>a[top])top=k;
+  $('d37-top').textContent='lag '+top+' ('+f(a[top],2)+')';$('d37-thr').textContent='±'+f(thr,3);
+  $('d37-sig').textContent=a.slice(1).filter(v=>Math.abs(v)>thr).length+' / '+K;
+  x2.clearRect(0,0,W2,H2);
+  const PL=36,PB=24,PT=10,PR=8,bw=(W2-PL-PR)/(K+1),yp=v=>PT+(1-v)/2*(H2-PB-PT);
+  x2.strokeStyle=css('--grid');x2.lineWidth=1;x2.fillStyle=css('--muted');x2.font='11px JetBrains Mono, monospace';x2.textAlign='right';
+  [-1,-0.5,0,0.5,1].forEach(v=>{x2.beginPath();x2.moveTo(PL,yp(v));x2.lineTo(W2-PR,yp(v));x2.stroke();x2.fillText(v,PL-4,yp(v)+4)});
+  for(let k=0;k<=K;k++){
+    const x=PL+k*bw,isP=k>0&&k%P===0,sig=Math.abs(a[k])>thr;
+    if(isP){x2.fillStyle=css('--soft');x2.fillRect(x,PT,bw,H2-PB-PT)}
+    x2.fillStyle=k===0?css('--muted'):sig?(isP?css('--vec-b'):css('--vec-a')):css('--muted');x2.globalAlpha=sig||k===0?1:.45;
+    const y0=yp(0),y1=yp(a[k]);x2.fillRect(x+bw*.18,Math.min(y0,y1),bw*.64,Math.abs(y1-y0)||1);x2.globalAlpha=1;
+    if(k%5===0){x2.fillStyle=css('--muted');x2.textAlign='center';x2.fillText(k,x+bw/2,H2-8)}
+  }
+  x2.strokeStyle=css('--bad');x2.setLineDash([5,4]);[thr,-thr].forEach(v=>{x2.beginPath();x2.moveTo(PL,yp(v));x2.lineTo(W2-PR,yp(v));x2.stroke()});x2.setLineDash([]);
+  x2.textAlign='left';
+}
+['d37-s','d37-w'].forEach(id=>$(id).addEventListener('input',draw2));$('d37-dif').addEventListener('change',draw2);
+draw2();
+
+// ================= Lab 3: walk-forward =================
+const c3=$('d37-c3'),x3=AI.setupCanvas(c3),W3=+c3.dataset.w,H3=+c3.dataset.h;
+const N3=400,NZ3=noiseArr(N3,42);
+const S3=Array.from({length:N3},(_,t)=>50+0.05*t+10*Math.sin(2*Math.PI*t/30)+2*NZ3[t]);
+let win='exp';
+function lags(s,k){const X=[],y=[],tIdx=[];for(let t=k;t<s.length;t++){const row=[];for(let l=1;l<=k;l++)row.push(s[t-l]);X.push(row);y.push(s[t]);tIdx.push(t)}return{X,y,tIdx}}
+function lstsq(X,y){
+  const d=X[0].length+1,A=Array.from({length:d},()=>new Float64Array(d)),b=new Float64Array(d);
+  X.forEach((r,i)=>{const z=[1].concat(r);for(let p=0;p<d;p++){b[p]+=z[p]*y[i];for(let q=0;q<d;q++)A[p][q]+=z[p]*z[q]}});
+  for(let p=1;p<d;p++)A[p][p]+=1e-8;
+  for(let c=0;c<d;c++){let pv=c;for(let r=c+1;r<d;r++)if(Math.abs(A[r][c])>Math.abs(A[pv][c]))pv=r;[A[c],A[pv]]=[A[pv],A[c]];[b[c],b[pv]]=[b[pv],b[c]];
+    for(let r=c+1;r<d;r++){const m=A[r][c]/A[c][c];for(let q=c;q<d;q++)A[r][q]-=m*A[c][q];b[r]-=m*b[c]}}
+  const th=new Float64Array(d);for(let r=d-1;r>=0;r--){let s=b[r];for(let q=r+1;q<d;q++)s-=A[r][q]*th[q];th[r]=s/A[r][r]}return th;
+}
+const pr=(th,r)=>th[0]+r.reduce((s,v,i)=>s+v*th[i+1],0);
+const mseF=(a,b)=>mean(a.map((v,i)=>(v-b[i])**2));
+function* wfs(n,splits,minTr){const step=Math.max(1,Math.floor((n-minTr)/splits));for(let i=0;i<splits;i++){const te=minTr+i*step,end=Math.min(te+step,n);if(te>=n)break;yield [te,end]}}
+function draw3(){
+  const k=+$('d37-k').value;$('d37-kv').textContent=k;
+  const {X,y,tIdx}=lags(S3,k),n=X.length;
+  // random split
+  const r=rng(42),idx=[...Array(n).keys()];for(let i=n-1;i>0;i--){const j=Math.floor(r()*(i+1));[idx[i],idx[j]]=[idx[j],idx[i]]}
+  const sp=Math.floor(n*0.8),trI=idx.slice(0,sp),teI=idx.slice(sp);
+  const thR=lstsq(trI.map(i=>X[i]),trI.map(i=>y[i]));const rM=mseF(teI.map(i=>y[i]),teI.map(i=>pr(thR,X[i])));
+  // walk forward
+  const folds=[...wfs(n,5,100)];let wf=[],pers=[],seas=[];
+  folds.forEach(([te,end])=>{const st=win==='sld'?Math.max(0,te-100):0;
+    const th=lstsq(X.slice(st,te),y.slice(st,te));const yt=y.slice(te,end);
+    wf.push(mseF(yt,X.slice(te,end).map(r=>pr(th,r))));
+    pers.push(mseF(yt,tIdx.slice(te,end).map(t=>S3[t-1])));
+    seas.push(mseF(yt,tIdx.slice(te,end).map(t=>S3[t-30])));
+  });
+  const wM=mean(wf),pM=mean(pers),sM=mean(seas);
+  $('d37-rm').textContent=f(rM,2);$('d37-wm').textContent=f(wM,2);$('d37-pm').textContent=f(pM,2);$('d37-sm').textContent=f(sM,2);
+  const v=$('d37-v3');
+  const beat=wM<Math.min(pM,sM)?'الـ AR بيكسب الـ baselines. ':'الـ AR خسر قدام baseline! ';
+  v.textContent=beat+(rM<wM?'الـ random split أقل بنسبة '+f(rM/wM,2)+'×: ده التفاؤل اللي جاي من التسريب.':'الـ random مش متفائل هنا (نسبة '+f(rM/wM,2)+'×)؛ زي ما الكود بيقول، الـ series ممكن تكون قريبة كفاية من stationary.');
+  v.style.color=rM<wM?css('--bad'):css('--muted');
+  // forecast
+  let fc=null;
+  if($('d37-fc').checked){const tr=S3.slice(0,250),L=lags(tr,k),th=lstsq(L.X,L.y),h=tr.slice(-k);fc=[];
+    for(let s=0;s<20;s++){const feat=h.slice(-k).reverse(),p=pr(th,feat);fc.push(p);h.push(p)}
+    $('d37-fm').textContent=f(mean(fc.map((p,i)=>Math.abs(p-S3[250+i]))),2)} else $('d37-fm').textContent='-';
+  // draw
+  x3.clearRect(0,0,W3,H3);
+  const PL=34,PR=8,PT=8,HS=190,lo=Math.min(...S3)-2,hi=Math.max(...S3)+2;
+  const xp=t=>PL+t/(N3-1)*(W3-PL-PR),yp=v=>PT+(hi-v)/(hi-lo)*(HS-PT);
+  x3.strokeStyle=css('--grid');x3.lineWidth=1;x3.fillStyle=css('--muted');x3.font='11px JetBrains Mono, monospace';x3.textAlign='right';
+  for(let q=0;q<=3;q++){const vv=lo+(hi-lo)*q/3;x3.beginPath();x3.moveTo(PL,yp(vv));x3.lineTo(W3-PR,yp(vv));x3.stroke();x3.fillText(f(vv,0),PL-3,yp(vv)+4)}
+  x3.strokeStyle=css('--ink');x3.lineWidth=1.2;x3.beginPath();S3.forEach((v,t)=>t?x3.lineTo(xp(t),yp(v)):x3.moveTo(xp(t),yp(v)));x3.stroke();
+  if(fc){x3.strokeStyle=css('--bad');x3.lineWidth=2.5;x3.beginPath();x3.moveTo(xp(249),yp(S3[249]));fc.forEach((p,i)=>x3.lineTo(xp(250+i),yp(p)));x3.stroke();
+    x3.fillStyle=css('--bad');x3.textAlign='left';x3.fillText('forecast',xp(272),yp(fc[19]))}
+  // folds
+  folds.forEach(([te,end],i)=>{const y0=HS+14+i*22,st=win==='sld'?Math.max(0,te-100):0;
+    x3.fillStyle=css('--soft');x3.fillRect(xp(0),y0,xp(N3-1)-xp(0),14);
+    x3.fillStyle=css('--vec-a');x3.fillRect(xp(tIdx[st]),y0,xp(tIdx[te-1])-xp(tIdx[st]),14);
+    x3.fillStyle=css('--vec-b');x3.fillRect(xp(tIdx[te]),y0,xp(tIdx[end-1])-xp(tIdx[te])+2,14);
+    x3.fillStyle=css('--muted');x3.textAlign='right';x3.fillText('f'+(i+1),PL-3,y0+11)});
+  x3.textAlign='left';
+}
+$('d37-k').addEventListener('input',draw3);$('d37-fc').addEventListener('change',draw3);
+function setWin(w){win=w;$('d37-exp').classList.toggle('primary',w==='exp');$('d37-sld').classList.toggle('primary',w==='sld');draw3()}
+$('d37-exp').addEventListener('click',()=>setWin('exp'));$('d37-sld').addEventListener('click',()=>setWin('sld'));
+draw3();
+
+// ================= Quiz =================
+const Q=[
+ ['ليه الـ random train/test split مش صالح للـ time series؟',['الـ time series مينفعش تتقسم أصلًا','الـ random split بيشتغل مع الـ classification بس','الـ random split بيسرّب معلومات من المستقبل للتدريب، فالموديل بيغش','الـ random split بيصغّر الداتا أوي'],2,'في الـ random split نقط من المستقبل ممكن تقع في التدريب ونقط من الماضي في الـ test، فالموديل بيستخدم المستقبل عشان يتوقع الماضي، والنتايج بتطلع متفائلة كدب.'],
+ ['يعني إيه time series تبقى stationary؟',['دايمًا طالعة','خصائصها الإحصائية (المتوسط، الـ variance، الـ autocorrelation) مش بتتغير مع الوقت','قيمها مش بتتغير خالص','ملهاش أنماط seasonal'],1,'الـ stationary ليها متوسط وvariance وبنية autocorrelation ثابتين. معظم طرق الـ forecasting بتفترض كده، واللي مش stationary محتاجة differencing أو detrending الأول.'],
+ ['الهدف من الـ differencing إيه؟',['تطبيع القيم بين 0 و1','تحويل الـ regression لـ classification','زيادة عدد النقط','شيل الـ trend وتخلّي الـ series stationary عن طريق نمذجة التغيير بين القيم المتتالية'],3,'الـ differencing بيبدّل كل قيمة بالتغيير عن اللي قبلها: diff[t] = value[t] − value[t−1]، وده بيشيل الـ trend ويقرّب الـ series من الـ stationary.'],
+ ['الـ lag features بتحوّل الـ time series لـ supervised learning. إيه هو lag-3 feature لتوقع y[t]؟',['القيمة من 3 خطوات فاتت: y[t−3]','الفرق بين القيمة الحالية والقيمة بعد 3 خطوات','المشتقة التالتة للـ series','متوسط الـ 3 قيم الجايين: (y[t+1] + y[t+2] + y[t+3]) / 3'],0,'الـ lag-3 هو y[t−3]: القيمة من 3 خطوات في الماضي. استخدام القيم الماضية كـ features بيخلّي الموديلات العادية تقدر تتوقع.'],
+ ['الـ walk-forward validation بيقسم بشبابيك expanding أو sliding. ليه أحسن من الـ K-fold للـ time series؟',['أسرع في الحساب','الـ K-fold مينفعش مع داتا رقمية','بيستخدم داتا أكتر في التدريب','بيحترم الترتيب الزمني: يدرّب على الماضي بس ويختبر على المستقبل، فمفيش lookahead bias'],3,'الـ walk-forward دايمًا بيدرّب على الماضي ويختبر على المستقبل، زي الـ deployment الحقيقي. الـ K-fold بيخلط الداتا وممكن يدرّب على المستقبل عشان يتوقع الماضي.'],
+ ['(سؤال مني) عملت feature اسمها rolling_mean_7 بـ s.rolling(7).mean() من غير shift وطلعت أهم feature. إيه المشكلة غالبًا؟',['مفيش مشكلة، الـ rolling mean مفيد','الشباك بيشمل قيمة النهاردة اللي هي الـ target، يعني leakage','لازم شباك 14 مش 7','الـ rolling mean مينفعش مع الأشجار'],1,'rolling(7) عند t بيشمل s[t] نفسها. لازم s.shift(1).rolling(7) عشان الـ feature تبقى من t−1 وأقدم. ده فخ محاذاة الـ target.'],
+ ['(سؤال مني) موديل XGBoost معقد على مبيعات يومية جاب MAE أسوأ من «نفس يوم الأسبوع اللي فات». تعمل إيه؟',['تنشره، الفرق بسيط','تزوّد عدد الأشجار','تعتبره bug: راجع الـ leakage وطريقة التقييم والـ features قبل أي حاجة','تشيل الـ baseline من التقرير'],2,'لو الموديل خسر قدام الـ seasonal naive يبقى غالبًا فيه leakage في الـ features، أو تقييم غلط، أو الـ series عشوائية فعلًا. الـ baseline هو جهاز إنذار.']
+];
+AI.quiz($('d37-quizBox'),Q,5,()=>{const c=$('d37-ckq');if(!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(37,root);
+
+AI.onTheme(()=>{if(!document.body.contains(c1))return false;draw1();draw2();draw3()});
+})();
+</script>

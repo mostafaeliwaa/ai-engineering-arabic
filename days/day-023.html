@@ -1,0 +1,704 @@
+<div class="day" id="d23-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 01 · What Is Machine Learning</span>
+  <h1>اليوم ٢٣: بطّل تكتب القواعد، خلّي الداتا تكتبها</h1>
+  <p class="lede">أهلًا بيك في <b>Phase 2</b>. خلصنا الرياضيات، ودلوقتي هنستخدمها. النهاردة هتفهم يعني إيه <b>Machine Learning</b> أصلًا: أنواعه، والفرق بين classification وregression، والـ workflow، وليه الـ test set مقدس، وإزاي تعرف إن الموديل <b>overfitting</b>. وبعدين هتبني أبسط classifier في الدنيا بإيدك وتقارنه بـ baseline.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٤٥ دقيقة</b> (خلّيها ساعة لو هتلعب في المعامل كويس)</span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Stochastic Processes</b></span>
+    <span>بعده: <b>Linear Regression</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d23-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d23-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح قفلنا Phase 1 بالـ Stochastic Processes. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. يعني إيه الـ stationary distribution في Markov chain؟</summary>
+    <p>هو التوزيع <span class="ltr">π</span> اللي بيحقق <span class="ltr">πP = π</span>. يعني لو مشيت خطوات كتير، نسبة الوقت اللي بتقضيها في كل state بتثبت عليه مهما كانت بدايتك. وهو الـ left eigenvector بتاع <span class="ltr">P</span> اللي الـ eigenvalue بتاعه 1.</p></details>
+  <details><summary>٢. الـ temperature في توليد التوكنز بتعمل إيه لو قلّلتها تحت 1؟</summary>
+    <p>بتخلّي التوزيع أحدّ (sharper) والاختيار أكتر deterministic. ولو قرّبت من الصفر بتبقى argmax (greedy). وفوق 1 التوزيع بيبقى أفلطح والكلام أعشوائي.</p></details>
+  <details><summary>٣. ليه بنرمي أول عينات في الـ MCMC (burn-in)؟</summary>
+    <p>لأن السلسلة محتاجة وقت توصل للـ stationary distribution من نقطة البداية. العينات الأولى لسه متأثرة بالبداية ومش جاية من التوزيع اللي عايزينه.</p></details>
+  <p>النهاردة بنبدأ الجزء اللي كل الرياضيات دي كانت بتجهزله: إن الكمبيوتر <b>يتعلم من الداتا</b>.</p>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>10 min</b>الفكرة + أنواع الـ ML والمعمل ٠١</div>
+    <div><b>10 min</b>الـ workflow والـ splits والمعمل ٠٢</div>
+    <div><b>10 min</b>Overfitting و bias-variance والمعمل ٠٣</div>
+    <div><b>10 min</b>Nearest Centroid والمعمل ٠٤</div>
+    <div><b>15 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section id="d23-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: فلتر الـ spam اللي مبيخلصش</h2></div>
+  <p>عايز تعمل فلتر spam. الطريقة القديمة: تقعد تكتب مئات القواعد. «لو الإيميل فيه FREE MONEY يبقى spam». «لو فيه أكتر من ٣ علامات تعجب يبقى spam». تقعد أسابيع. وبعدين الـ spammers يغيروا الكلام، القواعد تبوظ، تكتب قواعد جديدة… ومفيش نهاية.</p>
+  <p>الـ ML بيقلب الموضوع: بدل ما تكتب القواعد، بتدي الكمبيوتر آلاف الإيميلات المتعلّم عليها (spam / مش spam) وهو اللي يطلّع القواعد. وبيلاقي patterns انت عمرك ما كنت هتفكر فيها. ولما الـ spammers يغيروا أسلوبهم، بتعمل <b>retrain</b> على داتا جديدة بدل ما تعيد كتابة الكود.</p>
+  <div class="bench">
+    <div style="display:grid;gap:10px;min-width:0">
+      <h3>البرمجة العادية</h3>
+      <div class="formula">Rules + Data → Program → Output</div>
+      <p>انت بتكتب القواعد، والبرنامج بيطبقها على الداتا ويطلع النتيجة.</p>
+    </div>
+    <div style="display:grid;gap:10px;min-width:0">
+      <h3>الـ Machine Learning</h3>
+      <div class="formula">Data + Expected Output → Learning Algorithm → Model (Rules)</div>
+      <p>انت بتدي الداتا والإجابات الصح، والخوارزمية هي اللي بتكتشف القواعد.</p>
+    </div>
+  </div>
+  <div class="note"><strong>التشبيه:</strong> البرمجة العادية زي إنك تدي طباخ وصفة مكتوبة خطوة بخطوة. الـ ML زي إنك تأكّله ١٠٠٠ طبق حلو و١٠٠٠ طبق وحش، وتسيبه هو يستنتج الوصفة. والوصفة اللي استنتجها دي هي <b>الموديل</b>.</div>
+  <p>الـ <b>model</b> اللي بيطلع من التدريب <b>هو نفسه القواعد</b>، بس متخزنة كأرقام (weights / parameters). وشغلته إنه <b>يعمّم</b> (generalize): يتعلم من أمثلة شافها، ويتوقع صح على داتا عمره ما شافها. كل recommendation engine وvoice assistant وعربية ذاتية القيادة وlanguage model شغالين بالفكرة دي.</p>
+</section>
+
+<!-- TYPES + LAB 1 -->
+<section id="d23-types">
+  <div class="station-head"><span class="tag">02</span><h2>أنواع الـ ML التلاتة (وأقاربهم)</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>عندك إيه؟</th><th>مثال</th><th>بيتفرع لـ</th></tr>
+    <tr><td><b>Supervised</b></td><td>أزواج input → output (داتا عليها labels)</td><td>«دي ١٠,٠٠٠ صورة مكتوب عليها قطة أو كلب، اتعلم تفرّق»، «دي مواصفات بيوت وأسعارها، اتعلم تتوقع السعر»</td><td>Classification و Regression</td></tr>
+    <tr><td><b>Unsupervised</b></td><td>inputs بس، من غير labels</td><td>«دي تاريخ شراء ١٠,٠٠٠ عميل، لاقي المجموعات الطبيعية»، «دي نقط بـ 1000 بُعد، صغّرها لبُعدين وحافظ على الشكل»</td><td>Clustering و Dimensionality Reduction</td></tr>
+    <tr><td><b>Reinforcement</b></td><td>agent بياخد actions في environment ويستلم reward أو penalty</td><td>«العب اللعبة دي: +1 لو كسبت، −1 لو خسرت»، «حرّك دراع الروبوت: +1 لو مسكت الحاجة، −0.01 لكل ثانية بتضيع»</td><td>Policy Optimization و Value Learning</td></tr>
+  </table></div>
+  <p>الـ RL هدفه يتعلم <b>استراتيجية (policy)</b> تجيب أكبر مجموع reward. في الشغل الفعلي، معظم اللي هتبنيه <b>supervised</b>. الـ unsupervised منتشر في التجهيز والاستكشاف. والـ RL ورا الـ game AI والروبوتات والـ <b>RLHF</b> بتاع الـ language models.</p>
+
+  <h3>أبعد من التلاتة الكبار</h3>
+  <p><b>Semi-supervised:</b> شوية داتا عليها labels وكتير من غير. مثلًا ١٠٠ صورة أشعة متعلّم عليها و١٠٠,٠٠٠ لأ. أشهر الطرق:</p>
+  <ol class="ex">
+    <li><b>Label propagation:</b> اعمل graph بيوصّل النقط المتشابهة، والـ labels «تنتشر» من النقط المعروفة لجيرانها.</li>
+    <li><b>Pseudo-labeling:</b> درّب على المتعلّم عليه، خلّي الموديل يتوقع labels للباقي، وبعدين درّب على الكل. الموديل بيبني داتا التدريب بنفسه.</li>
+    <li><b>Consistency regularization:</b> الموديل لازم يدي نفس التوقع للـ input ولنسخة متغيرة فيه شوية. وده بيشتغل حتى من غير labels.</li>
+  </ol>
+  <p><b>Self-supervised:</b> الداتا نفسها بتعمل الـ labels، من غير ولا بني آدم:</p>
+  <ol class="ex">
+    <li><b>Masked language modeling (BERT):</b> خبّي 15% من كلمات الجملة، والموديل يتوقعهم. الإجابات جاية من النص الأصلي.</li>
+    <li><b>Contrastive learning (SimCLR):</b> خد صورة واعمل منها نسختين متعدلين. الموديل يتعلم إنهم من نفس الصورة، ويفرّقهم عن نسخ صور تانية.</li>
+    <li><b>Next-token prediction (GPT):</b> توقّع الكلمة الجاية من اللي قبلها. أي document بيبقى أمثلة تدريب.</li>
+  </ol>
+  <div class="note ai"><strong>خد بالك:</strong> دول مش أنواع منفصلة عن التلاتة الكبار. دي استراتيجيات بتخلط الأفكار. الـ self-supervised تقنيًا supervised (الموديل بيتوقع حاجة)، بس الـ labels بتتعمل أوتوماتيك مش بإيد بني آدم.</div>
+
+  <div class="instrument">
+    <h3>معمل ٠١: صنّف المشكلة</h3>
+    <p>لكل سيناريو اختار: ده نوع ML إيه؟ ولا أصلًا مش محتاج ML؟</p>
+    <div id="d23-sorter" class="quiz"></div>
+    <div class="score" id="d23-sortScore"></div>
+  </div>
+</section>
+
+<!-- CLASSIFICATION VS REGRESSION -->
+<section id="d23-cr">
+  <div class="station-head"><span class="tag">03</span><h2>Classification ولا Regression؟</h2></div>
+  <p>دول المهمتين الأساسيين في الـ supervised. الـ classification بتسأل «<b>أنهي فئة؟</b>»، والـ regression بتسأل «<b>قد إيه؟</b>».</p>
+  <div class="tablewrap"><table>
+    <tr><th>الجانب</th><th>Classification</th><th>Regression</th></tr>
+    <tr><td>الخرج</td><td>فئات منفصلة</td><td>أرقام متصلة</td></tr>
+    <tr><td>مثال</td><td>الإيميل ده spam؟</td><td>سعر البيت هيبقى كام؟</td></tr>
+    <tr><td>مساحة الخرج</td><td class="ltr">{cat, dog, bird}</td><td>أي رقم حقيقي</td></tr>
+    <tr><td>الـ Loss</td><td>Cross-entropy (والـ accuracy كمقياس)</td><td>Mean squared error، MAE</td></tr>
+    <tr><td>القرار</td><td>حدود بين الكلاسات</td><td>منحنى بيلبس على الداتا</td></tr>
+  </table></div>
+  <p>في مشاكل ممكن تتصاغ بالطريقتين: «السهم هيطلع ولا ينزل؟» classification. «السعر هيبقى كام بالظبط؟» regression. اختيارك بيحدد الـ loss اللي هتدرّب بيها.</p>
+</section>
+
+<!-- WORKFLOW + LAB 2 -->
+<section id="d23-flow">
+  <div class="station-head"><span class="tag">04</span><h2>الـ ML Workflow والـ Splits</h2></div>
+  <p>أي مشروع ML ماشي في نفس الخط مهما كانت الخوارزمية:</p>
+  <div class="formula">Collect → Clean &amp; Explore → Features → Split → Train → Evaluate → Deploy → Monitor<br>Evaluate مش كويس؟ ارجع للـ Features · الأداء وقع بعد الـ deploy؟ ارجع للـ Collect</div>
+  <div class="tablewrap"><table>
+    <tr><th>الخطوة</th><th>بتعمل إيه</th></tr>
+    <tr><td>Collect Data</td><td>تجمع الداتا الخام. الداتا الكتير غالبًا أحسن، بس <b>الجودة أهم من الكمية</b>.</td></tr>
+    <tr><td>Clean &amp; Explore</td><td>تعالج القيم الناقصة، تشيل المكرر، ترسم التوزيعات، تمسك الحاجات الشاذة. دي غالبًا بتاخد <b>60–80%</b> من وقت المشروع.</td></tr>
+    <tr><td>Feature Engineering</td><td>تحول الداتا الخام لـ features الموديل يقدر يستخدمها: التاريخ → يوم في الأسبوع، normalize للأرقام، encode للفئات. الـ features الكويسة أهم من الخوارزمية الفخمة.</td></tr>
+    <tr><td>Split Data</td><td>تقسم لـ training وvalidation وtest.</td></tr>
+    <tr><td>Train Model</td><td>الخوارزمية بتظبط البارامترز عشان تقلل الـ loss function.</td></tr>
+    <tr><td>Evaluate</td><td>تقيس على validation/test. مش مقبول؟ جرّب features أو خوارزمية أو hyperparameters تانية.</td></tr>
+    <tr><td>Deploy</td><td>الموديل يشتغل في الـ production ويتوقع على داتا جديدة.</td></tr>
+    <tr><td>Monitor</td><td>تتابع الأداء. توزيع الداتا بيتغير (<b>data drift</b>) والموديل بيضعف. لما الأداء يقع، retrain.</td></tr>
+  </table></div>
+
+  <h3>Training / Validation / Test</h3>
+  <p>ده أهم مفهوم المبتدئين بيغلطوا فيه: لازم تقيّم الموديل على داتا <b>عمره ما شافها</b> وهو بيتدرب. غير كده انت بتقيس <b>الحفظ</b> مش <b>التعلم</b>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>الغرض</th><th>إمتى</th><th>الحجم المعتاد</th></tr>
+    <tr><td>Training</td><td>الموديل بيتعلم منه</td><td>وقت التدريب</td><td class="ltr">60–80%</td></tr>
+    <tr><td>Validation</td><td>تظبط الـ hyperparameters وتقارن موديلات</td><td>بعد كل تجربة تدريب</td><td class="ltr">10–20%</td></tr>
+    <tr><td>Test</td><td>تقدير نهائي محايد للأداء</td><td><b>مرة واحدة</b> في الآخر خالص</td><td class="ltr">10–20%</td></tr>
+  </table></div>
+  <div class="note"><strong>الـ test set مقدس:</strong> بتبص عليه مرة واحدة بس. لو فضلت تعدّل الموديل حسب نتيجة الـ test، انت عمليًا بتدرّب عليه والأرقام اللي هتقولها ملهاش معنى. زي طالب شاف امتحان آخر السنة وذاكر عليه: الدرجة عالية بس مبتقولش هو فاهم ولا لأ.</div>
+  <p>لو الداتا صغيرة استخدم <b>k-fold cross-validation</b>: قسّم الداتا لـ k حتت، درّب على k−1 وقيّم على الحتة الباقية، لف على كل الحتت، وخد المتوسط.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: قسّم الداتا ولف الـ folds</h3>
+      <p>الشريط اللي فوق بيوريك الـ split. حرّك النسب. تحت، شوف الـ k-fold: كل صف «تجربة»، والحتة البرتقاني هي اللي بنقيّم عليها في التجربة دي. لاحظ إن كل حتة بتاخد دورها في التقييم مرة واحدة بالظبط.</p>
+      <p>الـ test (الرمادي الغامق) برا الـ folds خالص: مبنلمسوش غير في الآخر.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d23-split" width="520" height="300" aria-label="تقسيم الداتا و k-fold"></canvas>
+      <div class="mrow">
+        <label>train % <span id="d23-trv">70</span><input type="range" id="d23-trp" min="50" max="85" step="5" value="70"></label>
+        <label>val % <span id="d23-vav">15</span><input type="range" id="d23-vap" min="5" max="25" step="5" value="15"></label>
+        <label>k folds <span id="d23-kv">5</span><input type="range" id="d23-k" min="2" max="10" step="1" value="5"></label>
+        <label>dataset size <span id="d23-nv">1000</span><input type="range" id="d23-n" min="0" max="4" step="1" value="2"></label>
+      </div>
+      <div class="readout">
+        <div><small>train</small><b id="d23-ntr">700</b></div>
+        <div><small>validation</small><b id="d23-nva">150</b></div>
+        <div><small>test</small><b id="d23-nte">150</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- OVERFITTING + LAB 3 -->
+<section id="d23-fit">
+  <div class="station-head"><span class="tag">05</span><h2>Overfitting و Underfitting و Bias-Variance</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Underfitting</th><th>Good fit</th><th>Overfitting</th></tr>
+    <tr><td>الموديل</td><td>بسيط زيادة</td><td>تعقيده مظبوط</td><td>معقد زيادة</td></tr>
+    <tr><td>بيعمل إيه</td><td>بيفوّت الـ patterns (خط مستقيم على علاقة منحنية)</td><td>بيمسك الـ patterns الحقيقية</td><td>بيحفظ الـ noise (منحنى متعرج بيعدّي على كل نقطة)</td></tr>
+    <tr><td>Training error</td><td>عالي</td><td>واطي كويس</td><td>واطي جدًا</td></tr>
+    <tr><td>Test error</td><td>عالي</td><td>واطي كويس</td><td>عالي</td></tr>
+    <tr><td>الاسم الرياضي</td><td>High bias</td><td>متوازن</td><td>High variance</td></tr>
+  </table></div>
+  <p><b>علامات الـ overfitting:</b> الـ training accuracy أعلى بكتير من الـ validation، الموديل ممتاز على داتا التدريب ووحش على الجديد، وزيادة الداتا بتحسّنه (معناه كان بيحفظ).</p>
+  <div class="bench">
+    <div class="note"><strong>علاج الـ overfitting:</strong> داتا أكتر · موديل أبسط (بارامترز أقل) · <b>Regularization</b> (عقوبة على الأوزان الكبيرة) · <b>Dropout</b> (صفّر neurons عشوائي وقت التدريب) · <b>Early stopping</b> (وقّف لما الـ validation error يبدأ يطلع).</div>
+    <div class="note"><strong>علاج الـ underfitting:</strong> موديل أعقد · features أكتر · regularization أقل · درّب وقت أطول.</div>
+  </div>
+
+  <h3>الـ Bias-Variance Tradeoff</h3>
+  <p><b>Bias:</b> غلط جاي من فرضيات غلط في الموديل. موديل خطي على علاقة مش خطية = bias عالي = underfitting.</p>
+  <p><b>Variance:</b> غلط جاي من حساسية الموديل لتغييرات صغيرة في داتا التدريب. لو درّبته على حتت مختلفة من الداتا يدّيك توقعات مختلفة جدًا = variance عالي = overfitting.</p>
+  <div class="formula">Total error = Bias² + Variance + Irreducible noise</div>
+  <p>الـ irreducible noise ده العشوائية اللي في الداتا نفسها، مستحيل تقلله. اللي في إيدك إنك تلاقي النقطة اللي <span class="ltr">bias² + variance</span> فيها أقل حاجة.</p>
+  <div class="tablewrap"><table>
+    <tr><th>تعقيد الموديل</th><th>Bias</th><th>Variance</th><th>النتيجة</th></tr>
+    <tr><td>واطي (خطي على داتا منحنية)</td><td>عالي</td><td>واطي</td><td>Underfitting</td></tr>
+    <tr><td>مظبوط</td><td>متوسط</td><td>متوسط</td><td>تعميم كويس</td></tr>
+    <tr><td>عالي (polynomial درجة 20 على 10 نقط)</td><td>واطي</td><td>عالي</td><td>Overfitting</td></tr>
+  </table></div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: شوف الـ overfitting بعينك</h3>
+      <p>الداتا الحقيقية جاية من منحنى <span class="ltr">sin(πx)</span> (المتقطع) ومعاها noise. عندنا ١٢ نقطة تدريب (برتقاني) و٨٠ نقطة test (رمادي). بنعمل fit لـ polynomial ودرجته في إيدك.</p>
+      <p>ابدأ من درجة 0 وطلّع واحدة واحدة. راقب الرسمة التانية: الـ <b>train error</b> بينزل على طول، لكن الـ <b>test error</b> بينزل وبعدين يرجع يطلع. النقطة اللي تحت خالص في منحنى الـ test هي الـ sweet spot.</p>
+      <p>جرّب كمان تزوّد الـ noise: الـ overfitting بيبان أسرع.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d23-poly" width="520" height="300" aria-label="fit لـ polynomial على نقط"></canvas>
+      <canvas id="d23-curve" width="520" height="170" aria-label="train و test error مقابل الدرجة"></canvas>
+      <div class="mrow">
+        <label>degree <span id="d23-degv">1</span><input type="range" id="d23-deg" min="0" max="11" step="1" value="1"></label>
+        <label>noise σ <span id="d23-noisev">0.25</span><input type="range" id="d23-noise" min="0.05" max="0.6" step="0.05" value="0.25"></label>
+      </div>
+      <div class="readout">
+        <div><small>train MSE</small><b id="d23-trm">–</b></div>
+        <div><small>test MSE</small><b id="d23-tem">–</b></div>
+        <div><small>أحسن درجة للـ test</small><b id="d23-best">–</b></div>
+      </div>
+      <div class="verdict" id="d23-fitv"></div>
+      <div class="btns">
+        <button type="button" id="d23-resample">داتا جديدة</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d23-showTest" checked> ورّيني نقط الـ test</label>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- NFL + WHEN NOT -->
+<section id="d23-when">
+  <div class="station-head"><span class="tag">06</span><h2>No Free Lunch، وإمتى متستخدمش ML</h2></div>
+  <p><b>No Free Lunch Theorem:</b> مفيش خوارزمية واحدة هي الأحسن في كل المشاكل. اللي ممتازة في نوع مشاكل هتبقى وحشة في نوع تاني. عشان كده الـ data scientists بيجربوا كذا خوارزمية ويقارنوا. الاختيار بيعتمد على: الداتا عندك قد إيه، عدد الـ features، العلاقة خطية ولا لأ، محتاج interpretability ولا لأ، وقد إيه compute تقدر تدفع.</p>
+  <h3>متستخدمش ML لما:</h3>
+  <ol class="ex">
+    <li><b>القواعد بسيطة وواضحة:</b> حساب ضريبة، sorting، تحويل وحدات. لو تقدر تكتبها في كام if، الموديل بيزود تعقيد من غير فايدة.</li>
+    <li><b>مفيش داتا أو داتا قليلة جدًا:</b> بـ ١٠ نقط مش هتدرّب حاجة ليها معنى. اجمع داتا الأول.</li>
+    <li><b>الغلط كارثي ومحتاج صح مضمون:</b> جرعات دوا، التحكم في مفاعل، التحقق من التشفير. الموديلات احتمالية، هتغلط ساعات. لو «ساعات بيغلط» مش مقبول، استخدم طرق deterministic.</li>
+    <li><b>lookup table أو heuristic بيحل المشكلة:</b> لو threshold بسيط بيغطي 99% من الحالات، الـ ML بيزود تكلفة الصيانة من غير تحسين يذكر.</li>
+    <li><b>لازم تشرح كل قرار:</b> مجالات متنظمة بالقانون (قروض، تأمين، عدالة جنائية) ساعات بتطلب شرح كامل لكل قرار. فيه موديلات مفهومة (linear regression، decision trees صغيرة)، بس أغلبها لأ.</li>
+    <li><b>المشكلة بتتغير أسرع من ما تقدر تعمل retrain:</b> لو القواعد بتتغير كل يوم والتدريب بياخد أسبوع، الموديل هيفضل قديم دايمًا.</li>
+  </ol>
+  <h3>الـ flowchart بتاع القرار</h3>
+  <div class="tablewrap"><table>
+    <tr><th>السؤال</th><th>لو الإجابة…</th><th>اعمل إيه</th></tr>
+    <tr><td>١. عندك داتا؟</td><td>لأ</td><td>اجمع داتا الأول أو استخدم rules</td></tr>
+    <tr><td>٢. تقدر تكتب القواعد صريحة؟</td><td>أيوه وبسيطة</td><td>استخدم rules. سيب الـ ML.</td></tr>
+    <tr><td>٣. تكلفة الغلط مقبولة؟</td><td>لأ، محتاج صح مضمون</td><td>طرق deterministic</td></tr>
+    <tr><td>٤. محتاج explainability؟</td><td>أيوه، بصرامة</td><td>موديلات interpretable بس</td></tr>
+    <tr><td>٥. (استخدم ML) عندك labels كفاية؟</td><td>أيوه / شوية / مفيش</td><td>Supervised / Semi-supervised / Unsupervised أو Self-supervised</td></tr>
+  </table></div>
+</section>
+
+<!-- NEAREST CENTROID + LAB 4 -->
+<section id="d23-nc-sec">
+  <div class="station-head"><span class="tag">07</span><h2>أبسط Classifier: Nearest Centroid</h2></div>
+  <p>الفكرة: احسب <b>مركز (متوسط)</b> كل كلاس في داتا التدريب. ولما تيجي نقطة جديدة، اديها كلاس المركز الأقرب ليها. بس كده. مفيش gradient descent، مفيش iteration، مفيش hyperparameters.</p>
+  <p>ومع إنه بسيط جدًا، فيه نمط الـ ML كله:</p>
+  <ol class="ex">
+    <li><b>Learn:</b> اتعلم representation من داتا التدريب (المراكز).</li>
+    <li><b>Predict:</b> توقّع على داتا جديدة باستخدامه (أقرب مسافة).</li>
+    <li><b>Evaluate:</b> قارن بـ baseline (التخمين العشوائي).</li>
+  </ol>
+  <p>كل خوارزمية هتشوفها بعد كده، من logistic regression لحد الـ transformers، ماشية على نفس التلات خطوات. الـ representation بس اللي بيتعقد.</p>
+  <div class="note"><strong>الـ Baseline:</strong> أي موديل لازم يتقارن بحاجة تافهة. هنا التافه هو إنك تخمّن كلاس عشوائي (~50% في كلاسين). لو موديلك مش بيغلب التخمين، فيه حاجة غلط.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٤: درّب واختبر بإيدك</h3>
+      <p>النقط المليانة = <b>train</b> (70%)، والدواير الفاضية = <b>test</b> (30%). العلامات الكبيرة هي المراكز. اللون في الخلفية هو قرار الموديل، والخط بينهم هو الـ <b>decision boundary</b>: دايمًا خط مستقيم عمودي على النص بين المركزين.</p>
+      <p>حرّك الـ separation وشوف الـ accuracy. دوس على الكانفاس عشان تزوّد نقطة train من الكلاس اللي مختاره، وشوف المركز بيتحرك.</p>
+      <p>وبعدين جرّب <b>«الكلاس التاني جزيرتين»</b> و<b>«حلقة»</b>: هتشوف الموديل بيقع، وده بالظبط حدوده.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d23-nc" width="520" height="400" aria-label="nearest centroid classifier"></canvas>
+      <div class="mrow">
+        <label>separation <span id="d23-sepv">2</span><input type="range" id="d23-sep" min="0" max="5" step="0.5" value="2"></label>
+        <label>نقطة جديدة من <select id="d23-cls"><option value="0">class 0</option><option value="1">class 1</option></select></label>
+      </div>
+      <div class="readout">
+        <div><small>Train acc</small><b id="d23-tra">–</b></div>
+        <div><small>Test acc</small><b id="d23-tea">–</b></div>
+        <div><small>Random baseline</small><b id="d23-rba">–</b></div>
+        <div><small>Majority baseline</small><b id="d23-mba">–</b></div>
+      </div>
+      <div class="verdict" id="d23-ncv"></div>
+      <div class="btns">
+        <button type="button" data-shape="blobs">كلاسين blobs</button>
+        <button type="button" data-shape="two">الكلاس التاني جزيرتين</button>
+        <button type="button" data-shape="ring">حلقة</button>
+        <button type="button" id="d23-reseed">داتا جديدة</button>
+      </div>
+    </div>
+  </div>
+  <h3>الـ Nearest Centroid مبيعرفش يعمل إيه؟</h3>
+  <p>هو فاكر إن كل كلاس كتلة واحدة، وحدوده دايمًا خطية. فبيقع لما:</p>
+  <ol class="ex">
+    <li>الكلاس فيه أكتر من مجموعة (رقم «1» ممكن يتكتب بكذا شكل). شفتها في «جزيرتين»: المتوسط بييجي في النص بين الجزيرتين، في مكان مفيهوش ولا نقطة.</li>
+    <li>الحد بين الكلاسات مش خطي (كلاس ملفوف حوالين التاني). شفتها في «حلقة».</li>
+    <li>الـ features مقاييسها مختلفة جدًا: المسافة بتبقى محكومة بالـ feature اللي رقمها أكبر.</li>
+  </ol>
+  <p>الحدود دي هي السبب في كل خوارزمية جاية: الـ K-nearest neighbors بيحل مشكلة المجموعات الكتير، الـ decision trees بتحل الحدود غير الخطية، والـ feature scaling بيحل مشكلة المقاييس. كل درس بيبني على عيوب اللي قبله.</p>
+</section>
+
+<!-- CODE -->
+<section id="d23-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو (اللي عملتله clone في يوم ١):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+git pull
+python3 phases/02-ml-fundamentals/01-what-is-machine-learning/code/ml_intro.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> متعملش copy-paste. افتح ملف جديد <code>my_ml_intro.py</code> واكتب الخطوات دي بنفسك، وبص على الأصل بس لو اتزنقت. محتاج <code>numpy</code> بس.</p>
+
+  <h3>خطوة ١: الـ classifier نفسه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+
+class NearestCentroid:
+    def __init__(self):
+        self.classes = None
+        self.centroids = None
+
+    def fit(self, X, y):
+        self.classes = np.unique(y)                 <span class="c"># الكلاسات الموجودة</span>
+        self.centroids = np.array([
+            X[y == c].mean(axis=0) for c in self.classes   <span class="c"># متوسط كل كلاس = مركزه</span>
+        ])
+
+    def predict(self, X):
+        distances = np.array([
+            np.sqrt(((X - c) ** 2).sum(axis=1))     <span class="c"># مسافة euclidean من كل نقطة للمركز ده</span>
+            for c in self.centroids
+        ])
+        return self.classes[distances.argmin(axis=0)]   <span class="c"># أقرب مركز يكسب</span>
+
+    def score(self, X, y):
+        return np.mean(self.predict(X) == y)        <span class="c"># accuracy</span></pre></div>
+
+  <h3>خطوة ٢: داتا صناعية + split</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def generate_classification_data(n_per_class=100, n_features=2, separation=2.0, seed=42):
+    rng = np.random.RandomState(seed)
+    center_0 = np.ones(n_features) * (separation / 2)    <span class="c"># مركز كلاس 0</span>
+    center_1 = np.ones(n_features) * (-separation / 2)   <span class="c"># مركز كلاس 1 في العكس</span>
+    X_class0 = rng.randn(n_per_class, n_features) + center_0
+    X_class1 = rng.randn(n_per_class, n_features) + center_1
+    X = np.vstack([X_class0, X_class1])
+    y = np.array([0] * n_per_class + [1] * n_per_class)
+    shuffle_idx = rng.permutation(len(y))                <span class="c"># اخلط عشان الكلاسات متبقاش ورا بعض</span>
+    return X[shuffle_idx], y[shuffle_idx]
+
+
+def train_test_split(X, y, test_fraction=0.3, seed=42):
+    rng = np.random.RandomState(seed)
+    n = len(y)
+    idx = rng.permutation(n)
+    split = int(n * (1 - test_fraction))                 <span class="c"># 70% train و 30% test</span>
+    return X[idx[:split]], X[idx[split:]], y[idx[:split]], y[idx[split:]]</pre></div>
+
+  <h3>خطوة ٣: الـ baselines</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def random_baseline(y_train, y_test, seed=42):
+    rng = np.random.RandomState(seed)
+    classes, counts = np.unique(y_train, return_counts=True)
+    probs = counts / counts.sum()                        <span class="c"># خمّن بنفس نسب الكلاسات في الـ train</span>
+    preds = rng.choice(classes, size=len(y_test), p=probs)
+    return np.mean(preds == y_test)
+
+
+def majority_baseline(y_train, y_test):
+    values, counts = np.unique(y_train, return_counts=True)
+    majority_class = values[np.argmax(counts)]           <span class="c"># قول دايمًا الكلاس الأكتر</span>
+    preds = np.full(len(y_test), majority_class)
+    return np.mean(preds == y_test)</pre></div>
+
+  <h3>خطوة ٤: شغّل الديمو الأساسي</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>X, y = generate_classification_data(n_per_class=150, separation=2.0)
+X_train, X_test, y_train, y_test = train_test_split(X, y)
+print(f"Dataset: {len(y)} samples, {X.shape[1]} features, 2 classes")
+print(f"Train: {len(y_train)} samples, Test: {len(y_test)} samples")
+
+clf = NearestCentroid()
+clf.fit(X_train, y_train)                                <span class="c"># "التدريب" = حساب متوسطين</span>
+print("Centroids:", clf.centroids.round(3))
+print(f"{'Method':&lt;25} {'Train Acc':&gt;10} {'Test Acc':&gt;10}")
+print(f"{'Nearest Centroid':&lt;25} {clf.score(X_train, y_train):&gt;10.3f} {clf.score(X_test, y_test):&gt;10.3f}")
+print(f"{'Random Baseline':&lt;25} {'--':&gt;10} {random_baseline(y_train, y_test):&gt;10.3f}")
+print(f"{'Majority Baseline':&lt;25} {'--':&gt;10} {majority_baseline(y_train, y_test):&gt;10.3f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary>
+    <p>أول سطرين ثابتين بالحساب: ٢ × ١٥٠ = ٣٠٠ نقطة، و<span class="ltr">int(300 × 0.7) = 210</span>:</p>
+    <pre class="term">Dataset: 300 samples, 2 features, 2 classes
+Train: 210 samples, Test: 90 samples</pre>
+    <p>الدرس بيقول إن الـ Nearest Centroid المفروض يجيب حوالي <b>90% أو أكتر</b> على الداتا النضيفة دي، والـ random baseline حوالي <b>50%</b>. الأرقام بالظبط هتطلع نفسها كل مرة لأن الـ seed ثابت (42)، فاكتبها عندك في كشكول وقارنها بالمعمل ٠٤.</p>
+  </details>
+
+  <h3>خطوة ٥: الملف الأصلي فيه ٣ تجارب كمان</h3>
+  <p>بعد ما تشغّل الملف الأصلي، هتلاقي:</p>
+  <ol class="ex">
+    <li><b>EFFECT OF CLASS SEPARATION:</b> بيجرب separation = 0.5، 1، 1.5، 2، 3، 5. الكلاسات المتداخلة accuracy بتقع، والبعيدة حتى الموديل البسيط ده بيكسح (نفس اللي شفته بالـ slider في المعمل ٠٤).</li>
+    <li><b>HIGHER DIMENSIONS:</b> بيجرب 2، 5، 10، 20، 50 feature. مع داتا Gaussian وseparation ثابت، الأبعاد الزيادة بتساعد، لأن المراكز بتبعد أكتر (كل feature بيضيف فرق). بس الملف نفسه بينبّه إن الداتا الحقيقية غير كده: لما features كتير تبقى noise بتظهر الـ curse of dimensionality.</li>
+    <li><b>MULTICLASS (3 CLASSES):</b> نفس الكلاس بيشتغل على ٣ كلاسات من غير أي تعديل، والـ random baseline هنا حوالي 1/3.</li>
+  </ol>
+
+  <h3>خطوة ٦: نفس الكلام بـ scikit-learn (Use It)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.neighbors import NearestCentroid
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
+
+X, y = make_classification(
+    n_samples=500, n_features=2, n_redundant=0,
+    n_clusters_per_class=1, random_state=42
+)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
+
+clf = NearestCentroid()
+clf.fit(X_train, y_train)
+print(f"Accuracy: {clf.score(X_test, y_test):.3f}")   <span class="c"># الرقم هيتغير كل مرة: الـ split مالوش random_state</span></pre></div>
+  <p>لو مش عندك sklearn: <code>pip install scikit-learn</code>. لاحظ إن نفس الـ API: <code>fit</code> و<code>predict</code> و<code>score</code>. ده الشكل اللي هتشوفه في كل موديلات sklearn.</p>
+  <div class="note ai"><strong>Ship It:</strong> الدرس بيطلّع ملف <code>outputs/prompt-ml-problem-framer.md</code>: prompt بتديله مشكلة بيزنس مبهمة («عايزين نقلل الـ churn») فيحددلك نوع التعلم، الـ target، features مرشحة، مقياس النجاح، الـ baseline، والفخاخ زي الـ data leakage والـ class imbalance. افتحه واقراه، هتستخدمه في التمرين الإضافي.</div>
+</section>
+
+<!-- KEY TERMS -->
+<section id="d23-terms">
+  <div class="station-head"><span class="tag">09</span><h2>المصطلحات</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المصطلح</th><th>الناس بتقول</th><th>معناه بجد</th></tr>
+    <tr><td>Model</td><td>«الـ AI»</td><td>دالة رياضية ليها بارامترز بتتعلم، بتحوّل inputs لـ outputs</td></tr>
+    <tr><td>Training</td><td>«بنعلّم الـ AI»</td><td>خوارزمية optimization بتظبط البارامترز عشان التوقعات تطابق الإجابات المعروفة</td></tr>
+    <tr><td>Feature</td><td>«عمود input»</td><td>خاصية قابلة للقياس في الداتا الموديل بيستخدمها</td></tr>
+    <tr><td>Label</td><td>«الإجابة»</td><td>الخرج المعروف لمثال التدريب، بنحسب منه إشارة الغلط</td></tr>
+    <tr><td>Hyperparameter</td><td>«setting بتظبطه»</td><td>حاجة بتتحدد قبل التدريب وبتتحكم فيه (learning rate، عدد الـ layers)</td></tr>
+    <tr><td>Loss function</td><td>«الموديل غلطان قد إيه»</td><td>دالة بتقيس الفرق بين التوقع والحقيقة، والتدريب بيحاول يصغّرها</td></tr>
+    <tr><td>Overfitting</td><td>«حفظ الامتحان»</td><td>اتعلم noise خاص بداتا التدريب بدل الـ patterns العامة، فبيقع على الجديد</td></tr>
+    <tr><td>Underfitting</td><td>«ماتعلمش حاجة»</td><td>بسيط زيادة إنه يمسك الـ patterns الحقيقية</td></tr>
+    <tr><td>Generalization</td><td>«شغال على داتا جديدة»</td><td>قدرته يتوقع صح على داتا ماتدربش عليها</td></tr>
+    <tr><td>Cross-validation</td><td>«اختبار على حتت مختلفة»</td><td>تقسيم متكرر لـ folds وأخد المتوسط، تقدير أثبت للأداء</td></tr>
+    <tr><td>Regularization</td><td>«خلّي الأوزان صغيرة»</td><td>عقوبة بتتضاف للـ loss عشان تمنع الموديلات المعقدة زيادة</td></tr>
+    <tr><td>Data drift</td><td>«الدنيا اتغيرت»</td><td>توزيع الداتا الجاية بيتغير مع الوقت فالأداء بيقع</td></tr>
+  </table></div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d23-exercises">
+  <div class="station-head"><span class="tag">10</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Split بإيدك:</b> خد أي dataset (Iris أو Titanic)، وقسّمه 70/15/15 لـ train/validation/test. واشرح ليه ممنوع تظبط الـ hyperparameters على الـ test set.
+      <details><summary>تلميح وإجابة</summary>Iris موجود في <code>sklearn.datasets.load_iris()</code>. اعمل <code>permutation</code> للـ indices (زي <code>train_test_split</code> في الكود) وخد أول 70% وبعدها 15% وبعدها الباقي. ولو عايز تستخدم sklearn اعمل <code>train_test_split</code> مرتين: الأولى تفصل 30%، والتانية تقسم الـ 30% دول نصين. <b>ليه؟</b> لأنك لو اخترت الـ hyperparameters على أساس الـ test، المعلومة من الـ test «سرّبت» للموديل، فالرقم النهائي بقى متفائل ومبيقيسش الأداء على داتا جديدة فعلًا. الـ validation موجود عشان الشغلانة دي بالظبط.</details></li>
+    <li><b>صنّف ٣ مشاكل:</b> اكتب ٣ مشاكل حقيقية، ولكل واحدة: classification ولا regression ولا clustering؟ وsupervised ولا unsupervised؟
+      <details><summary>مثال إجابة</summary>تصنيف تذاكر الدعم الفني لأقسام (عندك تذاكر قديمة متوزعة): classification · supervised. توقع وقت توصيل الأوردر بالدقايق: regression · supervised. تقسيم مستخدمين تطبيق حسب سلوكهم من غير فئات جاهزة: clustering · unsupervised. اختبر نفسك بالمعمل ٠١.</details></li>
+    <li><b>تشخيص:</b> موديل جاب 99% على الـ train و60% على الـ test. إيه المشكلة؟ واقترح ٣ حاجات تجربها.
+      <details><summary>الإجابة</summary>ده <b>overfitting</b>: الفرق الكبير بين الـ train والـ test. جرّب: داتا تدريب أكتر، موديل أبسط (بارامترز أقل)، regularization، dropout، أو early stopping. وكمان اتأكد إن الـ test جاي من نفس توزيع الـ train (لو مش كده ممكن تكون data drift مش overfitting بس).</details></li>
+    <li><b>إضافة مني · اكسر الـ Nearest Centroid بالـ scale:</b> في <code>my_ml_intro.py</code>، بعد ما تولّد الداتا، اضرب العمود الأول في 1000 بس في الـ train والـ test: <code>X[:, 0] *= 1000</code>، وبدّل المراكز عشان الكلاسين يختلفوا في العمود التاني بس (مثلًا ضيف <code>±1</code> على العمود التاني وخلّي العمود الأول noise). قارن الـ accuracy قبل وبعد. وبعدين اعمل <b>standardize</b>: اطرح المتوسط واقسم على الانحراف المعياري لكل عمود، <b>محسوبين من الـ train بس</b>، وشوف الـ accuracy رجعت.
+      <details><summary>ليه ده مهم في الشغل؟</summary>في الشغل الحقيقي features زي «السعر بالجنيه» و«عدد الزيارات» مقاييسهم مختلفة جدًا، وأي موديل بيعتمد على المسافة (centroid، KNN، و embeddings retrieval لو خلطت أرقام خام) هيتحكم فيه الـ feature الأكبر. وحساب الـ mean/std من الـ train بس هو اللي بيمنع الـ leakage من الـ test. ده نفس الدرس اللي هتشوفه في Feature Engineering قدام.</details></li>
+    <li><b>إضافة مني · اعمل framing لمشكلة حقيقية:</b> افتح <code>outputs/prompt-ml-problem-framer.md</code> وطبّقه (بنفسك أو مع أي LLM) على مشكلة: «شركة عايزة تعرف أنهي عملاء هيلغوا الاشتراك الشهر الجاي». اكتب: نوع التعلم، الـ target بالظبط، ٥ features، مقياس النجاح، الـ baseline، وفخ leakage واحد.
+      <details><summary>تلميح</summary>Supervised classification. الـ target: «لغى في خلال ٣٠ يوم بعد تاريخ معين» (0/1). Baseline: majority (دايمًا «مش هيلغي») لأن الكلاسات غالبًا مش متوازنة، فالـ accuracy لوحدها هتضحك عليك. فخ leakage: feature زي «تاريخ الإلغاء» أو «آخر تذكرة دعم بعنوان إلغاء» لازم تتحسب من داتا <b>قبل</b> لحظة التوقع بس.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d23-extra">
+  <div class="station-head"><span class="tag">11</span><h2>إضافة مني: اللي الدرس ما قالهوش صريح</h2></div>
+  <h3>الـ LLM اللي بتستخدمه كل يوم فيه الأنواع كلها</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المرحلة</th><th>نوع التعلم</th><th>ليه</th></tr>
+    <tr><td>Pretraining (next-token)</td><td>Self-supervised</td><td>النص نفسه هو الـ label: الكلمة الجاية</td></tr>
+    <tr><td>Instruction fine-tuning (SFT)</td><td>Supervised</td><td>أزواج (prompt → رد كويس) مكتوبة أو متراجعة</td></tr>
+    <tr><td>RLHF</td><td>Reinforcement</td><td>الموديل بياخد reward على الردود اللي الناس بتفضلها</td></tr>
+    <tr><td>Clustering للـ embeddings (مثلًا تجميع أسئلة اليوزرز)</td><td>Unsupervised</td><td>مفيش فئات جاهزة، بندوّر على مجموعات</td></tr>
+  </table></div>
+  <h3>غلطات المبتدئين المشهورة</h3>
+  <ol class="ex">
+    <li><b>Data leakage:</b> أي معلومة من الـ test أو من المستقبل تدخل التدريب. أشهر شكل: تعمل normalize أو تملأ القيم الناقصة على الداتا كلها <b>قبل</b> الـ split. الصح: احسب كل حاجة من الـ train بس وطبّقها على الباقي.</li>
+    <li><b>Split عشوائي لداتا زمنية:</b> لو بتتوقع المستقبل (مبيعات، أسعار)، الـ shuffle بيخلي الموديل يتدرب على بكرة ويتختبر على امبارح. قسّم بالزمن: الماضي train والأحدث test.</li>
+    <li><b>Accuracy على كلاسات مش متوازنة:</b> لو 95% من الإيميلات مش spam، موديل بيقول «مش spam» دايمًا هياخد 95%. عشان كده الكود فيه <code>majority_baseline</code>: لو موديلك مش بيغلبه، هو ماتعلمش حاجة.</li>
+    <li><b>إنك تبص على الـ test كتير:</b> كل مرة تبص وتعدّل، الـ test بيتحول لـ validation من غير ما تحس.</li>
+  </ol>
+  <h3>فين ده في شغل الـ AI Engineering؟</h3>
+  <ol class="ex">
+    <li><b>الـ eval set بتاع تطبيق LLM هو الـ test set بتاعك:</b> لو بتظبط الـ prompt على نفس الأمثلة اللي بتقيس بيها، انت بتعمل overfitting على الـ eval. خلّي جزء held-out متلمسوش.</li>
+    <li><b>«متستخدمش ML» = متستخدمش LLM:</b> في الـ agents، الحسابات والتحويلات والتحقق من الصلاحيات تتعمل بكود deterministic (tool)، مش بإنك تسأل الموديل. الموديل احتمالي وهيغلط ساعات.</li>
+    <li><b>Data drift في الـ production:</b> نوعية الأسئلة اللي اليوزرز بيسألوها بتتغير. عشان كده الـ monitoring خطوة في الـ workflow، مش رفاهية.</li>
+    <li><b>Nearest centroid عايش في الـ embeddings:</b> لو عندك embeddings لأمثلة كل category، متوسطهم هو «مركز» الـ category، وتصنيف أي نص جديد = أقرب مركز. ده classifier سريع جدًا من غير تدريب، وكتير بيتعمل كـ baseline لتصنيف النصوص بالـ embeddings.</li>
+  </ol>
+</section>
+
+<!-- QUIZ -->
+<section id="d23-quizSec">
+  <div class="station-head"><span class="tag">12</span><h2>كويز</h2></div>
+  <div class="quiz" id="d23-quiz"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d23-done">
+  <div class="station-head"><span class="tag">13</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d23-checklist">
+    <li><label><input type="checkbox" data-ck="types"> أقدر أفرّق بين supervised وunsupervised وreinforcement، وأعرف self-supervised وsemi-supervised</label></li>
+    <li><label><input type="checkbox" data-ck="cr"> أعرف الفرق بين classification وregression والـ loss المناسبة لكل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="split"> فاهم ليه الـ test set بنبص عليه مرة واحدة، وإمتى أستخدم k-fold</label></li>
+    <li><label><input type="checkbox" data-ck="overfit"> شفت الـ test error بيطلع تاني في المعمل ٠٣ وأقدر أشرح الـ bias-variance</label></li>
+    <li><label><input type="checkbox" data-ck="nc"> كسرت الـ nearest centroid بالجزيرتين والحلقة في المعمل ٠٤</label></li>
+    <li><label><input type="checkbox" data-ck="code"> كتبت <code>NearestCentroid</code> والـ baselines بإيدي وشغّلت <code>ml_intro.py</code></label></li>
+    <li><label><input type="checkbox" data-ck="when"> أقدر أقول إمتى <b>مستخدمش</b> ML</label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="quiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Supervised learning</td><td>فلاتر الـ spam، الـ fraud detection، الـ SFT للـ LLMs</td></tr>
+    <tr><td>Self-supervised</td><td>pretraining بتاع GPT وBERT، الـ contrastive embeddings</td></tr>
+    <tr><td>Reinforcement learning</td><td>RLHF، الـ game AI، الروبوتات</td></tr>
+    <tr><td>Unsupervised / clustering</td><td>تقسيم العملاء، تجميع الـ embeddings، تقليل الأبعاد للرسم</td></tr>
+    <tr><td>Train / val / test</td><td>كل تجربة ML، والـ eval sets بتاعة تطبيقات الـ LLM</td></tr>
+    <tr><td>Overfitting / regularization</td><td>كل تدريب neural network (dropout، weight decay، early stopping)</td></tr>
+    <tr><td>Baselines</td><td>أي تقرير نتايج محترم: «أحسن من إيه؟»</td></tr>
+    <tr><td>Data drift / monitoring</td><td>الموديلات في الـ production، وتطبيقات الـ LLM اللي اليوزرز بيتغيروا عليها</td></tr>
+    <tr><td>Nearest centroid</td><td>تصنيف النصوص بالـ embeddings كـ baseline سريع</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Linear Regression. أول موديل هيتعلم فعلًا بـ gradient descent (اللي عملناه في Phase 1)، والـ MSE اللي شفته في المعمل ٠٣ هيبقى الـ loss بتاعتنا.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F01-what-is-machine-learning" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/01-what-is-machine-learning</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, fmt=A.fmt;
+const $=id=>document.getElementById(id);
+const root=$('d23-root');
+
+// roadmap
+const rm=$('d23-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===1)s.className='now';rm.appendChild(s)}
+
+// ---------- seeded random ----------
+function rng(seed){let a=seed>>>0;return function(){a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296}}
+function gauss(r){let u=0;while(!u)u=r();const v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function shuffle(arr,r){for(let i=arr.length-1;i>0;i--){const j=Math.floor(r()*(i+1));const t=arr[i];arr[i]=arr[j];arr[j]=t}return arr}
+
+// ---------- Lab 1: sorter ----------
+const KEYS=[['sc','Supervised · Classification'],['sr','Supervised · Regression'],['un','Unsupervised'],['rl','Reinforcement'],['no','مش محتاج ML (rules)']];
+const SC=[
+ ['فلتر spam متدرب على إيميلات قديمة مكتوب عليها spam / مش spam','sc','عندك labels والخرج فئة. ده المثال الكلاسيكي.'],
+ ['توقع سعر شقة من مساحتها ومكانها','sr','عندك أمثلة بأسعارها، والخرج رقم متصل.'],
+ ['تقسيم العملاء لمجموعات من تاريخ شرائهم، من غير فئات جاهزة','un','مفيش labels، بندوّر على مجموعات طبيعية: clustering.'],
+ ['دراع روبوت: +1 لو مسك الحاجة و −0.01 لكل ثانية بتضيع','rl','agent بياخد actions ويستلم rewards، وعايز يعظّم المجموع.'],
+ ['تحويل درجة الحرارة من Celsius لـ Fahrenheit','no','معادلة ثابتة F = 9/5·C + 32. ML هنا تعقيد ملوش لازمة.'],
+ ['السهم هيطلع ولا هينزل بكرة؟','sc','فئتين: طالع / نازل. لو سألت عن السعر بالظبط تبقى regression.'],
+ ['ضغط داتا من 1000 بُعد لبُعدين للرسم','un','dimensionality reduction من غير labels.'],
+ ['حساب الضريبة على مرتب','no','القواعد واضحة ومكتوبة في القانون. كام if وخلاص.'],
+ ['لعبة: +1 لو كسبت و −1 لو خسرت، اتعلم استراتيجية','rl','الـ reward بييجي من البيئة بعد سلسلة actions.'],
+ ['توقع كام دقيقة هياخدها توصيل الأوردر','sr','الخرج رقم متصل (دقايق).']
+];
+(function(){const box=$('d23-sorter');let right=0,ans=0;
+ SC.forEach((s,i)=>{const d=document.createElement('div');d.className='q';d.innerHTML='<h3></h3><div class="opts"></div><p class="exp" hidden></p>';
+  d.querySelector('h3').textContent=(i+1)+'. '+s[0];const o=d.querySelector('.opts');
+  KEYS.forEach(([k,t])=>{const b=document.createElement('button');b.type='button';b.textContent=t;b.dataset.k=k;
+   b.addEventListener('click',()=>{if(d.dataset.done)return;d.dataset.done=1;ans++;
+    if(k===s[1]){b.classList.add('right');right++}else{b.classList.add('wrong');o.querySelector('[data-k="'+s[1]+'"]').classList.add('right')}
+    const e=d.querySelector('.exp');e.textContent=s[2];e.hidden=false;
+    $('d23-sortScore').textContent='صنّفت '+right+' صح من '+ans+(ans===SC.length?(right>=8?' · ممتاز':' · راجع جدول الأنواع'):'');});
+   o.appendChild(b)});
+  box.appendChild(d)});
+})();
+
+// ---------- Lab 2: splits + k-fold ----------
+const sc2=$('d23-split'),sx=A.setupCanvas(sc2),SW=+sc2.dataset.w,SH=+sc2.dataset.h;
+const NS=[100,500,1000,10000,100000];
+function drawSplit(){
+ let tr=+$('d23-trp').value,va=+$('d23-vap').value;if(tr+va>95){va=95-tr;$('d23-vap').value=va}
+ const te=100-tr-va,k=+$('d23-k').value,N=NS[+$('d23-n').value];
+ $('d23-trv').textContent=tr;$('d23-vav').textContent=va;$('d23-kv').textContent=k;$('d23-nv').textContent=N.toLocaleString('en');
+ const ntr=Math.round(N*tr/100),nva=Math.round(N*va/100);
+ $('d23-ntr').textContent=ntr.toLocaleString('en');$('d23-nva').textContent=nva.toLocaleString('en');$('d23-nte').textContent=(N-ntr-nva).toLocaleString('en');
+ sx.clearRect(0,0,SW,SH);
+ const L=10,R=SW-10,BW=R-L;
+ sx.font='12px JetBrains Mono, monospace';sx.textBaseline='middle';
+ // split bar
+ const segs=[[tr,css('--vec-a'),'train '+tr+'%'],[va,css('--vec-b'),'val '+va+'%'],[te,css('--ink'),'test '+te+'%']];
+ let x=L;segs.forEach(([p,c,t])=>{const w=BW*p/100;sx.fillStyle=c;sx.globalAlpha=c===css('--ink')?.75:.85;sx.fillRect(x,14,w-2,30);sx.globalAlpha=1;
+  sx.fillStyle=css('--paper');sx.textAlign='center';if(w>50)sx.fillText(t,x+w/2,29);x+=w});
+ sx.fillStyle=css('--muted');sx.textAlign='left';sx.fillText('holdout split',L,58);
+ // k-fold over train+val
+ const top=80,rowH=Math.min(20,(SH-top-20)/k),pool=BW*(tr+va)/100,fw=pool/k;
+ sx.fillText(k+'-fold cross-validation (train + val)',L,top-8);
+ for(let r=0;r<k;r++){for(let f=0;f<k;f++){sx.fillStyle=f===r?css('--vec-b'):css('--vec-a');sx.globalAlpha=f===r?.9:.35;sx.fillRect(L+f*fw,top+r*rowH+2,fw-2,rowH-4)}
+  sx.globalAlpha=1;sx.fillStyle=css('--ink');sx.globalAlpha=.25;sx.fillRect(L+pool,top+r*rowH+2,BW-pool-2,rowH-4);sx.globalAlpha=1}
+ sx.fillStyle=css('--muted');sx.textAlign='right';sx.fillText('test: untouched',R,top+k*rowH+10);sx.textAlign='left';sx.textBaseline='alphabetic';
+}
+['d23-trp','d23-vap','d23-k','d23-n'].forEach(id=>$(id).addEventListener('input',drawSplit));drawSplit();
+
+// ---------- Lab 3: polynomial overfitting ----------
+const pc=$('d23-poly'),px=A.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+const cc=$('d23-curve'),cx=A.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+let seed2=7,tr2=[],te2=[],errs=[],W2=[];
+const truth=x=>Math.sin(Math.PI*x);
+function polyfit(P,d){const n=d+1,M=[];for(let i=0;i<n;i++)M.push(new Array(n+1).fill(0));
+ P.forEach(([x,y])=>{const p=[];for(let k=0;k<n;k++)p.push(Math.pow(x,k));for(let i=0;i<n;i++){for(let j=0;j<n;j++)M[i][j]+=p[i]*p[j];M[i][n]+=p[i]*y}});
+ for(let i=0;i<n;i++)M[i][i]+=1e-10;
+ for(let c=0;c<n;c++){let pv=c;for(let r=c+1;r<n;r++)if(Math.abs(M[r][c])>Math.abs(M[pv][c]))pv=r;const t=M[c];M[c]=M[pv];M[pv]=t;
+  for(let r=c+1;r<n;r++){const f=M[r][c]/M[c][c];for(let k=c;k<=n;k++)M[r][k]-=f*M[c][k]}}
+ const w=new Array(n).fill(0);for(let i=n-1;i>=0;i--){let s=M[i][n];for(let k=i+1;k<n;k++)s-=M[i][k]*w[k];w[i]=s/M[i][i]}return w}
+const peval=(w,x)=>{let s=0,p=1;for(let k=0;k<w.length;k++){s+=w[k]*p;p*=x}return s};
+const mse=(P,w)=>P.reduce((a,[x,y])=>a+Math.pow(peval(w,x)-y,2),0)/P.length;
+function gen2(){const r=rng(seed2),sig=+$('d23-noise').value;tr2=[];te2=[];
+ for(let i=0;i<12;i++){const x=-0.95+1.9*i/11+(r()-0.5)*0.06;tr2.push([x,truth(x)+gauss(r)*sig])}
+ for(let i=0;i<80;i++){const x=-0.95+1.9*r();te2.push([x,truth(x)+gauss(r)*sig])}
+ errs=[];W2=[];for(let d=0;d<=11;d++){const w=polyfit(tr2,d);W2.push(w);errs.push([mse(tr2,w),mse(te2,w)])}}
+function drawPoly(){
+ const d=+$('d23-deg').value,w=W2[d];$('d23-degv').textContent=d;$('d23-noisev').textContent=$('d23-noise').value;
+ const X=x=>(x+1.05)/2.1*PW,Y=y=>PH/2-y*PH/5.4;
+ px.clearRect(0,0,PW,PH);A.grid(px,PW,PH,PW/8.4,X(0),Y(0));
+ px.save();px.beginPath();px.rect(0,0,PW,PH);px.clip();
+ px.setLineDash([6,5]);px.strokeStyle=css('--muted');px.lineWidth=1.5;px.beginPath();
+ for(let i=0;i<=200;i++){const x=-1.05+2.1*i/200;i?px.lineTo(X(x),Y(truth(x))):px.moveTo(X(x),Y(truth(x)))}px.stroke();px.setLineDash([]);
+ if($('d23-showTest').checked){px.fillStyle=css('--muted');te2.forEach(([x,y])=>{px.globalAlpha=.55;px.beginPath();px.arc(X(x),Y(y),2.6,0,7);px.fill()});px.globalAlpha=1}
+ px.strokeStyle=css('--vec-a');px.lineWidth=3;px.beginPath();
+ for(let i=0;i<=300;i++){const x=-1+2*i/300;let y=peval(w,x);y=Math.max(-9,Math.min(9,y));i?px.lineTo(X(x),Y(y)):px.moveTo(X(x),Y(y))}px.stroke();
+ px.fillStyle=css('--vec-b');tr2.forEach(([x,y])=>{px.beginPath();px.arc(X(x),Y(y),5,0,7);px.fill()});
+ px.restore();
+ px.fillStyle=css('--ink');px.font='12px JetBrains Mono, monospace';px.fillText('degree '+d+' fit',8,16);
+ // error curve
+ cx.clearRect(0,0,CW,CH);
+ const L=36,R=CW-10,T=10,B=CH-24,lg=v=>Math.log10(Math.max(v,1e-6));
+ const allv=[];errs.forEach(e=>{allv.push(lg(e[0]),Math.min(lg(e[1]),2))});
+ const lo=Math.min(...allv),hi=Math.max(...allv)+0.1;
+ const ex=i=>L+(R-L)*i/11,ey=v=>B-(B-T)*(Math.min(lg(v),2)-lo)/(hi-lo||1);
+ cx.strokeStyle=css('--line');cx.lineWidth=1;cx.beginPath();cx.moveTo(L,T);cx.lineTo(L,B);cx.lineTo(R,B);cx.stroke();
+ cx.fillStyle=css('--vec-a');cx.globalAlpha=.15;cx.fillRect(ex(d)-8,T,16,B-T);cx.globalAlpha=1;
+ [[0,css('--vec-b'),'train'],[1,css('--vec-a'),'test']].forEach(([j,c,t])=>{cx.strokeStyle=c;cx.lineWidth=2.5;cx.beginPath();errs.forEach((e,i)=>{i?cx.lineTo(ex(i),ey(e[j])):cx.moveTo(ex(i),ey(e[j]))});cx.stroke();
+  cx.fillStyle=c;errs.forEach((e,i)=>{cx.beginPath();cx.arc(ex(i),ey(e[j]),3,0,7);cx.fill()})});
+ cx.font='11px JetBrains Mono, monospace';cx.fillStyle=css('--muted');cx.textAlign='center';
+ for(let i=0;i<=11;i++)cx.fillText(i,ex(i),CH-8);cx.textAlign='left';
+ cx.fillStyle=css('--vec-b');cx.fillText('train MSE',L+6,T+10);cx.fillStyle=css('--vec-a');cx.fillText('test MSE (log scale)',L+80,T+10);
+ // readouts
+ let best=0;errs.forEach((e,i)=>{if(e[1]<errs[best][1])best=i});
+ $('d23-trm').textContent=fmt(errs[d][0],3);$('d23-tem').textContent=errs[d][1]>999?'>999':fmt(errs[d][1],3);$('d23-best').textContent=best;
+ const v=$('d23-fitv');
+ if(d<best&&errs[d][1]>errs[best][1]*1.3){v.textContent='Underfitting: الموديل بسيط زيادة، الـ train والـ test الاتنين عاليين';v.style.color=css('--vec-b')}
+ else if(d>best&&errs[d][1]>errs[best][1]*1.3){v.textContent='Overfitting: الـ train واطي بس الـ test طلع. الموديل بيحفظ الـ noise';v.style.color=css('--bad')}
+ else{v.textContent='Good fit: قريب من أحسن test error';v.style.color=css('--ok')}
+}
+$('d23-deg').addEventListener('input',drawPoly);
+$('d23-noise').addEventListener('input',()=>{gen2();drawPoly()});
+$('d23-showTest').addEventListener('change',drawPoly);
+$('d23-resample').addEventListener('click',()=>{seed2++;gen2();drawPoly()});
+gen2();drawPoly();
+
+// ---------- Lab 4: nearest centroid ----------
+const nc=$('d23-nc'),nx=A.setupCanvas(nc),NW=+nc.dataset.w,NH=+nc.dataset.h,NSC=44,nox=NW/2,noy=NH/2;
+let seed1=42,shape='blobs',train=[],test=[],cents=[null,null];
+const toP=(x,y)=>[nox+x*NSC,noy-y*NSC],toW=(a,b)=>[(a-nox)/NSC,(noy-b)/NSC];
+function genNC(){const r=rng(seed1),s=+$('d23-sep').value,n=60,pts=[];
+ for(let i=0;i<n;i++){
+  if(shape==='blobs'){pts.push([gauss(r)+s/2,gauss(r)+s/2,0]);pts.push([gauss(r)-s/2,gauss(r)-s/2,1])}
+  else if(shape==='two'){pts.push([gauss(r)*0.7,gauss(r)*0.7,0]);const side=i%2?1:-1;pts.push([gauss(r)*0.6+side*(1.5+s*0.5),gauss(r)*0.6,1])}
+  else{pts.push([gauss(r)*0.6,gauss(r)*0.6,0]);const t=r()*2*Math.PI,R=2.2+s*0.3+gauss(r)*0.25;pts.push([R*Math.cos(t),R*Math.sin(t),1])}
+ }
+ const idx=shuffle(pts.map((_,i)=>i),r),sp=Math.floor(pts.length*0.7);
+ train=idx.slice(0,sp).map(i=>pts[i]);test=idx.slice(sp).map(i=>pts[i]);fitNC()}
+function fitNC(){cents=[0,1].map(c=>{const P=train.filter(p=>p[2]===c);if(!P.length)return null;return[P.reduce((a,p)=>a+p[0],0)/P.length,P.reduce((a,p)=>a+p[1],0)/P.length]})}
+function pred(x,y){if(!cents[0])return 1;if(!cents[1])return 0;const d0=Math.hypot(x-cents[0][0],y-cents[0][1]),d1=Math.hypot(x-cents[1][0],y-cents[1][1]);return d0<=d1?0:1}
+const acc=P=>P.length?P.filter(p=>pred(p[0],p[1])===p[2]).length/P.length:0;
+function drawNC(){
+ $('d23-sepv').textContent=$('d23-sep').value;
+ nx.clearRect(0,0,NW,NH);
+ const col=[css('--vec-a'),css('--vec-b')];
+ for(let a=0;a<NW;a+=8)for(let b=0;b<NH;b+=8){const w=toW(a+4,b+4);nx.fillStyle=col[pred(w[0],w[1])];nx.globalAlpha=.12;nx.fillRect(a,b,8,8)}
+ nx.globalAlpha=1;A.grid(nx,NW,NH,NSC,nox,noy);
+ if(cents[0]&&cents[1]){const m=[(cents[0][0]+cents[1][0])/2,(cents[0][1]+cents[1][1])/2],dx=cents[1][0]-cents[0][0],dy=cents[1][1]-cents[0][1],L=Math.hypot(dx,dy);
+  if(L>1e-6){const ux=-dy/L*20,uy=dx/L*20;nx.strokeStyle=css('--ink');nx.lineWidth=2;nx.setLineDash([7,5]);nx.beginPath();nx.moveTo(...toP(m[0]-ux,m[1]-uy));nx.lineTo(...toP(m[0]+ux,m[1]+uy));nx.stroke();nx.setLineDash([])}}
+ train.forEach(p=>{const q=toP(p[0],p[1]);nx.fillStyle=col[p[2]];nx.beginPath();nx.arc(q[0],q[1],4,0,7);nx.fill()});
+ test.forEach(p=>{const q=toP(p[0],p[1]),ok=pred(p[0],p[1])===p[2];nx.strokeStyle=ok?col[p[2]]:css('--bad');nx.lineWidth=ok?1.8:3;nx.beginPath();nx.arc(q[0],q[1],ok?5:6,0,7);nx.stroke()});
+ cents.forEach((c,i)=>{if(!c)return;const q=toP(c[0],c[1]);nx.fillStyle=css('--paper');nx.strokeStyle=col[i];nx.lineWidth=3;nx.beginPath();nx.moveTo(q[0],q[1]-11);nx.lineTo(q[0]+11,q[1]);nx.lineTo(q[0],q[1]+11);nx.lineTo(q[0]-11,q[1]);nx.closePath();nx.fill();nx.stroke();
+  nx.fillStyle=col[i];nx.font='bold 12px JetBrains Mono, monospace';nx.fillText('μ'+i,q[0]+13,q[1]-8)});
+ nx.fillStyle=css('--muted');nx.font='12px JetBrains Mono, monospace';nx.fillText('● train   ○ test   red ring = wrong',8,NH-10);
+ // readouts
+ const ta=acc(train),te=acc(test);
+ const cnt=[0,1].map(c=>train.filter(p=>p[2]===c).length),tot=cnt[0]+cnt[1],r=rng(seed1+99);
+ let rb=0;test.forEach(p=>{const g=r()<cnt[0]/tot?0:1;if(g===p[2])rb++});rb=test.length?rb/test.length:0;
+ const maj=cnt[0]>=cnt[1]?0:1,mb=test.length?test.filter(p=>p[2]===maj).length/test.length:0;
+ $('d23-tra').textContent=fmt(ta,3);$('d23-tea').textContent=fmt(te,3);$('d23-rba').textContent=fmt(rb,3);$('d23-mba').textContent=fmt(mb,3);
+ const v=$('d23-ncv');
+ if(te>=Math.max(rb,mb)+0.15){v.textContent='الموديل بيغلب الـ baselines بفرق واضح';v.style.color=css('--ok')}
+ else if(te>Math.max(rb,mb)){v.textContent='بيغلب الـ baseline بالعافية: الكلاسات متداخلة أو الشكل مش مناسب';v.style.color=css('--vec-b')}
+ else{v.textContent='مش بيغلب الـ baseline! الموديل ده مش مناسب للداتا دي';v.style.color=css('--bad')}
+}
+nc.addEventListener('pointerdown',e=>{const p=A.evPos(nc,e),w=toW(p[0],p[1]);train.push([w[0],w[1],+$('d23-cls').value]);fitNC();drawNC()});
+$('d23-sep').addEventListener('input',()=>{genNC();drawNC()});
+root.querySelectorAll('[data-shape]').forEach(b=>b.addEventListener('click',()=>{shape=b.dataset.shape;genNC();drawNC()}));
+$('d23-reseed').addEventListener('click',()=>{seed1++;genNC();drawNC()});
+genNC();drawNC();
+
+// ---------- quiz ----------
+const Q=[
+ ['في الـ supervised learning، الموديل بياخد إيه وقت التدريب؟',['أزواج input-output فيها الإجابة الصح','مجموعة قواعد كتبها خبير','reward signal لكل action','inputs بس من غير labels'],0,'الـ supervised بيتدرب على داتا عليها labels، والموديل بيتعلم يوصّل كل input للـ output الصح بتاعه.'],
+ ['ليه بنقسم الداتا لـ training وtest؟',['عشان يبقى عندنا نسخة احتياطي لو الداتا ضاعت','عشان نقيّم هل الموديل بيعمّم على داتا ماشافهاش وهو بيتدرب','عشان التدريب يبقى أسرع بداتا أقل','عشان نوازن الكلاسات'],1,'الـ test set بيقيس الـ generalization. لو قيّمت على داتا التدريب انت بتقيس الحفظ مش التعلم.'],
+ ['موديل جاب 98% على الـ train و55% على الـ test. ده مثال على إيه؟',['Data drift: توزيع الـ test اتغير','Underfitting: الموديل بسيط زيادة','Overfitting: الموديل حفظ الـ noise بدل الـ patterns العامة','Generalization كويس'],2,'الفرق الكبير بين train عالي وtest واطي هو علامة الـ overfitting المشهورة.'],
+ ['موقع e-commerce عايز يقسم العملاء لشرايح حسب سلوك الشراء من غير labels جاهزة. ده أنهي نوع ML؟',['Unsupervised (clustering)','Supervised (regression)','Supervised (classification)','Reinforcement learning'],0,'إنك تلاقي مجموعات طبيعية من غير labels ده clustering، ودي unsupervised.'],
+ ['أنهي سيناريو مش مناسب للـ ML؟',['كشف معاملات الاحتيال في ملايين المدفوعات','توقع الـ churn من تاريخ سلوك العملاء','تصنيف صور الجلد benign أو malignant','تحويل Celsius لـ Fahrenheit'],3,'دي معادلة ثابتة F = 9/5·C + 32. القواعد البسيطة الواضحة مش محتاجة ML.'],
+ ['(سؤال مني) الـ GPT بيتدرب في الـ pretraining إنه يتوقع الكلمة الجاية من النص. ده نوع تعلم إيه؟',['Unsupervised clustering','Self-supervised: الـ labels جاية من النص نفسه','Reinforcement learning','Semi-supervised بـ pseudo-labels'],1,'الكلمة الجاية موجودة أصلًا في النص، فمحدش كتب labels بإيده. تقنيًا هو supervised بس الإشارة بتتعمل أوتوماتيك.'],
+ ['(سؤال مني) كلاس 0 في النص، وكلاس 1 حلقة حواليه. الـ Nearest Centroid هيعمل إيه؟',['هيجيب 100% لأن الكلاسات مفصولة','هيقع، لأن مركز الحلقة جاي تقريبًا في نفس مكان مركز كلاس 0 والحد بتاعه خطي','هيرسم دايرة حوالين كلاس 0','هيطلب hyperparameters أكتر'],1,'الحدود بتاعته دايمًا خط مستقيم بين المركزين، ومتوسط الحلقة في النص. جرّبها في المعمل ٠٤.']
+];
+A.quiz($('d23-quiz'),Q,5,()=>{const c=root.querySelector('[data-ck="quiz"]');if(c){c.checked=true;A.store.set('aiefs-d23-quiz','1')}});
+
+// ---------- checklist ----------
+A.checklist(23,root);
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(nc))return false;drawSplit();drawPoly();drawNC()});
+})();
+</script>

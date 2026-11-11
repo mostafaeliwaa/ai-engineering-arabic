@@ -1,0 +1,576 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 05 · Transfer Learning &amp; Fine-Tuning</span>
+  <h1>اليوم ٦١: استلف عقل موديل اتدرب بمليون ساعة GPU</h1>
+  <p class="lede">حد تاني صرف آلاف ساعات الـ GPU عشان يعلّم شبكة تشوف الـ edges والـ textures وأجزاء الأشياء. النهاردة هتتعلم إزاي <b>تستلف</b> الـ features دي: إمتى تجمّد الـ backbone وتدرب head بس، وإمتى تعمل fine-tuning، وإزاي تدي كل طبقة learning rate مختلف، وإزاي الـ BatchNorm ممكن يبوّظ كل حاجة في صمت.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python · PyTorch</b></span>
+    <span>قبله: <b>Image Classification</b></span>
+    <span>بعده: <b>Object Detection — YOLO</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 lessons</span>
+    <div class="roadmap" id="d61-roadmap" aria-label="دروس الفيز الرابعة"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d61-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر امبارح</h2></div>
+  <p>امبارح بنينا pipeline تصنيف صور كامل: dataset، augmentation، training loop، وقرينا confusion matrix. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ label smoothing بيعمل إيه، وليه بنستخدمه؟</summary>بدل ما الـ target يبقى one-hot (1 للصح و0 للباقي)، بنخلي الصح أقل شوية من 1 ونوزع الباقي على الكلاسات التانية. ده بيقلل الـ over-confidence وبيحسن الـ calibration. هتلاقيه النهاردة في الكود: <code>label_smoothing=0.1</code>.</details>
+  <details><summary>٢. ليه الـ accuracy لوحدها مش كفاية؟</summary>ممكن تبقى عالية والموديل فاشل تمامًا في كلاس معين. الـ per-class accuracy والـ confusion matrix بيوروك الموديل بيلخبط بين أنهي كلاسات بالظبط.</details>
+  <details><summary>٣. الـ mixup بيعمل إيه في الداتا؟</summary>بيخلط صورتين بنسبة λ ويخلط الـ labels بنفس النسبة. ده بيعلّم الموديل يبقى «ناعم» بين الكلاسات بدل ما يحفظ الصور.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين</div>
+    <div><b>15 min</b>الفكرة: Feature extraction ضد Fine-tuning</div>
+    <div><b>15 min</b>المعامل: التجميد، الـ LR، الـ BatchNorm</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d61-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: محدش عنده ٢٠٠٠ ساعة GPU لكل مهمة</h2></div>
+  <p>تدريب ResNet-50 على ImageNet بيكلّف حوالي <b>2,000 GPU-hour</b>. معظم الفرق مش بتعمل كده لكل مشروع. اللي بيتشحن فعلًا في الشغل: backbone متدرب قبل كده + <b>head جديد</b> بيتدرب على كام مية أو كام ألف صورة خاصة بالمهمة.</p>
+  <p>ودي مش «حركة استسهال». بص على الهرم اللي أي CNN متدرب على ImageNet بيتعلمه:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء من الشبكة</th><th>بيتعلم إيه</th><th>بينفع في مهام تانية؟</th></tr>
+    <tr><td>أول conv block</td><td>edges وفلاتر شبه Gabor</td><td>تقريبًا في أي صورة</td></tr>
+    <tr><td>البلوكات اللي بعدها</td><td>textures وأشكال بسيطة (motifs)</td><td>أيوه، غالبًا</td></tr>
+    <tr><td>البلوكات اللي في النص</td><td>أجزاء الأشياء (عين، عجلة…)</td><td>جزئيًا</td></tr>
+    <tr><td>آخر البلوكات</td><td>تركيبات قريبة من الـ 1000 كلاس بتوع ImageNet</td><td>ده الجزء اللي انت فعلًا بتدربه</td></tr>
+  </table></div>
+  <div class="note"><strong>تشبيه:</strong> زي ما تجيب مهندس معماري شاطر يشتغل في تصميم مطابخ. مش هتعلمه يعني إيه خط مستقيم وزاوية ومادة. هتعلمه بس قواعد المطابخ. الطبيعة «مفرداتها» محدودة: edges وtextures. عشان كده أول ٩٠٪ من الهرم بيتنقل تقريبًا زي ما هو للصور الطبية والفحص الصناعي والأقمار الصناعية.</div>
+  <p>بس فيه ٣ bugs مستنيينك، والدرس بيمشي عليهم واحد واحد:</p>
+  <ol class="ex">
+    <li><b>تدمير الـ features</b> بـ learning rate عالي على الـ backbone.</li>
+    <li><b>تجويع الموديل</b> لما تجمّد أكتر من اللازم فمش لاقي حاجة يتعلم بيها.</li>
+    <li><b>الـ BatchNorm stats</b> تنحرف ناحية dataset صغيرة الشبكة عمرها ما شافتها.</li>
+  </ol>
+</section>
+
+<!-- STATION 2 -->
+<section id="d61-regimes">
+  <div class="station-head"><span class="tag">02</span><h2>طريقتين: Feature extraction و Fine-tuning</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Feature extraction</th><th>Fine-tuning</th></tr>
+    <tr><td>الـ backbone</td><td>متجمّد (مفيش gradient)</td><td>بيتدرب بـ LR صغير جدًا</td></tr>
+    <tr><td>الـ head الجديد</td><td>بيتدرب</td><td>بيتدرب بـ LR عادي</td></tr>
+    <tr><td>بتختاره لما</td><td>داتا قليلة وقريبة من ImageNet</td><td>داتا أكتر أو domain بعيد</td></tr>
+  </table></div>
+  <p>الاختيار بيعتمد على حاجتين: <b>حجم الداتا</b> و<b>بُعد الـ domain</b> عن ImageNet. «قريب من ImageNet» يعني صور RGB طبيعية فيها أشياء. صور الـ CT والأقمار الصناعية من فوق والميكروسكوب دي domains بعيدة: الـ features لسه بتساعد، بس لازم تسيب طبقات أكتر تتأقلم.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل صغير: اختار الوصفة</h3>
+      <p>حدد حجم الداتا وبُعد الـ domain، وشوف القاعدة اللي الدرس بيقترحها.</p>
+      <label style="display:grid;gap:2px">حجم الداتا: <b class="mono" id="d61-szv"></b><input type="range" id="d61-sz" min="0" max="3" step="1" value="0"></label>
+      <label style="display:flex;gap:8px;align-items:center">الـ domain: <select id="d61-dom"><option value="close">قريب من ImageNet (صور طبيعية)</option><option value="far">بعيد (CT، أقمار صناعية، ميكروسكوب)</option></select></label>
+    </div>
+    <div class="instrument">
+      <div class="verdict" id="d61-recipe"></div>
+      <p id="d61-recipe-why" style="font-size:15px;color:var(--muted)"></p>
+      <canvas id="d61-recCanvas" width="520" height="120" aria-label="أنهي مراحل بتتدرب"></canvas>
+    </div>
+  </div>
+  <h3>ليه التجميد بيشتغل أصلًا؟</h3>
+  <p>الـ features اللي الـ CNN بيتعلمها مش متخصصة في الـ 1000 كلاس. هي متخصصة في <b>إحصائيات الصور الطبيعية</b>: edges باتجاهات معينة، textures، contrast، أشكال أولية. ودي ثابتة في تقريبًا أي domain بصري. الدرس بيقول إن موديل ImageNet متقيّم على CIFAR-10 بـ linear head جديد بس (من غير ما تلمس الـ backbone) بيوصل لـ 80%+. الـ head بيتعلم بس <b>أنهي feature من اللي موجودين يدّيها وزن</b> للمهمة دي.</p>
+</section>
+
+<!-- STATION 3: LAB discriminative LR -->
+<section id="d61-dlr">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Discriminative Learning Rates: كل طبقة بسرعتها</h2></div>
+  <p>لما تفك التجميد، الطبقات الأولى لازم تتدرب <b>أبطأ</b> من الأخيرة. الأولى فيها features عامة عايز تحافظ عليها، والأخيرة فيها هيكل خاص بالمهمة لازم يتحرك كتير.</p>
+  <div class="formula">lr_stage_i = base_lr · decay^(N − 1 − i)</div>
+  <p>في PyTorch ده مجرد list من الـ parameter groups بتديها للـ optimizer. موديل واحد، كذا learning rate، ومن غير كود زيادة.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>ده ResNet18 بمراحله: <code>conv1+bn1</code>، <code>layer1..layer4</code>، و<code>fc</code> (head بـ 10 كلاسات). أعداد الـ parameters حقيقية لـ ResNet18.</p>
+      <div class="note"><strong>جرب:</strong> غيّر الـ mode. في «Progressive» حرّك الـ epoch وشوف المراحل بتتفك من الآخر للأول. في «Discriminative» حرّك الـ decay: عند 0.3 الـ <code>conv1</code> بياخد <span class="ltr">0.3⁵ ≈ 0.00243</span> من الـ base_lr. يبان متطرف، بس عمليًا بيشتغل.</div>
+      <label style="display:flex;gap:8px;align-items:center">الـ mode: <select id="d61-mode"><option value="fe">Feature extraction</option><option value="dlr" selected>Discriminative fine-tune</option><option value="prog">Progressive unfreezing</option><option value="bad">غلطة: LR واحد كبير للكل</option></select></label>
+      <div class="mrow">
+        <label>base_lr <span id="d61-lrv"></span><input type="range" id="d61-lr" min="-5" max="-1" step="1" value="-3"></label>
+        <label>decay <span id="d61-dcv"></span><input type="range" id="d61-dc" min="0.1" max="1" step="0.05" value="0.3"></label>
+        <label>epoch <span id="d61-epv"></span><input type="range" id="d61-ep" min="0" max="4" step="1" value="0"></label>
+      </div>
+    </div>
+    <div class="instrument">
+      <canvas id="d61-lrCanvas" width="520" height="330" aria-label="الـ learning rate لكل مرحلة على مقياس log"></canvas>
+      <div class="readout">
+        <div><small>trainable</small><b id="d61-tr"></b></div>
+        <div><small>frozen</small><b id="d61-fr"></b></div>
+        <div><small>نسبة المتدرب</small><b id="d61-pct"></b></div>
+      </div>
+      <div class="verdict" id="d61-lrVerdict"></div>
+    </div>
+  </div>
+  <h3>Progressive unfreezing</h3>
+  <p>جدول بيفك مرحلة واحدة كل epoch من الآخر للأول: الأول الـ head لوحده، وبعدين <code>layer4</code>، وبعدين <code>layer3</code>… ده بيقلل الـ <b>feature drift</b> على حساب epochs زيادة. نقطة مهمة جدًا: <b>ابني الـ optimizer من جديد</b> كل ما مجموعة الـ parameters المتدربة تتغير، وإلا الـ parameters اللي كانت متجمدة هتفضل شايلة moments متخزنة تلخبطه.</p>
+</section>
+
+<!-- STATION 4: Layer-wise LR decay -->
+<section id="d61-llrd">
+  <div class="station-head"><span class="tag">04</span><h2>Layer-wise LR decay: النسخة الناعمة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>نسخة أنعم من الـ discriminative LR بتستخدم في الـ fine-tuning الحديث (BEiT، DINOv2، fine-tunes لـ ViT-B). بدل ما تقسم الطبقات لمراحل، كل طبقة بتاخد LR أصغر شوية من اللي فوقها:</p>
+      <div class="formula">lr_layer_k = base_lr · decay^(L − k)</div>
+      <p>مع decay = 0.75 و L = 12 transformer block، أول block بيتدرب بـ <span class="ltr">0.75¹¹ ≈ 0.04×</span> من LR الـ head. ده بيفرق أكتر في الـ transformers من الـ CNNs، لأن في الـ CNN تقسيم المراحل غالبًا كفاية.</p>
+      <div class="note"><strong>تشبيه:</strong> الـ discriminative LR زي سلم بدرجات كبيرة، والـ layer-wise decay زي رامب منحدر ناعم. نفس الفكرة: كل ما تنزل لتحت، تتحرك أبطأ.</div>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>L (blocks) <span id="d61-Lv"></span><input type="range" id="d61-L" min="4" max="24" step="1" value="12"></label>
+        <label>decay <span id="d61-ldv"></span><input type="range" id="d61-ld" min="0.5" max="1" step="0.01" value="0.75"></label>
+      </div>
+      <canvas id="d61-llCanvas" width="520" height="240" aria-label="LR لكل طبقة"></canvas>
+      <div class="readout">
+        <div><small>أول block / head</small><b id="d61-first"></b></div>
+        <div><small>نص الشبكة / head</small><b id="d61-mid"></b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5: BN -->
+<section id="d61-bn">
+  <div class="station-head"><span class="tag">05</span><h2>مشكلة الـ BatchNorm: إحصائيات من عالم تاني</h2></div>
+  <p>طبقات الـ BN شايلة buffers اسمها <code>running_mean</code> و<code>running_var</code> اتحسبت على ImageNet. لو مهمتك ليها توزيع بيكسلز مختلف (إضاءة مختلفة، sensor مختلف، color space مختلف) الـ buffers دي <b>غلط</b>. ٣ حلول بالترتيب ده:</p>
+  <ol class="ex">
+    <li><b>Fine-tune والـ BN في train mode:</b> سيب الـ BN يحدّث الإحصائيات مع باقي الشبكة. الاختيار الافتراضي لما الداتا متوسطة (≥ 5k صورة).</li>
+    <li><b>جمّد الـ BN في eval mode:</b> احتفظ بإحصائيات ImageNet ودرّب الأوزان بس. صح لما الداتا صغيرة لدرجة إن المتوسط المتحرك هيبقى noisy.</li>
+    <li><b>استبدل BN بـ GroupNorm:</b> بيشيل مشكلة المتوسط المتحرك خالص. بيستخدم في backbones الـ detection والـ segmentation لما الـ batch لكل GPU صغير جدًا.</li>
+  </ol>
+  <p>لو غلطت هنا، الـ accuracy بتنزل <b>5–15%</b> من غير ما أي error يظهر.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: شوف الـ normalization بيبوظ</h3>
+      <p>المنحنى الرمادي المتقطع هو اللي الطبقات اللي بعد كده متعودة عليه: توزيع طبيعي mean=0 و std=1. المنحنى البرتقالي هو activations داتا مهمتك بعد ما اتعملها normalize بالإحصائيات الحالية.</p>
+      <p>حرّك الـ domain shift، وبعدين زوّد عدد خطوات التدريب في train mode وشوف الـ running stats بتلحق (momentum = 0.1، زي الـ default في PyTorch). صغّر الـ batch size وشوف الـ noise.</p>
+      <div class="note"><strong>ملاحظة:</strong> ده نموذج مبسط لطبقة BN واحدة عشان تشوف الفكرة، مش محاكاة لشبكة كاملة.</div>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>shift في الـ mean <span id="d61-muv"></span><input type="range" id="d61-mu" min="-3" max="3" step="0.1" value="1.5"></label>
+        <label>scale في الـ std <span id="d61-sgv"></span><input type="range" id="d61-sg" min="0.3" max="3" step="0.1" value="0.5"></label>
+        <label>خطوات train <span id="d61-kv"></span><input type="range" id="d61-k" min="0" max="60" step="1" value="0"></label>
+        <label>batch size <span id="d61-bv"></span><input type="range" id="d61-b" min="0" max="5" step="1" value="4"></label>
+      </div>
+      <canvas id="d61-bnCanvas" width="520" height="260" aria-label="توزيع الـ activations بعد الـ normalization"></canvas>
+      <div class="readout">
+        <div><small>running_mean</small><b id="d61-rm"></b></div>
+        <div><small>running_var</small><b id="d61-rv"></b></div>
+        <div><small>mean بعد norm</small><b id="d61-om"></b></div>
+        <div><small>std بعد norm</small><b id="d61-os"></b></div>
+      </div>
+      <div class="verdict" id="d61-bnVerdict"></div>
+      <div class="btns"><button type="button" id="d61-bnRe">batch جديد (noise جديد)</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6: head + eval -->
+<section id="d61-head">
+  <div class="station-head"><span class="tag">06</span><h2>تصميم الـ head وإيه اللي تقيسه</h2></div>
+  <p>الـ classifier head هو 1–3 طبقات linear ومعاهم dropout اختياري. كل backbone في torchvision جاي بـ head افتراضي انت بتبدله، ومكانه بيختلف حسب الموديل:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>backbone.fc = nn.Linear(backbone.fc.in_features, num_classes)   <span class="c"># ResNet</span>
+backbone.classifier[1] = nn.Linear(..., num_classes)             <span class="c"># EfficientNet, MobileNet</span>
+backbone.heads.head = nn.Linear(..., num_classes)                <span class="c"># torchvision ViT</span></pre></div>
+  <p>للداتا الصغيرة، طبقة linear واحدة غالبًا كفاية. إضافة طبقة مخفية <span class="ltr">(Linear → ReLU → Dropout → Linear)</span> بتساعد لما توزيع المهمة يبقى أبعد عن اللي الـ backbone اتدرب عليه.</p>
+  <h3>رقمين لازم تطبعهم دايمًا</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الرقم</th><th>معناه</th></tr>
+    <tr><td><b>Pretrained-only accuracy</b> (linear probe)</td><td>دقة الـ head والـ backbone متجمد. ده <b>الأرضية</b>.</td></tr>
+    <tr><td><b>Fine-tuned accuracy</b></td><td>نفس الموديل بعد تدريب end-to-end. ده <b>السقف</b>.</td></tr>
+  </table></div>
+  <div class="note ai"><strong>القاعدة الذهبية:</strong> لو الـ fine-tuned طلع <b>أقل</b> من الـ linear probe، يبقى عندك bug في الـ LR أو الـ BN. ليه؟ لأن الـ linear probe نفسه حالة خاصة من الـ fine-tuning فيها LR الـ backbone = صفر. فالـ fine-tune المظبوط لازم يساويه على الأقل.</div>
+  <p>الدرس بيذكر إن 5 epochs بالوصفة دي على CIFAR-10 بتاخد <code>ResNet18-IMAGENET1K_V1</code> من حوالي 70% (linear probe) لحوالي 93% (fine-tuned)، والـ head لوحده بيقف عند حوالي 86%.</p>
+</section>
+
+<!-- CODE -->
+<section id="d61-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>محتاج <code>torch</code> و<code>torchvision</code>. أول مرة هيحمّل أوزان ResNet18 من النت. من جذر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>pip install torch torchvision numpy
+python3 phases/04-computer-vision/05-transfer-learning/code/main.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_transfer.py</code> واكتب كل خطوة بنفسك، وبص على <code>code/main.py</code> بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: حمّل backbone متدرب وبص جواه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+from torchvision.models import resnet18, ResNet18_Weights
+
+backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+print(backbone)                                 <span class="c"># stem + layer1..layer4 + fc</span>
+print("classifier head:", backbone.fc)
+print("feature dim:", backbone.fc.in_features)  <span class="c"># 512</span></pre></div>
+
+  <h3>خطوة ٢: Feature extraction — جمّد كله وبدّل الـ head</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_feature_extractor(num_classes=10):
+    model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+    for p in model.parameters():
+        p.requires_grad = False                 <span class="c"># جمّد الـ backbone</span>
+    model.fc = nn.Linear(model.fc.in_features, num_classes)  <span class="c"># head جديد، requires_grad=True تلقائي</span>
+    return model
+
+model = make_feature_extractor(num_classes=10)
+trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+print(f"trainable: {trainable:>10,}")
+print(f"frozen:    {frozen:>10,}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">trainable:      5,130
+frozen:    11,176,512</pre><p>‏5,130 = 512×10 أوزان + 10 bias. والرقم ده هو نفسه اللي في المعمل ٠٣ في mode الـ Feature extraction.</p></details>
+
+  <h3>خطوة ٣: الـ parameter groups بـ LR لكل مرحلة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def discriminative_param_groups(model, base_lr=1e-3, decay=0.3):
+    stages = [["conv1", "bn1"], ["layer1"], ["layer2"],
+              ["layer3"], ["layer4"], ["fc"]]
+    groups = []
+    for i, names in enumerate(stages):
+        lr = base_lr * (decay ** (len(stages) - 1 - i))   <span class="c"># الـ fc بياخد base_lr، واللي قبله أصغر</span>
+        params = [p for n, p in model.named_parameters()
+                  if any(n.startswith(k) for k in names) and p.requires_grad]  <span class="c"># المتدرب بس</span>
+        if params:
+            groups.append({"params": params, "lr": lr, "name": "_".join(names)})
+    return groups</pre></div>
+  <p>لاحظ إن نسخة <code>main.py</code> فيها شرط <code>and p.requires_grad</code>، فلو الـ backbone متجمد هيطلع group واحد بس للـ fc.</p>
+
+  <h3>خطوة ٤: جمّد إحصائيات الـ BatchNorm</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def freeze_bn_stats(model):
+    for m in model.modules():
+        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            m.eval()                         <span class="c"># وقّف تحديث running_mean/var</span>
+            for p in m.parameters():
+                p.requires_grad = False      <span class="c"># وجمّد gamma و beta كمان</span>
+    return model</pre></div>
+  <p>نادِه <b>بعد</b> <code>model.train()</code> في أول كل epoch. الـ <code>model.train()</code> بيقلب كل حاجة لـ training mode، والدالة دي بترجّع الـ BN بس لـ eval.</p>
+
+  <h3>خطوة ٥: الـ training loop</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torch.optim import SGD
+from torch.optim.lr_scheduler import CosineAnnealingLR
+import torch.nn.functional as F
+
+def train_and_eval(model, train_loader, val_loader, device, epochs=2, base_lr=1e-3, freeze_bn=False):
+    model = model.to(device)
+    groups = discriminative_param_groups(model, base_lr=base_lr)
+    if not groups:   <span class="c"># احتياطي لو مفيش groups</span>
+        groups = [{"params": [p for p in model.parameters() if p.requires_grad], "lr": base_lr}]
+    optimizer = SGD(groups, momentum=0.9, weight_decay=1e-4, nesterov=True)
+    scheduler = CosineAnnealingLR(optimizer, T_max=max(epochs, 1))
+
+    last_val = 0.0
+    for epoch in range(epochs):
+        model.train()
+        if freeze_bn:
+            freeze_bn_stats(model)           <span class="c"># بعد train() مش قبلها</span>
+        tr_loss, tr_correct, tr_total = 0.0, 0, 0
+        for x, y in train_loader:
+            x, y = x.to(device), y.to(device)
+            logits = model(x)
+            loss = F.cross_entropy(logits, y, label_smoothing=0.1)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            tr_loss += loss.item() * x.size(0)
+            tr_total += x.size(0)
+            tr_correct += (logits.argmax(-1) == y).sum().item()
+        scheduler.step()
+
+        model.eval()                         <span class="c"># تقييم من غير gradient</span>
+        va_total, va_correct = 0, 0
+        with torch.no_grad():
+            for x, y in val_loader:
+                x, y = x.to(device), y.to(device)
+                pred = model(x).argmax(-1)
+                va_total += x.size(0)
+                va_correct += (pred == y).sum().item()
+        last_val = va_correct / va_total
+        print(f"  epoch {epoch}  train {tr_loss/tr_total:.3f}/{tr_correct/tr_total:.3f}  val {last_val:.3f}")
+    return last_val</pre></div>
+
+  <h3>خطوة ٦: Progressive unfreezing</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def progressive_unfreeze_schedule(model):
+    stages = ["layer4", "layer3", "layer2", "layer1"]   <span class="c"># من الآخر للأول</span>
+
+    def start():                     <span class="c"># مرة واحدة قبل أول epoch</span>
+        for p in model.parameters():
+            p.requires_grad = False
+        for p in model.fc.parameters():
+            p.requires_grad = True
+
+    def unfreeze(epoch):             <span class="c"># في أول كل epoch</span>
+        if epoch &lt; len(stages):
+            name = stages[epoch]
+            for n, p in model.named_parameters():
+                if n.startswith(name):
+                    p.requires_grad = True
+            return name
+        return None
+
+    return start, unfreeze
+<span class="c"># مهم: ابني optimizer جديد كل ما unfreeze ترجع اسم مرحلة</span></pre></div>
+
+  <h3>خطوة ٧: الـ main — داتا synthetic والمقارنة</h3>
+  <p>الملف بيعمل dataset صناعي: 10 كلاسات، 40 صورة لكل كلاس بحجم 96×96، كل كلاس ليه نمط sin/cos بتردد مختلف. بيقسمها 90/10، ويعمل normalize بـ mean/std بتوع ImageNet <span class="ltr">([0.485, 0.456, 0.406] / [0.229, 0.224, 0.225])</span>، ويدرب الطريقتين epochين لكل واحدة.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    print("\n[feature extraction] freeze backbone, train head only")
+    fe = make_feature_extractor()
+    acc_fe = train_and_eval(fe, train_loader, val_loader, device, epochs=2, base_lr=3e-2)
+
+    print("\n[fine-tune] discriminative LR across stages")
+    ft = make_fine_tune()
+    for g in discriminative_param_groups(ft, base_lr=1e-3):
+        print(f"  group {g['name']:>10s}  lr={g['lr']:.2e}")
+    acc_ft = train_and_eval(ft, train_loader, val_loader, device, epochs=2, base_lr=1e-3)
+
+    print(f"\nsummary  feature-extract val={acc_fe:.3f}   fine-tune val={acc_ft:.3f}")</pre></div>
+  <details><summary>الناتج المتوقع (الأجزاء الثابتة)</summary><pre class="term">device: cpu          <span class="c"># أو cuda / mps</span>
+
+[feature extraction] freeze backbone, train head only
+  trainable params: 5,130
+  epoch 0  train ... val ...
+  epoch 1  train ... val ...
+
+[fine-tune] discriminative LR across stages
+  group  conv1_bn1  lr=2.43e-06
+  group     layer1  lr=8.10e-06
+  group     layer2  lr=2.70e-05
+  group     layer3  lr=9.00e-05
+  group     layer4  lr=3.00e-04
+  group         fc  lr=1.00e-03
+  ...
+summary  feature-extract val=...   fine-tune val=...</pre><p>أرقام الـ loss والـ accuracy هتختلف حسب جهازك. قيم الـ LR لازم تطلع زي دي بالظبط. على CPU التدريب ممكن ياخد كام دقيقة.</p></details>
+
+  <h3>في الشغل الحقيقي: ٣ سطور</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torchvision.models import resnet50, ResNet50_Weights
+
+model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+model.fc = nn.Linear(model.fc.in_features, num_classes)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
+
+<span class="c"># timm: حوالي 800 backbone بنفس الـ API</span>
+<span class="c"># timm.create_model("resnet50", pretrained=True, num_classes=10)</span>
+<span class="c"># للـ transformers (ViT / BEiT / DeiT):</span>
+<span class="c"># AutoModelForImageClassification.from_pretrained(name, num_labels=N)</span></pre></div>
+  <p>الأدوات التقيلة اللي فوق تلزمك لما تقابل مشاكل الـ defaults مش بتحلها. والدرس بيطلّع ملفين في <code>outputs/</code>: prompt بيختار الطريقة حسب حجم الداتا وبُعد الـ domain والـ compute، وskill بيفحص موديل PyTorch ويقولك إيه المتدرب، وأنهي BN في eval، وهل الـ optimizer فعلًا واخد الـ parameters المتدربة.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d61-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل) Linear probe ضد full fine-tune:</b> درّب ResNet18 بالطريقتين على نفس الـ synthetic dataset وحط الدقتين جنب بعض. أنهي فرق بيقولك إن الـ features بتتنقل كويس، وأنهي بيقولك لأ؟
+      <details><summary>تلميح</summary>لو الـ linear probe لوحده عالي وقريب من الـ fine-tune: الـ features بتتنقل كويس والـ head كفاية. لو الـ fine-tune أعلى بكتير: المهمة محتاجة الـ features تتأقلم (domain أبعد). لو الـ fine-tune أقل من الـ probe: ده bug مش نتيجة.</details></li>
+    <li><b>(متوسط) اعمل الـ bug بإيدك:</b> حط <code>base_lr = 1e-1</code> على مرحلة الـ backbone بدل الـ head. شوف الـ loss بينفجر، وبعدين صلّحه بـ <code>discriminative_param_groups</code>. سجّل الـ LR اللي كل مرحلة بتبدأ تنهار عنده.
+      <details><summary>تلميح</summary>اعمل loop على LRs زي <span class="ltr">[1e-4, 1e-3, 1e-2, 1e-1]</span> وكل مرة غيّر مرحلة واحدة بس وسيب الباقي متجمد. اطبع الـ loss بعد كام batch. علامة الانهيار: loss بيطلع <code>nan</code> أو بيزيد بدل ما يقل، أو كل التوقعات كلاس واحد.</details></li>
+    <li><b>(صعب) Medical imaging:</b> خد dataset طبي (CheXpert-small أو PatchCamelyon أو HAM10000) وقارن ٣ طرق: (a) backbone متجمد + linear head، (b) fine-tune end-to-end، (c) تدريب من الصفر. سجّل الدقة وتكلفة الـ compute. عند أنهي حجم داتا التدريب من الصفر بيبدأ ينافس؟
+      <details><summary>تلميح</summary>جرب subsets بأحجام متضاعفة (مثلًا 500، 1k، 2k، 5k…) وارسم الدقة ضد الحجم لكل طريقة. افتكر إن الصور دي domain بعيد، فاتوقع (b) يتفوق على (a) أكتر من العادي. ولو الصور grayscale فكّر في الـ BN.</details></li>
+    <li><b>إضافة مني · Freeze inspector:</b> اكتب <code>inspect(model, optimizer)</code> تطبع لكل top-level module: عدد الـ parameters المتدربة والمتجمدة، وكام BN في eval mode، وبعدين تتأكد إن كل parameter متدرب موجود في الـ optimizer وإن مفيش parameter متجمد فيه. ده بالظبط الفحص اللي هتعمله قبل أي fine-tune حقيقي (ودي فكرة <code>outputs/skill-freeze-inspector.md</code>).
+      <details><summary>تلميح</summary>
+        <code>opt_ids = {id(p) for g in optimizer.param_groups for p in g["params"]}</code>. لكل <code>model.named_children()</code> اجمع <code>p.numel()</code> حسب <code>p.requires_grad</code>. للـ BN: <code>isinstance(m, nn.BatchNorm2d) and not m.training</code>. جربها مرة بعد <code>model.train()</code> ومرة بعد <code>freeze_bn_stats</code> وشوف الفرق.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d61-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مقالهوش صريح</h2></div>
+  <h3>الحدس في سطر</h3>
+  <p>الـ pretrained weights مش «إجابة»، هي <b>نقطة بداية ممتازة</b> في فضاء الأوزان. الـ LR الصغير معناه «اتحرك حوالين النقطة دي بس». الـ LR الكبير معناه «انسى النقطة دي»، وده اللي اسمه catastrophic forgetting.</p>
+  <h3>غلطات شائعة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الغلطة</th><th>العَرَض</th><th>الحل</th></tr>
+    <tr><td>normalize بأرقام غير اللي الموديل اتدرب بيها</td><td>دقة أقل من المتوقع من غير error</td><td>استخدم نفس mean/std بتوع الأوزان (ImageNet هنا)، أو الـ transforms اللي جاية مع الـ weights</td></tr>
+    <tr><td>نسيت تبني optimizer جديد بعد unfreeze</td><td>المراحل اللي اتفكت مش بتتدرب، أو بتتدرب بشكل غريب</td><td>ابني الـ optimizer بعد كل تغيير في <code>requires_grad</code></td></tr>
+    <tr><td>نادِت <code>freeze_bn_stats</code> قبل <code>model.train()</code></td><td>الـ BN رجع train mode وانت مش واخد بالك</td><td>دايمًا بعد <code>train()</code>، في أول كل epoch</td></tr>
+    <tr><td>LR الـ scratch (زي 0.1) على backbone متدرب</td><td>loss بينفجر أو كل التوقعات كلاس واحد</td><td>LR أصغر بكتير + discriminative groups</td></tr>
+    <tr><td>مقارنة بـ fine-tune بس من غير linear probe</td><td>مش عارف النتيجة كويسة ولا فيه bug</td><td>اطبع الرقمين دايمًا</td></tr>
+  </table></div>
+  <h3>ده بيظهر فين في الـ LLMs والـ agents؟</h3>
+  <ul class="checklist">
+    <li>• <b>نفس الفكرة بالظبط في الـ NLP:</b> الدرس نفسه بيشاور على ULMFiT، الورقة اللي بدأت discriminative LR و progressive unfreezing في موديلات اللغة.</li>
+    <li>• <b>Fine-tuning الـ LLMs:</b> LoRA (اللي شفته في يوم ١) هو أقصى درجات «جمّد الـ backbone»: الأوزان الأصلية متجمدة خالص وبتدرب مصفوفات صغيرة بس جنبها.</li>
+    <li>• <b>Linear probes:</b> بيستخدموا عشان تختبر «هل المعلومة دي موجودة في الـ hidden states بتاعة الموديل؟» من غير ما تغير الموديل.</li>
+    <li>• <b>Embeddings + classifier:</b> في شغل الـ agents كتير بتاخد embedding model متجمد وتحط فوقه classifier صغير (لتصنيف intents أو routing). ده feature extraction بالحرف.</li>
+    <li>• <b>Catastrophic forgetting:</b> نفس الخطر لما تعمل fine-tune لـ LLM بـ LR كبير: بيتعلم مهمتك وينسى قدرات عامة كانت عنده.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d61-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d61-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d61-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d61-check">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أختار بين feature extraction و fine-tuning حسب حجم الداتا وبُعد الـ domain</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فهمت ليه الطبقات الأولى بتاخد LR أصغر، ولعبت في معمل الـ decay</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> فهمت مشكلة الـ BN والحلول التلاتة</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت الكود بإيدي وشغّلت main.py وشفت قيم الـ LR</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Feature extraction / linear probe</td><td>تصنيف بداتا قليلة، تقييم جودة representations، classifiers فوق embeddings</td></tr>
+    <tr><td>Fine-tuning</td><td>تقريبًا كل موديل vision بيتشحن في production</td></tr>
+    <tr><td>Discriminative LR</td><td>ULMFiT، fine-tunes الـ CNNs</td></tr>
+    <tr><td>Layer-wise LR decay</td><td>BEiT، DINOv2، ViT fine-tunes</td></tr>
+    <tr><td>BN freeze / GroupNorm</td><td>backbones الـ detection والـ segmentation (الأيام الجاية)</td></tr>
+    <tr><td>Catastrophic forgetting</td><td>fine-tuning الـ LLMs، وسبب انتشار LoRA</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Object Detection — YOLO from Scratch. هنستخدم backbone متدرب (زي النهاردة) ونضيف عليه head بيطلّع boxes مش بس كلاس.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F05-transfer-learning" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/05-transfer-learning</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+
+// roadmap
+const rm=$('d61-roadmap');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===5)s.className='now';rm.appendChild(s)}
+
+// ---------- Recipe picker ----------
+const SZ=['< 1k','1k – 10k','10k – 100k','100k+'];
+const rc=$('d61-recCanvas'),rctx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+const STG=['stem','layer1','layer2','layer3','layer4','head'];
+function recipe(){
+  const s=+$('d61-sz').value,far=$('d61-dom').value==='far';
+  $('d61-szv').textContent=SZ[s];
+  let t,w,train;
+  if(s===0&&!far){t='جمّد الـ backbone ودرّب الـ head بس';w='داتا قليلة وقريبة: الـ features جاهزة، ومفيش إشارة كفاية تحرك الـ backbone بأمان.';train=[0,0,0,0,0,1]}
+  else if(s===0&&far){t='ابدأ بـ head بس، وبعدين جرّب تفك آخر مرحلة بحذر';w='الجدول بيقول «جمّد» للداتا الأقل من 1k القريبة. الـ domain البعيد محتاج طبقات أكتر تتأقلم، بس الداتا القليلة خطر. ابدأ بالـ linear probe كأرضية وقارن. (ده استنتاجي من القاعدتين، مش سطر في الجدول.)';train=[0,0,0,0,.5,1]}
+  else if(s===1&&!far){t='جمّد أول ٢–٣ مراحل، واعمل fine-tune للباقي';w='داتا متوسطة وقريبة: الـ features الأولى عامة فسيبها، وحرّك الأخيرة.';train=[0,0,0,1,1,1]}
+  else if(s===1&&far){t='جمّد أقل، وسيب مراحل أكتر تتأقلم بـ discriminative LR';w='الدرس بيقول الـ domains البعيدة محتاجة طبقات أكتر تتأقلم. (الجدول بيدي القاعدة دي للقريب، والبعيد بيزق ناحية فك أكتر.)';train=[0,0,.5,1,1,1]}
+  else if(s===2){t='Fine-tune end-to-end بـ discriminative LR';w='من 10k لـ 100k، قريب أو بعيد: كل الطبقات بتتدرب، والأولى أبطأ.';train=[.15,.3,.55,.8,1,1]}
+  else{t=far?'Fine-tune كله، وفكّر في التدريب من الصفر':'Fine-tune كله';w=far?'داتا كبيرة جدًا و domain بعيد كفاية: التدريب من الصفر بقى اختيار وارد.':'داتا كبيرة: كل الطبقات تتدرب، ولسه الـ pretrained بداية أحسن من random.';train=[1,1,1,1,1,1]}
+  $('d61-recipe').textContent=t;$('d61-recipe-why').textContent=w;
+  rctx.clearRect(0,0,RW,RH);const bw=(RW-10*7)/6;
+  STG.forEach((n,i)=>{const x=RW-10-(i+1)*(bw+10)+10,v=train[i];
+    rctx.fillStyle=css('--soft');rctx.fillRect(x,20,bw,56);
+    if(v>0){rctx.fillStyle=i===5?css('--ok'):css('--vec-b');rctx.globalAlpha=.25+.75*v;rctx.fillRect(x,20,bw,56);rctx.globalAlpha=1}
+    rctx.strokeStyle=css('--line');rctx.strokeRect(x,20,bw,56);
+    rctx.fillStyle=css('--ink');rctx.font='12px JetBrains Mono, monospace';rctx.textAlign='center';
+    rctx.fillText(n,x+bw/2,52);rctx.fillStyle=css('--muted');rctx.fillText(v>0?'train':'frozen',x+bw/2,96)});
+  rctx.textAlign='left';rctx.fillStyle=css('--muted');rctx.fillText('input →',RW-60,14);
+}
+$('d61-sz').addEventListener('input',recipe);$('d61-dom').addEventListener('change',recipe);recipe();
+
+// ---------- Discriminative LR lab ----------
+const P=[['conv1_bn1',9536],['layer1',147968],['layer2',525568],['layer3',2099712],['layer4',8393728],['fc',5130]];
+const lc=$('d61-lrCanvas'),lctx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+function lrs(){
+  const mode=$('d61-mode').value,base=Math.pow(10,+$('d61-lr').value),dec=+$('d61-dc').value,ep=+$('d61-ep').value;
+  $('d61-lrv').textContent=base.toExponential(0);$('d61-dcv').textContent=f(dec,2);$('d61-epv').textContent=ep;
+  $('d61-dc').disabled=!(mode==='dlr'||mode==='prog');$('d61-ep').disabled=mode!=='prog';
+  const N=P.length;
+  const rows=P.map(([n,c],i)=>{let lr=0;
+    if(mode==='fe')lr=i===N-1?base:0;
+    else if(mode==='dlr')lr=base*Math.pow(dec,N-1-i);
+    else if(mode==='bad')lr=0.1;
+    else{const order=['layer4','layer3','layer2','layer1'];const open=order.slice(0,ep+1);
+      lr=(i===N-1||open.includes(n))?base*Math.pow(dec,N-1-i):0}
+    return [n,c,lr]});
+  let tr=0,fr=0;rows.forEach(r=>r[2]>0?tr+=r[1]:fr+=r[1]);
+  $('d61-tr').textContent=tr.toLocaleString('en');$('d61-fr').textContent=fr.toLocaleString('en');
+  $('d61-pct').textContent=f(tr/(tr+fr)*100,2)+'%';
+  // draw: log10 scale from 1e-8 to 1e0
+  lctx.clearRect(0,0,LW,LH);const top=20,rowH=(LH-50)/N,x0=110,x1=LW-20,lo=-8,hi=0;
+  const X=v=>x0+(Math.log10(v)-lo)/(hi-lo)*(x1-x0);
+  lctx.strokeStyle=css('--grid');lctx.fillStyle=css('--muted');lctx.font='11px JetBrains Mono, monospace';lctx.textAlign='center';
+  for(let e=lo;e<=hi;e++){const x=X(Math.pow(10,e));lctx.beginPath();lctx.moveTo(x,top-6);lctx.lineTo(x,LH-28);lctx.stroke();lctx.fillText('1e'+e,x,LH-12)}
+  rows.forEach(([n,c,lr],i)=>{const y=top+i*rowH+4;
+    lctx.textAlign='right';lctx.fillStyle=css('--ink');lctx.font='12px JetBrains Mono, monospace';lctx.fillText(n,x0-8,y+rowH/2);
+    if(lr>0){lctx.fillStyle=i===N-1?css('--ok'):(lr>=0.05&&mode==='bad'?css('--bad'):css('--vec-a'));lctx.fillRect(x0,y,Math.max(2,X(lr)-x0),rowH-12);
+      lctx.textAlign='left';lctx.fillStyle=css('--ink');lctx.font='11px JetBrains Mono, monospace';
+      const lx=X(lr)+6,txt=lr.toExponential(2);lctx.fillText(txt,lx>x1-60?x0+6:lx,y+rowH/2)}
+    else{lctx.textAlign='left';lctx.fillStyle=css('--muted');lctx.fillText('frozen (no grad)',x0+6,y+rowH/2)}});
+  lctx.textAlign='left';
+  const v=$('d61-lrVerdict');
+  if(mode==='fe'){v.textContent='الـ head بس بيتعلم: ده الـ linear probe، الأرضية بتاعتك.';v.style.color=css('--ok')}
+  else if(mode==='bad'){v.textContent='خطر: LR بتاع تدريب من الصفر على backbone متدرب = catastrophic forgetting وممكن collapse.';v.style.color=css('--bad')}
+  else if(mode==='prog'){v.textContent=ep<4?'epoch '+ep+': فكّينا لحد '+['layer4','layer3','layer2','layer1'][ep]+'. ابني optimizer جديد دلوقتي.':'كل المراحل اتفكت ما عدا الـ stem (الدرس بيفك layer1..layer4 بس).';v.style.color=css('--ink')}
+  else{v.textContent='الـ fc بياخد base_lr، والـ conv1 بياخد '+f(Math.pow(dec,5)*100,3)+'% منه.';v.style.color=css('--ink')}
+}
+['d61-lr','d61-dc','d61-ep'].forEach(id=>$(id).addEventListener('input',lrs));$('d61-mode').addEventListener('change',lrs);lrs();
+
+// ---------- Layer-wise decay ----------
+const llc=$('d61-llCanvas'),llx=AI.setupCanvas(llc),QW=+llc.dataset.w,QH=+llc.dataset.h;
+function ll(){
+  const L=+$('d61-L').value,d=+$('d61-ld').value;$('d61-Lv').textContent=L;$('d61-ldv').textContent=f(d,2);
+  llx.clearRect(0,0,QW,QH);const n=L+1,bw=(QW-40)/n,base=QH-30;
+  for(let k=1;k<=n;k++){const r=k===n?1:Math.pow(d,L-k),h=(base-20)*r,x=20+(k-1)*bw;
+    llx.fillStyle=k===n?css('--ok'):css('--vec-a');llx.fillRect(x+2,base-h,bw-4,h);
+    if(n<=16||k===1||k===n){llx.fillStyle=css('--muted');llx.font='10px JetBrains Mono, monospace';llx.textAlign='center';llx.fillText(k===n?'head':String(k),x+bw/2,base+14)}}
+  llx.textAlign='left';llx.fillStyle=css('--muted');llx.font='11px JetBrains Mono, monospace';llx.fillText('lr / base_lr (linear scale) — block 1 = closest to input',20,14);
+  $('d61-first').textContent=f(Math.pow(d,L-1),4)+'×';$('d61-mid').textContent=f(Math.pow(d,L-Math.round(L/2)),3)+'×';
+}
+['d61-L','d61-ld'].forEach(id=>$(id).addEventListener('input',ll));ll();
+
+// ---------- BN lab ----------
+const BS=[2,4,8,16,32,64];let seed=1;
+const rnd=()=>{seed=(seed*16807)%2147483647;return (seed-1)/2147483646};
+const gauss=()=>{let u=0,v=0;while(!u)u=rnd();v=rnd();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)};
+const bc=$('d61-bnCanvas'),bctx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+let noiseM=[],noiseV=[];
+function reNoise(){noiseM=[];noiseV=[];for(let i=0;i<60;i++){noiseM.push(gauss());noiseV.push(gauss())}}
+reNoise();
+function bn(){
+  const mu=+$('d61-mu').value,sg=+$('d61-sg').value,k=+$('d61-k').value,B=BS[+$('d61-b').value];
+  $('d61-muv').textContent=f(mu,1);$('d61-sgv').textContent=f(sg,1);$('d61-kv').textContent=k;$('d61-bv').textContent=B;
+  // running stats start at ImageNet values (0,1); each step: r = 0.9 r + 0.1 batch_stat
+  let rmn=0,rvr=1;
+  for(let i=0;i<k;i++){const bm=mu+sg/Math.sqrt(B)*noiseM[i];const bv=Math.max(1e-3,sg*sg*(1+Math.sqrt(2/Math.max(1,B-1))*noiseV[i]));rmn=.9*rmn+.1*bm;rvr=.9*rvr+.1*bv}
+  const om=(mu-rmn)/Math.sqrt(rvr),os=sg/Math.sqrt(rvr);
+  $('d61-rm').textContent=f(rmn,3);$('d61-rv').textContent=f(rvr,3);$('d61-om').textContent=f(om,2);$('d61-os').textContent=f(os,2);
+  bctx.clearRect(0,0,BW,BH);const ox=BW/2,S=BW/12,base=BH-26;
+  AI.grid(bctx,BW,BH,S,ox,base);
+  const pdf=(x,m,s)=>Math.exp(-.5*((x-m)/s)**2)/(s*Math.sqrt(2*Math.PI));
+  const maxY=Math.max(pdf(0,0,1),pdf(om,om,Math.max(os,.05)));const Y=v=>base-(v/maxY)*(base-24);
+  const curve=(m,s,col,dash,w)=>{bctx.strokeStyle=col;bctx.lineWidth=w;bctx.setLineDash(dash);bctx.beginPath();
+    for(let px=0;px<=BW;px+=2){const x=(px-ox)/S,y=Y(pdf(x,m,Math.max(s,.05)));px?bctx.lineTo(px,y):bctx.moveTo(px,y)}bctx.stroke();bctx.setLineDash([])};
+  curve(0,1,css('--muted'),[6,5],2);curve(om,os,css('--vec-b'),[],3);
+  bctx.fillStyle=css('--muted');bctx.font='11px JetBrains Mono, monospace';bctx.textAlign='center';
+  for(let x=-5;x<=5;x++)bctx.fillText(x,ox+x*S,BH-10);
+  bctx.textAlign='left';bctx.fillText('expected N(0,1)',8,14);bctx.fillStyle=css('--vec-b');bctx.fillText('your data after BN',8,30);
+  const v=$('d61-bnVerdict'),bad=Math.abs(om)>.3||Math.abs(os-1)>.3;
+  if(k===0&&bad){v.textContent='إحصائيات ImageNet متجمدة والداتا مختلفة: الطبقات اللي بعد كده بتستقبل توزيع غلط.';v.style.color=css('--bad')}
+  else if(bad){v.textContent='الـ running stats لسه بتلحق… زوّد الخطوات.';v.style.color=css('--vec-b')}
+  else if(B<=4&&k>0){v.textContent='قربت، بس batch صغير = إحصائيات noisy. جرّب «batch جديد» وشوف قد إيه بتتهز. هنا GroupNorm أو تجميد الـ BN أأمن.';v.style.color=css('--vec-b')}
+  else{v.textContent='التوزيع رجع قريب من N(0,1): الـ BN اتأقلم مع الـ domain.';v.style.color=css('--ok')}
+}
+['d61-mu','d61-sg','d61-k','d61-b'].forEach(id=>$(id).addEventListener('input',bn));
+$('d61-bnRe').addEventListener('click',()=>{reNoise();bn()});bn();
+
+// ---------- quiz ----------
+const Q=[
+ ['عندك 500 صورة متصنفة لمهمة جديدة قريبة من توزيع ImageNet. أنهي طريقة منطقية أكتر؟',['Fine-tune لكل الطبقات بنفس الـ LR الكبير','تجاهل الأوزان المتدربة؛ الداتا الصغيرة بتنفع مع موديلات صغيرة','جمّد backbone متدرب على ImageNet ودرّب head جديد linear بس','درّب ResNet-50 من الصفر'],2,'500 صورة مش كفاية تدرب شبكة عميقة من الصفر، ولا تعمل fine-tune لكل الطبقات بأمان من غير ما تدمر الـ features. تجميد الـ backbone وتدريب head جديد (linear probe) هو الوصفة القياسية للداتا الصغيرة القريبة.'],
+ ['ليه طبقات الـ conv الأولى في شبكة متدربة على ImageNet بتتنقل كويس للصور الطبية مع إن ImageNet مفيهوش أشعة؟',['ImageNet فيه داتا طبية متخبية','الـ transfer بيشتغل بس لما الـ domains تتطابق','PyTorch بيعيد initialize الطبقات الأولى تلقائي','الطبقات الأولى بتمثل أساسيات بصرية عامة (edges، اتجاهات، contrast) مشتركة في تقريبًا أي domain؛ الطبقات الأخيرة بس هي اللي بتتخصص في كلاسات ImageNet'],3,'الفلاتر الشبيهة بـ Gabor وكاشفات الـ texture البسيطة بتتعلم من أي مجموعة صور طبيعية، وبتعكس إحصائيات الضوء والضل والـ edges في التصوير والطب والميكروسكوب والأقمار الصناعية. الطبقات الأخيرة بتتخصص تدريجيًا، وعشان كده الـ fine-tuning بيركز على آخر كام block.'],
+ ['في fine-tuning end-to-end بـ discriminative LR، ليه الطبقات الأولى بتاخد LR أصغر من الأخيرة؟',['LR أصغر في الأولى بيسرّع التدريب','الطبقات الأولى فيها parameters أقل','الأولى فيها features عامة عايز تحافظ عليها، والأخيرة features خاصة بالمهمة لازم تتحرك؛ الـ LR الأصغر للأولى بيمنع الـ feature drift والـ catastrophic forgetting','PyTorch بيطلب layer-wise LR عشان يشتغل صح'],2,'الطبقات الأولى فيها الأساسيات البصرية الصح فعايز تحديثات صغيرة. الأخيرة لازم تتحرك ناحية المهمة. LR واحد للكل بيفرض حل وسط بيضر الطرفين.'],
+ ['بتعمل fine-tune لـ ResNet على dataset طبي فيه 10 كلاسات و800 صورة grayscale (متكررة على 3 قنوات). الدقة 10% (عشوائي). إيه السبب الأرجح؟',['ResNet مبيعرفش يتعامل مع grayscale','إحصائيات الـ BatchNorm من صور ImageNet الملونة ومختلفة جدًا عن توزيع الصور الطبية الرمادية، فأول طبقات BN بتطلّع noise بيتنقل لقدام','800 صورة قليلة جدًا لأي transfer learning','استخدمت loss function غلط'],1,'الـ BN شايل running_mean و running_var من ImageNet. على داتا صغيرة ومتزحزحة التوزيع، الـ buffers دي مش بتتأقلم بسرعة كفاية في fine-tune قصير. الحلول: جمّد إحصائيات الـ BN، أو استخدم GroupNorm، أو اعمل warmup pass للـ BN بس على الداتا الجديدة.'],
+ ['قارنت تجربتين: (a) linear probe على backbone متجمد = 82%، (b) fine-tune end-to-end = 78%. تستنتج إيه؟',['الـ fine-tuning مش مفيد؛ اشحن الـ linear probe','fine-tune أقل من الـ linear probe غالبًا bug في التدريب (LR عالي، BN متعامل غلط، أو scheduler/optimizer متظبطين غلط)؛ دوّر على السبب قبل ما تستنتج حاجة','الداتا كبيرة زيادة','الأوزان المتدربة وحشة'],1,'الـ linear probe حالة خاصة من الـ fine-tuning فيها LR الـ backbone = صفر، فالـ fine-tune لازم يساويه على الأقل. لو أقل، الـ pipeline بيدمر الـ features. الحل: قلّل LR الـ backbone، استخدم discriminative LR، أو جمّد الـ BN.'],
+ ['(سؤال مني) عملت progressive unfreezing وفكّيت layer3 في epoch 2، بس الـ loss مش بيتحرك خالص لـ layer3. أرجح سبب؟',['layer3 مش محتاجة تدريب','ما بنيتش optimizer جديد بعد ما غيّرت requires_grad، فالـ parameters الجديدة مش جوه الـ optimizer','الـ LR كبير زيادة','لازم تفك layer1 الأول'],1,'الـ optimizer بيحدّث بس الـ parameters اللي اتدّتله وقت ما اتبنى. ولو جواه parameters كانت متجمدة، بتفضل شايلة moments قديمة تلخبطه. الدرس بيقول: ابني الـ optimizer من جديد كل ما مجموعة المتدرب تتغير.'],
+ ['(سؤال مني) مع layer-wise LR decay بـ decay = 0.75 و L = 12، أول block بيتدرب بكام من LR الـ head تقريبًا؟',['0.75×','0.5×','0.04×','0.0001×'],2,'decay^(L−k) = 0.75^(12−1) = 0.75¹¹ ≈ 0.042. جربها في المعمل ٠٤.']
+];
+AI.quiz($('d61-quizBox'),Q,5,()=>{const c=document.querySelector('#d61-check input[data-ck="c6"]');if(c&&!c.checked){c.checked=true;AI.store.set('aiefs-d61-c6','1')}});
+
+// ---------- checklist ----------
+AI.checklist(61,$('d61-check'));
+
+// theme
+AI.onTheme(()=>{if(!document.body.contains(lc))return false;recipe();lrs();ll();bn()});
+})();
+</script>

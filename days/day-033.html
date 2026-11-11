@@ -1,0 +1,757 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 11 · Ensemble Methods</span>
+  <h1>اليوم ٣٣: موديلات ضعيفة كتير = موديل قوي</h1>
+  <p class="lede">امبارح شفت إن الغلط بيتقسم <b>bias</b> و<b>variance</b>. النهاردة هتشوف إزاي تجمع موديلات «مش أد كده» عشان تقتل الاتنين: <b>Bagging</b> بيقلل الـ variance، و<b>Boosting</b> بيقلل الـ bias، و<b>Stacking</b> بيتعلم يثق في مين وإمتى. وهتبني AdaBoost و Gradient Boosting بإيدك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Bias-Variance Tradeoff</b></span>
+    <span>بعده: <b>Hyperparameter Tuning</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d33-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d33-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ Expected Error بيتقسم لإيه؟ ومين فيهم مستحيل تشيله؟</summary>
+    <p><span class="ltr">Bias² + Variance + Irreducible Noise</span>. الـ noise (σ²) مفيش موديل يقدر يعمل أحسن منه.</p></details>
+  <details><summary>٢. الـ train error واطي والـ test error عالي والفرق كبير. ده إيه وتعمل إيه؟</summary>
+    <p>ده <b>high variance</b> (overfitting). الحل: داتا أكتر، regularization، موديل أبسط، أو <b>bagging</b>. خلي بالك من الكلمة الأخيرة، هي موضوع النهاردة.</p></details>
+  <details><summary>٣. لو متوسط N توقعات مستقلة كل واحد variance بتاعه σ²، الـ variance بتاع المتوسط كام؟</summary>
+    <p><span class="ltr">σ² / N</span>. وفي الواقع الموديلات مش مستقلة تمامًا، فالتقليل أقل من كده بس لسه كبير. ده بالظبط السر اللي هنلعب بيه في المعمل ٠١.</p></details>
+</section>
+
+<section id="d33-plan-s">
+  <h2>خطة الساعتين</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>ليه الـ ensembles بتشتغل + معمل التصويت</div>
+    <div><b>20 min</b>Bagging و Random Forest + معمل</div>
+    <div><b>25 min</b>Boosting: AdaBoost و Gradient Boosting + معملين</div>
+    <div><b>10 min</b>XGBoost و Stacking و Voting</div>
+    <div><b>30 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d33-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه الـ Ensembles بتشتغل أصلًا؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>تخيل لجنة امتحان فيها ٢١ مصحح، كل واحد فيهم بيصيب في ٦٠٪ بس من الحالات. لو كل واحد بيغلط في حاجات <b>مختلفة</b> عن التاني، ورأي الأغلبية هو اللي بيمشي، عشان القرار يطلع غلط لازم أكتر من النص يغلطوا في نفس الوقت. ودي حاجة صعبة.</p>
+      <p>لو عندك N classifiers مستقلين، كل واحد accuracy بتاعه <span class="ltr">p &gt; 0.5</span>، دقة تصويت الأغلبية:</p>
+      <div class="formula">P(majority correct) = Σ_{k &gt; N/2} C(N,k) · p^k · (1−p)^(N−k)</div>
+      <p>الأخطاء بتلغي بعضها لما الموديلات تغلط غلطات <b>مختلفة</b>. الشرط الأساسي اسمه <b>diversity</b> (التنوع): لو كلهم بيغلطوا نفس الغلطة، تجميعهم مش هيفيد بحاجة.</p>
+      <p>بنعمل التنوع ده بـ ٤ طرق:</p>
+      <ul>
+        <li>داتا تدريب مختلفة لكل موديل ← <b>Bagging</b></li>
+        <li>features مختلفة لكل موديل ← <b>Random Forests</b></li>
+        <li>تصحيح الأخطاء واحد ورا التاني ← <b>Boosting</b></li>
+        <li>عائلات موديلات مختلفة ← <b>Stacking</b></li>
+      </ul>
+      <div class="note"><strong>جرب بإيدك:</strong> خلي الـ correlation = 0 وزوّد عدد الموديلات: الدقة بتطلع لفوق. بعدين زوّد الـ correlation وشوف المكسب بيتبخر. ولو خليت p أقل من 0.5، التصويت بيخليها أوحش!</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d33-voteCanvas" width="520" height="340" aria-label="دقة تصويت الأغلبية مقابل عدد الموديلات"></canvas>
+      <div class="mrow">
+        <label>p (دقة كل موديل) <span id="d33-pV">0.60</span><input type="range" id="d33-p" min="0.4" max="0.85" step="0.01" value="0.6"></label>
+        <label>correlation ρ <span id="d33-rV">0.00</span><input type="range" id="d33-r" min="0" max="1" step="0.01" value="0"></label>
+        <label>N (عدد الموديلات) <span id="d33-nV">21</span><input type="range" id="d33-n" min="1" max="101" step="2" value="21"></label>
+      </div>
+      <div class="readout">
+        <div><small>موديل واحد</small><b id="d33-vOne">0.600</b></div>
+        <div><small>الأغلبية (ρ الحالي)</small><b id="d33-vEns">0.826</b></div>
+        <div><small>الأغلبية لو مستقلين</small><b id="d33-vInd">0.826</b></div>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">الخط المتقطع = موديلات مستقلة تمامًا (ρ=0). الخط الملون = الـ ρ اللي اخترته. الـ correlation هنا معناها: كل موديل بنسبة ρ بينقل نفس «الرأي المشترك»، وبنسبة 1−ρ بيفكر لوحده.</p>
+    </div>
+  </div>
+  <div class="note ai"><strong>ملاحظة على الأرقام:</strong> الدرس الأصلي بيقول إن ٢١ موديل بدقة ٦٠٪ بيوصلوا لحوالي ٧٤٪، و١٠١ لحوالي ٨٤٪. لو حسبت المعادلة اللي فوق بالظبط لموديلات <b>مستقلة تمامًا</b> هتطلع ≈ ٨٢.٦٪ و≈ ٩٧.٩٪ (المعمل بيحسبها بالظبط). الفكرة واحدة: الدقة بتطلع مع N. والدرس العملي: في الحقيقة الموديلات عمرها ما بتبقى مستقلة تمامًا، فالمكسب الفعلي أقل من الرقم النظري. حرّك ρ وشوف بنفسك.</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d33-bagging">
+  <div class="station-head"><span class="tag">02</span><h2>Bagging: نفس الموديل، داتا مختلفة شوية</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p><b>Bagging</b> = <b>B</b>ootstrap <b>Agg</b>regat<b>ing</b>. بتدرّب كل موديل على <b>bootstrap sample</b> مختلفة، وفي الآخر تاخد المتوسط (regression) أو تصويت الأغلبية (classification).</p>
+      <p><b>الـ bootstrap sample</b>: تخيل كيس فيه N كرة (صفوف الداتا). تسحب كرة، تكتب رقمها، و<b>ترجعها الكيس</b>. تكرر N مرة. النتيجة: نفس الحجم، بس فيه صفوف متكررة وصفوف مااتسحبتش خالص.</p>
+      <div class="formula">Data → Bootstrap 1..N → Model 1..N → Average / Vote → Prediction</div>
+      <p>في المتوسط حوالي <b>63.2٪</b> من الصفوف الفريدة بتظهر في كل sample. الـ <b>36.8٪</b> الباقيين اسمهم <b>out-of-bag (OOB)</b> وبيدّوك validation set ببلاش من غير ما تقتطع holdout.</p>
+      <p>كل شجرة لوحدها بتعمل overfit على الـ sample بتاعتها، بس الـ overfit ده <b>مختلف</b> من شجرة للتانية، فلما تاخد المتوسط الضوضاء بتلغي بعضها. النتيجة: <b>variance أقل من غير ما الـ bias يزيد كتير</b>.</p>
+      <h3>Random Forest</h3>
+      <p>Bagging لأشجار القرار + حركة زيادة: عند كل split، الشجرة بتبص على <b>مجموعة عشوائية من الـ features</b> بس. ده بيجبر الأشجار تختلف عن بعض أكتر (diversity أعلى). العدد المعتاد: <span class="ltr">sqrt(n_features)</span> للـ classification و<span class="ltr">n_features / 3</span> للـ regression.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> خلي العمق 6 (شجرة بتعمل overfit) وشجرة واحدة: هتلاقي خط مسنن بيجري ورا الضوضاء. زوّد عدد الأشجار لـ 30: المتوسط (الخط التقيل) بينعم ويقرب من الدالة الحقيقية (المتقطعة).</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d33-bagCanvas" width="520" height="340" aria-label="أشجار bagging والمتوسط بتاعها"></canvas>
+      <div class="mrow">
+        <label>عمق الشجرة <span id="d33-bdV">6</span><input type="range" id="d33-bd" min="1" max="7" step="1" value="6"></label>
+        <label>عدد الأشجار B <span id="d33-bnV">1</span><input type="range" id="d33-bn" min="1" max="60" step="1" value="1"></label>
+        <label>الضوضاء <span id="d33-bsV">0.30</span><input type="range" id="d33-bs" min="0.05" max="0.6" step="0.05" value="0.3"></label>
+      </div>
+      <div class="readout">
+        <div><small>MSE شجرة واحدة</small><b id="d33-bOne">–</b></div>
+        <div><small>MSE المتوسط (bagged)</small><b id="d33-bAvg">–</b></div>
+        <div><small>صفوف فريدة في sample 1</small><b id="d33-bUni">–</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d33-bNew">داتا جديدة</button><button type="button" id="d33-bRe">bootstrap samples جديدة</button></div>
+      <p style="font-size:14px;color:var(--muted)">الـ MSE هنا محسوب بالمقارنة بالدالة الحقيقية، يعني بيقيس قد إيه الموديل قريب من الحقيقة مش من الضوضاء.</p>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d33-boost">
+  <div class="station-head"><span class="tag">03</span><h2>Boosting و AdaBoost: كل موديل بيصلّح غلط اللي قبله</h2></div>
+  <p>الـ <b>Boosting</b> بيدرّب الموديلات <b>ورا بعض</b> (sequential) مش بالتوازي. كل موديل جديد بيركز على الأمثلة اللي الموديلات اللي قبله غلطت فيها. التوقع النهائي = <b>مجموع موزون</b> لكل الموديلات، والموديل الأحسن وزنه أعلى.</p>
+  <p>زي مدرس خصوصي: أول حصة بيشرح كل حاجة، تاني حصة بيركز على الحاجات اللي الطالب غلط فيها، تالت حصة على اللي لسه غلط فيها… كده الـ <b>bias</b> بيقل خطوة بخطوة.</p>
+  <div class="note"><strong>التمن:</strong> الـ boosting ممكن يعمل overfit لو زودت الجولات أوي، لأنه بيفضل يجري ورا الأمثلة الصعبة، وبعضها أصلًا noise.</div>
+  <h3>AdaBoost (Adaptive Boosting)</h3>
+  <p>أول خوارزمية boosting عملية. بتشتغل مع أي base learner، والمعتاد <b>decision stump</b>: شجرة بعمق 1، يعني سؤال واحد بس زي «x أصغر من 0.3؟».</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>1. Initialize sample weights: w_i = 1/N for all i          <span class="c"># أوزان متساوية</span>
+
+2. For t = 1 to T:
+   a. Train weak learner h_t on weighted data              <span class="c"># stump على الداتا الموزونة</span>
+   b. err_t = sum(w_i * I(h_t(x_i) != y_i)) / sum(w_i)     <span class="c"># الغلط الموزون</span>
+   c. alpha_t = 0.5 * ln((1 - err_t) / err_t)              <span class="c"># وزن الموديل</span>
+   d. w_i = w_i * exp(-alpha_t * y_i * h_t(x_i))           <span class="c"># حدّث أوزان الأمثلة</span>
+   e. Normalize weights to sum to 1                        <span class="c"># نرمل</span>
+
+3. H(x) = sign(sum(alpha_t * h_t(x)))                      <span class="c"># التوقع النهائي</span></pre></div>
+  <p>لاحظ في (d): لو التوقع صح، <span class="ltr">y·h = +1</span> فالوزن بيتضرب في <span class="ltr">e^(−α)</span> ويصغر. لو غلط، <span class="ltr">y·h = −1</span> فالوزن بيتضرب في <span class="ltr">e^(+α)</span> ويكبر. والموديل اللي غلطه قليل بياخد α أكبر.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: شوف الأوزان بتكبر</h3>
+      <p>النقط الزرقا <span class="ltr">+1</span> (جوه دايرة) والبرتقاني <span class="ltr">−1</span>. stump واحد يقدر يرسم خط مستقيم أفقي أو رأسي بس، فمستحيل لوحده يحيط بالدايرة.</p>
+      <p>دوس «جولة جاية»: الخط المتقطع هو الـ stump الجديد، و<b>حجم كل نقطة = وزنها</b>. النقط اللي اتغلط فيها بتكبر عشان الـ stump اللي بعده ياخد باله منها. الخلفية الملونة = قرار الـ ensemble كله، والنقطة اللي حواليها حلقة حمرا = لسه غلط.</p>
+      <div class="note ai"><strong>لاحظ:</strong> بعد كام جولة الـ ensemble بيعمل شكل «صندوق» حوالين الدايرة من خطوط مستقيمة بس. ده معنى «weak learners بيعملوا strong learner».</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d33-adaCanvas" width="520" height="400" aria-label="AdaBoost خطوة بخطوة"></canvas>
+      <div class="readout">
+        <div><small>الجولة t</small><b id="d33-aT">0</b></div>
+        <div><small>err_t</small><b id="d33-aErr">–</b></div>
+        <div><small>alpha_t</small><b id="d33-aAl">–</b></div>
+        <div><small>train accuracy</small><b id="d33-aAcc">–</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d33-aStep">جولة جاية</button>
+        <button type="button" id="d33-aTen">+10 جولات</button>
+        <button type="button" id="d33-aReset">من الأول</button>
+        <button type="button" id="d33-aNew">داتا جديدة</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d33-gb">
+  <div class="station-head"><span class="tag">04</span><h2>Gradient Boosting: اتعلم الـ residuals</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ Gradient Boosting بيعمّم الفكرة لأي loss function. بدل ما يغيّر أوزان الأمثلة، كل موديل جديد بيتدرب على <b>الـ residuals</b> (بالظبط: سالب الـ gradient بتاع الـ loss) للـ ensemble الحالي.</p>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>1. F_0(x) = argmin_c sum(L(y_i, c))                <span class="c"># ابدأ بثابت</span>
+
+2. For t = 1 to T:
+   a. r_i = -dL(y_i, F_{t-1}(x_i)) / dF_{t-1}(x_i) <span class="c"># pseudo-residuals</span>
+   b. Fit a tree h_t to the residuals r_i          <span class="c"># شجرة على الغلط</span>
+   c. gamma_t = argmin_gamma sum(L(y_i, F_{t-1}(x_i) + gamma * h_t(x_i)))
+   d. F_t(x) = F_{t-1}(x) + learning_rate * gamma_t * h_t(x)
+
+3. Final prediction: F_T(x)</pre></div>
+      <p>مع الـ <b>squared error</b>، الـ pseudo-residuals هي نفسها الـ residuals العادية: <span class="ltr">r_i = y_i − F_{t-1}(x_i)</span>. يعني كل شجرة حرفيًا بتتعلم «الغلط اللي فاضل».</p>
+      <p>تشبيه: بتحاول تصيب هدف بالجولف. أول ضربة بتقربك. التانية هدفها المسافة اللي فاضلة. التالتة المسافة اللي فاضلة بعد كده…</p>
+      <p>الـ <b>learning rate</b> (shrinkage) بيتحكم قد إيه كل شجرة بتساهم. أصغر = محتاج أشجار أكتر بس بيعمم أحسن غالبًا. القيم المعتادة: <span class="ltr">0.01</span> لحد <span class="ltr">0.3</span>.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> بـ lr = 1 الخط بيقفز بسرعة. بـ lr = 0.1 بيقرب بالراحة. الخطوط الرأسية الرفيعة هي الـ residuals اللي الشجرة الجاية هتتعلمها، وبتقصر مع كل جولة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d33-gbCanvas" width="520" height="340" aria-label="Gradient boosting على الـ residuals"></canvas>
+      <div class="mrow">
+        <label>learning rate <span id="d33-glV">0.30</span><input type="range" id="d33-gl" min="0.05" max="1" step="0.05" value="0.3"></label>
+        <label>عمق كل شجرة <span id="d33-gdV">1</span><input type="range" id="d33-gd" min="1" max="3" step="1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>عدد الأشجار</small><b id="d33-gT">0</b></div>
+        <div><small>train MSE</small><b id="d33-gM">–</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d33-gStep">شجرة جاية</button>
+        <button type="button" id="d33-gTen">+10 أشجار</button>
+        <button type="button" id="d33-gReset">من الأول</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d33-xgb">
+  <div class="station-head"><span class="tag">05</span><h2>XGBoost و Stacking و Voting</h2></div>
+  <h3>XGBoost: ليه مسيطر على الداتا الجدولية؟</h3>
+  <p><b>XGBoost</b> (eXtreme Gradient Boosting) هو gradient boosting ومعاه تحسينات هندسية خلته سريع ودقيق وصعب يعمل overfit:</p>
+  <div class="tablewrap"><table>
+    <tr><th>التحسين</th><th>يعني إيه ببساطة</th></tr>
+    <tr><td class="ltr">Regularized objective</td><td>عقوبات L1 و L2 على أوزان الأوراق، عشان مفيش شجرة تبقى واثقة زيادة</td></tr>
+    <tr><td class="ltr">Second-order approximation</td><td>بيستخدم المشتقة الأولى والتانية للـ loss، فقرارات الـ split أحسن</td></tr>
+    <tr><td class="ltr">Sparsity-aware splits</td><td>بيتعامل مع الـ missing values لوحده: بيتعلم أحسن اتجاه للقيمة الناقصة عند كل split</td></tr>
+    <tr><td class="ltr">Column subsampling</td><td>زي الـ random forest، بياخد features عشوائية للتنوع</td></tr>
+    <tr><td class="ltr">Weighted quantile sketch</td><td>بيلاقي نقط الـ split للـ features المستمرة بكفاءة على داتا موزعة</td></tr>
+    <tr><td class="ltr">Cache-aware block structure</td><td>ترتيب الذاكرة متظبط على الـ CPU cache</td></tr>
+  </table></div>
+  <p>على الداتا الجدولية، XGBoost (واللي جه بعده LightGBM) بيغلبوا الـ neural networks باستمرار. لو داتاك جدول rows و columns، <b>ابدأ بالـ gradient boosting</b>.</p>
+
+  <h3>Stacking (Meta-Learning)</h3>
+  <p>بتدرّب كذا base model مختلفين (مثلًا Random Forest و SVM و Logistic Regression)، وتستخدم <b>توقعاتهم كـ features</b> لموديل فوقيهم اسمه <b>meta-learner</b>.</p>
+  <div class="formula">RF, SVM, LogReg → predictions → Meta-Learner → Final</div>
+  <p>الـ meta-learner بيتعلم يثق في مين في أنهي منطقة: لو الـ RF أحسن في حتة والـ SVM أحسن في حتة تانية، هيتعلم يوزّع على حسب كده. زي مدير فريق عارف مين شاطر في إيه.</p>
+  <div class="note"><strong>فخ الـ leakage:</strong> توقعات الـ base models اللي بتدرب بيها الـ meta-learner لازم تطلع بالـ <b>cross-validation</b> على الـ training set. عمرك ما تدرب الـ base models وتطلع منهم الـ meta-features على نفس الداتا، وإلا الـ meta-learner هيشوف توقعات «حافظة» الداتا وهيثق فيها زيادة.</div>
+
+  <h3>Voting: أبسط ensemble</h3>
+  <ul>
+    <li><b>Hard voting</b>: تصويت أغلبية على الـ labels.</li>
+    <li><b>Soft voting</b>: متوسط الـ probabilities وتختار الـ class صاحبة أعلى متوسط. غالبًا أحسن لأنه بيستخدم معلومة «قد إيه الموديل واثق».</li>
+  </ul>
+  <p>مثال: ٣ موديلات بيدّوا احتمال class A = <span class="ltr">0.9, 0.4, 0.45</span>. hard voting: ٢ من ٣ قالوا B ← B. soft voting: المتوسط <span class="ltr">0.583</span> ← A. الموديل الأول كان واثق جدًا والاتنين التانيين مترددين.</p>
+
+  <h3>تختار إيه إمتى؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>بتقلل</th><th>أحسن في</th><th>خلي بالك من</th></tr>
+    <tr><td>Bagging / Random Forest</td><td>Variance</td><td>داتا فيها noise، features كتير</td><td>مش بيساعد في الـ bias</td></tr>
+    <tr><td>AdaBoost</td><td>Bias</td><td>داتا نضيفة، base learners بسيطة</td><td>حساس للـ outliers والـ noise</td></tr>
+    <tr><td>Gradient Boosting</td><td>Bias</td><td>داتا جدولية، مسابقات</td><td>بطيء في التدريب، سهل يعمل overfit من غير tuning</td></tr>
+    <tr><td>XGBoost / LightGBM</td><td>الاتنين</td><td>Production tabular ML</td><td>hyperparameters كتير</td></tr>
+    <tr><td>Stacking</td><td>الاتنين</td><td>آخر ١–٢٪ دقة</td><td>معقد، والـ meta-learner ممكن يعمل overfit</td></tr>
+    <tr><td>Voting</td><td>Variance</td><td>تجميع سريع لموديلات مختلفة</td><td>بيفيد بس لو الموديلات متنوعة</td></tr>
+  </table></div>
+  <h3>الترتيب العملي لأي مشكلة جدولية</h3>
+  <ol class="ex">
+    <li><b>LightGBM أو XGBoost</b> بالـ parameters الافتراضية.</li>
+    <li>ظبط <span class="ltr">n_estimators, learning_rate, max_depth, min_child_weight</span>.</li>
+    <li>لو محتاج آخر ٠.٥٪، اعمل stacking من ٣–٥ موديلات متنوعة.</li>
+    <li>استخدم cross-validation في كل خطوة.</li>
+  </ol>
+  <p>الـ neural networks على الداتا الجدولية غالبًا أوحش من الـ gradient boosting. محاولات زي TabNet و NODE ساعات بتعادل، بس نادرًا ما بتغلب XGBoost متظبط كويس.</p>
+  <p><b>Ship It:</b> الدرس بيطلّع <code>outputs/prompt-ensemble-selector.md</code>: prompt بتوصف فيه الداتا (الحجم، نوع الـ features، الـ noise، توازن الـ classes) فيمشيك على checklist ويرشحلك طريقة و hyperparameters مبدئية ويحذرك من الأخطاء الشائعة. ومعاه <code>outputs/skill-ensemble-builder.md</code> فيه دليل الاختيار كامل. افتحهم واقراهم.</p>
+</section>
+
+<!-- STATION 6: my addition -->
+<section id="d33-extra">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>الحدس في جملة</h3>
+  <p>Bagging = «اسأل ناس كتير مستقلين وخد المتوسط» (بيعالج التذبذب). Boosting = «اسأل واحد ورا التاني وكل واحد يصلّح اللي قبله» (بيعالج القصور). قاعدة الدرس اللي فات بتلخصها: base model عنده variance عالي (شجرة عميقة) ← bagging. base model عنده bias عالي (stump) ← boosting.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>تعمل ensemble من ٥ نسخ من نفس الموديل بنفس الداتا ونفس الـ seed:</b> correlation = 1، يعني صفر مكسب. ارجع للمعمل ٠١ وحط ρ=1.</li>
+    <li><b>تفتكر إن الـ random forest هيعمل overfit لو زودت الأشجار:</b> لأ، زيادة الأشجار مش بتعمل overfit، بس المكسب بيقف عند حد. الـ boosting بقى هو اللي ممكن يعمل overfit مع جولات أكتر، فبتحتاج early stopping.</li>
+    <li><b>AdaBoost على labels فيها noise كتير:</b> هيكبّر وزن الأمثلة الغلط ويجري وراها. جرّب في المعمل ٠٣: نقطة غلط في النص بتكبر كل جولة.</li>
+    <li><b>Stacking من غير cross-validation:</b> leakage. الأرقام بتبان حلوة في التدريب وتقع في الـ production.</li>
+    <li><b>الـ OOB score بيتحسب على الأشجار اللي ماشافتش الصف بس:</b> مش على كل الغابة.</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <ul>
+    <li><b>Self-consistency:</b> تسأل الـ LLM نفس السؤال كذا مرة بـ temperature أعلى من صفر وتاخد الإجابة الأكتر تكرارًا. ده hard voting بالظبط، وبيشتغل بس لأن الـ samples مختلفة عن بعض (diversity).</li>
+    <li><b>LLM-as-judge panel:</b> بدل حكم واحد، كذا موديل مختلف يقيّموا وتاخد الأغلبية أو المتوسط. موديلات من عائلات مختلفة = correlation أقل.</li>
+    <li><b>Dropout:</b> الدرس اللي فات وصفه كـ «implicit bagging»: كل خطوة تدريب بتدرب شبكة فرعية مختلفة شوية.</li>
+    <li><b>Router في الـ agents:</b> فكرة الـ stacking (موديل بيتعلم يثق في مين في أنهي حالة) قريبة من agent بيختار أنهي tool أو أنهي موديل يرد. التشابه في الفكرة مش في التفاصيل.</li>
+    <li><b>شغلك الحقيقي:</b> أي classifier جدولي جنب الـ LLM (fraud، churn، ranking features قبل الـ RAG) غالبًا الحل الأول فيه هو LightGBM/XGBoost.</li>
+  </ul>
+</section>
+
+<!-- CODE -->
+<section id="d33-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من الـ root بتاع الريبو شغّل الملف الأصلي الأول عشان تشوف الصورة الكاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+git pull
+pip install numpy scikit-learn
+python3 phases/02-ml-fundamentals/11-ensemble-methods/code/ensembles.py</pre></div>
+  <p><b>القاعدة:</b> بعد ما تشوفه شغال، افتح ملف جديد <code>my_ensembles.py</code> واكتب الخطوات دي بإيدك من غير copy-paste. بص على الأصل بس لو اتزنقت. الـ sklearn اختياري: لو مش متسطب، آخر جزء بيطبع إنه skipped.</p>
+
+  <h3>خطوة ١: داتا صناعية وتقسيمة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def make_classification_data(n_samples=300, n_features=5, noise=0.1, seed=42):
+    rng = np.random.RandomState(seed)
+    X = rng.randn(n_samples, n_features)
+    <span class="c"># حدود غير خطية: فيها x1 تربيع، يعني stump واحد مش هيكفي</span>
+    boundary = 0.5 * X[:, 0] + 0.3 * X[:, 1] ** 2 - 0.2 * X[:, 2]
+    y = np.where(boundary + rng.normal(0, noise, n_samples) &gt; 0, 1, -1)   <span class="c"># labels = +1 / -1</span>
+    return X, y
+
+def make_regression_data(n_samples=300, n_features=5, noise=0.3, seed=42):
+    rng = np.random.RandomState(seed)
+    X = rng.randn(n_samples, n_features)
+    y = 2.0 * X[:, 0] + np.sin(3 * X[:, 1]) - 0.5 * X[:, 2] ** 2 + rng.normal(0, noise, n_samples)
+    return X, y
+
+def train_test_split(X, y, test_ratio=0.2, seed=42):
+    rng = np.random.RandomState(seed)
+    idx = rng.permutation(len(y))                 <span class="c"># لخبط الترتيب</span>
+    split = int(len(y) * (1 - test_ratio))
+    return X[idx[:split]], X[idx[split:]], y[idx[:split]], y[idx[split:]]</pre></div>
+
+  <h3>خطوة ٢: الـ Decision Stump (الـ weak learner)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class DecisionStump:
+    def __init__(self):
+        self.feature_idx = None
+        self.threshold = None
+        self.polarity = 1
+        self.alpha = None
+
+    def fit(self, X, y, weights):
+        n_samples, n_features = X.shape
+        best_error = float("inf")
+        for f in range(n_features):                       <span class="c"># جرّب كل feature</span>
+            for thresh in np.unique(X[:, f]):             <span class="c"># وكل threshold</span>
+                for polarity in [1, -1]:                  <span class="c"># والاتجاهين</span>
+                    pred = np.ones(n_samples)
+                    pred[polarity * X[:, f] &lt; polarity * thresh] = -1
+                    error = np.sum(weights[pred != y])    <span class="c"># غلط موزون، مش عدد</span>
+                    if error &lt; best_error:
+                        best_error = error
+                        self.feature_idx, self.threshold, self.polarity = f, thresh, polarity
+
+    def predict(self, X):
+        pred = np.ones(X.shape[0])
+        idx = self.polarity * X[:, self.feature_idx] &lt; self.polarity * self.threshold
+        pred[idx] = -1
+        return pred</pre></div>
+
+  <h3>خطوة ٣: AdaBoost من الصفر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class AdaBoostScratch:
+    def __init__(self, n_estimators=50):
+        self.n_estimators = n_estimators
+        self.stumps, self.alphas = [], []
+
+    def fit(self, X, y):
+        n = X.shape[0]
+        weights = np.full(n, 1 / n)                       <span class="c"># أوزان متساوية في الأول</span>
+        for t in range(self.n_estimators):
+            stump = DecisionStump()
+            stump.fit(X, y, weights)
+            pred = stump.predict(X)
+            err = np.sum(weights[pred != y])
+            err = np.clip(err, 1e-10, 1 - 1e-10)          <span class="c"># نحمي الـ log من القسمة على صفر</span>
+            alpha = 0.5 * np.log((1 - err) / err)         <span class="c"># غلط أقل = صوت أعلى</span>
+            weights *= np.exp(-alpha * y * pred)          <span class="c"># الغلط يكبر، الصح يصغر</span>
+            weights /= weights.sum()
+            stump.alpha = alpha
+            self.stumps.append(stump)
+            self.alphas.append(alpha)
+
+    def predict(self, X):
+        total = sum(a * s.predict(X) for a, s in zip(self.alphas, self.stumps))
+        return np.sign(total)                             <span class="c"># تصويت موزون</span>
+
+    def accuracy(self, X, y):
+        return np.mean(self.predict(X) == y)</pre></div>
+
+  <h3>خطوة ٤: Regression Tree بسيطة (هنحتاجها للـ boosting والـ bagging)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class TreeNode:
+    def __init__(self, value=None):
+        self.feature_idx = None; self.threshold = None
+        self.left = None; self.right = None
+        self.value = value                                <span class="c"># لو ورقة: التوقع</span>
+
+class SimpleRegressionTree:
+    def __init__(self, max_depth=3, min_samples_split=2):
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.root = None
+
+    def fit(self, X, y):
+        self.root = self._build(X, y, depth=0)
+
+    def _build(self, X, y, depth):
+        n_samples, n_features = X.shape
+        if depth &gt;= self.max_depth or n_samples &lt; self.min_samples_split:
+            return TreeNode(value=np.mean(y))             <span class="c"># وقف: ورقة = المتوسط</span>
+        best_gain, best_feature, best_threshold = -float("inf"), None, None
+        current_var = np.var(y) * n_samples
+        for f in range(n_features):
+            thresholds = np.unique(X[:, f])
+            if len(thresholds) &gt; 20:                      <span class="c"># نقلل المحاولات لـ 20 percentile</span>
+                thresholds = np.percentile(X[:, f], np.linspace(0, 100, 20))
+            for thresh in thresholds:
+                left_mask = X[:, f] &lt;= thresh
+                right_mask = ~left_mask
+                if left_mask.sum() &lt; 1 or right_mask.sum() &lt; 1:
+                    continue
+                left_var = np.var(y[left_mask]) * left_mask.sum()
+                right_var = np.var(y[right_mask]) * right_mask.sum()
+                gain = current_var - left_var - right_var  <span class="c"># قد إيه الـ split قلل التشتت</span>
+                if gain &gt; best_gain:
+                    best_gain, best_feature, best_threshold = gain, f, thresh
+        if best_feature is None or best_gain &lt;= 0:
+            return TreeNode(value=np.mean(y))
+        left_mask = X[:, best_feature] &lt;= best_threshold
+        node = TreeNode()
+        node.feature_idx, node.threshold = best_feature, best_threshold
+        node.left = self._build(X[left_mask], y[left_mask], depth + 1)
+        node.right = self._build(X[~left_mask], y[~left_mask], depth + 1)
+        return node
+
+    def predict(self, X):
+        return np.array([self._predict_one(x, self.root) for x in X])
+
+    def _predict_one(self, x, node):
+        if node.value is not None:
+            return node.value
+        if x[node.feature_idx] &lt;= node.threshold:
+            return self._predict_one(x, node.left)
+        return self._predict_one(x, node.right)</pre></div>
+
+  <h3>خطوة ٥: Gradient Boosting من الصفر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class GradientBoostingScratch:
+    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=3):
+        self.n_estimators = n_estimators
+        self.lr = learning_rate
+        self.max_depth = max_depth
+        self.trees = []
+        self.initial_pred = None
+
+    def fit(self, X, y):
+        self.initial_pred = np.mean(y)                    <span class="c"># F_0 = المتوسط (أحسن ثابت للـ MSE)</span>
+        current_pred = np.full(len(y), self.initial_pred)
+        for _ in range(self.n_estimators):
+            residuals = y - current_pred                  <span class="c"># الغلط اللي فاضل</span>
+            tree = SimpleRegressionTree(max_depth=self.max_depth)
+            tree.fit(X, residuals)                        <span class="c"># الشجرة بتتعلم الغلط</span>
+            current_pred += self.lr * tree.predict(X)     <span class="c"># خطوة صغيرة ناحيته</span>
+            self.trees.append(tree)
+
+    def predict(self, X):
+        pred = np.full(X.shape[0], self.initial_pred)
+        for tree in self.trees:
+            pred += self.lr * tree.predict(X)
+        return pred
+
+    def mse(self, X, y):
+        return np.mean((self.predict(X) - y) ** 2)</pre></div>
+
+  <h3>خطوة ٦: Bagging</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class BaggingClassifier:
+    def __init__(self, n_estimators=20, max_depth=5):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.trees = []
+
+    def fit(self, X, y):
+        rng = np.random.RandomState(42)
+        n = len(y)
+        for _ in range(self.n_estimators):
+            idx = rng.choice(n, size=n, replace=True)     <span class="c"># bootstrap: سحب مع الإرجاع</span>
+            tree = SimpleRegressionTree(max_depth=self.max_depth)
+            tree.fit(X[idx], y[idx])
+            self.trees.append(tree)
+
+    def predict(self, X):
+        predictions = np.array([tree.predict(X) for tree in self.trees])
+        return np.sign(np.mean(predictions, axis=0))      <span class="c"># متوسط ثم إشارة = تصويت</span>
+
+    def accuracy(self, X, y):
+        return np.mean(self.predict(X) == y)</pre></div>
+
+  <h3>خطوة ٧: Stacking (القلب بس)</h3>
+  <p>الفكرة المهمة في الـ fit: الـ meta-features بتطلع من <b>folds</b>، كل موديل بيتوقع على الجزء اللي ماشافهوش. بعدين meta-learner بسيط (tanh + gradient descent) بيتعلم وزن لكل base model، وفي الآخر الـ base models بتتدرب تاني على الداتا كلها.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class StackingClassifier:
+    def __init__(self, base_models, meta_lr=0.1, n_folds=5):
+        self.base_models = base_models                    <span class="c"># list of factories: lambda: Model()</span>
+        self.meta_lr, self.n_folds = meta_lr, n_folds
+        self.meta_weights = None; self.meta_bias = None
+        self.fitted_models = []
+
+    def fit(self, X, y):
+        n = len(y)
+        meta_features = np.zeros((n, len(self.base_models)))
+        fold_size = n // self.n_folds
+        indices = np.arange(n)
+        for fold in range(self.n_folds):
+            val_start = fold * fold_size
+            val_end = val_start + fold_size if fold &lt; self.n_folds - 1 else n
+            val_idx = indices[val_start:val_end]
+            train_idx = np.concatenate([indices[:val_start], indices[val_end:]])
+            for m_idx, model_class in enumerate(self.base_models):
+                model = model_class()
+                model.fit(X[train_idx], y[train_idx])     <span class="c"># اتدرب من غير الـ fold ده</span>
+                meta_features[val_idx, m_idx] = model.predict(X[val_idx])   <span class="c"># واتوقع عليه: مفيش leakage</span>
+
+        self.meta_weights = np.zeros(len(self.base_models)); self.meta_bias = 0.0
+        for _ in range(200):                              <span class="c"># meta-learner صغير</span>
+            preds = np.tanh(meta_features @ self.meta_weights + self.meta_bias)
+            errors = y - preds
+            self.meta_weights -= self.meta_lr * (-2 * meta_features.T @ errors / n)
+            self.meta_bias -= self.meta_lr * (-2 * np.sum(errors) / n)
+
+        self.fitted_models = []
+        for model_class in self.base_models:              <span class="c"># درّب تاني على كله للاستخدام</span>
+            model = model_class(); model.fit(X, y)
+            self.fitted_models.append(model)
+
+    def predict(self, X):
+        meta_features = np.column_stack([m.predict(X) for m in self.fitted_models])
+        return np.sign(meta_features @ self.meta_weights + self.meta_bias)</pre></div>
+
+  <h3>خطوة ٨: جرّب وقارن</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>X, y = make_classification_data(n_samples=400, n_features=5)
+X_train, X_test, y_train, y_test = train_test_split(X, y)
+
+for n_est in [1, 5, 10, 25, 50]:
+    model = AdaBoostScratch(n_estimators=n_est)
+    model.fit(X_train, y_train)
+    print(f"n_estimators={n_est:&gt;3d}  train_acc={model.accuracy(X_train, y_train):.3f}  "
+          f"test_acc={model.accuracy(X_test, y_test):.3f}")
+
+Xr, yr = make_regression_data(n_samples=400)
+Xr_tr, Xr_te, yr_tr, yr_te = train_test_split(Xr, yr)
+for lr, n_est in [(0.5, 20), (0.1, 100), (0.05, 200), (0.01, 500)]:
+    gb = GradientBoostingScratch(n_estimators=n_est, learning_rate=lr)
+    gb.fit(Xr_tr, yr_tr)
+    print(f"lr={lr:.2f}, n_trees={n_est:&gt;3d}  test_mse={gb.mse(Xr_te, yr_te):.4f}")</pre></div>
+  <details><summary>الناتج المتوقع (الشكل)</summary>
+    <p>الملف الأصلي بيطبع ٧ أقسام بالترتيب: <span class="ltr">ADABOOST FROM SCRATCH</span>، <span class="ltr">GRADIENT BOOSTING FROM SCRATCH</span>، <span class="ltr">LEARNING RATE vs NUMBER OF TREES</span>، <span class="ltr">BAGGING CLASSIFIER</span>، <span class="ltr">STACKING ENSEMBLE</span>، <span class="ltr">FULL COMPARISON</span>، <span class="ltr">SKLEARN COMPARISON</span>، وفي الآخر <span class="ltr">All ensemble demos complete.</span> الأرقام نفسها هتشوفها عندك. اللي المفروض تلاحظه: الـ AdaBoost بيبدأ بدقة stump واحد ويتحسن مع الجولات، الـ train MSE في الـ gradient boosting بينزل مع كل شجرة، والـ bagging يطلع أحسن من شجرة واحدة أو قريب منها. سجّل أرقامك في ورقة وقارنها بالكلام ده.</p>
+  </details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d33-exercises">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة (١ و٣ أهم اتنين). الباقي كمّله بكرة.</p>
+  <ol class="ex">
+    <li><b>منحنى AdaBoost:</b> عدّل الـ AdaBoost يسجل الـ training accuracy بعد كل جولة. ارسم accuracy مقابل عدد الـ estimators. بيستقر إمتى؟
+      <details><summary>تلميح</summary>جوه الـ loop بعد ما تضيف الـ stump، احسب <code>np.sign(sum(a*s.predict(X) for ...))</code> وخزّن الدقة في list. ارسم بـ matplotlib. هتلاقي الـ train accuracy بتطلع بسرعة في الأول وبعدين المكسب بيقل. قارنه بالـ test accuracy عشان تشوف هل في overfit.</details></li>
+    <li><b>Random Forest من الصفر:</b> ضيف random feature subsampling للـ regression tree. درّب 100 شجرة بـ <code>max_features=sqrt(n_features)</code> وخد المتوسط. قارن الـ variance reduction بشجرة واحدة.
+      <details><summary>تلميح</summary>في <code>_build</code> بدل <code>for f in range(n_features)</code> استخدم <code>rng.choice(n_features, k, replace=False)</code> مع <code>k = max(1, int(np.sqrt(n_features)))</code>، واختار مجموعة جديدة عند <b>كل</b> split مش مرة لكل شجرة. عشان تقيس الـ variance: درّب على كذا bootstrap مختلفة وقارن تشتت التوقعات على نفس نقط الـ test.</details></li>
+    <li><b>Early stopping:</b> في الـ gradient boosting، تابع الـ validation loss بعد كل جولة ووقف لو ماتحسنش ١٠ جولات ورا بعض. هو محتاج كام شجرة فعلًا؟
+      <details><summary>تلميح</summary>قسّم الـ train لـ train/val. خزّن <code>best_loss</code> و <code>best_round</code> و عدّاد <code>patience</code>. لما العداد يوصل 10 اعمل break وقص <code>self.trees = self.trees[:best_round+1]</code>. جرّبها مع lr مختلفة: الأصغر هيحتاج أشجار أكتر.</details></li>
+    <li><b>Stacking حقيقي:</b> ٣ base models (logistic regression، decision tree، k-nearest neighbors) و meta-learner logistic regression. استخدم 5-fold CV للـ meta-features. قارن بكل base model لوحده.
+      <details><summary>تلميح</summary>أسهل طريق بـ sklearn: <code>cross_val_predict(model, X, y, cv=5, method="predict_proba")</code> لكل موديل، خد عمود الـ class الموجبة، و <code>np.column_stack</code>. وفي sklearn فيه كمان <code>StackingClassifier</code> جاهز تقارن بيه نسختك.</details></li>
+    <li><b>XGBoost مقابل نسختك:</b> شغّل XGBoost بالـ defaults على نفس الداتا. قارن الدقة واحسب الوقت للاتنين. الفرق في السرعة قد إيه؟
+      <details><summary>تلميح</summary><code>pip install xgboost</code>، و <code>XGBRegressor()</code> للـ regression data. الوقت بـ <code>time.perf_counter()</code> قبل وبعد الـ fit. نسختك فيها loops في Python فتوقع إن XGBoost أسرع بفرق كبير، وسجل الرقم اللي يطلعلك.</details></li>
+    <li><b>إضافة مني · Self-consistency simulator:</b> انت بتبني agent بيجاوب أسئلة حسابية. اعمل simulation: كل sample من الـ LLM صح باحتمال <span class="ltr">p=0.6</span>، ولما يغلط بيختار إجابة غلط من ٣ إجابات غلط ممكنة. خد k samples (1، 3، 5، 9) واختار الإجابة الأكتر تكرارًا. احسب الدقة على 10,000 سؤال. وبعدين ضيف correlation: بنسبة ρ كل الـ samples بتنسخ نفس الإجابة. إمتى زيادة k بتبطل تفيد؟ واكتب سطرين: تستاهل تكلفة k مرات الـ tokens؟
+      <details><summary>تلميح</summary><code>Counter(answers).most_common(1)[0][0]</code> بيجيبلك الأغلبية. خلي الإجابة الصح = 0 والغلط من <code>rng.integers(1, 4)</code>. لاحظ إن الغلطات المتفرقة على ٣ اختيارات بتخلي الأغلبية الصح أسهل من الحالة الثنائية. ومع ρ عالية هتلاقي نفس اللي شفته في المعمل ٠١.</details></li>
+  </ol>
+</section>
+
+<!-- QUIZ -->
+<section id="d33-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d33-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d33-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d33-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح ليه التصويت بيرفع الدقة، وليه الـ diversity شرط</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فاهم الـ bootstrap والـ OOB (63.2٪ / 36.8٪) والفرق بين Bagging و Random Forest</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> شفت أوزان AdaBoost بتكبر، وأعرف معادلة alpha وتحديث الأوزان</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> فاهم إن الـ gradient boosting بيدرّب كل شجرة على الـ residuals، ودور الـ learning rate</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> أعرف إمتى أستخدم bagging vs boosting vs stacking، وفخ الـ leakage في الـ stacking</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> كتبت AdaBoost و Gradient Boosting بإيدي وشغّلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> حليت تمرينين على الأقل وجبت ٥ من ٧ في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Majority vote / diversity</td><td>Self-consistency في الـ LLMs، لجان الـ LLM judges</td></tr>
+    <tr><td>Bagging / Random Forest</td><td>baseline سريع ومش سهل يتظبط غلط، feature importance، الـ OOB كـ validation ببلاش</td></tr>
+    <tr><td>Gradient Boosting / XGBoost / LightGBM</td><td>أغلب الـ production ML على الداتا الجدولية: fraud، churn، ranking، مسابقات Kaggle</td></tr>
+    <tr><td>AdaBoost</td><td>أول boosting عملي، وفكرة «ركّز على الأمثلة الصعبة»</td></tr>
+    <tr><td>Stacking</td><td>آخر ١–٢٪ دقة في المسابقات، وفكرة الـ router اللي بيختار يثق في مين</td></tr>
+    <tr><td>Soft voting</td><td>تجميع probabilities من موديلات مختلفة</td></tr>
+    <tr><td>Learning rate + early stopping</td><td>درس بكرة: Hyperparameter Tuning</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Hyperparameter Tuning. الأرقام اللي لعبت بيها النهاردة (lr، n_estimators، max_depth) هنتعلم ندوّر على أحسنها بطريقة منظمة، ونبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F11-ensemble-methods" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/11-ensemble-methods</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),C=AI.css,F=AI.fmt;
+const root=document.querySelector('#d33-roadmap').closest('.day');
+
+// roadmap
+const rm=$('d33-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===11)s.className='now';rm.appendChild(s)}
+
+// seeded rng
+function rng(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(!u)u=r();while(!v)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+// ---------- Lab 1: majority vote ----------
+const vc=$('d33-voteCanvas'),vx=AI.setupCanvas(vc),VW=+vc.dataset.w,VH=+vc.dataset.h;
+function tail(N,q){ // P(more than N/2 successes)
+  if(q>=1)return 1; if(q<=0)return 0;
+  const lq=Math.log(q),lr=Math.log(1-q);let lc=0,s=0; // lc = log C(N,k)
+  for(let k=0;k<=N;k++){ if(k>0) lc+=Math.log((N-k+1)/k); if(k>N/2) s+=Math.exp(lc+k*lq+(N-k)*lr); }
+  return Math.min(1,Math.max(0,s));
+}
+function maj(N,p,r){return p*tail(N,r+(1-r)*p)+(1-p)*tail(N,(1-r)*p)}
+function drawVote(){
+  const p=+$('d33-p').value,r=+$('d33-r').value,N=+$('d33-n').value;
+  $('d33-pV').textContent=p.toFixed(2);$('d33-rV').textContent=r.toFixed(2);$('d33-nV').textContent=N;
+  const L=46,R=14,T=14,B=34,pw=VW-L-R,ph=VH-T-B;
+  const X=n=>L+(n-1)/100*pw,Y=a=>T+(1-a)*ph; // y from 0 to 1? use 0.3..1
+  const Y2=a=>T+(1-(a-0.2)/0.8)*ph;
+  vx.clearRect(0,0,VW,VH);
+  vx.strokeStyle=C('--grid');vx.lineWidth=1;vx.fillStyle=C('--muted');vx.font='11px JetBrains Mono, monospace';
+  for(let a=0.2;a<=1.001;a+=0.1){vx.beginPath();vx.moveTo(L,Y2(a));vx.lineTo(VW-R,Y2(a));vx.stroke();vx.fillText(a.toFixed(1),8,Y2(a)+4)}
+  [1,21,41,61,81,101].forEach(n=>{vx.beginPath();vx.moveTo(X(n),T);vx.lineTo(X(n),T+ph);vx.stroke();vx.fillText(n,X(n)-6,VH-16)});
+  vx.fillText('N',VW-R-10,VH-4);
+  // p line
+  vx.strokeStyle=C('--muted');vx.setLineDash([2,4]);vx.beginPath();vx.moveTo(L,Y2(p));vx.lineTo(VW-R,Y2(p));vx.stroke();
+  // independent
+  vx.setLineDash([6,5]);vx.lineWidth=2;vx.strokeStyle=C('--vec-b');vx.beginPath();
+  for(let n=1;n<=101;n+=2){const a=maj(n,p,0);n===1?vx.moveTo(X(n),Y2(a)):vx.lineTo(X(n),Y2(a))}vx.stroke();vx.setLineDash([]);
+  vx.lineWidth=3;vx.strokeStyle=C('--vec-a');vx.beginPath();
+  for(let n=1;n<=101;n+=2){const a=maj(n,p,r);n===1?vx.moveTo(X(n),Y2(a)):vx.lineTo(X(n),Y2(a))}vx.stroke();
+  const e=maj(N,p,r),ei=maj(N,p,0);
+  vx.fillStyle=C('--vec-a');vx.beginPath();vx.arc(X(N),Y2(e),6,0,7);vx.fill();
+  vx.fillStyle=C('--muted');vx.fillText('p',VW-R-12,Y2(p)-4);
+  $('d33-vOne').textContent=p.toFixed(3);$('d33-vEns').textContent=e.toFixed(3);$('d33-vInd').textContent=ei.toFixed(3);
+  $('d33-vEns').style.color=e>p+0.001?C('--ok'):e<p-0.001?C('--bad'):'';
+}
+['d33-p','d33-r','d33-n'].forEach(id=>$(id).addEventListener('input',drawVote));drawVote();
+
+// ---------- 1D regression tree (for labs 2 & 4) ----------
+function fitTree(xs,ys,depth){
+  const n=xs.length,mean=ys.reduce((a,b)=>a+b,0)/(n||1);
+  if(depth<=0||n<2)return{v:mean};
+  const idx=[...xs.keys()].sort((a,b)=>xs[a]-xs[b]);
+  const sx=idx.map(i=>xs[i]),sy=idx.map(i=>ys[i]);
+  let tot=0,tot2=0;sy.forEach(y=>{tot+=y;tot2+=y*y});
+  let best=null,bestG=1e-12,ls=0,ls2=0;const base=tot2-tot*tot/n;
+  for(let i=0;i<n-1;i++){ls+=sy[i];ls2+=sy[i]*sy[i];if(sx[i]===sx[i+1])continue;
+    const nl=i+1,nr=n-nl,rs=tot-ls,rs2=tot2-ls2;
+    const sse=(ls2-ls*ls/nl)+(rs2-rs*rs/nr),g=base-sse;
+    if(g>bestG){bestG=g;best={t:(sx[i]+sx[i+1])/2,i:nl}}}
+  if(!best)return{v:mean};
+  return{t:best.t,l:fitTree(sx.slice(0,best.i),sy.slice(0,best.i),depth-1),r:fitTree(sx.slice(best.i),sy.slice(best.i),depth-1)};
+}
+const predT=(nd,x)=>nd.v!==undefined?nd.v:predT(x<=nd.t?nd.l:nd.r,x);
+const truth=x=>Math.sin(2*Math.PI*x);
+
+// ---------- Lab 2: bagging ----------
+const bc=$('d33-bagCanvas'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+let bSeed=7,bsSeed=11,bX=[],bY=[];
+function bagData(){const r=rng(bSeed),s=+$('d33-bs').value;bX=[];bY=[];for(let i=0;i<40;i++){const x=r();bX.push(x);bY.push(truth(x)+s*gauss(r))}}
+function drawBag(){
+  const d=+$('d33-bd').value,B=+$('d33-bn').value;
+  $('d33-bdV').textContent=d;$('d33-bnV').textContent=B;$('d33-bsV').textContent=(+$('d33-bs').value).toFixed(2);
+  const r=rng(bsSeed),n=bX.length,trees=[];let uni=0;
+  for(let b=0;b<B;b++){const xs=[],ys=[],seen=new Set();for(let i=0;i<n;i++){const j=Math.floor(r()*n);xs.push(bX[j]);ys.push(bY[j]);seen.add(j)}if(b===0)uni=seen.size;trees.push(fitTree(xs,ys,d))}
+  const Xp=x=>20+x*(BW-40),Yp=y=>BH/2-y*(BH/2-20)/1.9;
+  bx.clearRect(0,0,BW,BH);AI.grid(bx,BW,BH,26,20,BH/2);
+  const G=200,grid=[];for(let i=0;i<=G;i++)grid.push(i/G);
+  bx.lineWidth=1.2;bx.strokeStyle=C('--vec-a');bx.globalAlpha=B>1?.22:.9;
+  trees.slice(0,20).forEach(t=>{bx.beginPath();grid.forEach((x,i)=>{const y=Yp(predT(t,x));i?bx.lineTo(Xp(x),y):bx.moveTo(Xp(x),y)});bx.stroke()});bx.globalAlpha=1;
+  bx.setLineDash([6,5]);bx.lineWidth=2;bx.strokeStyle=C('--muted');bx.beginPath();grid.forEach((x,i)=>{i?bx.lineTo(Xp(x),Yp(truth(x))):bx.moveTo(Xp(x),Yp(truth(x)))});bx.stroke();bx.setLineDash([]);
+  let m1=0,mA=0;
+  bx.lineWidth=3.5;bx.strokeStyle=C('--vec-b');bx.beginPath();
+  grid.forEach((x,i)=>{let s=0;trees.forEach(t=>s+=predT(t,x));const a=s/B;const y=Yp(a);i?bx.lineTo(Xp(x),y):bx.moveTo(Xp(x),y);
+    mA+=(a-truth(x))**2;m1+=(predT(trees[0],x)-truth(x))**2});bx.stroke();
+  bx.fillStyle=C('--ink');bX.forEach((x,i)=>{bx.beginPath();bx.arc(Xp(x),Yp(bY[i]),3.5,0,7);bx.fill()});
+  bx.font='12px JetBrains Mono, monospace';bx.fillStyle=C('--vec-b');bx.fillText('bagged average',BW-150,18);bx.fillStyle=C('--muted');bx.fillText('true f(x)',BW-150,34);
+  $('d33-bOne').textContent=F(m1/(G+1),3);$('d33-bAvg').textContent=F(mA/(G+1),3);$('d33-bUni').textContent=uni+' / '+n+' ('+Math.round(uni/n*100)+'%)';
+}
+$('d33-bd').addEventListener('input',drawBag);$('d33-bn').addEventListener('input',drawBag);
+$('d33-bs').addEventListener('input',()=>{bagData();drawBag()});
+$('d33-bNew').addEventListener('click',()=>{bSeed++;bagData();drawBag()});
+$('d33-bRe').addEventListener('click',()=>{bsSeed+=13;drawBag()});
+bagData();drawBag();
+
+// ---------- Lab 3: AdaBoost ----------
+const ac=$('d33-adaCanvas'),ax=AI.setupCanvas(ac),AW=+ac.dataset.w,AH=+ac.dataset.h;
+let aSeed=3,P=[],W=[],stumps=[],lastErr=null,lastAl=null;
+function adaData(){const r=rng(aSeed);P=[];for(let i=0;i<40;i++){const x=r()*2-1,y=r()*2-1;let lab=(x*x+y*y<0.42)?1:-1;if(r()<0.05)lab=-lab;P.push([x,y,lab])}adaReset()}
+function adaReset(){W=P.map(()=>1/P.length);stumps=[];lastErr=null;lastAl=null;drawAda()}
+const sp=(s,p)=>(s.pol*p[s.f]<s.pol*s.th)?-1:1;
+const score=(x,y)=>stumps.reduce((a,s)=>a+s.al*sp(s,[x,y]),0);
+function adaStep(){
+  let best=null,be=Infinity;
+  for(let f=0;f<2;f++)for(const q of P){const th=q[f];for(const pol of [1,-1]){let e=0;P.forEach((p,i)=>{if(sp({f,th,pol},p)!==p[2])e+=W[i]});if(e<be){be=e;best={f,th,pol}}}}
+  const err=Math.min(1-1e-10,Math.max(1e-10,be)),al=0.5*Math.log((1-err)/err);best.al=al;
+  let s=0;P.forEach((p,i)=>{W[i]*=Math.exp(-al*p[2]*sp(best,p));s+=W[i]});W=W.map(w=>w/s);
+  stumps.push(best);lastErr=err;lastAl=al;
+}
+function drawAda(){
+  const pad=16,S=Math.min(AW,AH)-2*pad,ox=(AW-S)/2,oy=pad;
+  const Xp=x=>ox+(x+1)/2*S,Yp=y=>oy+(1-y)/2*S;
+  ax.clearRect(0,0,AW,AH);
+  if(stumps.length){const cell=10;for(let px=0;px<S;px+=cell)for(let py=0;py<S;py+=cell){const x=(px+cell/2)/S*2-1,y=1-(py+cell/2)/S*2;
+      ax.fillStyle=score(x,y)>0?C('--vec-a'):C('--vec-b');ax.globalAlpha=.13;ax.fillRect(ox+px,oy+py,cell,cell)}ax.globalAlpha=1}
+  ax.strokeStyle=C('--line');ax.lineWidth=1;ax.strokeRect(ox,oy,S,S);
+  if(stumps.length){const s=stumps[stumps.length-1];ax.setLineDash([7,5]);ax.strokeStyle=C('--ink');ax.lineWidth=2;ax.beginPath();
+    if(s.f===0){ax.moveTo(Xp(s.th),oy);ax.lineTo(Xp(s.th),oy+S)}else{ax.moveTo(ox,Yp(s.th));ax.lineTo(ox+S,Yp(s.th))}ax.stroke();ax.setLineDash([])}
+  let ok=0;
+  P.forEach((p,i)=>{const r=Math.max(3,Math.min(22,Math.sqrt(W[i]*P.length)*5.5));
+    ax.fillStyle=p[2]>0?C('--vec-a'):C('--vec-b');ax.beginPath();ax.arc(Xp(p[0]),Yp(p[1]),r,0,7);ax.fill();
+    const correct=stumps.length?Math.sign(score(p[0],p[1]))===p[2]:false;if(correct)ok++;
+    if(stumps.length&&!correct){ax.strokeStyle=C('--bad');ax.lineWidth=2.5;ax.beginPath();ax.arc(Xp(p[0]),Yp(p[1]),r+3,0,7);ax.stroke()}});
+  $('d33-aT').textContent=stumps.length;$('d33-aErr').textContent=lastErr===null?'–':F(lastErr,3);
+  $('d33-aAl').textContent=lastAl===null?'–':F(lastAl,3);$('d33-aAcc').textContent=stumps.length?F(ok/P.length,3):'–';
+}
+$('d33-aStep').addEventListener('click',()=>{adaStep();drawAda()});
+$('d33-aTen').addEventListener('click',()=>{for(let k=0;k<10;k++)adaStep();drawAda()});
+$('d33-aReset').addEventListener('click',adaReset);
+$('d33-aNew').addEventListener('click',()=>{aSeed+=5;adaData()});
+adaData();
+
+// ---------- Lab 4: gradient boosting ----------
+const gc=$('d33-gbCanvas'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+let gX=[],gY=[],gF0=0,gTrees=[];
+(function(){const r=rng(21);for(let i=0;i<30;i++){const x=i/29;gX.push(x);gY.push(truth(x)+0.15*gauss(r))}})();
+function gReset(){gF0=gY.reduce((a,b)=>a+b,0)/gY.length;gTrees=[];drawGb()}
+const gPred=x=>gTrees.reduce((a,t)=>a+t.lr*predT(t.tr,x),gF0);
+function gStep(){const lr=+$('d33-gl').value,d=+$('d33-gd').value;const res=gX.map((x,i)=>gY[i]-gPred(x));gTrees.push({lr,tr:fitTree(gX,res,d)})}
+function drawGb(){
+  $('d33-glV').textContent=(+$('d33-gl').value).toFixed(2);$('d33-gdV').textContent=$('d33-gd').value;
+  const Xp=x=>20+x*(GW-40),Yp=y=>GH/2-y*(GH/2-20)/1.5;
+  gx.clearRect(0,0,GW,GH);AI.grid(gx,GW,GH,26,20,GH/2);
+  let mse=0;
+  gx.strokeStyle=C('--bad');gx.lineWidth=1.3;gx.globalAlpha=.7;
+  gX.forEach((x,i)=>{const f=gPred(x);mse+=(gY[i]-f)**2;gx.beginPath();gx.moveTo(Xp(x),Yp(gY[i]));gx.lineTo(Xp(x),Yp(f));gx.stroke()});gx.globalAlpha=1;
+  gx.setLineDash([6,5]);gx.lineWidth=2;gx.strokeStyle=C('--muted');gx.beginPath();
+  for(let i=0;i<=200;i++){const x=i/200;i?gx.lineTo(Xp(x),Yp(truth(x))):gx.moveTo(Xp(x),Yp(truth(x)))}gx.stroke();gx.setLineDash([]);
+  gx.lineWidth=3;gx.strokeStyle=C('--vec-a');gx.beginPath();
+  for(let i=0;i<=300;i++){const x=i/300;i?gx.lineTo(Xp(x),Yp(gPred(x))):gx.moveTo(Xp(x),Yp(gPred(x)))}gx.stroke();
+  gx.fillStyle=C('--ink');gX.forEach((x,i)=>{gx.beginPath();gx.arc(Xp(x),Yp(gY[i]),3.5,0,7);gx.fill()});
+  gx.font='12px JetBrains Mono, monospace';gx.fillStyle=C('--vec-a');gx.fillText('F_t(x)',GW-110,18);gx.fillStyle=C('--bad');gx.fillText('residuals',GW-110,34);
+  $('d33-gT').textContent=gTrees.length;$('d33-gM').textContent=F(mse/gX.length,4);
+}
+$('d33-gStep').addEventListener('click',()=>{gStep();drawGb()});
+$('d33-gTen').addEventListener('click',()=>{for(let k=0;k<10;k++)gStep();drawGb()});
+$('d33-gReset').addEventListener('click',gReset);
+['d33-gl','d33-gd'].forEach(id=>$(id).addEventListener('input',drawGb));
+gReset();
+
+// ---------- quiz ----------
+AI.quiz($('d33-quizBox'),[
+ ['ليه تجميع كذا weak classifier في ensemble بيرفع الدقة؟',['الـ weak classifiers دايمًا أسرع من القوية','كل classifier بيحفظ جزء مختلف من الـ test set','الـ ensembles دايمًا بتستخدم داتا تدريب أكتر','لو الـ classifiers بيغلطوا غلطات مختلفة، تصويت الأغلبية بيلغي الأخطاء الفردية'],3,'السر هو الـ diversity. لو الأخطاء مستقلة، عشان الإجابة الغلط تكسب لازم تخدع أكتر من نص الموديلات. الأخطاء بتلغي بعضها ودقة الـ ensemble بتعدي أي موديل لوحده.'],
+ ['إيه الفرق الأساسي بين الـ bagging والـ boosting؟',['الـ bagging محتاج labels والـ boosting unsupervised','الـ bagging بيدرّب موديلات بالتوازي على subsets عشوائية، والـ boosting بيدرّبهم ورا بعض ويركز على أخطاء اللي قبله','الـ bagging بيقلل الـ bias والـ boosting بيقلل الـ variance','الـ bagging بيستخدم deep neural networks والـ boosting بيستخدم decision trees'],1,'Bagging: موديلات مستقلة على bootstrap samples (بالتوازي، بيقلل الـ variance). Boosting: موديلات ورا بعض، كل واحد بيركز على أخطاء الـ ensemble لحد دلوقتي (بيقلل الـ bias).'],
+ ['في AdaBoost، إيه اللي بيحصل لوزن نقطة تدريب اتصنفت غلط بعد كل جولة؟',['بيزيد، عشان الـ weak learner الجاي يركز أكتر على المثال الصعب ده','بيقل، عشان الجاي يتجاهلها','بيفضل زي ما هو','النقطة بتتشال من الـ training set'],0,'AdaBoost بيزوّد أوزان الأمثلة اللي اتصنفت غلط، فالـ learner اللي بعده بيدّي اهتمام أكبر للأمثلة اللي الـ ensemble لسه بيغلط فيها. شفتها بعينك في المعمل ٠٣.'],
+ ['Random forest بـ 100 شجرة ليه نفس الـ test accuracy بتاعة 200 شجرة، وحتى 500 مافيش تحسن. ليه؟',['بعد عدد كفاية من الأشجار، تقليل الـ variance بيوصل لسقف، وزيادة الأشجار بتدي مكسب بيقل من غير ما تزوّد الـ overfitting','500 شجرة هو أقصى عدد مسموح','الأشجار كلها متطابقة فزيادتها مالهاش تأثير','الـ random forest بيعمل underfit ومحتاج خوارزمية تانية'],0,'الـ random forests مش بتعمل overfit مع أشجار أكتر (عكس الـ boosting). بس تقليل الـ variance بيقف بعد ما تتوسط أشجار متنوعة كفاية، والزيادة بتبقى compute من غير فايدة.'],
+ ['الـ gradient boosting بيدرّب كل شجرة جديدة على إيه؟',['توقعات الشجرة اللي قبلها','الـ target values الأصلية','subsets عشوائية من الـ features','الـ residuals (الأخطاء) بتاعة توقعات الـ ensemble الحالي'],3,'كل شجرة جديدة بتتدرب تتوقع الـ residuals (سالب الـ gradient بتاع الـ loss) للـ ensemble الحالي، فالغلط اللي فاضل بيقل خطوة بخطوة.'],
+ ['(إضافة مني) عملت bootstrap sample من 1000 صف. تقريبًا كام صف فريد هيكون فيها؟',['1000 بالظبط','حوالي 632','حوالي 500','حوالي 368'],1,'حوالي 63.2٪ من الصفوف الفريدة بتظهر، والـ 36.8٪ الباقيين هما الـ out-of-bag اللي ينفعوا validation ببلاش.'],
+ ['(إضافة مني) عملت stacking: دربت ٣ base models على الـ training set كله، وطلعت توقعاتهم على نفس الـ training set ودربت عليها الـ meta-learner. المشكلة؟',['مفيش مشكلة، ده الطريقة الصح','الـ meta-learner لازم يبقى neural network','Data leakage: الـ meta-features لازم تطلع بالـ cross-validation على داتا الموديل ماشافهاش','لازم الـ base models تبقى من نفس العائلة'],2,'الـ base models «حافظة» الـ training set، فتوقعاتها عليه أحسن من الحقيقة، والـ meta-learner هيثق فيها زيادة. الحل: out-of-fold predictions زي ما الكود بيعمل.']
+],5,()=>{const c=root.querySelector('input[data-ck="c7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+AI.checklist(33,root);
+
+// redraw on theme change
+AI.onTheme(()=>{if(!document.body.contains(vc))return false;drawVote();drawBag();drawAda();drawGb()});
+})();
+</script>

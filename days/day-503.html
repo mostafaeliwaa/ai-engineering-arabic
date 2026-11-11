@@ -1,0 +1,645 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 75 · End-to-End Eval Runner</span>
+  <h1>اليوم ٥٠٣: لزّق الخمس دروس في eval runner واحد</h1>
+  <p class="lede">خمس دروس سباكة، ودرس واحد يوصّلهم ببعض. النهاردة مشروع تجميع: الـ runner بيقرا الـ tasks (درس ٧٠)، ويكلّم الموديل من خلال <b>adapter</b>، ويقيّم بالـ metrics (٧١ و ٧٢)، ويضيف تقرير الـ calibration والـ perplexity (٧٣)، ويطلّع الـ leaderboard (٧٤). وفي الآخر بيقفل لوحده: exit 0 لو كله تمام، وغير كده لو حاجة باظت.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> + numpy</span>
+    <span>قبله: <b>Leaderboard Aggregation</b></span>
+    <span>بعده: <b>Collective Ops From Scratch</b></span>
+  </div>
+  <div style="min-width:0">
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d503-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d503-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت الـ leaderboard aggregator. جاوب في دماغك الأول.</p>
+  <ol class="ex">
+    <li>الـ <code>aggregate</code> بتعمل إيه لو جالها score = 42 (BLEU على 100)؟
+      <details><summary>الإجابة</summary>بترمي <code>ValueError</code> وترفض الـ run كله. العقد إن كل score في <span class="ltr">[0, 1]</span>، والإصلاح مكانه طبقة الـ metric مش الـ aggregator.</details></li>
+    <li>الـ paired diff CI طلع <span class="ltr">[−0.01, +0.06]</span>. الفرق significant؟
+      <details><summary>الإجابة</summary>لأ. الـ CI فيه الصفر، فالـ leaderboard بيعتبرهم متعادلين عند المستوى ده.</details></li>
+    <li>إيه الـ ٣ حاجات اللي بتطلع من <code>aggregate</code> لكل موديل غير الـ mean؟
+      <details><summary>الإجابة</summary>حدود الـ CI (<code>mean_ci_lo</code> و <code>mean_ci_hi</code>)، والـ <code>win_rate</code>، و <code>tasks_completed</code>، ومعاهم <code>categories</code> (متوسط لكل فئة).</details></li>
+  </ol>
+  <div class="note ai"><strong>الربط بالنهاردة:</strong> الـ aggregator كان مستني list من <code>EvalRun</code> «من حد». النهاردة إنت الحد ده. ولاحظ القاعدة الذهبية: الـ runner <b>ما بيكررش</b> أي logic من الدروس اللي فاتت. بيستورد الموديولات وبيركّبهم.</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة (مشروع بمراحل)</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>10 min</b>الصورة الكبيرة (معمل ١)</div>
+    <div><b>10 min</b>M1–M2: الـ loading والـ adapter</div>
+    <div><b>20 min</b>M3–M4: الـ scoring loop والـ parallel (معمل ٢)</div>
+    <div><b>20 min</b>M5–M6: التقرير والـ demo (معمل ٣)</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 PIPELINE -->
+<section id="d503-pipe">
+  <div class="station-head"><span class="tag">01</span><h2>الصورة الكبيرة: مين بيعمل إيه</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المرحلة</th><th>جاية من</th><th>بتعمل إيه</th></tr>
+    <tr><td>validate + render prompt</td><td>درس ٧٠</td><td>يقرا <code>tasks.jsonl</code>، يتأكد إن كل task سليم، ويلزق الـ few-shot قبل الـ prompt</td></tr>
+    <tr><td>adapter.generate</td><td>النهاردة</td><td>يكلّم الموديل ويرجّع نص + ثقة + NLL + عدد tokens</td></tr>
+    <tr><td>post_process</td><td>درس ٧٠</td><td>strip أو lower أو استخراج حرف أو code block أو أول سطر</td></tr>
+    <tr><td>metric dispatch</td><td>دروس ٧١ و ٧٢</td><td>exact_match / accuracy / f1 / bleu_4 / rouge_l، أو <code>run_candidate</code> للكود</td></tr>
+    <tr><td>calibration + perplexity</td><td>درس ٧٣</td><td>ECE و Brier لكل موديل، و perplexity من الـ NLL</td></tr>
+    <tr><td>aggregate + pairwise</td><td>درس ٧٤</td><td>الـ leaderboard بالـ CI والمقارنات الزوجية</td></tr>
+  </table></div>
+  <p><b>تشبيه:</b> الـ runner زي مدير مطبخ. مش بيطبخ بنفسه. عنده شيف للصوص (درس ٧١) وشيف للمشويات (درس ٧٢) ومحاسب (درس ٧٤). شغلته إنه يوزّع الطلبات بالترتيب الصح ويجمّع الأطباق في صينية واحدة. لو المحاسب غيّر طريقة الحساب، المدير مش محتاج يتغير.</p>
+  <h3>الـ adapter: الواجهة الصغيرة اللي بتفصل الموديل عن الـ runner</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class ModelAdapter:
+    model_id: str
+    def generate(self, prompt: str, task: TaskSpec) -&gt; Generation: ...
+
+@dataclass
+class Generation:
+    text: str                <span class="c"># رد الموديل كنص حر</span>
+    confidence: float = 0.5  <span class="c"># ثقة الموديل في الإجابة، في [0, 1]</span>
+    token_nll: float = 0.0   <span class="c"># اختياري: مجموع الـ NLL على الـ tokens المتولدة</span>
+    token_count: int = 0     <span class="c"># اختياري: عدد الـ tokens</span></pre></div>
+  <p>دالة واحدة بس. أي موديل (mock، local، API) يقدر يلبس الواجهة دي. كل حاجة تانية (retries، caching، rate limits) مكانها جوه الـ adapter مش الـ runner.</p>
+  <h3>الـ ٣ adapters الوهمية (mocks)</h3>
+  <ul>
+    <li><b><code>RuleBasedAdapter</code></b> (rule_based): deterministic وشبه مثالي. بيرجّع الـ target نفسه، وللكود بيكتب الحل الصح لـ <code>add</code> و <code>is_even</code>. ثقته 0.92 دايمًا، و NLL لكل token = 0.8.</li>
+    <li><b><code>NoisyAdapter</code></b> (noisy): بيجيب الإجابة الصح بنسبة ٢٥٪ بس، وغير كده «I do not know» أو «Answer: A» أو <code>add</code> بتطرح بدل ما تجمع. ثقته 0.85 دايمًا (يعني overconfident جدًا)، و NLL لكل token = 2.5.</li>
+    <li><b><code>BiasedAdapter</code></b> (biased): ممتاز في فئة واحدة (arithmetic افتراضيًا) بثقة 0.9، وبيخمّن في الباقي بثقة 0.4. NLL لكل token = 1.0 في فئته و 3.0 في الباقي.</li>
+  </ul>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: تتبّع task واحد في الـ pipeline</h3>
+      <p>اختار adapter و task من الـ ١٠ tasks الحقيقية بتاعة fixture درس ٧٠، ودوس «تتبّع». هتشوف كل مرحلة بتحوّل إيه لإيه. الـ metrics هنا <b>محاكاة مبسطة في المتصفح</b> (للـ summaries بنعتبر التطابق الكامل 1 وغيره 0، وده بيطابق ردود الـ mocks دي). الـ noisy بيستخدم random generator من عندي، فدوس «زهر جديد» تشوف حالات تانية.</p>
+      <div class="note"><strong>جرب:</strong> (١) biased على <code>mcq_001</code>: بيخمّن «B» وهي صح بالصدفة، بثقة 0.4. ده هيفرق في الـ calibration بتاعه. (٢) noisy على <code>code_001</code>: الكود بيتشغّل بس الـ assertions بتفشل. (٣) rule_based على <code>sum_002</code>: الـ metric هنا <code>bleu_4</code> والـ correct threshold 0.5.</div>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>adapter<select id="d503-ad"><option value="rule_based">rule_based</option><option value="noisy">noisy</option><option value="biased">biased</option></select></label>
+        <label>task<select id="d503-tk"></select></label>
+      </div>
+      <canvas id="d503-pc" width="520" height="330" aria-label="مراحل الـ pipeline لـ task واحد"></canvas>
+      <div class="btns"><button type="button" class="primary" id="d503-trace">تتبّع</button><button type="button" id="d503-dice">زهر جديد (noisy)</button></div>
+      <div class="verdict" id="d503-tv"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 02 MILESTONES -->
+<section id="d503-ms">
+  <div class="station-head"><span class="tag">02</span><h2>المشروع: ٦ مراحل، وكل مرحلة ليها check</h2></div>
+  <p>قبل ما تكتب: شغّل الأصل وشوف النتيجة اللي المفروض توصلها. من جذر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/75-end-to-end-eval-runner/code/main.py
+echo "exit=$?"
+python3 phases/19-capstone-projects/75-end-to-end-eval-runner/code/tests/test_runner.py</pre></div>
+  <p>الـ runner بيستورد ملفات <code>main.py</code> بتاعة دروس ٧٠ لـ ٧٤ بمسارات نسبية، فلازم يكونوا موجودين جنبه في الريبو. اكتب نسختك في نفس الفولدر (<code>code/my_runner.py</code>) عشان المسارات تشتغل. ومن غير PyTorch، numpy بس.</p>
+
+  <h3>M1 · تحميل الموديولات الشقيقة</h3>
+  <p>كل درس اسم الملف بتاعه <code>main.py</code>، فما ينفعش تعمل <code>import main</code> خمس مرات. الحل: <code>importlib</code> تحمّل كل ملف باسم موديول مختلف.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import importlib.util, json, os, random, sys, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+
+def _load_sibling(lesson_dir, module_name="main"):
+    here = os.path.dirname(os.path.abspath(__file__))
+    sibling = os.path.normpath(os.path.join(here, "..", "..", lesson_dir, "code", "main.py"))
+    if not os.path.isfile(sibling):
+        raise ImportError(f"sibling module not found: {sibling}")
+    mod_name = f"_sibling_{lesson_dir.replace('-', '_')}"   <span class="c"># اسم فريد لكل درس</span>
+    spec = importlib.util.spec_from_file_location(mod_name, sibling)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not build spec for {sibling}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module        <span class="c"># لازم قبل exec عشان الـ dataclasses تشتغل</span>
+    spec.loader.exec_module(module)
+    return module
+
+spec_mod    = _load_sibling("70-task-spec-format")
+metrics_mod = _load_sibling("71-classical-metrics")
+exec_mod    = _load_sibling("72-code-exec-metric")
+calib_mod   = _load_sibling("73-perplexity-calibration")
+board_mod   = _load_sibling("74-leaderboard-aggregation")
+TaskSpec = spec_mod.TaskSpec</pre></div>
+  <p><b>Check:</b> <code>python3 -c</code> يستورد ملفك من غير error، و <code>board_mod.aggregate</code> موجودة.</p>
+
+  <h3>M2 · الـ dataclasses والـ adapter</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class Generation:
+    text: str
+    confidence: float = 0.5
+    token_nll: float = 0.0
+    token_count: int = 0
+
+class ModelAdapter:
+    model_id: str = "abstract"
+    def generate(self, prompt, task):
+        raise NotImplementedError          <span class="c"># الـ test بيتأكد إن الـ abstract بيرمي</span>
+
+@dataclass
+class TaskResult:
+    model_id: str
+    task_id: str
+    category: str
+    metric_name: str
+    score: float
+    correct: bool
+    confidence: float
+    generation: str
+    detail: str = ""
+    wall_seconds: float = 0.0
+
+@dataclass
+class EvalReport:
+    leaderboard: list
+    pairwise: list
+    calibration: dict
+    perplexity: dict
+    summary: dict
+    error: str | None = None
+
+    def to_json(self):
+        payload = {"leaderboard": self.leaderboard, "pairwise": self.pairwise,
+                   "calibration": self.calibration, "perplexity": self.perplexity,
+                   "summary": self.summary}
+        if self.error:
+            payload["error"] = self.error     <span class="c"># الـ error المنظم جوه الـ envelope</span>
+        return json.dumps(payload, indent=2)</pre></div>
+  <p><b>Check:</b> <code>ModelAdapter().generate("p", None)</code> بيرمي <code>NotImplementedError</code>.</p>
+
+  <h3>M3 · الـ scoring loop لـ task واحد</h3>
+  <p>لكل task: (١) ارسم الـ prompt، (٢) نادي الـ adapter واحسب الوقت، (٣) اعمل post-process حسب قاعدة الـ task، (٤) وزّع على طبقة الـ metric، (٥) ابني نتيجة فيها الـ score والـ metadata، (٦) الثقة والصح بيروحوا لبافر الـ calibration بعدين.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _correct_from_score(metric_name, score, threshold=0.5):
+    if metric_name in ("exact_match", "accuracy", "code_exec"):
+        return score &gt;= 0.999999          <span class="c"># يا صح يا غلط: لازم 1.0</span>
+    return score &gt;= threshold             <span class="c"># المتدرجة (f1, bleu, rouge): 0.5</span>
+
+def _score_one(adapter, task, timeout_s=3.0):
+    rendered = spec_mod.render_prompt(task)
+    t0 = time.time()
+    gen = adapter.generate(rendered, task)
+    elapsed = time.time() - t0
+    processed = spec_mod.post_process(gen.text, task.post_process)
+    if task.metric_name == "code_exec":   <span class="c"># الكود بيتشغّل في subprocess (درس 72)</span>
+        result = exec_mod.run_candidate(exec_mod.extract_code(processed) or processed,
+                                        task.targets, timeout_s=timeout_s)
+        score, detail = result.score, result.detail
+    else:                                  <span class="c"># الباقي من درس 71</span>
+        score, detail = metrics_mod.score(task.metric_name, processed, task.targets), ""
+    return TaskResult(
+        model_id=adapter.model_id, task_id=task.task_id, category=task.category,
+        metric_name=task.metric_name, score=float(score),
+        correct=bool(_correct_from_score(task.metric_name, score)),
+        confidence=float(min(1.0, max(0.0, gen.confidence))),   <span class="c"># clamp للأمان</span>
+        generation=gen.text, detail=detail, wall_seconds=float(elapsed))</pre></div>
+  <p>الـ threshold جوه <code>_correct_from_score</code> والـ runner ما بيدّيش طريقة عامة تغيّره. <b>Check:</b> <code>_correct_from_score("exact_match", 0.99)</code> = False، و <code>("f1", 0.6)</code> = True، و <code>("f1", 0.49)</code> = False.</p>
+
+  <h3>M4 · الـ run_eval مع parallel اختياري</h3>
+  <p>الـ runner بيستخدم <code>ThreadPoolExecutor</code>. الـ threads كفاية لأن عنق الزجاجة في الموديلات الحقيقية هو الـ network I/O، ومسار الكود بيعمل subprocess لوحده والـ executor بس بيستنى. الدرس بيقول عدد الـ workers الافتراضي هو الأصغر بين ٨ وعدد الـ tasks، والكود بيعمل <code>min(max_workers, len(work))</code> و <code>max_workers=8</code>. وفيه flag اسمه <code>parallel</code>: الـ tests بتقفله عشان الترتيب يبقى ثابت.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def run_eval(adapters, tasks, parallel=True, max_workers=8, code_exec_timeout_s=3.0):
+    results = []
+    model_ids = [a.model_id for a in adapters]
+    if len(set(model_ids)) != len(model_ids):          <span class="c"># model_id لازم يبقى فريد</span>
+        raise ValueError("adapter.model_id values must be unique within a single eval run")
+    calibration_buf = {mid: [] for mid in model_ids}
+    if not tasks or not adapters:
+        return results, calibration_buf
+    work = [(a, t) for a in adapters for t in tasks]     <span class="c"># كل موديل × كل task</span>
+    if parallel and len(work) &gt; 1:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(work))) as ex:
+            futures = {ex.submit(_score_one, a, t, code_exec_timeout_s): (a, t) for a, t in work}
+            for fut in as_completed(futures):           <span class="c"># بترجع بترتيب الخلصان</span>
+                results.append(fut.result())
+    else:
+        for a, t in work:
+            results.append(_score_one(a, t, code_exec_timeout_s))
+    results.sort(key=lambda r: (r.model_id, r.task_id))   <span class="c"># نرجّع الترتيب ثابت</span>
+    for r in results:
+        calibration_buf[r.model_id].append((r.confidence, 1.0 if r.correct else 0.0, r.score))
+    return results, calibration_buf</pre></div>
+  <p><b>Check:</b> نفس الـ adapter مرة <code>parallel=False</code> ومرة <code>parallel=True</code> بيطلّعوا نفس الـ scores لكل task (ده الـ test <code>test_parallel_sequential_match</code>).</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: parallel ضد sequential</h3>
+      <p>٣٠ شغلانة (٣ adapters × ١٠ tasks). كل شغلانة ليها latency (محاكاة: نداء API بين 0.2 و 1.2 ثانية، ومهام الكود أطول عشان الـ subprocess). كل صف worker، وكل مستطيل شغلانة. الأرقام في المستطيلات = ترتيب الخلصان.</p>
+      <div class="note"><strong>جرب:</strong> (١) workers = 1: ده الـ sequential، والوقت = مجموع كل الـ latencies. (٢) زوّد لـ 8 وشوف الوقت بيقل قد إيه. (٣) لاحظ ترتيب الخلصان بيتلخبط، وده سبب <code>results.sort</code> في الآخر.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d503-gc" width="520" height="300" aria-label="Gantt chart للـ workers"></canvas>
+      <div class="mrow">
+        <label>workers = <span id="d503-wv">6</span><input type="range" id="d503-w" min="1" max="12" value="6"></label>
+        <label>code latency × <span id="d503-cv">2.0</span><input type="range" id="d503-c" min="10" max="40" value="20"></label>
+      </div>
+      <div class="readout">
+        <div><small>wall time</small><b id="d503-wall">0</b></div>
+        <div><small>sequential</small><b id="d503-seq">0</b></div>
+        <div><small>speed-up</small><b id="d503-sp">0</b></div>
+      </div>
+      <div class="btns"><button type="button" class="primary" id="d503-gplay">شغّل الأنيميشن</button></div>
+    </div>
+  </div>
+
+  <h3>M5 · التقرير: aggregate + calibration + perplexity</h3>
+  <p>بعد ما كل task يخلص، الـ runner بيحوّل النتايج لـ <code>EvalRun</code> ويديها لـ <code>aggregate</code> و <code>pairwise_diffs</code> من درس ٧٤ (بـ <span class="ltr">b = 200</span>، <span class="ltr">seed = 7</span>)، وبيحسب <code>CalibrationReport</code> من درس ٧٣ لكل موديل بـ ١٠ صناديق. والـ perplexity لكل موديل من الـ <code>token_stats</code> اللي الـ adapter جمّعها، <b>جنب</b> الـ leaderboard مش جواه.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def build_eval_runs(results):
+    return [board_mod.EvalRun(model_id=r.model_id, task_id=r.task_id,
+                              metric_name=r.metric_name, score=r.score, category=r.category)
+            for r in results]
+
+def _calibration_blocks(buf):
+    out = {}
+    for model_id, entries in buf.items():
+        if not entries:
+            out[model_id] = {"ece": 0.0, "brier": 0.0, "populated_bins": 0, "n_samples": 0}
+            continue
+        report = calib_mod.CalibrationReport.from_predictions(
+            [e[0] for e in entries], [e[1] for e in entries], bins=10)
+        out[model_id] = {"ece": report.ece, "brier": report.brier,
+                         "populated_bins": report.populated_bins, "n_samples": report.n_samples}
+    return out
+
+def _perplexity_blocks(adapters, buf, results, adapter_token_stats):
+    out = {}
+    for adapter in adapters:
+        stats = adapter_token_stats.get(adapter.model_id, [])
+        if not stats:
+            out[adapter.model_id] = {"perplexity": float("nan"), "total_tokens": 0}
+            continue
+        result = calib_mod.PerplexityResult.from_token_nll([s[0] for s in stats], [s[1] for s in stats])
+        out[adapter.model_id] = result.to_dict()
+    return out
+
+def render_report(adapters, tasks, results, calibration_buf, adapter_token_stats, wall_seconds):
+    eval_runs = build_eval_runs(results)
+    rows = board_mod.aggregate(eval_runs, b=200, alpha=0.05, seed=7)
+    diffs = board_mod.pairwise_diffs(eval_runs, b=200, alpha=0.05, seed=7)
+    return EvalReport(
+        leaderboard=[r.to_dict() for r in rows],
+        pairwise=[d.to_dict() for d in diffs],
+        calibration=_calibration_blocks(calibration_buf),
+        perplexity=_perplexity_blocks(adapters, calibration_buf, results, adapter_token_stats),
+        summary={"tasks": len(tasks), "models": len(adapters),
+                 "task_runs": len(results), "wall_seconds": float(wall_seconds)})
+
+def render_markdown_block(report):
+    lines = ["| Rank | Model | Mean | 95% CI | Win rate | Tasks | ECE | Brier |",
+             "|------|-------|------|--------|----------|-------|-----|-------|"]
+    for i, row in enumerate(report.leaderboard, start=1):
+        cal = report.calibration.get(row["model_id"], {})
+        ci = f"{row['mean_ci_lo']:.2f}-{row['mean_ci_hi']:.2f}"
+        lines.append(f"| {i} | {row['model_id'][:20]} | {row['mean_score']:.2f} | {ci} | "
+                     f"{row['win_rate']:.2f} | {row['tasks_completed']} | "
+                     f"{cal.get('ece', float('nan')):.3f} | {cal.get('brier', float('nan')):.3f} |")
+    return "\n".join(lines)</pre></div>
+  <p><b>Check:</b> <code>json.loads(report.to_json())</code> فيه الـ ٥ مفاتيح: <code>leaderboard</code> و <code>pairwise</code> و <code>calibration</code> و <code>perplexity</code> و <code>summary</code>. (الـ docs بتوري envelope من غير perplexity، بس الكود والـ test بيضيفوه.)</p>
+
+  <h3>M6 · الـ mocks والـ demo اللي بيقفل لوحده</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class RuleBasedAdapter(ModelAdapter):
+    model_id = "rule_based"
+    def __init__(self):
+        self.token_stats = []                   <span class="c"># (nll, count) لكل نداء</span>
+    def generate(self, prompt, task):
+        text = task.targets[0] if task.targets else ""
+        if task.metric_name == "code_exec":
+            if task.task_id == "code_001":
+                text = "```python\ndef add(a, b):\n    return a + b\n```"
+            elif task.task_id == "code_002":
+                text = "```python\ndef is_even(n):\n    return n % 2 == 0\n```"
+            else:
+                text = "```python\npass\n```"
+        if task.post_process == "extract_letter" and task.targets:
+            text = f"Answer: {task.targets[0]}"
+        token_count = max(1, len(text.split()))
+        nll = token_count * 0.8
+        self.token_stats.append((nll, token_count))
+        return Generation(text=text, confidence=0.92, token_nll=nll, token_count=token_count)
+
+class NoisyAdapter(ModelAdapter):
+    model_id = "noisy"
+    def __init__(self, seed=0):
+        self.rng = random.Random(seed)
+        self.token_stats = []
+    def generate(self, prompt, task):
+        if self.rng.random() &lt; 0.25 and task.targets:
+            text = task.targets[0]              <span class="c"># صح بنسبة 25%</span>
+        else:
+            text = "I do not know"
+            if task.post_process == "extract_letter":
+                text = "Answer: A"
+            if task.metric_name == "code_exec":
+                text = "```python\ndef add(a, b):\n    return a - b\n```"
+        token_count = max(1, len(text.split()))
+        nll = token_count * 2.5
+        self.token_stats.append((nll, token_count))
+        return Generation(text=text, confidence=0.85, token_nll=nll, token_count=token_count)
+
+class BiasedAdapter(ModelAdapter):
+    model_id = "biased"
+    def __init__(self, good_category="arithmetic"):
+        self.good_category = good_category
+        self.token_stats = []
+    def generate(self, prompt, task):
+        if task.category == self.good_category and task.targets:
+            text, confidence, nll_per_token = task.targets[0], 0.9, 1.0
+        else:
+            text = "guess"
+            if task.post_process == "extract_letter":
+                text = "Answer: B"
+            if task.metric_name == "code_exec":
+                text = "```python\ndef add(a, b):\n    return None\n```"
+            confidence, nll_per_token = 0.4, 3.0
+        token_count = max(1, len(text.split()))
+        nll = token_count * nll_per_token
+        self.token_stats.append((nll, token_count))
+        return Generation(text=text, confidence=confidence, token_nll=nll, token_count=token_count)
+
+def _load_fixture_tasks():
+    import tempfile
+    good, _bad = spec_mod.load_fixtures(tempfile.mkdtemp(prefix="aie_l75_"))
+    tasks, errors = spec_mod.validate_file(good)
+    if errors:
+        raise RuntimeError(f"fixture validation failed: {errors}")
+    return tasks
+
+def demo():
+    tasks = _load_fixture_tasks()
+    adapters = [RuleBasedAdapter(), NoisyAdapter(seed=1), BiasedAdapter(good_category="arithmetic")]
+    t0 = time.time()
+    results, buf = run_eval(adapters, tasks, parallel=True, max_workers=6, code_exec_timeout_s=2.0)
+    wall = time.time() - t0
+    stats = {a.model_id: list(getattr(a, "token_stats", [])) for a in adapters}
+    report = render_report(adapters, tasks, results, buf, stats, wall)
+    print(render_markdown_block(report))
+    print()
+    print(f"summary: {json.dumps(report.summary, indent=2)}")
+    print()
+    print("pairwise differences (paired bootstrap):")
+    for d in report.pairwise:
+        sig = "yes" if d["significant"] else "no"
+        print(f"  {d['model_a']} vs {d['model_b']}: diff={d['diff_mean']:+.3f}  "
+              f"ci=[{d['ci_lo']:+.3f},{d['ci_hi']:+.3f}]  significant={sig}")
+    if not report.leaderboard:
+        print("ERROR: empty leaderboard"); return 1
+    top, bot = report.leaderboard[0]["model_id"], report.leaderboard[-1]["model_id"]
+    if top != "rule_based":
+        print(f"ERROR: expected rule_based at top, got {top}"); return 2
+    if bot == "rule_based":
+        print("ERROR: rule_based should not be at the bottom"); return 3
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(demo())</pre></div>
+  <h3>شروط الـ clean run (exit 0)</h3>
+  <ul>
+    <li>كل task اتعمله validate بقواعد درس ٧٠.</li>
+    <li>كل task اتقيّم بدروس ٧١ و ٧٢.</li>
+    <li>تقرير الـ calibration اتجمّع بدرس ٧٣ من غير errors.</li>
+    <li>الـ rule_based في المركز الأول. (الـ docs بتقول «فوق الـ random adapter»، والكود بيطبّقها كده: الأول لازم rule_based، والأخير لازم ميكونش rule_based، وإلا exit 2 أو 3.)</li>
+  </ul>
+  <p>الدرس بيقول الوقت الكلي المفروض يبقى أقل من ١٠ ثواني على الـ ١٠ tasks.</p>
+  <h3>المتوقع لما تشغّل</h3>
+  <p>جدول markdown بـ ٣ صفوف وأعمدة <code>ECE</code> و <code>Brier</code>، و <code>rule_based</code> في الأول. بعده <code>summary</code> فيه <code>"tasks": 10</code> و <code>"models": 3</code> و <code>"task_runs": 30</code>، وبعده ٣ سطور pairwise، و <code>exit=0</code>. حاجات تقدر تحسبها بإيدك قبل ما تشغّل (وتقارن):</p>
+  <ul>
+    <li>rule_based ثقته 0.92 دايمًا. لو كل الـ ١٠ طلعوا صح، يبقى كلهم في صندوق واحد: <span class="ltr">ECE = |0.92 − 1| = 0.08</span> و <span class="ltr">Brier = 0.08² = 0.0064</span>.</li>
+    <li>الـ perplexity بتاعة rule_based = <span class="ltr">e^0.8 ≈ 2.23</span> وبتاعة noisy = <span class="ltr">e^2.5 ≈ 12.18</span> بالظبط، مهما كان عدد الـ tokens، لأن الـ NLL لكل token ثابت عندهم. الـ biased بيخلط 1.0 و 3.0 فبيعتمد على أطوال ردوده.</li>
+    <li>أرقام الـ noisy بتعتمد على <code>random.Random(seed=1)</code>، فشغّل وشوف.</li>
+  </ul>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: ابني التقرير من المحاكاة</h3>
+      <p>نفس محاكاة معمل ١، بس على الـ ٣٠ شغلانة كلها: mean و win-rate و ECE و Brier و perplexity لكل adapter. الـ rule_based والـ biased deterministic، والـ noisy بالـ random generator بتاعي (مش بتاع Python)، فما تتوقعش نفس أرقامه.</p>
+      <div class="note"><strong>جرب:</strong> (١) لاحظ إن الـ noisy ثقته 0.85 وهو بيغلط أغلب الوقت: الـ ECE بتاعه هو الأعلى. (٢) غيّر الفئة اللي الـ biased شاطر فيها وشوف ترتيبه بيتغير. (٣) دوس «زهر جديد» كذا مرة: ممكن الـ noisy يعدّي الـ biased؟</div>
+      <label style="font-size:15px">فئة الـ biased: <select id="d503-gc2"><option>arithmetic</option><option>mcq</option><option>code_exec</option><option>classification</option><option>summary</option></select></label>
+    </div>
+    <div class="instrument">
+      <div class="tablewrap"><table id="d503-rep" style="direction:ltr"></table></div>
+      <div class="btns"><button type="button" id="d503-dice2">زهر جديد (noisy)</button></div>
+      <div class="verdict" id="d503-rv"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 LIMITS -->
+<section id="d503-limits">
+  <div class="station-head"><span class="tag">03</span><h2>الـ runner ده مش بيعمل إيه، وإيه اللي بعده</h2></div>
+  <p>مش بينادي موديل حقيقي، ومفيهوش API keys ولا rate limits، ومفيهوش streaming (رد واحد لكل نداء)، ولا retries ولا caching. كل ده مكانه طبقة الـ adapter، والـ runner يفضل محايد للـ metric وللـ provider.</p>
+  <p>نظام eval حقيقي في production بيضيف (والدرس بيعدّهم):</p>
+  <ul>
+    <li><b>results cache</b> بمفتاح <span class="ltr">(task_id, model_id, model_version)</span>: ما تدفعش تاني على نفس السؤال.</li>
+    <li><b>cost ledger</b>: دولارات و tokens لكل run.</li>
+    <li><b>retry layer</b> بيعمل back-off على الـ rate limits.</li>
+    <li><b>sampling policy</b> لـ tasks الـ pass@k.</li>
+    <li><b>streaming output</b> للـ suites الطويلة.</li>
+  </ul>
+  <p>كل واحدة منهم concern لوحده بيلف حوالين الـ runner من غير ما يغيّر طبقة الـ metric أو الـ aggregation. والفصل ده هو هدف العقد كله. والخطوة الطبيعية: بعد ما الـ mocks تشتغل، اكتب adapter لـ provider حقيقي عنده free tier (الدرس بيقول حوالي ٣٠ سطر glue)، وبعدين التاني، وسيب الـ harness يشتغل.</p>
+</section>
+
+<!-- 04 EXERCISES -->
+<section id="d503-ex">
+  <div class="station-head"><span class="tag">04</span><h2>التمارين</h2></div>
+  <p>الدرس ما فيهوش قايمة تمارين منفصلة، فدي مأخوذة من «Going further»، والأخير إضافة مني.</p>
+  <ol class="ex">
+    <li><b>Results cache:</b> لفّ أي adapter في <code>CachedAdapter</code> بيحفظ الـ <code>Generation</code> بمفتاح <span class="ltr">(task_id, model_id, model_version)</span>.
+      <details><summary>تلميح</summary>نفس الواجهة: <code>model_id</code> و <code>generate</code>. جوه <code>generate</code> دوّر في dict (أو ملف JSONL) الأول، ولو مش موجود نادي الـ adapter الداخلي واحفظ. خلي بالك إن الـ threads بتكتب في نفس الوقت، فاستخدم <code>threading.Lock</code>. اختبر إن الـ adapter الداخلي اتنادى مرة واحدة بس لما تشغّل الـ eval مرتين.</details></li>
+    <li><b>Retry مع back-off:</b> <code>RetryingAdapter</code> بيعيد المحاولة لما الـ adapter الداخلي يرمي exception.
+      <details><summary>تلميح</summary><code>for attempt in range(n): try: return inner.generate(...) except RateLimitError: time.sleep(base * 2**attempt + random.random()*jitter)</code>. في الآخر ارمي الـ exception. الـ runner نفسه ما يتغيرش، وده بالظبط معنى «concern بيلف حوالين الـ runner».</details></li>
+    <li><b>Cost ledger:</b> كل <code>TaskResult</code> يشيل tokens، والتقرير يطلّع <code>"cost": {model_id: {"tokens":…, "usd":…}}</code>.
+      <details><summary>تلميح</summary>ضيف <code>token_count</code> من الـ <code>Generation</code> للـ <code>TaskResult</code>، وخلي الـ adapter يعرّف <code>price_per_1k_tokens</code>. اجمع في <code>render_report</code> وضيف المفتاح للـ envelope. حدّث الـ test بتاع الـ envelope.</details></li>
+    <li><b>Adapter لـ provider حقيقي</b> (من «Going further»): اكتبه وشغّله جنب الـ mocks.
+      <details><summary>تلميح</summary>الـ <code>generate</code> بتبعت <code>prompt</code> وترجّع <code>Generation(text=…)</code>. لو الـ API بيدّي log-probabilities للـ tokens، اجمع <code>−logprob</code> في <code>token_nll</code>. لو مش بيدّي، سيب الثقة 0.5 (الافتراضي)، وده هيبان في الـ ECE. حط الـ key في environment variable مش في الكود.</details></li>
+    <li><b>إضافة مني · eval gate في الـ CI:</b> اعمل script بيشغّل الـ runner على suite صغير، ويفشل (exit ≠ 0) لو موديل الـ PR أسوأ significantly من الـ baseline، ويطبع الجدول عشان يتحط كتعليق.
+      <details><summary>الحل</summary>شغّل <code>run_eval([baseline, candidate], tasks)</code> و <code>render_report</code>. دوّر في <code>report.pairwise</code> على الزوج ده. انتبه للاتجاه: <code>model_a</code> هو الأول أبجديًا، والفرق <span class="ltr">a − b</span>. لو الـ candidate أسوأ والـ CI ما فيهوش الصفر، اطبع <code>render_markdown_block(report)</code> و <code>sys.exit(1)</code>. لو الفرق مش significant، عدّي بس اطبع تحذير. ده شكل شائع جدًا لحماية الـ prompts والـ RAG pipelines من regressions.</details></li>
+  </ol>
+</section>
+
+<!-- 05 EXTRA -->
+<section id="d503-extra">
+  <div class="station-head"><span class="tag">05</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> الـ runner الكويس «ممل»: ما فيهوش أي ذكاء. كل الذكاء في الموديولات اللي بيركّبها. لو لقيت نفسك بتكتب حسابات جوه الـ runner، غالبًا مكانها درس تاني.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>الـ token_stats بتتراكم:</b> الـ mocks بتضيف لـ <code>self.token_stats</code> في كل نداء. لو شغّلت نفس الـ instance مرتين، الـ perplexity هتتحسب على الاتنين مع بعض. عشان كده الـ test بتاع parallel ضد sequential بيعمل adapter جديد لكل run.</li>
+    <li><b>model_id متكرر:</b> لو عملت اتنين <code>RuleBasedAdapter()</code> في نفس الـ run، الـ runner بيرمي <code>ValueError</code>، لأن الـ calibration buffer والـ leaderboard مفتاحهم الـ model_id.</li>
+    <li><b>الـ correct threshold مخفي:</b> ROUGE = 0.5 بيتعدّ «صح» في الـ calibration. ده قرار تصميم، مش حقيقة. لو الـ suite بتاعك كله summaries، فكّر فيه كويس.</li>
+    <li><b>الحظ بيبان صح:</b> الـ biased خمّن «B» في <code>mcq_001</code> وطلعت صح. في suite صغير، حالة زي دي بتأثر على الـ mean والـ calibration. وده سبب الـ CI.</li>
+    <li><b>الـ threads والـ GIL:</b> الـ threads بتسرّع الـ I/O (نداءات API، انتظار subprocess)، بس لو الـ metric نفسه بيحسب حاجة تقيلة بـ Python، مش هتكسب كتير.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents</h3>
+  <p>ده بالظبط شكل أدوات الـ eval المفتوحة والداخلية في الشركات: ملف tasks، و adapters لكل provider، وطبقة metrics، وتقرير. في الـ agents بالذات، الـ adapter ممكن يكون الـ agent كله (بأدواته وخطواته)، والـ task بيبقى مهمة كاملة، والـ metric ممكن يكون «الـ tests عدّت؟» زي درس ٧٢. نفس الهيكل بيكبر معاك.</p>
+</section>
+
+<!-- 06 QUIZ -->
+<section id="d503-quiz">
+  <div class="station-head"><span class="tag">06</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d503-quizBox"></div>
+</section>
+
+<!-- 07 DONE -->
+<section id="d503-done">
+  <div class="station-head"><span class="tag">07</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> M1: حمّلت الموديولات الخمسة بـ importlib</label></li>
+    <li><label><input type="checkbox" data-ck="2"> M2–M3: الـ adapter والـ scoring loop شغالين، وفاهم الـ correct threshold</label></li>
+    <li><label><input type="checkbox" data-ck="3"> M4: الـ parallel والـ sequential بيطلّعوا نفس الـ scores</label></li>
+    <li><label><input type="checkbox" data-ck="4"> M5: الـ JSON envelope فيه الـ ٥ مفاتيح</label></li>
+    <li><label><input type="checkbox" data-ck="5"> M6: الـ demo طلّع exit=0 والـ tests عدّت</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Adapter interface</td><td>أي eval tool بيدعم أكتر من provider</td></tr>
+    <tr><td>Metric dispatch</td><td>suites فيها MCQ وكود وتلخيص مع بعض</td></tr>
+    <tr><td>ThreadPool للـ I/O</td><td>تشغيل آلاف نداءات الـ API بالتوازي</td></tr>
+    <tr><td>Calibration buffer</td><td>تقارير الموديلات جنب الـ accuracy</td></tr>
+    <tr><td>JSON envelope + markdown</td><td>dashboards وتعليقات الـ PR</td></tr>
+    <tr><td>Exit codes</td><td>eval gates في الـ CI</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Collective Ops From Scratch. هنبدأ track التدريب الموزّع: الأربع عمليات (allreduce و broadcast و allgather و reduce_scatter) اللي بيتبني عليهم DDP و ZeRO.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F75-end-to-end-eval-runner" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/75-end-to-end-eval-runner</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N0=503,LESSON=75,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d503-roadmap').closest('.day');
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+const rm=$('d503-roadmap');for(let i=1;i<=87;i++){if(i===18||i===19)continue;const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)}
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+function mk(seed){let s=seed>>>0||1;return()=>{s^=s<<13;s>>>=0;s^=s>>>17;s^=s<<5;s>>>=0;return s/4294967296}}
+
+// the 10 fixture tasks from lesson 70 (prompts shortened)
+const TASKS=[
+ {id:'arith_001',cat:'arithmetic',p:'Question: 17 + 24',t:['41'],m:'exact_match',pp:'strip_whitespace'},
+ {id:'arith_002',cat:'arithmetic',p:'Question: 144 / 12',t:['12'],m:'exact_match',pp:'strip_whitespace'},
+ {id:'mcq_001',cat:'mcq',p:'Which planet is closest to the sun? A..D',t:['B'],m:'exact_match',pp:'extract_letter'},
+ {id:'mcq_002',cat:'mcq',p:'Which of these is a prime number? A..D',t:['C'],m:'exact_match',pp:'extract_letter'},
+ {id:'code_001',cat:'code_exec',p:'Write add(a, b) that returns the sum',t:['add(1, 2) == 3','add(-5, 5) == 0','add(100, 1) == 101'],m:'code_exec',pp:'extract_code_block'},
+ {id:'code_002',cat:'code_exec',p:'Write is_even(n)',t:['is_even(2) == True','is_even(3) == False','is_even(0) == True'],m:'code_exec',pp:'extract_code_block'},
+ {id:'cls_001',cat:'classification',p:'Sentiment: I loved the film...',t:['positive'],m:'exact_match',pp:'lower'},
+ {id:'cls_002',cat:'classification',p:'Sentiment: I hated every minute...',t:['negative'],m:'exact_match',pp:'lower'},
+ {id:'sum_001',cat:'summary',p:'Summarise: The cat sat on the mat...',t:['A cat watched the rain from the mat.'],m:'rouge_l',pp:'extract_first_line'},
+ {id:'sum_002',cat:'summary',p:'Summarise: The runner crossed the finish line...',t:['The runner won the race with arms raised.'],m:'bleu_4',pp:'extract_first_line'}];
+const CODE={add_ok:'```python\ndef add(a, b):\n    return a + b\n```',even_ok:'```python\ndef is_even(n):\n    return n % 2 == 0\n```',add_sub:'```python\ndef add(a, b):\n    return a - b\n```',add_none:'```python\ndef add(a, b):\n    return None\n```'};
+const CODE_SCORE={add_ok:{code_001:1,code_002:0},even_ok:{code_001:0,code_002:1},add_sub:{code_001:0,code_002:0},add_none:{code_001:0,code_002:0}};
+const CODE_DETAIL={add_ok:{code_001:'pass 3/3',code_002:'is_even not defined'},even_ok:{code_002:'pass 3/3'},add_sub:{code_001:'assertion_fail 0/3',code_002:'is_even not defined'},add_none:{code_001:'assertion_fail 0/3',code_002:'is_even not defined'}};
+
+function gen(ad,t,noisyHit,goodCat){
+  if(ad==='rule_based'){let text=t.t[0],key=null;if(t.m==='code_exec'){key=t.id==='code_001'?'add_ok':'even_ok';text=CODE[key]}if(t.pp==='extract_letter')text='Answer: '+t.t[0];return{text,key,conf:0.92,npt:0.8}}
+  if(ad==='noisy'){if(noisyHit)return{text:t.t[0],key:t.m==='code_exec'?'__target':null,conf:0.85,npt:2.5};let text='I do not know',key=null;if(t.pp==='extract_letter')text='Answer: A';if(t.m==='code_exec'){key='add_sub';text=CODE[key]}return{text,key,conf:0.85,npt:2.5}}
+  if(t.cat===goodCat)return{text:t.t[0],key:t.m==='code_exec'?'__target':null,conf:0.9,npt:1.0};
+  let text='guess',key=null;if(t.pp==='extract_letter')text='Answer: B';if(t.m==='code_exec'){key='add_none';text=CODE[key]}return{text,key,conf:0.4,npt:3.0}}
+function post(text,rule){if(rule==='strip_whitespace')return text.trim();if(rule==='lower')return text.toLowerCase();
+  if(rule==='extract_letter'){const m=text.match(/(?:^|[^A-Za-z])([A-E])(?:[^A-Za-z]|$)/);if(m)return m[1];const m2=text.match(/[A-E]/);return m2?m2[0]:''}
+  if(rule==='extract_code_block'){const m=text.match(/```[a-zA-Z0-9_]*\n([\s\S]*?)```/);return m?m[1]:text}
+  if(rule==='extract_first_line'){const l=text.split('\n').find(x=>x.trim());return l?l.trim():''}return text}
+function scoreOf(t,g,processed){
+  if(t.m==='code_exec'){if(g.key==='__target')return{s:0,d:'assertions as code: error'};return{s:(CODE_SCORE[g.key]||{})[t.id]||0,d:(CODE_DETAIL[g.key]||{})[t.id]||'error'}}
+  if(t.m==='exact_match')return{s:t.t.some(x=>x.trim()===processed.trim())?1:0,d:''};
+  return{s:processed===t.t[0]?1:0,d:'(simplified)'}}
+const correctOf=(m,s)=>['exact_match','accuracy','code_exec'].includes(m)?s>=0.999999:s>=0.5;
+function runOne(ad,t,hit,goodCat){const g=gen(ad,t,hit,goodCat),pr=post(g.text,t.pp),sc=scoreOf(t,g,pr),tc=Math.max(1,g.text.split(/\s+/).filter(Boolean).length);
+  return{ad,t,g,pr,score:sc.s,detail:sc.d,correct:correctOf(t.m,sc.s),conf:g.conf,nll:tc*g.npt,tc}}
+let noisySeed=1;
+function noisyHits(seed){const r=mk(seed*7919+13);return TASKS.map(()=>r()<0.25)}
+
+// ---------- Lab 1: trace ----------
+const tk=$('d503-tk');TASKS.forEach((t,i)=>{const o=document.createElement('option');o.value=i;o.textContent=t.id;tk.appendChild(o)});
+const pc=$('d503-pc'),px=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+let stage=7,anim=null,cur=null;
+function computeCur(){const ad=$('d503-ad').value,i=+tk.value;cur=runOne(ad,TASKS[i],noisyHits(noisySeed)[i],'arithmetic')}
+function wrapText(s,max){s=s.replace(/\n/g,' ⏎ ');return s.length>max?s.slice(0,max-1)+'…':s}
+function drawTrace(){
+  const c=cur,t=c.t;px.clearRect(0,0,PW,PH);
+  const rows=[['task',t.id+' · '+t.cat+' · metric='+t.m],['render_prompt',wrapText(t.p,46)],['adapter.generate','"'+wrapText(c.g.text,40)+'"'],['  confidence / nll',f(c.conf,2)+' / '+f(c.nll,2)+' ('+c.tc+' tok)'],['post_process',t.pp+' → "'+wrapText(c.pr,26)+'"'],['metric',(t.m==='code_exec'?'run_candidate: ':'score: ')+f(c.score,3)+(c.detail?'  '+c.detail:'')],['_correct_from_score',String(c.correct)+'  (threshold '+(['exact_match','accuracy','code_exec'].includes(t.m)?'1.0':'0.5')+')'],['→ EvalRun + calib buf','('+f(c.conf,2)+', '+(c.correct?'1.0':'0.0')+', '+f(c.score,2)+')']];
+  const h=(PH-10)/rows.length;px.font='12px JetBrains Mono, monospace';px.textBaseline='middle';
+  rows.forEach((r,i)=>{const y=6+i*h,on=i<=stage;px.fillStyle=on?css('--soft'):'transparent';px.fillRect(4,y+2,PW-8,h-4);
+    if(i===stage){px.strokeStyle=css('--vec-b');px.lineWidth=2;px.strokeRect(4,y+2,PW-8,h-4)}
+    px.globalAlpha=on?1:.25;px.fillStyle=css('--vec-a');px.textAlign='left';px.fillText(r[0],12,y+h/2);
+    let col=css('--ink');if(i===6)col=c.correct?css('--ok'):css('--bad');px.fillStyle=col;px.fillText(r[1],168,y+h/2);px.globalAlpha=1;
+    if(i<rows.length-1&&on){px.fillStyle=css('--muted');px.fillText('↓',150,y+h-2)}});
+  if(stage>=7){const v=$('d503-tv');v.textContent=c.correct?'صح · بيدخل الـ calibration كـ (ثقة '+f(c.conf,2)+'، 1)':'غلط · بيدخل الـ calibration كـ (ثقة '+f(c.conf,2)+'، 0)'+(c.conf>=0.8?' — ثقة عالية في إجابة غلط = overconfident':'');v.style.color=c.correct?css('--ok'):css('--bad')}
+  else{$('d503-tv').textContent='';}
+}
+function trace(){computeCur();if(anim)clearInterval(anim);if(reduce){stage=7;drawTrace();return}stage=0;drawTrace();
+  anim=setInterval(()=>{if(!document.body.contains(pc)){clearInterval(anim);return}stage++;drawTrace();if(stage>=7){clearInterval(anim);anim=null}},380)}
+$('d503-trace').addEventListener('click',trace);
+$('d503-dice').addEventListener('click',()=>{noisySeed++;$('d503-ad').value='noisy';trace();buildReport()});
+['d503-ad','d503-tk'].forEach(id=>$(id).addEventListener('change',()=>{computeCur();stage=7;drawTrace()}));
+tk.value=2;$('d503-ad').value='biased';computeCur();drawTrace();
+
+// ---------- Lab 2: parallel gantt ----------
+const gc=$('d503-gc'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+let gT=0,gAnim=null,sched=null;
+function schedule(){const W=+$('d503-w').value,cm=+$('d503-c').value/10;$('d503-wv').textContent=W;$('d503-cv').textContent=f(cm,1);
+  const r=mk(77),jobs=[];['rule_based','noisy','biased'].forEach((a,ai)=>TASKS.forEach((t,ti)=>{let d=0.2+r()*1.0;if(t.m==='code_exec')d*=cm;jobs.push({a:ai,t:t.id,d})}));
+  const free=new Array(W).fill(0),out=[];jobs.forEach(j=>{let w=0;for(let k=1;k<W;k++)if(free[k]<free[w])w=k;out.push({...j,w,s:free[w],e:free[w]+j.d});free[w]+=j.d});
+  const ord=out.slice().sort((a,b)=>a.e-b.e);ord.forEach((j,i)=>j.rank=i+1);
+  const wall=Math.max(...free),seq=jobs.reduce((s,j)=>s+j.d,0);$('d503-wall').textContent=f(wall,2)+' s';$('d503-seq').textContent=f(seq,2)+' s';$('d503-sp').textContent='×'+f(seq/wall,2);
+  sched={out,W,wall};}
+function drawG(){if(!sched)return;const {out,W,wall}=sched;gx.clearRect(0,0,GW,GH);const L=34,R=GW-10,T=10,B=GH-26,rh=Math.min(36,(B-T)/W);
+  const X=v=>L+v/Math.max(wall,0.001)*(R-L),cols=[css('--vec-a'),css('--vec-b'),css('--ok')];
+  gx.font='11px JetBrains Mono, monospace';gx.textBaseline='middle';
+  for(let w=0;w<W;w++){gx.fillStyle=css('--muted');gx.textAlign='right';gx.fillText('w'+w,L-4,T+w*rh+rh/2)}
+  out.forEach(j=>{if(j.s>gT)return;const e=Math.min(j.e,gT),y=T+j.w*rh;gx.fillStyle=cols[j.a];gx.globalAlpha=j.e<=gT?.85:.45;gx.fillRect(X(j.s)+1,y+2,Math.max(1,X(e)-X(j.s)-2),rh-4);gx.globalAlpha=1;
+    if(j.e<=gT&&X(j.e)-X(j.s)>16){gx.fillStyle=css('--paper');gx.textAlign='center';gx.fillText(j.rank,(X(j.s)+X(j.e))/2,y+rh/2)}});
+  gx.strokeStyle=css('--line');gx.beginPath();gx.moveTo(L,B);gx.lineTo(R,B);gx.stroke();
+  gx.fillStyle=css('--muted');gx.textAlign='left';gx.fillText('■ rule_based',L,GH-10);gx.fillStyle=cols[1];gx.fillText('■ noisy',L+110,GH-10);gx.fillStyle=cols[2];gx.fillText('■ biased',L+180,GH-10);
+  gx.fillStyle=css('--muted');gx.textAlign='right';gx.fillText('t = '+f(Math.min(gT,wall),2)+' s',R,GH-10)}
+function regen(){schedule();gT=sched.wall;drawG()}
+$('d503-gplay').addEventListener('click',()=>{if(gAnim)cancelAnimationFrame(gAnim);if(reduce){gT=sched.wall;drawG();return}gT=0;const t0=performance.now(),dur=3000;
+  const step=now=>{if(!document.body.contains(gc))return;gT=sched.wall*Math.min(1,(now-t0)/dur);drawG();if(gT<sched.wall)gAnim=requestAnimationFrame(step);else gAnim=null};gAnim=requestAnimationFrame(step)});
+['d503-w','d503-c'].forEach(id=>$(id).addEventListener('input',regen));
+regen();
+
+// ---------- Lab 3: report ----------
+function ece(conf,corr){const M=10,n=conf.length,sc=new Array(M).fill(0),sa=new Array(M).fill(0),cn=new Array(M).fill(0);
+  conf.forEach((c,i)=>{let b=Math.floor(c*M);if(b>=M)b=M-1;sc[b]+=c;sa[b]+=corr[i];cn[b]++});let e=0;for(let b=0;b<M;b++)if(cn[b])e+=cn[b]/n*Math.abs(sc[b]/cn[b]-sa[b]/cn[b]);return e}
+function buildReport(){
+  const goodCat=$('d503-gc2').value,hits=noisyHits(noisySeed),ads=['rule_based','noisy','biased'];
+  const res={};ads.forEach(a=>res[a]=TASKS.map((t,i)=>runOne(a,t,hits[i],goodCat)));
+  const rows=ads.map(a=>{const R=res[a],sc=R.map(r=>r.score);let wins=0;TASKS.forEach((t,i)=>{const best=Math.max(...ads.map(b=>res[b][i].score));if(Math.abs(R[i].score-best)<1e-12)wins++});
+    const conf=R.map(r=>r.conf),corr=R.map(r=>r.correct?1:0),br=conf.reduce((s,c,i)=>s+(c-corr[i])**2,0)/conf.length;
+    const nll=R.reduce((s,r)=>s+r.nll,0),tok=R.reduce((s,r)=>s+r.tc,0);
+    return{a,mean:sc.reduce((x,y)=>x+y,0)/sc.length,wr:wins/TASKS.length,ece:ece(conf,corr),br,ppl:Math.exp(nll/tok)}});
+  rows.sort((x,y)=>y.mean-x.mean);
+  const tb=$('d503-rep');tb.innerHTML='<tr><th>#</th><th>model</th><th>mean</th><th>win</th><th>ECE</th><th>Brier</th><th>ppl</th></tr>'+rows.map((r,i)=>'<tr><td>'+(i+1)+'</td><td>'+r.a+'</td><td>'+f(r.mean,2)+'</td><td>'+f(r.wr,2)+'</td><td>'+f(r.ece,3)+'</td><td>'+f(r.br,3)+'</td><td>'+f(r.ppl,2)+'</td></tr>').join('');
+  tb.querySelectorAll('td,th').forEach(c=>c.style.textAlign='left');
+  const v=$('d503-rv'),top=rows[0].a,bot=rows[rows.length-1].a;
+  if(top!=='rule_based'){v.textContent='exit 2: expected rule_based at top, got '+top;v.style.color=css('--bad')}
+  else if(bot==='rule_based'){v.textContent='exit 3';v.style.color=css('--bad')}
+  else{v.textContent='exit 0 · rule_based في الأول · noisy seed = '+noisySeed;v.style.color=css('--ok')}
+}
+$('d503-gc2').addEventListener('change',buildReport);
+$('d503-dice2').addEventListener('click',()=>{noisySeed++;buildReport();computeCur();drawTrace()});
+buildReport();
+
+// ---------- quiz ----------
+AI.quiz($('d503-quizBox'),[
+ ['إيه أصغر شكل ممكن لواجهة الـ ModelAdapter؟',['complete و embed و classify و summarise','init و login و generate و close','generate(prompt, task) بترجّع نص ومعاه اختياري ثقة و NLL لكل token','load_weights و generate و save_weights'],2,'دالة واحدة بتغطي أي adapter. أي حاجة تانية زينة اختيارية، والـ runner مش محتاج أكتر.'],
+ ['ليه الـ runner بياخد flag اسمه parallel بدل ما يشتغل parallel على طول؟',['الـ tests محتاجة ترتيب تنفيذ ثابت؛ الـ flag بيخليها تقلب sequential','التنفيذ المتوازي مش آمن في CPython','التنفيذ المتوازي محتاج GPU','ThreadPoolExecutor مش في الـ stdlib'],0,'الـ tests عايزة reproducibility، والـ production عايز throughput. الـ flag بيفصل الاتنين من غير مسارين كود.'],
+ ['الـ runner بيحدد flag الـ correct لبافر الـ calibration إزاي؟',['الـ metrics اللي زي exact_match بـ threshold 1.0، والمتدرجة بـ 0.5 افتراضيًا','بينادي الـ adapter مرتين ويقارن','بيستخدم متوسط ثقة الصندوق','بيستخدم تفكيك الـ Brier'],0,'الـ threshold بيعتمد على نوع الـ metric: اللي زي exact_match لازم ~1.0، والمتدرجة 0.5 افتراضيًا.'],
+ ['ليه الـ runner بيبني سجلات EvalRun ويديها للـ aggregator بدل ما يحسب الـ leaderboard جواه؟',['عشان الـ runner يفضل مش فارق معاه الـ aggregator، وطبقة الـ leaderboard تتطور من غير ما تلمس الـ runner','الـ aggregator أسرع على numpy arrays','JSON Schema بيطلب EvalRun','EvalRun أوفر في الذاكرة'],0,'التركيب بدل الدمج. الـ runner بيطلّع سجلات، والـ aggregator مسؤول عن حسابات الـ leaderboard. كل درس ليه concern واحد.'],
+ ['دور الـ perplexity block في الـ JSON envelope النهائي إيه؟',['بيتحسب من الـ bootstrap CI','بيشيل رقم الـ language modelling لكل موديل، منفصل عن تقييم الـ tasks','هو الـ input لتقرير الـ calibration','لازم لترتيب الـ leaderboard'],1,'الـ perplexity قاعدة جنب الـ leaderboard مش جواه. بتستخدم الـ token NLL وعدد الـ tokens اللي الـ adapter جمّعها.'],
+ ['إيه شرط الـ clean run عشان الـ demo يطلع exit 0؟',['كل task اتعمله validate واتقيّم، والـ calibration اتجمّعت، والـ rule-based فوق في الـ leaderboard','كل task جاب أكتر من 0.9','الـ ECE أقل من 0.05 لكل موديل','الـ bootstrap CI ما فيهوش الصفر لكل زوج'],0,'الـ demo بيطبّق العقد من أوله لآخره: كل طبقة اشتغلت، والـ adapter الأدق مترتب في مكانه.'],
+ ['(سؤال مني) الـ rule_based ثقته 0.92 وكل إجاباته صح على 10 tasks. الـ ECE بتاعه كام؟',['0','0.08','0.92','0.0064'],1,'كلهم في صندوق واحد: |0.92 − 1| = 0.08. والـ 0.0064 ده الـ Brier (0.08²). يعني حتى الموديل المثالي «خايف شوية».'],
+ ['(سؤال مني) شغّلت run_eval مرتين بنفس instance من RuleBasedAdapter. إيه اللي ممكن يبوظ؟',['الـ scores هتتغير','الـ token_stats هتتراكم من الـ runين فالـ perplexity هتتحسب على الاتنين','الـ runner هيرمي ValueError','الـ ThreadPool هيعلّق'],1,'الـ mocks بتعمل append لـ self.token_stats في كل نداء. عشان كده الـ tests بتعمل adapter جديد لكل run. (للـ rule_based بالذات الـ perplexity مش هتتغير لأن الـ NLL لكل token ثابت، بس العدد هيتضاعف.)']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N0,root);
+AI.onTheme(()=>{if(!document.body.contains(pc))return false;drawTrace();drawG()});
+})();
+</script>

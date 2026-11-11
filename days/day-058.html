@@ -1,0 +1,640 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 02 · Convolutions from Scratch</span>
+  <h1>اليوم ٥٨: الـ Convolution، طبقة صغيرة بتتزحلق على الصورة</h1>
+  <p class="lede">النهاردة هتبني الـ <b>convolution</b> بإيدك بـ NumPy: نسخة بالـ loops ونسخة سريعة بالـ <b>im2col</b>. هتشوف الـ kernel وهو بيتحرك على الصورة، وتحسب حجم الـ output لأي padding وstride، وتصمم فلاتر edge وblur بنفسك، وتفهم ليه طبقات 3×3 فوق بعض بتشوف مساحة أكبر.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python + NumPy</b></span>
+    <span>قبله: <b>Image Fundamentals</b></span>
+    <span>بعده: <b>CNNs — LeNet to ResNet</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — Computer Vision · 25 days</span>
+    <div class="roadmap" id="d58-roadmap" aria-label="أيام فيز الرؤية بالكمبيوتر"></div>
+  </div>
+</header>
+
+<section id="d58-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح عرفنا إن الصورة tensor أرقام، وإن ترتيب المحاور والـ dtype بيفرقوا جدًا. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. صورة RGB مقاسها 224×224 بعد ما قريتها من الديسك، شكلها إيه؟ وPyTorch عايزها إزاي؟</summary>
+    من الديسك (PIL/OpenCV) بتيجي <b>HWC</b> يعني <span class="ltr">(224, 224, 3)</span> وغالبًا <code>uint8</code> من 0 لـ 255. PyTorch عايزها <b>CHW</b> <span class="ltr">(3, 224, 224)</span> وفي batch <span class="ltr">(N, 3, 224, 224)</span>، بـ <code>transpose(2, 0, 1)</code>. وهنشوف النهاردة ليه: الـ kernel بيتزحلق على H وW، فكل channel لازم يبقى «لوح» 2D متصل.</details>
+  <details><summary>٢. ليه بنطرح الـ mean ونقسم على الـ std قبل ما ندخل الصورة للموديل؟</summary>
+    لأن الموديلات المدربة (زي اللي على ImageNet) اتدربت على داتا standardized تقريبًا حوالين الصفر. لو دخلت أرقام 0–255 أو حتى 0–1 من غير الـ normalization اللي اتدربت عليها، الـ activations هتبقى في مكان غلط والنتايج هتبوظ من غير ما يطلع error.</details>
+  <details><summary>٣. لو هتعمل resize لـ mask فيها أرقام classes (0، 1، 2)، تستخدم bilinear ولا nearest؟</summary>
+    <b>nearest</b>. الـ bilinear هيعمل متوسطات زي 0.5 أو 1.5 ودي مش classes حقيقية. الـ bilinear مناسب للصورة نفسها بس.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>المشكلة: ليه الـ dense layer وحش على الصور</div>
+    <div><b>20 min</b>الـ kernel، padding، stride، channels (بالمعامل)</div>
+    <div><b>10 min</b>im2col والـ receptive field</div>
+    <div><b>25 min</b>اكتب الكود بإيدك وقارن النسختين</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1: the problem -->
+<section id="d58-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الـ dense layer مش فاهم الصور</h2></div>
+  <p>تخيل صورة RGB مقاسها 224×224. لو دخلتها على fully connected layer، كل neuron محتاج وزن لكل رقم في الصورة:</p>
+  <div class="formula">224 × 224 × 3 = 150,528 weight لكل neuron  →  1000 neuron ≈ 150 مليون parameter</div>
+  <p>ده قبل ما يتعلم أي حاجة. والأسوأ: الطبقة دي بتعامل كل مكان في الصورة كأنه حاجة مستقلة. لو فيه كلب فوق على الشمال وكلب تحت على اليمين، هي شايفاهم حاجتين مختلفين تمامًا. لو حركت قطة ٣ بيكسل، المفروض الموديل ما يحتاجش يتعلم «القطة» من الأول.</p>
+  <p>الموديل بتاع الصور محتاج خاصيتين:</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>Translation equivariance</b>: لو حركت الدخل، الخرج يتحرك بنفس المقدار («shift in, shift out»).</li>
+    <li><b>Parameter sharing</b>: نفس كاشف الـ feature يشتغل في كل مكان في الصورة.</li>
+  </ul>
+  <p>الـ dense layer مش بيدي ولا واحدة. الـ convolution بتديهم الاتنين ببلاش.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ dense layer زي مفتش لازم يحفظ شكل «الشباك» في كل مكان في العمارة لوحده. الـ convolution زي مفتش معاه كشاف واحد صغير (الـ kernel) بيلف بيه على كل الحيطان، ونفس الكشاف بيلاقي الشباك في أي دور.</div>
+  <p>والـ convolution مش اختراع deep learning أصلًا: هي نفس العملية اللي في ضغط الـ JPEG، والـ Gaussian blur في Photoshop، وكشف الحواف في الرؤية الصناعية، وكل فلتر صوت. الـ CNNs سيطرت على ImageNet من 2012 لـ 2020 لأن الـ convolution هي الافتراض الصح (the right prior) لداتا القيم القريبة فيها مرتبطة ببعض، ونفس النمط ممكن يظهر في أي مكان.</p>
+</section>
+
+<!-- STATION 2: sliding kernel lab -->
+<section id="d58-slide">
+  <div class="station-head"><span class="tag">02</span><h2>Kernel واحد بيتزحلق</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ 2D convolution بتاخد مصفوفة weights صغيرة اسمها <b>kernel</b> (أو filter)، تحطها على حتة من الصورة، تضرب كل خانة في اللي تحتها وتجمع. المجموع ده = <b>بيكسل واحد</b> في الخرج. وبعدين تتحرك خطوة وتعيد.</p>
+      <div class="formula">Y[i, j] = sum( W * X[i:i+3, j:j+3] )</div>
+      <p>ده كل الموضوع: <b>weights مشتركة، محلية (locality)، نافذة بتتزحلق</b>. أي حاجة تانية مجرد حسابات.</p>
+      <p>المعمل جاي بنفس مثال الدرس: input 5×5 وkernel عمودي 3×3. اضغط على أي خانة في الـ input عشان تغير قيمتها (بتلف 0→1→2→3)، وغيّر الـ padding والـ stride وشوف الخرج بيتغير إزاي.</p>
+      <div class="note"><strong>معلومة صغيرة:</strong> رياضيًا اللي بنعمله ده اسمه <b>cross-correlation</b> (من غير ما نقلب الـ kernel)، بس الكل بيسميه convolution. ولأن الـ weights بتتعلم، القلب مش فارق.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d58-slideCanvas" width="520" height="300" aria-label="kernel بيتحرك على صورة 5 في 5"></canvas>
+      <div class="mrow">
+        <label>padding P = <span id="d58-pV">0</span><input type="range" id="d58-p" min="0" max="2" step="1" value="0"></label>
+        <label>stride S = <span id="d58-sV">1</span><input type="range" id="d58-s" min="1" max="3" step="1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>الخرج</small><b id="d58-outShape">3 × 3</b></div>
+        <div><small>المكان الحالي</small><b id="d58-pos">Y[0,0]</b></div>
+        <div><small>القيمة</small><b id="d58-val">0</b></div>
+      </div>
+      <div class="formula" id="d58-calc" style="font-size:13px;text-align:left">…</div>
+      <div class="btns">
+        <button type="button" class="primary" id="d58-play">▶ شغّل</button>
+        <button type="button" id="d58-step">خطوة</button>
+        <button type="button" id="d58-reset">رجّع المثال</button>
+        <select id="d58-kSel" aria-label="اختار kernel">
+          <option value="lesson">Kernel الدرس</option>
+          <option value="sobel_x">sobel_x</option>
+          <option value="sobel_y">sobel_y</option>
+          <option value="blur_3x3">blur_3x3</option>
+          <option value="identity">identity</option>
+        </select>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: size, padding, stride -->
+<section id="d58-size">
+  <div class="station-head"><span class="tag">03</span><h2>معادلة حجم الخرج + الـ padding والـ stride</h2></div>
+  <p>لو الدخل مقاسه <code>H</code>، والـ kernel <code>K</code>، والـ padding <code>P</code>، والـ stride <code>S</code>:</p>
+  <div class="formula">H_out = floor( (H − K + 2P) / S ) + 1</div>
+  <p>احفظها. هتحسبها عشرات المرات في كل architecture. المنطق: الـ padding بيكبّر الدخل لـ <span class="ltr">H + 2P</span>، والـ kernel محتاج K خانة، فعدد الأماكن اللي يقف فيها لو بيتحرك S كل مرة = <span class="ltr">(H + 2P − K)/S</span> خطوة + المكان الأول.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>Padding: أصفار على الأطراف</h3>
+      <p>من غير padding كل convolution بتصغّر الصورة. ركّب 20 طبقة 3×3 وصورتك الـ 224 تبقى 184، وده بيهدر compute على الأطراف ويعقد الـ residual connections اللي محتاجة نفس الشكل في الطرفين.</p>
+      <p>الـ padding بيحط إطار حوالين الصورة عشان الـ kernel يقدر يقف وسطه على البيكسل (0,0) ويلاقي ٣ صفوف و٣ أعمدة يضرب فيهم. الأنواع:</p>
+      <div class="tablewrap"><table>
+        <tr><th>Mode</th><th>بيعمل إيه</th><th>بيستخدم فين</th></tr>
+        <tr><td class="ltr">zero</td><td>أصفار</td><td>الأشهر، الافتراضي</td></tr>
+        <tr><td class="ltr">reflect</td><td>مراية للطرف</td><td>الموديلات التوليدية، يمنع حواف حادة</td></tr>
+        <tr><td class="ltr">replicate</td><td>ينسخ آخر بيكسل</td><td>لما تحب الطرف يكمل زي ما هو</td></tr>
+        <tr><td class="ltr">circular</td><td>يلف من الناحية التانية</td><td>المسائل اللي شكلها حلقي (toroidal)</td></tr>
+      </table></div>
+      <p><b>Same padding</b> = اختار P بحيث <span class="ltr">H_out = H</span> لما <span class="ltr">S = 1</span>. لـ K فردي: <span class="ltr">P = (K − 1)/2</span>. عشان كده الـ 3×3 هو الملك: أصغر kernel فردي ليه «نص».</p>
+      <h3>Stride: طول الخطوة</h3>
+      <p><code>stride=1</code> الافتراضي. <code>stride=2</code> بيقسم الأبعاد على ٢، ودي الطريقة الكلاسيكية للـ downsampling جوه الـ CNN من غير pooling layer منفصلة. ResNet وConvNeXt وMobileNet كلهم بيستخدموا strided conv مكان max-pool في حتة ما.</p>
+    </div>
+    <div class="instrument">
+      <h3>آلة حاسبة الحجم</h3>
+      <div class="mrow">
+        <label>H = <span id="d58-hV">32</span><input type="range" id="d58-h" min="4" max="256" step="1" value="32"></label>
+        <label>K = <span id="d58-kV">3</span><input type="range" id="d58-k" min="1" max="11" step="1" value="3"></label>
+        <label>P = <span id="d58-cpV">0</span><input type="range" id="d58-cp" min="0" max="5" step="1" value="0"></label>
+        <label>S = <span id="d58-csV">1</span><input type="range" id="d58-cs" min="1" max="4" step="1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>H_out</small><b id="d58-hout">30</b></div>
+        <div><small>نوعها</small><b id="d58-kind">valid</b></div>
+      </div>
+      <div class="formula" id="d58-hcalc">(32 − 3 + 0) / 1 + 1 = 30</div>
+      <canvas id="d58-sizeCanvas" width="520" height="120" aria-label="مقارنة طول الدخل والخرج"></canvas>
+      <div class="btns">
+        <button type="button" data-hk="32,3,0,1">Valid</button>
+        <button type="button" data-hk="32,3,1,1">Same</button>
+        <button type="button" data-hk="32,3,1,2">Downsample ×2</button>
+        <button type="button" data-hk="32,2,0,2">Pool 2×2</button>
+        <button type="button" data-hk="32,7,3,2">Kernel 7 كبير</button>
+      </div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>H</th><th>K</th><th>P</th><th>S</th><th>H_out</th></tr>
+    <tr><td>Valid، من غير padding</td><td>32</td><td>3</td><td>0</td><td>1</td><td>30</td></tr>
+    <tr><td>Same (بيحافظ على الحجم)</td><td>32</td><td>3</td><td>1</td><td>1</td><td>32</td></tr>
+    <tr><td>Downsample ×2</td><td>32</td><td>3</td><td>1</td><td>2</td><td>16</td></tr>
+    <tr><td>Pool 2×2</td><td>32</td><td>2</td><td>0</td><td>2</td><td>16</td></tr>
+    <tr><td>Receptive field كبير</td><td>32</td><td>7</td><td>3</td><td>2</td><td>16</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 4: channels + params -->
+<section id="d58-chan">
+  <div class="station-head"><span class="tag">04</span><h2>أكتر من channel وعدد الـ parameters</h2></div>
+  <p>الصور الحقيقية فيها ٣ channels. فالـ kernel 3×3 على صورة RGB هو في الحقيقة <b>مكعب 3×3×3</b>: شريحة 3×3 لكل channel. في كل مكان بنضرب ونجمع على التلات شرايح مع بعض ونزود bias، فيطلع رقم واحد. يعني kernel واحد = خريطة 2D واحدة.</p>
+  <div class="formula">Input (C_in, H, W) · Kernel (C_in, K, K) → Output (1, H', W')</div>
+  <p>عايز layer تطلع <code>C_out</code> channels؟ رص <code>C_out</code> kernels:</p>
+  <div class="formula">Weight (C_out, C_in, K, K) → Output (C_out, H', W')<br>Params = C_out · C_in · K · K + C_out</div>
+  <p>الـ <span class="ltr">+ C_out</span> دي الـ biases، واحد لكل output channel. مثال: <span class="ltr">64·3·3·3 + 64 = 1,792</span> parameter بس. رخيص جدًا جنب الـ 150 مليون بتوع الـ dense.</p>
+  <div class="note"><strong>تشبيه:</strong> كل output channel زي «سؤال» واحد بيتسأل في كل مكان في الصورة: «فيه حافة رأسية هنا؟»، «فيه لون أحمر هنا؟». الـ C_out = عدد الأسئلة، وكل سؤال بيبص على كل الـ channels مع بعض.</div>
+</section>
+
+<!-- STATION 5: kernel bank lab -->
+<section id="d58-bank">
+  <div class="station-head"><span class="tag">05</span><h2>بنك الـ kernels اليدوية</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>قبل أي تدريب، طبقة conv واحدة تقدر تعمل حاجات مفيدة لو حطيت أرقام الـ kernel بإيدك:</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li><b>identity</b>: ١ في النص والباقي أصفار → الصورة زي ما هي.</li>
+        <li><b>blur_3x3</b>: كله 1/9 → متوسط الجيران، فالصورة بتنعم.</li>
+        <li><b>sharpen</b>: 5 في النص و−1 للجيران الأربعة → البيكسل ناقص جيرانه، فالفروق (الحواف) بتبان أكتر.</li>
+        <li><b>sobel_x</b>: يمين ناقص شمال → بيولّع على الحواف <b>الرأسية</b> (اللي السطوع فيها بيتغير من شمال ليمين).</li>
+        <li><b>sobel_y</b>: تحت ناقص فوق → بيولّع على الحواف <b>الأفقية</b>.</li>
+      </ul>
+      <p>اختار kernel أو عدّل الـ 9 أرقام بنفسك وشوف الخرج. اللون البرتقالي = قيم سالبة، والأزرق = موجبة.</p>
+      <div class="note ai"><strong>الحتة الحلوة:</strong> دي بالظبط الأنماط اللي أول conv layer في AlexNet وVGG اتعلمتها لوحدها بالتدريب. أي موديل صور كويس محتاج كواشف حواف وبُقع (blobs) مهما كانت المهمة بعد كده.</div>
+    </div>
+    <div class="instrument">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;direction:ltr">
+        <canvas id="d58-srcCanvas" width="256" height="256" aria-label="الصورة الأصلية"></canvas>
+        <canvas id="d58-dstCanvas" width="256" height="256" aria-label="الصورة بعد الفلتر"></canvas>
+      </div>
+      <div class="btns" id="d58-kbtns">
+        <button type="button" data-k="identity">identity</button>
+        <button type="button" data-k="blur_3x3">blur</button>
+        <button type="button" data-k="sharpen">sharpen</button>
+        <button type="button" data-k="sobel_x">sobel_x</button>
+        <button type="button" data-k="sobel_y">sobel_y</button>
+      </div>
+      <div id="d58-kgrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;direction:ltr;max-width:240px"></div>
+      <div class="readout">
+        <div><small>أصغر قيمة</small><b id="d58-kmin">0</b></div>
+        <div><small>أكبر قيمة</small><b id="d58-kmax">1</b></div>
+        <div><small>مجموع الـ kernel</small><b id="d58-ksum">1</b></div>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">لاحظ مجموع الـ kernel: لو = 1 السطوع العام ثابت، لو = 0 المناطق الهادية بتبقى صفر وبيفضل التغيير بس.</p>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6: im2col -->
+<section id="d58-im2col">
+  <div class="station-head"><span class="tag">06</span><h2>حيلة الـ im2col: الـ convolution كضرب مصفوفة واحد</h2></div>
+  <p>الـ loops المتداخلة سهلة تتقري بس بطيئة. الـ GPU بيحب ضرب مصفوفات كبير (GEMM). الحيلة:</p>
+  <ol class="ex">
+    <li>كل نافذة بحجم الـ kernel في الدخل افردها <b>عمود</b> في مصفوفة كبيرة <code>cols</code> شكلها <span class="ltr">(C_in·K·K, H_out·W_out)</span>.</li>
+    <li>افرد كل kernel <b>صف</b>: <code>w_flat</code> شكلها <span class="ltr">(C_out, C_in·K·K)</span>.</li>
+    <li>اضرب: <span class="ltr">w_flat @ cols</span> → <span class="ltr">(C_out, H_out·W_out)</span>، وبعدين reshape لـ <span class="ltr">(C_out, H_out, W_out)</span>.</li>
+  </ol>
+  <p>مثلًا لو <span class="ltr">C_in=3, K=3</span> كل عمود فيه 27 رقم. في المعمل ٠٢ فوق، العمود اللي ظاهر في الحسبة هو بالظبط عمود من <code>cols</code>، والـ kernel المفرود هو الصف.</p>
+  <div class="note"><strong>تشبيه:</strong> بدل ما تطبخ طبق طبق، بتقطع كل الخضار الأول وتحطها في صفوف (im2col)، وبعدين تطبخ كله في حلة واحدة كبيرة (matmul). أسرع بكتير، بس بياخد مساحة أكتر في المطبخ (memory): كل بيكسل بيتنسخ لحد K·K مرة.</div>
+  <p>كل implementation حقيقية للـ conv هي نسخة من ده مع حيل cache-tiling (direct conv، Winograd، FFT conv للـ kernels الكبيرة). افهم im2col تفهم القلب.</p>
+</section>
+
+<!-- STATION 7: receptive field lab -->
+<section id="d58-rf">
+  <div class="station-head"><span class="tag">07</span><h2>الـ Receptive Field: الـ neuron شايف قد إيه؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>conv واحدة 3×3 بتبص على 9 بيكسل. ركّب اتنين 3×3: الـ neuron في التانية بيعتمد على 3×3 من الأولى، وكل واحد منهم شايف 3×3، فالمجموع <b>5×5</b> من الصورة الأصلية. تلاتة → 7×7.</p>
+      <div class="formula">RF (L طبقة K×K، stride 1) = 1 + L · (K − 1)</div>
+      <p>ومع الـ stride الـ RF بيكبر أسرع: كل طبقة بتزود <span class="ltr">(K−1) × حاصل ضرب الـ strides اللي قبلها</span>. ده اللي الكود بيحسبه في <code>receptive_field</code>.</p>
+      <p>السبب إن «3×3 على طول» نجح (VGG، ResNet، ConvNeXt): اتنين 3×3 بيشوفوا نفس مساحة 5×5 واحدة، بس بـ <span class="ltr">2·9 = 18</span> وزن بدل 25 (لكل زوج channels)، ومعاهم non-linearity زيادة في النص.</p>
+      <p>زوّد طبقات وغيّر الـ stride بتاع كل واحدة واضغط على أي خلية في الطبقة الأخيرة عشان تشوف هي معتمدة على إيه تحت.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d58-rfCanvas" width="520" height="300" aria-label="الـ receptive field وهو بيكبر مع الطبقات"></canvas>
+      <div class="btns">
+        <button type="button" id="d58-add1">+ طبقة 3×3 s=1</button>
+        <button type="button" id="d58-add2">+ طبقة 3×3 s=2</button>
+        <button type="button" id="d58-rm">شيل آخر طبقة</button>
+      </div>
+      <div class="readout">
+        <div><small>الطبقات</small><b id="d58-layers">[(3,1),(3,1)]</b></div>
+        <div><small>RF</small><b id="d58-rfv">5</b></div>
+        <div><small>params (3×3 vs K واحد)</small><b id="d58-rfp">18 vs 25</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d58-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: ابني الـ conv بـ NumPy</h2></div>
+  <p>من جوه فولدر الريبو، شغّل الملف الأصلي الأول عشان تشوف الهدف:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/02-convolutions-from-scratch/code/main.py</pre></div>
+  <p><b>القاعدة:</b> ما تعملش copy-paste. افتح ملف جديد <code>my_conv.py</code> واكتب الخطوات دي بإيدك، وارجع للأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: pad2d</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def pad2d(x, p):
+    if p == 0:
+        return x
+    h, w = x.shape[-2:]                         <span class="c"># آخر محورين بس = H, W</span>
+    out = np.zeros(x.shape[:-2] + (h + 2 * p, w + 2 * p), dtype=x.dtype)
+    out[..., p:p + h, p:p + w] = x              <span class="c"># حط الصورة في النص</span>
+    return out
+
+x = np.arange(9).reshape(3, 3)
+print(pad2d(x, 1))</pre></div>
+  <p>الحيلة <code>x.shape[:-2]</code> بتخلي نفس الدالة تشتغل على <span class="ltr">(H, W)</span> أو <span class="ltr">(C, H, W)</span> أو <span class="ltr">(N, C, H, W)</span> من غير تعديل.</p>
+
+  <h3>خطوة ٢: output_size و conv2d_naive</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def output_size(h_in, k, p, s):
+    return (h_in + 2 * p - k) // s + 1          <span class="c"># المعادلة اللي حفظناها</span>
+
+def conv2d_naive(x, w, b=None, stride=1, padding=0):
+    c_in, h, w_in = x.shape
+    c_out, c_in_w, kh, kw = w.shape
+    assert c_in == c_in_w                       <span class="c"># الـ channels لازم تتطابق</span>
+
+    x_pad = pad2d(x, padding)
+    h_out = output_size(h, kh, padding, stride)
+    w_out = output_size(w_in, kw, padding, stride)
+
+    out = np.zeros((c_out, h_out, w_out), dtype=np.float32)
+    for oc in range(c_out):                     <span class="c"># لكل kernel</span>
+        for i in range(h_out):                  <span class="c"># لكل صف في الخرج</span>
+            for j in range(w_out):              <span class="c"># لكل عمود</span>
+                hs = i * stride
+                ws = j * stride
+                patch = x_pad[:, hs:hs + kh, ws:ws + kw]
+                out[oc, i, j] = np.sum(patch * w[oc])   <span class="c"># اضرب واجمع على C_in و K و K</span>
+        if b is not None:
+            out[oc] += b[oc]
+    return out</pre></div>
+  <p>دي النسخة المرجعية (ground truth) اللي هتقارن بيها أي نسخة أسرع.</p>
+
+  <h3>خطوة ٣: im2col و conv2d_im2col</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def im2col(x, kh, kw, stride=1, padding=0):
+    c_in, h, w = x.shape
+    x_pad = pad2d(x, padding)
+    h_out = output_size(h, kh, padding, stride)
+    w_out = output_size(w, kw, padding, stride)
+
+    cols = np.zeros((c_in * kh * kw, h_out * w_out), dtype=x.dtype)
+    col = 0
+    for i in range(h_out):
+        for j in range(w_out):
+            hs = i * stride
+            ws = j * stride
+            patch = x_pad[:, hs:hs + kh, ws:ws + kw]
+            cols[:, col] = patch.reshape(-1)    <span class="c"># النافذة بقت عمود</span>
+            col += 1
+    return cols, h_out, w_out
+
+def conv2d_im2col(x, w, b=None, stride=1, padding=0):
+    c_out, c_in, kh, kw = w.shape
+    cols, h_out, w_out = im2col(x, kh, kw, stride, padding)
+    w_flat = w.reshape(c_out, -1)               <span class="c"># كل kernel بقى صف</span>
+    out = w_flat @ cols                         <span class="c"># ضربة مصفوفة واحدة</span>
+    if b is not None:
+        out += b[:, None]
+    return out.reshape(c_out, h_out, w_out)</pre></div>
+
+  <h3>خطوة ٤: قارن النسختين</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def test_against_naive():
+    rng = np.random.default_rng(0)
+    x = rng.normal(0, 1, (3, 16, 16)).astype(np.float32)
+    w = rng.normal(0, 1, (8, 3, 3, 3)).astype(np.float32)
+    b = rng.normal(0, 1, (8,)).astype(np.float32)
+    y_naive = conv2d_naive(x, w, b, padding=1)
+    y_im2col = conv2d_im2col(x, w, b, padding=1)
+    diff = float(np.max(np.abs(y_naive - y_im2col)))
+    return y_naive.shape, diff
+
+shape, diff = test_against_naive()
+print(f"shape={shape}   max|diff|={diff:.2e}")   <span class="c"># الفرق صغير جدًا</span></pre></div>
+  <p>الدرس بيقول الفرق يبقى حوالي <code>1e-5</code> أو أقل: ده من ترتيب الجمع في الـ float، مش bug. الـ shape لازم يطلع <span class="ltr">(8, 16, 16)</span> لأن padding=1 مع K=3 = same.</p>
+
+  <h3>خطوة ٥: الـ kernels والـ receptive field</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>KERNELS = {
+    "identity": np.array([[0, 0, 0], [0, 1, 0], [0, 0, 0]], dtype=np.float32),
+    "blur_3x3": np.ones((3, 3), dtype=np.float32) / 9.0,
+    "sharpen":  np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32),
+    "sobel_x":  np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32),
+    "sobel_y":  np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32),
+}
+
+def apply_kernel(img2d, kernel):
+    x = img2d[None].astype(np.float32)          <span class="c"># (H,W) → (1,H,W)</span>
+    w = kernel[None, None]                      <span class="c"># (3,3) → (1,1,3,3)</span>
+    return conv2d_im2col(x, w, padding=1)[0]
+
+def synthetic_step_image(size=16):
+    img = np.zeros((1, size, size), dtype=np.float32)
+    img[:, :, size // 2:] = 1.0                 <span class="c"># شمال أسود، يمين أبيض</span>
+    return img
+
+def receptive_field(layers):
+    rf, stride_prod = 1, 1
+    for k, s in layers:
+        rf = rf + (k - 1) * stride_prod         <span class="c"># كل طبقة بتزود (K-1) × الـ strides اللي قبلها</span>
+        stride_prod *= s
+    return rf
+
+y = apply_kernel(synthetic_step_image()[0], KERNELS["sobel_x"])
+print(y[:5].round(1))
+print(receptive_field([(3, 1), (3, 2), (3, 1), (3, 2)]))</pre></div>
+  <details><summary>إيه اللي المفروض تشوفه؟</summary>
+    <p>السطر الأول: <code>conv equivalence ... shape=(8, 16, 16) max|diff|=...</code> برقم صغير جدًا. بعدين مصفوفة sobel_x: قيم موجبة كبيرة عند الحافة في النص (العمودين 7 و8)، وأصفار في المناطق الهادية. هتلاحظ كمان قيم <b>سالبة</b> في آخر عمود، ودي مش حافة حقيقية: دي الـ zero padding عملت «حافة» صناعية بين الأبيض والأصفار اللي برة. والصف الأول قيمه أقل شوية لنفس السبب من فوق.</p>
+    <p>جدول الأحجام لـ H=32: <span class="ltr">30, 32, 16, 16, 16</span>. والـ receptive field للـ stacks: <span class="ltr">3, 5, 7</span> وللـ stack اللي فيه strides <span class="ltr">13</span>.</p>
+  </details>
+
+  <h3>خطوة ٦: نفس الكلام في PyTorch</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+
+conv = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1)
+print(f"weight shape: {tuple(conv.weight.shape)}")   <span class="c"># (64, 3, 3, 3) = (C_out, C_in, K, K)</span>
+print(f"param count:  {sum(p.numel() for p in conv.parameters())}")   <span class="c"># 1792</span>
+
+x = torch.randn(8, 3, 224, 224)
+print(tuple(conv(x).shape))                           <span class="c"># (8, 64, 224, 224)</span></pre></div>
+  <p>غيّر <code>padding=1</code> لـ <code>0</code> → 222×222. غيّر <code>stride</code> لـ <code>2</code> → 112×112. نفس المعادلة بالظبط، بس <code>nn.Conv2d</code> معاها autograd وكيرنلز CUDA وcuDNN.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d58-ex">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل) احسب بإيدك:</b> دخل 128×128 grayscale وstack <span class="ltr">[Conv3x3(s=1,p=1), Conv3x3(s=2,p=1), Conv3x3(s=1,p=1), Conv3x3(s=2,p=1)]</span>. احسب الحجم والـ RF بعد كل طبقة، وبعدين اتأكد بـ <code>nn.Sequential</code> من convs وهمية.
+      <details><summary>الإجابة</summary>الأحجام: <span class="ltr">128 → 64 → 64 → 32</span>. الـ RF: <span class="ltr">3 → 5 → 9 → 13</span> (التالتة بتزود 2×2=4 لأن قبلها stride 2، والرابعة بتزود 2×2=4 كمان لأن حاصل الـ strides قبلها لسه 2). اتأكد في المعمل ٠٧: s=1، s=2، s=1، s=2. للتحقق: <code>nn.Sequential(*[nn.Conv2d(1,1,3,s,1) for s in [1,2,1,2]])(torch.randn(1,1,128,128)).shape</code>.</details></li>
+    <li><b>(متوسط) groups:</b> زوّد argument اسمه <code>groups</code> لـ <code>conv2d_naive</code> و<code>conv2d_im2col</code>. ورّي إن <span class="ltr">groups = C_in = C_out</span> بيعمل depthwise convolution، وإن عدد البارامترز <span class="ltr">C·K·K</span> بدل <span class="ltr">C·C·K·K</span>.
+      <details><summary>تلميح</summary>شكل الـ weight يبقى <span class="ltr">(C_out, C_in/groups, K, K)</span>. قسّم الـ channels لـ groups مجموعات، وطبّق الـ conv العادية على كل مجموعة لوحدها بالـ weights بتوعها، وبعدين <code>np.concatenate</code> على محور الـ channels. مع depthwise كل output channel شايف input channel واحد بس.</details></li>
+    <li><b>(صعب) الـ backward pass:</b> اكتب الـ gradient بالنسبة لـ <code>x</code> و<code>w</code> لـ <code>conv2d_im2col</code> بإيدك، وقارن بـ <code>torch.autograd.grad</code>.
+      <details><summary>تلميح</summary>الـ forward هو <span class="ltr">out = w_flat @ cols</span>. فـ <span class="ltr">dw_flat = dout @ cols.T</span> و<span class="ltr">dcols = w_flat.T @ dout</span> (و<span class="ltr">db = dout.sum(axis=1)</span>). وبعدين لازم <b>col2im</b>: رجّع كل عمود في <code>dcols</code> لمكانه في الصورة <b>بالجمع</b> (<code>+=</code>) لأن النوافذ بتتداخل، وفي الآخر شيل الـ padding.</details></li>
+    <li><b>إضافة مني · خطة backbone صغيرة:</b> انت عايز تعمل موديل يصنف صور 64×64 RGB لـ 10 أصناف على موبايل. صمم stack من 4–6 Conv2d بحيث (أ) الحجم يوصل 4×4 أو أقل، (ب) الـ RF يغطي الصورة كلها تقريبًا (≥ 64)، (ج) الـ parameters أقل من 100 ألف. اكتب جدول: K، S، P، C_out، H_out، RF، params لكل طبقة، واتأكد بـ PyTorch.
+      <details><summary>تلميح</summary>ابدأ بـ C_out=16 وضاعف كل ما تعمل stride 2. خمس طبقات 3×3 كلها s=2 بتوصل 64→2 والـ RF يبقى <span class="ltr">1+2+4+8+16+32 = 63</span>. احسب params بـ <span class="ltr">C_out·C_in·9 + C_out</span>. ده نفس الشغل اللي ملف <code>outputs/skill-conv-shape-calculator.md</code> في الدرس بيعمله.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d58-mine">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس ما قالهوش بصراحة</h2></div>
+  <h3>حدس سريع</h3>
+  <p>الـ convolution = <b>dot product</b> (اللي اتعلمته يوم ١) بين الـ kernel وكل نافذة. والـ dot product بيكبر لما الاتنين شبه بعض. يعني الـ kernel هو «شكل» بيدور عليه، وخريطة الخرج بتقولك «الشكل ده موجود قد إيه في كل مكان». عشان كده اسمها <b>feature map</b>.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>تنسى الـ <span class="ltr">+ C_out</span> بتاعة الـ bias في عدد الـ parameters (أو تنسى إن <code>bias=False</code> بيشيلها، ودي بتتعمل كتير قبل BatchNorm).</li>
+    <li>تحط الصورة HWC بدل CHW، فـ <code>nn.Conv2d(3, …)</code> يشتكي إن عنده 224 channel.</li>
+    <li>تستخدم K زوجي (2، 4) ومستني same padding: مفيش P صحيح يخلي الحجم ثابت بالظبط مع stride 1.</li>
+    <li>تنسى إن الـ floor في المعادلة بيرمي آخر صف/عمود لو القسمة مش مظبوطة، فـ 33 بـ stride 2 و K=3 و P=1 تبقى 17 مش 16.5.</li>
+    <li>تفتكر إن zero padding «محايدة»: شفنا في sobel_x إنها بتعمل حواف وهمية على الأطراف.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <p>الـ Vision Transformer (ViT) بيقطع الصورة patches بـ <code>Conv2d(kernel_size=16, stride=16)</code>، يعني conv بـ K = S فالنوافذ مش بتتداخل، وكل patch يبقى token. وده أول layer في vision encoders كتير زي CLIP اللي الـ multimodal LLMs بتستخدمها عشان «تشوف» الصور. وفي الـ NLP والصوت فيه 1D conv بنفس الفكرة بالظبط (نافذة على الوقت بدل المكان). ولما agent بياخد screenshot ويقراها، الصورة دي بتعدي على حاجة من دول في الأول.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d58-quizSec">
+  <div class="station-head"><span class="tag">11</span><h2>كويز</h2></div>
+  <div class="quiz" id="d58-quiz"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d58-done">
+  <div class="station-head"><span class="tag">12</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d58-check">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح ليه الـ conv أحسن من الـ dense للصور (equivariance + sharing)</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> حافظ <span class="ltr">(H − K + 2P)/S + 1</span> وأقدر أحسبها في دماغي</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> أعرف أحسب params لـ Conv2d (ومعاها الـ bias)</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت conv2d_naive وconv2d_im2col وقارنتهم</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> فاهم ليه اتنين 3×3 أحسن من 5×5 واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت تمرينين على الأقل وجبت ٥ من ٧ في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Conv2d + parameter sharing</td><td>كل CNN: ResNet، ConvNeXt، MobileNet، U-Net، YOLO</td></tr>
+    <tr><td>Stride 2</td><td>الـ downsampling جوه الـ backbones بدل max-pool</td></tr>
+    <tr><td>Same padding</td><td>الـ residual connections اللي محتاجة نفس الشكل</td></tr>
+    <tr><td>im2col / GEMM</td><td>cuDNN وكل مكتبة conv سريعة</td></tr>
+    <tr><td>Receptive field</td><td>ليه الشبكات العميقة بتشوف الصورة كلها، وتصميم الـ detectors</td></tr>
+    <tr><td>Depthwise conv</td><td>MobileNet وConvNeXt والموديلات اللي على الموبايل</td></tr>
+    <tr><td>Patch embedding (K=S)</td><td>ViT وCLIP والـ vision encoders في الـ multimodal LLMs</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> CNNs — LeNet to ResNet. هنركّب الـ convs دي فوق بعض ونشوف تاريخ الـ architectures لحد الـ residual connections.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F02-convolutions-from-scratch" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات ومعامل تفاعلية.</span>
+  <span class="ltr">phases/04-computer-vision/02-convolutions-from-scratch</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id);
+const css=AI.css, F=AI.fmt;
+
+/* roadmap */
+const RM=[[57,'01'],[58,'02'],[59,'03'],[60,'04'],[61,'05'],[62,'06'],[63,'07'],[64,'08'],[65,'09'],[66,'10'],[67,'11'],[68,'12+13'],[69,'14'],[70,'15'],[71,'16'],[72,'17'],[73,'18+19'],[74,'20+21'],[75,'22'],[76,'23'],[77,'24'],[78,'25'],[79,'26'],[80,'27'],[81,'28']];
+const rm=$('d58-roadmap');
+RM.forEach(([n,l])=>{const s=document.createElement('span');s.textContent=l.split('+')[0].replace(/^0/,'')+(l.includes('+')?'+':'');s.title='Day '+n+' · Lesson '+l;if(n===58)s.className='now';rm.appendChild(s)});
+
+const KERNELS={
+  identity:[[0,0,0],[0,1,0],[0,0,0]],
+  blur_3x3:[[1/9,1/9,1/9],[1/9,1/9,1/9],[1/9,1/9,1/9]],
+  sharpen:[[0,-1,0],[-1,5,-1],[0,-1,0]],
+  sobel_x:[[-1,0,1],[-2,0,2],[-1,0,1]],
+  sobel_y:[[-1,-2,-1],[0,0,0],[1,2,1]],
+  lesson:[[1,0,-1],[2,0,-2],[1,0,-1]]
+};
+
+/* ---------- LAB 1: sliding kernel ---------- */
+const X0=[[1,2,0,1,2],[0,1,3,1,0],[2,1,0,2,1],[1,0,2,1,3],[2,1,1,0,1]];
+let X=X0.map(r=>r.slice()),Kk=KERNELS.lesson,P=0,S=1,step=0,timer=null;
+const sc=$('d58-slideCanvas'),sx=AI.setupCanvas(sc);
+const outDim=()=>Math.floor((5-3+2*P)/S)+1;
+const xp=(r,c)=>(r<P||c<P||r>=5+P||c>=5+P)?0:X[r-P][c-P];
+function outVal(i,j){let s=0;for(let a=0;a<3;a++)for(let b=0;b<3;b++)s+=Kk[a][b]*xp(i*S+a,j*S+b);return s}
+let geo={};
+function drawSlide(){
+  if(!sc.isConnected)return false;
+  const W=+sc.dataset.w,H=+sc.dataset.h,n=5+2*P,o=outDim();
+  const cell=Math.min(34,(W*0.55)/n,(H-40)/n);
+  const ox=12,oy=28,ox2=ox+n*cell+40;const cell2=Math.min(34,(W-ox2-12)/Math.max(o,1));
+  geo={ox,oy,cell,n};
+  sx.clearRect(0,0,W,H);
+  sx.font='12px '+css('--f-mono');sx.fillStyle=css('--muted');sx.textAlign='left';
+  sx.fillText('input (pad '+P+')',ox,16);sx.fillText('output '+o+'×'+o,ox2,16);
+  const tot=o*o,k=step%tot,i=Math.floor(k/o),j=k%o;
+  for(let r=0;r<n;r++)for(let c=0;c<n;c++){
+    const pad=(r<P||c<P||r>=5+P||c>=5+P);
+    sx.fillStyle=pad?css('--soft'):css('--panel');sx.fillRect(ox+c*cell,oy+r*cell,cell-2,cell-2);
+    sx.strokeStyle=css('--line');sx.lineWidth=1;sx.strokeRect(ox+c*cell,oy+r*cell,cell-2,cell-2);
+    sx.fillStyle=pad?css('--muted'):css('--ink');sx.textAlign='center';sx.font=(cell*0.42|0)+'px '+css('--f-mono');
+    sx.fillText(xp(r,c),ox+c*cell+cell/2-1,oy+r*cell+cell*0.62);
+  }
+  sx.strokeStyle=css('--vec-b');sx.lineWidth=3;sx.strokeRect(ox+j*S*cell-1,oy+i*S*cell-1,3*cell,3*cell);
+  for(let a=0;a<o;a++)for(let b=0;b<o;b++){
+    const v=outVal(a,b),cur=(a===i&&b===j),seen=(a*o+b)<=k;
+    sx.fillStyle=cur?css('--vec-b'):(seen?css('--soft'):css('--panel'));
+    sx.fillRect(ox2+b*cell2,oy+a*cell2,cell2-2,cell2-2);sx.strokeStyle=css('--line');sx.lineWidth=1;sx.strokeRect(ox2+b*cell2,oy+a*cell2,cell2-2,cell2-2);
+    if(seen){sx.fillStyle=cur?css('--paper'):css('--ink');sx.font=(cell2*0.36|0)+'px '+css('--f-mono');sx.fillText(F(v,1),ox2+b*cell2+cell2/2-1,oy+a*cell2+cell2*0.6)}
+  }
+  $('d58-outShape').textContent=o+' × '+o;$('d58-pos').textContent='Y['+i+','+j+']';$('d58-val').textContent=F(outVal(i,j),2);
+  const col=[],kr=[];for(let a=0;a<3;a++)for(let b=0;b<3;b++){col.push(xp(i*S+a,j*S+b));kr.push(F(Kk[a][b],2))}
+  $('d58-calc').textContent='patch column = ['+col.join(', ')+']\nkernel row   = ['+kr.join(', ')+']\nsum(row*col) = '+F(outVal(i,j),2);
+  $('d58-calc').style.whiteSpace='pre';
+  return true;
+}
+function stepOnce(){step=(step+1)%(outDim()*outDim());drawSlide()}
+$('d58-step').addEventListener('click',()=>{stopPlay();stepOnce()});
+function stopPlay(){if(timer){clearInterval(timer);timer=null;$('d58-play').textContent='▶ شغّل'}}
+$('d58-play').addEventListener('click',()=>{if(timer){stopPlay();return}$('d58-play').textContent='❚❚ وقّف';timer=setInterval(()=>{if(!sc.isConnected){stopPlay();return}stepOnce()},700)});
+$('d58-reset').addEventListener('click',()=>{X=X0.map(r=>r.slice());step=0;drawSlide()});
+$('d58-p').addEventListener('input',e=>{P=+e.target.value;$('d58-pV').textContent=P;step=0;drawSlide()});
+$('d58-s').addEventListener('input',e=>{S=+e.target.value;$('d58-sV').textContent=S;step=0;drawSlide()});
+$('d58-kSel').addEventListener('change',e=>{Kk=KERNELS[e.target.value];drawSlide()});
+sc.addEventListener('click',e=>{const [mx,my]=AI.evPos(sc,e);const c=Math.floor((mx-geo.ox)/geo.cell)-P,r=Math.floor((my-geo.oy)/geo.cell)-P;if(r>=0&&r<5&&c>=0&&c<5){X[r][c]=(X[r][c]+1)%4;drawSlide()}});
+drawSlide();AI.onTheme(drawSlide);
+
+/* ---------- size calculator ---------- */
+const zc=$('d58-sizeCanvas'),zx=AI.setupCanvas(zc);
+let cH=32,cK=3,cP=0,cS=1;
+function calc(){
+  if(!zc.isConnected)return false;
+  ['h','k','cp','cs'].forEach((id,ix)=>$('d58-'+id+'V').textContent=[cH,cK,cP,cS][ix]);
+  $('d58-h').value=cH;$('d58-k').value=cK;$('d58-cp').value=cP;$('d58-cs').value=cS;
+  const num=cH-cK+2*cP,ho=num<0?0:Math.floor(num/cS)+1;
+  $('d58-hout').textContent=ho>0?ho:'✗';
+  $('d58-hcalc').textContent=num<0?'K أكبر من الدخل بعد الـ padding: مفيش خرج':'floor(('+cH+' − '+cK+' + '+(2*cP)+') / '+cS+') + 1 = '+ho+(num%cS?'   (الـ floor رمى الباقي)':'');
+  let kind='valid';if(cS===1&&ho===cH)kind='same';else if(cS>1)kind='downsample ÷'+F(cH/ho,1);else if(cP>0)kind='padded';
+  if(cK%2===0&&cS===1&&cP>0&&ho!==cH)kind+=' (K زوجي!)';
+  $('d58-kind').textContent=kind;
+  const W=+zc.dataset.w,H=+zc.dataset.h,mx=Math.max(cH+2*cP,ho,1),sc2=(W-24)/mx;
+  zx.clearRect(0,0,W,H);zx.font='12px '+css('--f-mono');zx.textAlign='left';
+  zx.fillStyle=css('--soft');zx.fillRect(12,18,(cH+2*cP)*sc2,24);
+  zx.fillStyle=css('--vec-a');zx.fillRect(12+cP*sc2,18,cH*sc2,24);
+  zx.fillStyle=css('--vec-b');zx.fillRect(12,74,ho*sc2,24);
+  zx.fillStyle=css('--muted');zx.fillText('input '+cH+(cP?' + pad '+cP+'×2':''),12,12);zx.fillText('output '+ho,12,68);
+  return true;
+}
+[['d58-h',v=>cH=v],['d58-k',v=>cK=v],['d58-cp',v=>cP=v],['d58-cs',v=>cS=v]].forEach(([id,f])=>$(id).addEventListener('input',e=>{f(+e.target.value);calc()}));
+document.querySelectorAll('#d58-size [data-hk]').forEach(b=>b.addEventListener('click',()=>{[cH,cK,cP,cS]=b.dataset.hk.split(',').map(Number);calc()}));
+calc();AI.onTheme(calc);
+
+/* ---------- LAB 2: kernel bank on a synthetic image ---------- */
+const N=64,img=new Float32Array(N*N);
+for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+  let v=0.15+0.25*(x/N);
+  if(x>8&&x<28&&y>8&&y<30)v=0.9;
+  const dx=x-44,dy=y-20;if(dx*dx+dy*dy<120)v=0.6;
+  if(y>40&&y<56&&x>8&&x<56&&((x>>2)&1))v=0.8;
+  if(Math.abs((x-36)-(y-36))<2&&y>34&&y<62)v=1;
+  img[y*N+x]=v;
+}
+let KB=KERNELS.sobel_x.map(r=>r.slice());
+const src=$('d58-srcCanvas'),dst=$('d58-dstCanvas');
+function paint(cv,data,signed,lo,hi){
+  const c=cv.getContext('2d');cv.width=N;cv.height=N;const id=c.createImageData(N,N);
+  const a=css('--vec-a'),b=css('--vec-b');
+  const hex=h=>{h=h.replace('#','');return[parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]};
+  let A=[11,111,142],B=[194,103,26];try{A=hex(a);B=hex(b)}catch(e){}
+  const m=Math.max(Math.abs(lo),Math.abs(hi))||1;
+  for(let i=0;i<N*N;i++){let r,g,bl;const v=data[i];
+    if(signed){const t=Math.min(1,Math.abs(v)/m);const C=v>=0?A:B;r=255-(255-C[0])*t;g=255-(255-C[1])*t;bl=255-(255-C[2])*t}
+    else{const t=Math.max(0,Math.min(1,v))*255;r=g=bl=t}
+    id.data[i*4]=r;id.data[i*4+1]=g;id.data[i*4+2]=bl;id.data[i*4+3]=255}
+  c.putImageData(id,0,0);cv.style.imageRendering='pixelated';
+}
+function conv(){
+  const out=new Float32Array(N*N);let lo=1e9,hi=-1e9;
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++){let s=0;
+    for(let a=0;a<3;a++)for(let b=0;b<3;b++){const yy=y+a-1,xx=x+b-1;if(yy>=0&&yy<N&&xx>=0&&xx<N)s+=KB[a][b]*img[yy*N+xx]}
+    out[y*N+x]=s;if(s<lo)lo=s;if(s>hi)hi=s}
+  return [out,lo,hi];
+}
+const kg=$('d58-kgrid'),kin=[];
+for(let i=0;i<9;i++){const inp=document.createElement('input');inp.type='number';inp.step='0.1';inp.setAttribute('aria-label','خانة '+(i+1)+' في الـ kernel');inp.style.cssText='width:100%;font:inherit;font-family:var(--f-mono);font-size:13px;padding:3px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink);text-align:center';
+  inp.addEventListener('input',()=>{const v=parseFloat(inp.value);KB[Math.floor(i/3)][i%3]=isNaN(v)?0:v;drawBank(false)});kg.appendChild(inp);kin.push(inp)}
+function drawBank(sync){
+  if(!dst.isConnected)return false;
+  if(sync!==false)kin.forEach((inp,i)=>inp.value=F(KB[Math.floor(i/3)][i%3],3));
+  paint(src,img,false,0,1);
+  const [out,lo,hi]=conv();
+  const sum=KB.flat().reduce((a,b)=>a+b,0);
+  const signed=lo<-1e-6;
+  if(signed)paint(dst,out,true,lo,hi);else paint(dst,out.map(v=>v/Math.max(hi,1e-6)*(hi>1?1:hi)),false,0,1);
+  $('d58-kmin').textContent=F(lo,2);$('d58-kmax').textContent=F(hi,2);$('d58-ksum').textContent=F(sum,2);
+  return true;
+}
+document.querySelectorAll('#d58-kbtns [data-k]').forEach(b=>b.addEventListener('click',()=>{KB=KERNELS[b.dataset.k].map(r=>r.slice());drawBank()}));
+drawBank();AI.onTheme(()=>drawBank());
+
+/* ---------- LAB 3: receptive field ---------- */
+let L=[[3,1],[3,1]],sel=null;
+const rc=$('d58-rfCanvas'),rx=AI.setupCanvas(rc);
+function rfOf(ls){let rf=1,sp=1;ls.forEach(([k,s])=>{rf+=(k-1)*sp;sp*=s});return rf}
+function sizes(n0){const a=[n0];L.forEach(([k,s])=>a.push(Math.floor((a[a.length-1]-k+2*1)/s)+1));return a}
+let rgeo={};
+function drawRF(){
+  if(!rc.isConnected)return false;
+  const W=+rc.dataset.w,H=+rc.dataset.h,n0=24,sz=sizes(n0),rows=L.length+1,rowH=Math.min(46,(H-20)/rows);
+  rx.clearRect(0,0,W,H);
+  const cw=(W-80)/n0;
+  /* positions of cells in each layer (centres in input coords); same padding, stride s */
+  const centres=[];centres[0]=[...Array(n0).keys()];
+  let sp=1;
+  L.forEach(([k,s],li)=>{const prev=centres[li];const c=[];for(let j=0;j<sz[li+1];j++)c.push(prev[0]+j*s*(prev.length>1?(prev[1]-prev[0]):1));centres.push(c);sp*=s});
+  const last=centres[rows-1];if(sel===null||sel>=last.length)sel=Math.floor(last.length/2);
+  /* trace dependency back */
+  let lo=sel,hi=sel;const span=[];span[rows-1]=[lo,hi];
+  for(let li=rows-1;li>0;li--){const [k,s]=L[li-1];const nlo=lo*s-1,nhi=hi*s+1;lo=Math.max(0,nlo);hi=Math.min(sz[li-1]-1,nhi);span[li-1]=[lo,hi]}
+  rgeo={rows,rowH,cw,last};
+  for(let li=0;li<rows;li++){
+    const y=H-14-(li+1)*rowH+6;
+    rx.fillStyle=css('--muted');rx.font='11px '+css('--f-mono');rx.textAlign='left';rx.fillText(li===0?'input':'L'+li+(L[li-1][1]>1?' s2':''),4,y+rowH*0.45);
+    centres[li].forEach((cx,j)=>{const x=70+cx*cw;const on=j>=span[li][0]&&j<=span[li][1];
+      rx.fillStyle=on?(li===rows-1?css('--vec-b'):css('--vec-a')):css('--soft');rx.fillRect(x,y,Math.max(cw-2,2),rowH*0.6)});
+  }
+  const rfReal=span[0][1]-span[0][0]+1,rfT=rfOf(L);
+  $('d58-layers').textContent='['+L.map(([k,s])=>'('+k+','+s+')').join(',')+']';
+  $('d58-rfv').textContent=rfT+(rfReal<rfT?' (مقصوص عند الطرف '+rfReal+')':'');
+  $('d58-rfp').textContent=(L.length*9)+' vs '+(rfT*rfT);
+  return true;
+}
+rc.addEventListener('click',e=>{const [mx,my]=AI.evPos(rc,e);const W=+rc.dataset.w;const j=Math.round(((mx-70)/rgeo.cw-rgeo.last[0])/((rgeo.last[1]-rgeo.last[0])||1));if(j>=0&&j<rgeo.last.length){sel=j;drawRF()}});
+$('d58-add1').addEventListener('click',()=>{if(L.length<6){L.push([3,1]);sel=null;drawRF()}});
+$('d58-add2').addEventListener('click',()=>{if(L.length<6&&sizes(24).slice(-1)[0]>2){L.push([3,2]);sel=null;drawRF()}});
+$('d58-rm').addEventListener('click',()=>{if(L.length>1){L.pop();sel=null;drawRF()}});
+drawRF();AI.onTheme(drawRF);
+
+/* ---------- quiz ---------- */
+AI.quiz($('d58-quiz'),[
+ ['صورة RGB مقاسها 224×224 دخلت على conv بـ kernel_size=3 وstride=1 وpadding=0. حجم الخرج إيه؟',['222×222','224×224','74×74','112×112'],0,'(224 − 3 + 0)/1 + 1 = 222. من غير padding كل 3×3 بتقص بيكسل من كل طرف.'],
+ ['Conv layer فيها in_channels=3 وout_channels=64 وkernel_size=3 ومعاها bias. كام parameter؟',['576','1,792','1,728','192'],1,'64·3·3·3 + 64 = 1,728 + 64 = 1,792. الـ +64 دول bias لكل output channel. قارنها بـ dense على نفس الدخل (~9.6 مليون).'],
+ ['ليه الـ CNNs الحديثة بتفضل stack من 3×3 بدل 5×5 أو 7×7 واحدة؟',['3×3 هو الحجم الوحيد اللي بيقبل padding','الـ kernels الكبيرة بتعمل overflow في registers الـ GPU','3×3 بس اللي ليها hardware acceleration','اتنين 3×3 بيغطوا نفس الـ 5×5 بـ parameters أقل (2·9 مقابل 25) ومعاهم non-linearity زيادة'],3,'نفس الـ receptive field بوزن أقل وnon-linearities أكتر = قدرة تعبير أكبر. VGG أثبتها، وResNet وConvNeXt ورثوها.'],
+ ['الـ im2col بيعمل إيه بالظبط؟',['بيلزق كل صور الـ batch في مصفوفة 2D واحدة','بيطلع كل نافذة بحجم الـ kernel من الدخل ويرصها أعمدة، فالـ convolution تبقى ضربة مصفوفة واحدة','بيحول البيكسلز من float32 لـ int8','بيضغط الصورة عشان تدخل الـ cache'],1,'كل عمود = receptive field مفرود، والـ kernel المفرود صف، فالـ conv كلها تبقى GEMM واحد. كل مكتبة conv حقيقية مبنية على نسخة من ده.'],
+ ['ركّبت ٤ convs 3×3 (كلها stride 1 ومن غير pooling). الـ receptive field للـ neuron في الآخر كام؟',['3×3، كل conv 3×3','5×5، العمق مش بيفرق بعد اتنين','9×9: كل conv بتزود 2 → 1 + 4·(3−1) = 9','15×15: كل conv بتضرب في 3'],2,'RF = 1 + L·(K − 1) = 1 + 4·2 = 9. ومع الـ strides بيكبر أسرع، عشان كده شبكة عميقة فيها downsampling بتغطي الصورة كلها.'],
+ ['(إضافة) عايز conv بـ K=5 وstride=1 تحافظ على حجم الصورة (same). الـ padding كام؟',['1','2','5','0'],1,'P = (K − 1)/2 = (5 − 1)/2 = 2. جرّبها في الآلة الحاسبة: H=32, K=5, P=2, S=1 → 32.'],
+ ['(إضافة) الـ ViT بيقطع الصورة patches بـ Conv2d(3, 768, kernel_size=16, stride=16). صورة 224×224 هتطلع كام patch؟',['196 (14×14)','224','256 (16×16)','50176'],0,'H_out = (224 − 16)/16 + 1 = 14، يعني 14×14 = 196 token. ولأن K = S النوافذ مش بتتداخل.']
+],5);
+
+/* ---------- checklist ---------- */
+AI.checklist(58,$('d58-check'));
+})();
+</script>

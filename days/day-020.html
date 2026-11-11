@@ -1,0 +1,781 @@
+<div class="day" id="d20-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 20 · The Fourier Transform</span>
+  <h1>اليوم ٢٠: أي إشارة هي مجموعة موجات sine، والـ Fourier بيقولك هي أنهي</h1>
+  <p class="lede">النهاردة هتاخد صوت أو أي سلسلة أرقام وتفكها لموجات بسيطة: كل موجة ليها <b>تردد</b> و<b>قوة</b> و<b>بداية</b>. هتبني الـ DFT بإيدك، وبعدين الـ FFT اللي بيعمل نفس الحساب أسرع بكتير، وهتشوف ليه الـ convolution في الـ CNN والـ positional encoding في الـ Transformer والـ spectrogram في Whisper كلهم نفس الفكرة.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Complex Numbers for AI</b></span>
+    <span>بعده: <b>Graph Theory for Machine Learning</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d20-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d20-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الأعداد المركبة؟</h2></div>
+  <p>النهاردة كله مبني على درس امبارح. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. يعني إيه <span class="ltr">e^(iθ)</span> هندسيًا؟</summary>
+    <p>نقطة على دايرة نصف قطرها ١، بزاوية θ. يعني <span class="ltr">cos θ + i·sin θ</span> (معادلة Euler). لو θ بتزيد مع الوقت، النقطة بتلف حوالين الدايرة. السهم اللي بيلف ده اسمه <b>phasor</b>، وهو الحاجة اللي هنستخدمها النهاردة في كل سطر.</p></details>
+  <details><summary>٢. الـ magnitude والـ phase بتوع عدد مركب <span class="ltr">a + bi</span>؟</summary>
+    <p>الطول <span class="ltr">√(a² + b²)</span> والزاوية <span class="ltr">atan2(b, a)</span>. النهاردة الطول هيقولنا «التردد ده قوي قد إيه» والزاوية هتقولنا «الموجة بتبدأ منين».</p></details>
+  <details><summary>٣. لما تضرب عددين مركبين، إيه اللي بيحصل للزوايا؟</summary>
+    <p>الزوايا بتتجمع والأطوال بتتضرب. عشان كده الضرب في <span class="ltr">e^(-iθ)</span> معناه «لف لورا بزاوية θ»، ودي بالظبط حركة الـ DFT.</p></details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>المشكلة: time domain ضد frequency domain</div>
+    <div><b>20 min</b>الـ DFT ومعنى كل X[k] + المعمل ٠١ و٠٢</div>
+    <div><b>10 min</b>الـ FFT: نفس النتيجة، أسرع</div>
+    <div><b>15 min</b>الـ convolution theorem، الـ windowing، الـ aliasing + المعمل ٠٣</div>
+    <div><b>25 min</b>اكتب الكود بنفسك وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d20-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: في حاجات مستخبية في الوقت</h2></div>
+  <p>تسجيل صوت هو سلسلة قراءات ضغط هوا على مدار الوقت. سعر سهم هو أرقام على مدار الأيام. صورة هي شبكة بيكسلز على مدار المكان. كل دول داتا في الـ <b>time domain</b> (أو space domain): بتشوف قيمة بتتغير مع index.</p>
+  <p>بس أسئلة كتير ماتتجاوبش وانت باصص على الوقت: الصوت ده نغمة واحدة ولا chord؟ السهم ده ليه دورة أسبوعية؟ الصورة دي فيها texture متكرر؟ دي كلها أسئلة عن <b>التردد</b>، والـ time domain مخبيها.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيل عصير مخلوط فيه فراولة ومانجة وموز. وانت بتشربه مش شايف المكونات. الـ Fourier transform زي آلة بترجع العصير لمكوناته وتقولك: ٥٠٪ مانجة، ٣٠٪ فراولة، ٢٠٪ موز. الإشارة هي العصير، والموجات هي الفاكهة.</div>
+  <p>الـ Fourier transform بيحول الداتا من الـ time domain للـ <b>frequency domain</b>. بيفك الإشارة لموجات sine بترددات مختلفة. كل موجة ليها <b>amplitude</b> (قوتها) و<b>phase</b> (بتبدأ منين). والتحويل بيديك الاتنين.</p>
+  <p>ده مهم في الـ ML لأن التفكير بالتردد في كل حتة: الـ CNN بتعمل convolution، ودي ضرب في الـ frequency domain. الـ positional encodings في الـ Transformer مبنية على ترددات. موديلات الصوت بتشتغل على spectrograms. وموديلات الـ time series بتدور على أنماط دورية.</p>
+</section>
+
+<!-- STATION 2: DFT -->
+<section id="d20-dft">
+  <div class="station-head"><span class="tag">02</span><h2>الـ DFT: نقارن الإشارة بكل تردد</h2></div>
+  <p>عندك <span class="ltr">N</span> عينة <span class="ltr">x[0] … x[N−1]</span>. الـ Discrete Fourier Transform بيطلّع <span class="ltr">N</span> معامل تردد:</p>
+  <div class="formula">X[k] = Σₙ x[n] · e^(−2πi·k·n/N)      k = 0, 1, …, N−1</div>
+  <p>كل <span class="ltr">X[k]</span> عدد مركب. طوله <span class="ltr">|X[k]|</span> متناسب مع قوة التردد <span class="ltr">k</span>، وزاويته هي الـ phase بتاعته.</p>
+  <div class="note"><strong>قاعدة القراءة:</strong> من غير normalization، موجة sine حقيقية قوتها <span class="ltr">A</span> وواقعة بالظبط على bin رقم <span class="ltr">k</span> بتدّي <span class="ltr">|X[k]| = A·N/2</span>. فعشان تقرا الـ amplitude اقسم على <span class="ltr">N/2</span>.</div>
+  <p><b>الفكرة الأساسية:</b> <span class="ltr">e^(−2πi·k·n/N)</span> ده phasor بيلف بتردد <span class="ltr">k</span>. الـ DFT بيحسب الـ <b>correlation</b> بين إشارتك وبين كل واحد من <span class="ltr">N</span> تردد متساويين المسافات. لو الإشارة فيها طاقة عند التردد <span class="ltr">k</span>، الـ correlation بيبقى كبير. لو مفيش، بيبقى قريب من الصفر. يعني الـ DFT هو dot product (فاكر يوم ١؟) بين الإشارة وكل موجة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: الف الإشارة حوالين دايرة</h3>
+      <p>الإشارة الزرقا فيها موجة بتردد ٣ (وتقدر تضيف موجة تانية). حرّك الـ slider بتاع <span class="ltr">k</span>: إحنا بنضرب كل عينة في phasor بيلف بسرعة <span class="ltr">k</span>، يعني بنلف الإشارة حوالين الدايرة.</p>
+      <p>النقطة البرتقالي هي «مركز الكتلة» (المتوسط = <span class="ltr">X[k]/N</span>). لما <span class="ltr">k</span> يساوي تردد موجودة في الإشارة، كل النقط بتتجمع في ناحية واحدة والمركز بيبعد عن الصفر. غير كده، النقط بتتوزع حوالين الدايرة وبتلغي بعض.</p>
+      <div class="note ai"><strong>لاحظ:</strong> عند <span class="ltr">k = 3</span> المركز بيبعد بالظبط <span class="ltr">A/2</span>، يعني <span class="ltr">|X[3]| = A·N/2</span>، وده نفس القاعدة اللي فوق.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d20-wind" width="520" height="300" aria-label="الإشارة ملفوفة حوالين دايرة"></canvas>
+      <canvas id="d20-windspec" width="520" height="120" aria-label="الطيف لحد التردد الحالي"></canvas>
+      <div class="mrow">
+        <label>k (تردد الاختبار) <span id="d20-kv">3</span><input type="range" id="d20-k" min="0" max="16" step="0.25" value="3"></label>
+        <label>موجة تانية تردد ٧ (amp) <span id="d20-a2v">0</span><input type="range" id="d20-a2" min="0" max="1" step="0.1" value="0"></label>
+      </div>
+      <div class="readout">
+        <div><small>|X[k]|</small><b id="d20-wm">0</b></div>
+        <div><small>|X[k]| / (N/2)</small><b id="d20-wa">0</b></div>
+        <div><small>N</small><b>64</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: coefficients -->
+<section id="d20-coef">
+  <div class="station-head"><span class="tag">03</span><h2>كل معامل معناه إيه؟</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المعامل</th><th>اسمه</th><th>معناه</th></tr>
+    <tr><td class="ltr">X[0]</td><td>DC component</td><td>مجموع كل العينات (<span class="ltr">e⁰ = 1</span>)، يعني متناسب مع المتوسط. ده الـ offset الثابت (تردد صفر).</td></tr>
+    <tr><td class="ltr">X[1] … X[N/2]</td><td>ترددات موجبة</td><td><span class="ltr">X[k]</span> = تردد <span class="ltr">k</span> دورة كل <span class="ltr">N</span> عينة. كل ما <span class="ltr">k</span> يكبر، الموجة أسرع.</td></tr>
+    <tr><td class="ltr">X[N/2]</td><td>Nyquist</td><td>أعلى تردد تقدر تمثله بـ <span class="ltr">N</span> عينة. فوقه بيحصل <b>aliasing</b>: ترددات عالية بتتنكر في شكل ترددات واطية.</td></tr>
+    <tr><td class="ltr">X[N/2+1] … X[N−1]</td><td>ترددات سالبة</td><td>للإشارات الحقيقية: <span class="ltr">X[N−k] = conj(X[k])</span>، يعني مراية للنص الأولاني. عشان كده المعلومة المفيدة كلها في أول <span class="ltr">N/2 + 1</span> معامل.</td></tr>
+  </table></div>
+
+  <h3>الـ Inverse DFT: نرجع زي ما كنا</h3>
+  <div class="formula">x[n] = (1/N) · Σₖ X[k] · e^(+2πi·k·n/N)</div>
+  <p>الفرق الوحيد عن الـ DFT: الإشارة في الأُس موجبة، وفي قسمة على <span class="ltr">N</span>. والرجوع ده <b>مثالي</b>: مفيش أي معلومة بتضيع. الـ DFT هو <b>change of basis</b>، نفس المعلومة بس بإحداثيات تانية (زي ما شفنا في درس المصفوفات: بنعبّر عن نفس المتجه بمحاور مختلفة، والمحاور هنا موجات).</p>
+
+  <h3>الـ Power spectrum والـ Phase spectrum</h3>
+  <div class="formula">P[k] = |X[k]|² = Re(X[k])² + Im(X[k])²        φ[k] = atan2(Im(X[k]), Re(X[k]))</div>
+  <p>الـ power spectrum بيوريك الطاقة عند كل تردد. الـ phase spectrum بيوريك كل تردد بيبدأ منين. في أغلب التحليل بيهمك الـ power وبتتجاهل الـ phase.</p>
+
+  <h3>دقة التردد (frequency resolution)</h3>
+  <p>لو بتاخد عينات بمعدل <span class="ltr">f_s</span> عينة في الثانية:</p>
+  <div class="formula">f_k = k · f_s / N        Δf = f_s / N        f_max = f_s / 2  (Nyquist)</div>
+  <p>عشان تفرّق بين ترددين قريبين محتاج عينات أكتر. وعشان تمسك ترددات عالية محتاج معدل sampling أعلى.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: اعمل إشارة وشوف طيفها</h3>
+      <p>عندك ٣ موجات. غيّر التردد والقوة بتاعة كل واحدة، وشوف فوق الإشارة في الوقت وتحت الـ magnitude spectrum (الـ bins من ٠ لـ N/2). <span class="ltr">N = 64</span> و<span class="ltr">f_s = 64 Hz</span>، يعني كل bin = ١ Hz.</p>
+      <p>جرب «بين bin والتاني»: موجة 7.5 Hz مش واقعة على bin، فالطاقة بتسيح على الجيران (ده الـ <b>spectral leakage</b>). بعدين غير الـ window لـ Hann أو Hamming وشوف التسييح بيقل.</p>
+      <p>وجرب «DC offset»: أي رقم ثابت بيتجمع في <span class="ltr">X[0]</span> لوحده.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d20-syn" width="520" height="170" aria-label="الإشارة في الوقت"></canvas>
+      <canvas id="d20-spec" width="520" height="190" aria-label="الطيف"></canvas>
+      <div class="mrow">
+        <label>f₁ (Hz) <span id="d20-f1v">3</span><input type="range" id="d20-f1" min="0" max="32" step="0.5" value="3"></label>
+        <label>A₁ <span id="d20-a1v">1</span><input type="range" id="d20-a1" min="0" max="1.5" step="0.1" value="1"></label>
+        <label>f₂ (Hz) <span id="d20-f2v">7</span><input type="range" id="d20-f2" min="0" max="32" step="0.5" value="7"></label>
+        <label>A₂ <span id="d20-a2bv">0.5</span><input type="range" id="d20-a2b" min="0" max="1.5" step="0.1" value="0.5"></label>
+        <label>f₃ (Hz) <span id="d20-f3v">15</span><input type="range" id="d20-f3" min="0" max="32" step="0.5" value="15"></label>
+        <label>A₃ <span id="d20-a3v">0.3</span><input type="range" id="d20-a3" min="0" max="1.5" step="0.1" value="0.3"></label>
+        <label>DC offset <span id="d20-dcv">0</span><input type="range" id="d20-dc" min="-1" max="1" step="0.1" value="0"></label>
+        <label>noise σ <span id="d20-nzv">0</span><input type="range" id="d20-nz" min="0" max="1" step="0.1" value="0"></label>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:14px">الـ window: <select id="d20-win"><option value="rect">Rectangular (من غير)</option><option value="hann">Hann</option><option value="hamm">Hamming</option></select></label>
+      <div class="btns">
+        <button type="button" data-d20p="pure">نغمة واحدة 5 Hz</button>
+        <button type="button" data-d20p="chord">3 + 7 + 15 Hz</button>
+        <button type="button" data-d20p="leak">بين bin والتاني (7.5 Hz)</button>
+        <button type="button" data-d20p="close">10 و 12 Hz</button>
+      </div>
+      <div class="readout">
+        <div><small>أعلى peak</small><b id="d20-pk">—</b></div>
+        <div><small>X[0] (DC)</small><b id="d20-x0">0</b></div>
+        <div><small>Σ|x|² (وقت)</small><b id="d20-et">0</b></div>
+        <div><small>(1/N)Σ|X|² (تردد)</small><b id="d20-ef">0</b></div>
+      </div>
+    </div>
+  </div>
+  <p>لاحظ آخر خانتين: الطاقة في الوقت = الطاقة في التردد دايمًا. ده <b>Parseval's theorem</b> اللي هنرجعله تحت.</p>
+</section>
+
+<!-- STATION 4: FFT -->
+<section id="d20-fft">
+  <div class="station-head"><span class="tag">04</span><h2>الـ FFT: نفس النتيجة، أسرع بمراحل</h2></div>
+  <p>الـ DFT بالتعريف <span class="ltr">O(N²)</span>: لكل واحد من <span class="ltr">N</span> معامل بتجمع على <span class="ltr">N</span> عينة. لو <span class="ltr">N</span> = مليون، ده <span class="ltr">10¹²</span> عملية. الـ <b>Fast Fourier Transform</b> بيحسب نفس النتيجة بالظبط في <span class="ltr">O(N log N)</span>: حوالي ٢٠ مليون عملية بدل تريليون. ده اللي خلّى تحليل الترددات عملي أصلًا.</p>
+  <p>أشهر خوارزمية هي <b>Cooley-Tukey</b>، وهي divide and conquer:</p>
+  <ol class="ex">
+    <li>قسّم الإشارة لعينات زوجية الـ index وعينات فردية.</li>
+    <li>احسب الـ DFT لكل نص recursively.</li>
+    <li>ادمج النصين باستخدام <b>twiddle factors</b> <span class="ltr">e^(−2πi·k/N)</span>.</li>
+  </ol>
+  <div class="formula">X[k] = E[k] + e^(−2πik/N)·O[k]<br>X[k+N/2] = E[k] − e^(−2πik/N)·O[k]      k = 0 … N/2−1</div>
+  <p>حيث <span class="ltr">E</span> = DFT العينات الزوجية و<span class="ltr">O</span> = DFT العينات الفردية. السر إن نفس الضربة <span class="ltr">twiddle·O[k]</span> بتنفع لخانتين مرة واحدة (مرة بـ + ومرة بـ −)، فكل مستوى من الـ recursion بياخد <span class="ltr">O(N)</span>، وفيه <span class="ltr">log₂N</span> مستوى. المجموع <span class="ltr">O(N log N)</span>.</p>
+  <div class="note"><strong>تشبيه:</strong> عايز ترتب ١٠٠٠ ورقة. بدل ما تقارن كل ورقة بكل الورق، بتقسمهم نصين، ترتب كل نص، وتدمج. نفس روح الـ merge sort.</div>
+  <p>مثال ٨ نقط: <span class="ltr">x[0..7]</span> → زوجي <span class="ltr">x[0,2,4,6]</span> وفردي <span class="ltr">x[1,3,5,7]</span> → FFT بـ ٤ نقط لكل واحد → دمج بالـ twiddle factors → <span class="ltr">X[0..7]</span>. الـ DFT هنا ٦٤ ضربة والـ FFT ٢٤.</p>
+  <p>الـ radix-2 FFT اللي هنبنيه أسرع حاجة لما الطول power of 2. لو أي جزء طلع طوله فردي، الكود بيرجع للـ <code>dft</code> العادي، عشان كده الناس بتعمل zero-padding لأقرب power of 2. مكتبات زي <code>numpy.fft</code> بتتعامل مع أي طول (mixed-radix)، بس أسرع لما الطول عوامله الأولية صغيرة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>شوف الفرق بعينك</h3>
+      <p>حرّك <span class="ltr">N</span> (power of 2). المستطيل الرمادي هو عدد عمليات الـ DFT، والأزرق هو الـ FFT، على نفس المقياس. عند الأحجام الكبيرة الأزرق بيختفي تقريبًا.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">N = <b class="mono" id="d20-nv">32</b><input type="range" id="d20-n" min="3" max="13" step="1" value="5"></label>
+      <canvas id="d20-cost" width="520" height="110" aria-label="مقارنة عدد العمليات"></canvas>
+      <div class="readout">
+        <div><small>DFT N²</small><b id="d20-cd">1,024</b></div>
+        <div><small>FFT N·log₂N</small><b id="d20-cf">160</b></div>
+        <div><small>تسريع</small><b id="d20-cs">6.4x</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5: convolution, windowing, properties -->
+<section id="d20-conv">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Convolution theorem والـ windowing والخواص</h2></div>
+  <h3>الـ Convolution theorem: أهم نتيجة النهاردة</h3>
+  <p><b>الـ convolution في الوقت = ضرب عنصر بعنصر في التردد.</b></p>
+  <div class="formula">x * h = IFFT( FFT(x) · FFT(h) )</div>
+  <ul class="ex">
+    <li>الـ convolution المباشر لإشارتين طولهم <span class="ltr">N</span> و<span class="ltr">M</span> = <span class="ltr">O(NM)</span>.</li>
+    <li>بالـ FFT = <span class="ltr">O(N log N)</span>: حوّل الاتنين، اضرب، ارجع.</li>
+    <li>للـ kernels الكبيرة، الـ FFT أسرع بكتير. ده بالظبط اللي بيحصل في convolution layers ليها receptive field كبير.</li>
+  </ul>
+  <div class="note"><strong>خلي بالك:</strong> الـ DFT بيحسب <b>circular convolution</b> (الإشارة بتلف من الآخر للأول). عشان تاخد <b>linear convolution</b> العادي، اعمل zero-pad للإشارتين لطول <span class="ltr">N + M − 1</span> الأول.</div>
+  <div class="note"><strong>تشبيه:</strong> الـ convolution زي إنك تمشّي فلتر (مثلًا متوسط ٣ أرقام) على الإشارة خانة خانة. في عالم الترددات، الفلتر ده مجرد «مكبر صوت» لكل تردد: بيضرب كل تردد في رقم. تمشية خانة خانة صعبة، الضرب سهل.</div>
+
+  <h3>الـ Windowing: علاج الـ spectral leakage</h3>
+  <p>الـ DFT بيفترض إن الإشارة دورية: بيعامل الـ <span class="ltr">N</span> عينة كأنهم دورة واحدة من إشارة بتتكرر للأبد. لو الإشارة مش بتبدأ وتخلص عند نفس القيمة، بيحصل «قطع» عند الحدود، والقطع ده بيظهر كترددات عالية مش موجودة. ده الـ <b>spectral leakage</b> (شفته في المعمل ٠٢ مع 7.5 Hz).</p>
+  <p>الحل: نضرب الإشارة في <b>window</b> بيخليها تقل لحد الصفر عند الطرفين قبل الـ DFT: <code>X = DFT(x * w)</code>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Window</th><th>الشكل</th><th>عرض الـ main lobe</th><th>الـ side lobes</th><th>امتى</th></tr>
+    <tr><td>Rectangular</td><td>مسطح (من غير window)</td><td>الأضيق</td><td>الأعلى (‎-13 dB)</td><td>لما الإشارة دورية بالظبط في N عينة</td></tr>
+    <tr><td>Hann</td><td>raised cosine</td><td>متوسط</td><td>واطي (‎-31 dB)</td><td>تحليل عام</td></tr>
+    <tr><td>Hamming</td><td>cosine معدّل</td><td>متوسط</td><td>أوطى (‎-42 dB)</td><td>الصوت والكلام</td></tr>
+    <tr><td>Blackman</td><td>triple cosine</td><td>عريض</td><td>واطي جدًا (‎-58 dB)</td><td>لما كبت الـ side lobes أهم حاجة</td></tr>
+  </table></div>
+  <div class="formula">Hann:  w[n] = 0.5·(1 − cos(2πn/(N−1)))<br>Hamming:  w[n] = 0.54 − 0.46·cos(2πn/(N−1))</div>
+  <p>الـ tradeoff: الـ window بيعرّض الـ peak الرئيسي شوية، بس بيكتم التسييح للبعيد.</p>
+
+  <h3>خواص الـ DFT</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الخاصية</th><th>في الوقت</th><th>في التردد</th></tr>
+    <tr><td>Linearity</td><td class="ltr">ax + by</td><td class="ltr">aX + bY</td></tr>
+    <tr><td>Time shift</td><td class="ltr">x[n − k]</td><td class="ltr">X[f]·e^(−2πifk/N)</td></tr>
+    <tr><td>Frequency shift</td><td class="ltr">x[n]·e^(2πif₀n/N)</td><td class="ltr">X[f − f₀]</td></tr>
+    <tr><td>Convolution</td><td class="ltr">x * h</td><td class="ltr">X · H</td></tr>
+    <tr><td>Multiplication</td><td class="ltr">x · h</td><td>circular convolution <span class="ltr">X * H</span> مقسومة على <span class="ltr">N</span></td></tr>
+    <tr><td>Parseval</td><td class="ltr">Σ|x[n]|²</td><td class="ltr">(1/N)·Σ|X[k]|²</td></tr>
+    <tr><td>Conjugate symmetry</td><td>x حقيقية</td><td class="ltr">X[k] = conj(X[N−k])</td></tr>
+  </table></div>
+  <p><b>Parseval</b> بيقول إن الطاقة الكلية واحدة في الدومينين: التحويل مش بيخلق ولا بيضيع طاقة. ولاحظ الـ time shift: لما تزق الإشارة في الوقت، الـ magnitude ما بيتغيرش، الـ phase بس اللي بيلف.</p>
+</section>
+
+<!-- STATION 6: aliasing, STFT, zero padding -->
+<section id="d20-alias">
+  <div class="station-head"><span class="tag">06</span><h2>الـ Aliasing والـ Spectrogram والـ zero-padding</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>الـ Aliasing</h3>
+      <p>لو الإشارة فيها ترددات فوق <span class="ltr">f_s/2</span>، الـ sampling بمعدل <span class="ltr">f_s</span> بيعمل نسخ مزيفة. مثال الدرس: موجة <b>90 Hz</b> لو أخدت منها عينات بـ <b>100 Hz</b>، العينات هتطلع مطابقة لموجة <b>10 Hz</b> (<span class="ltr">100 − 90 = 10</span>). مفيش أي رياضة ترجعلك الـ 90 Hz من العينات دي.</p>
+      <div class="note"><strong>تشبيه:</strong> عجلة عربية في فيديو بتبان بتلف لورا أو واقفة. الكاميرا بتاخد صور (عينات) أبطأ من لف العجلة، فعينك بتشوف تردد مزيف.</div>
+      <p>عشان كده الـ analog-to-digital converters فيها anti-aliasing filter بيشيل الترددات اللي فوق الـ Nyquist قبل الـ sampling. وفي الـ ML، الـ aliasing بيظهر لما تعمل downsampling للـ feature maps من غير low-pass filter، وفي architectures بتعالج ده بـ anti-aliased pooling.</p>
+      <p><b>جرب:</b> خلّي <span class="ltr">f_s = 100</span> والتردد الحقيقي <span class="ltr">90</span>. النقط (العينات) هتقع بالظبط على الموجة البرتقالي اللي ترددها 10.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d20-al" width="520" height="240" aria-label="موجة حقيقية وعيناتها والنسخة المزيفة"></canvas>
+      <div class="mrow">
+        <label>التردد الحقيقي (Hz) <span id="d20-tfv">90</span><input type="range" id="d20-tf" min="1" max="200" step="1" value="90"></label>
+        <label>f_s (Hz) <span id="d20-fsv">100</span><input type="range" id="d20-fs" min="10" max="400" step="5" value="100"></label>
+      </div>
+      <div class="readout">
+        <div><small>Nyquist f_s/2</small><b id="d20-ny">50</b></div>
+        <div><small>التردد الظاهر</small><b id="d20-ap">10</b></div>
+      </div>
+      <div class="verdict" id="d20-alv"></div>
+    </div>
+  </div>
+
+  <h3>الـ STFT والـ Spectrogram</h3>
+  <p>FFT واحد بيقولك إيه الترددات الموجودة في الإشارة كلها، بس مش بيقولك <b>امتى</b>. موجة chirp (ترددها بيزيد مع الوقت) وchord (كل الترددات مع بعض) ممكن يطلعلهم نفس الـ magnitude spectrum.</p>
+  <p>الـ <b>Short-Time Fourier Transform</b> بيحل ده: بيعمل FFT على شبابيك متداخلة من الإشارة. النتيجة <b>spectrogram</b>: صورة 2D، محور للوقت ومحور للتردد، والشدة = الطاقة عند التردد ده في الوقت ده.</p>
+  <ol class="ex">
+    <li>اختار حجم الـ window (مثلًا 1024 عينة).</li>
+    <li>اختار الـ hop (مثلًا 256 عينة = تداخل 75٪).</li>
+    <li>لكل مكان للـ window: اقطع الجزء، اضربه في Hann أو Hamming، اعمل FFT، وخزّن الـ magnitude spectrum كعمود في الـ spectrogram.</li>
+  </ol>
+  <p>الـ spectrograms هي المدخل القياسي لموديلات الصوت. موديلات التعرف على الكلام (Whisper وDeepSpeech) بتشتغل على <b>mel-spectrograms</b>: spectrogram بس الترددات متحولة لـ mel scale اللي أقرب لإحساس الودن بالـ pitch.</p>
+
+  <h3>الـ Zero-padding مش بيزوّد الدقة</h3>
+  <p>غلطة مشهورة: إنك تفتكر إن zero-padding قبل الـ FFT بيحسّن الـ frequency resolution. لأ. هو بيعمل interpolation بين الـ bins الموجودة، فالطيف بيبان أنعم، بس مش بيكشف تفاصيل مش موجودة في العينات الأصلية.</p>
+  <div class="formula">T = N / f_s        لازم T ≥ 1 / Δf عشان تفرّق ترددين بينهم Δf</div>
+  <p>الدقة الحقيقية بتعتمد على <b>مدة الملاحظة</b> بس. مفيش zero-padding يغيّر الحد ده.</p>
+</section>
+
+<!-- STATION 7: PE + CNN -->
+<section id="d20-ml">
+  <div class="station-head"><span class="tag">07</span><h2>فين ده في الـ Transformers والـ CNNs</h2></div>
+  <h3>الـ Positional encodings</h3>
+  <p>الـ Transformer الأصلي بيستخدم sinusoidal positional encodings:</p>
+  <div class="formula">PE(pos, 2i) = sin(pos / 10000^(2i/d_model))<br>PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))</div>
+  <p>كل زوج أبعاد <span class="ltr">(2i, 2i+1)</span> بيتذبذب بتردد مختلف، والترددات متباعدة هندسيًا: من عالي (أبعاد 0,1) لواطي (آخر الأبعاد). كده كل position ليه بصمة فريدة على كل الـ frequency bands، زي ما معاملات الـ Fourier بتحدد الإشارة.</p>
+  <ul class="ex">
+    <li><b>Uniqueness:</b> مفيش موقعين ليهم نفس الـ encoding.</li>
+    <li><b>Bounded:</b> sin وcos دايمًا بين ‎-1 و1.</li>
+    <li><b>Relative position:</b> encoding الموقع <span class="ltr">p+k</span> ممكن يتكتب كدالة خطية من encoding الموقع <span class="ltr">p</span>، فالموديل يقدر يتعلم يعمل attention على المسافات النسبية.</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> زي عقارب الساعة: عقرب الثواني سريع (دقة عالية)، الدقايق أبطأ، الساعات أبطأ كمان. لو بصيت على التلاتة مع بعض تعرف الوقت بالظبط. كل زوج أبعاد عقرب.</div>
+  <h3>الـ CNNs</h3>
+  <p>الـ convolution layer بتطبّق فلتر متعلّم بتمشّيه على الإشارة أو الصورة. بالـ convolution theorem ده يساوي: FFT للمدخل، FFT للـ kernel، اضرب، IFFT.</p>
+  <p>التطبيقات العادية بتستخدم direct convolution لأنه أسرع للـ kernels الصغيرة 3×3. بس للـ kernels الكبيرة أو الـ global convolution، الـ FFT أسرع بكتير. وفي architectures زي <b>FNet</b> شالت الـ attention خالص وحطت مكانه FFT، ووصلت لدقة منافسة بتعقيد <span class="ltr">O(N log N)</span> بدل <span class="ltr">O(N²)</span>.</p>
+</section>
+
+<!-- CODE -->
+<section id="d20-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو (اللي عملتله clone في يوم ١)، شغّل ملف الدرس كله الأول عشان تشوف الصورة الكاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/01-math-foundations/20-fourier-transform/code/fourier.py</pre></div>
+  <p class="note">لو شغلته من root الريبو هتلاقي في الآخر سطر <code>Could not write prompt output (run from the lesson directory)</code>، ده عادي. لو عايز يكتب ملف <code>outputs/prompt-spectral-analyzer.md</code>، ادخل فولدر الدرس وشغّل <code>python3 code/fourier.py</code>.</p>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_fourier.py</code> واكتب كل خطوة بنفسك. الكود بتاع الدرس pure Python من غير NumPy عشان تشوف كل حاجة.</p>
+
+  <h3>خطوة ١: كلاس Complex و Euler</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+class Complex:
+    def __init__(self, real=0.0, imag=0.0):
+        self.real = float(real)
+        self.imag = float(imag)
+
+    def __add__(self, other):
+        if isinstance(other, (int, float)):
+            return Complex(self.real + other, self.imag)
+        return Complex(self.real + other.real, self.imag + other.imag)
+
+    def __sub__(self, other):
+        if isinstance(other, (int, float)):
+            return Complex(self.real - other, self.imag)
+        return Complex(self.real - other.real, self.imag - other.imag)
+
+    def __mul__(self, other):                <span class="c"># (a+bi)(c+di)</span>
+        if isinstance(other, (int, float)):
+            return Complex(self.real * other, self.imag * other)
+        r = self.real * other.real - self.imag * other.imag
+        i = self.real * other.imag + self.imag * other.real
+        return Complex(r, i)
+
+    def magnitude(self):                     <span class="c"># الطول = قوة التردد</span>
+        return math.sqrt(self.real ** 2 + self.imag ** 2)
+
+    def phase(self):                         <span class="c"># الزاوية = بداية الموجة</span>
+        return math.atan2(self.imag, self.real)
+
+    def conjugate(self):
+        return Complex(self.real, -self.imag)
+
+def euler(theta):                            <span class="c"># e^(iθ) = cos θ + i sin θ</span>
+    return Complex(math.cos(theta), math.sin(theta))</pre></div>
+
+  <h3>خطوة ٢: الـ DFT والـ IDFT من التعريف</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def dft(x):
+    N = len(x)
+    result = []
+    for k in range(N):                       <span class="c"># لكل تردد</span>
+        total = Complex(0, 0)
+        for n in range(N):                   <span class="c"># لكل عينة</span>
+            angle = -2 * math.pi * k * n / N <span class="c"># phasor بيلف لورا</span>
+            xn = x[n] if isinstance(x[n], Complex) else Complex(x[n])
+            total = total + xn * euler(angle)
+        result.append(total)
+    return result
+
+def idft(X):
+    N = len(X)
+    result = []
+    for n in range(N):
+        total = Complex(0, 0)
+        for k in range(N):
+            angle = 2 * math.pi * k * n / N  <span class="c"># الإشارة موجبة</span>
+            xk = X[k] if isinstance(X[k], Complex) else Complex(X[k])
+            total = total + xk * euler(angle)
+        result.append(Complex(total.real / N, total.imag / N))  <span class="c"># قسمة على N</span>
+    return result</pre></div>
+
+  <h3>خطوة ٣: الـ FFT (Cooley-Tukey) والـ IFFT</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def fft(x):
+    N = len(x)
+    if N &lt;= 1:
+        return [x[0] if isinstance(x[0], Complex) else Complex(x[0])]
+    if N % 2 != 0:                           <span class="c"># طول فردي: ارجع للـ DFT العادي</span>
+        return dft(x)
+
+    even = fft([x[i] for i in range(0, N, 2)])   <span class="c"># العينات الزوجية</span>
+    odd = fft([x[i] for i in range(1, N, 2)])    <span class="c"># العينات الفردية</span>
+
+    result = [Complex(0)] * N
+    for k in range(N // 2):
+        twiddle = euler(-2 * math.pi * k / N)    <span class="c"># twiddle factor</span>
+        t = twiddle * odd[k]
+        result[k] = even[k] + t                  <span class="c"># نفس t لخانتين</span>
+        result[k + N // 2] = even[k] - t
+    return result
+
+def ifft(X):
+    <span class="c"># حيلة: conj ثم FFT ثم conj وقسمة على N</span>
+    N = len(X)
+    conj_X = [xk.conjugate() if isinstance(xk, Complex) else Complex(xk) for xk in X]
+    result = fft(conj_X)
+    return [Complex(r.real / N, -r.imag / N) for r in result]</pre></div>
+
+  <h3>خطوة ٤: أدوات التحليل والـ windows</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def power_spectrum(X):
+    return [xk.real ** 2 + xk.imag ** 2 for xk in X]
+
+def magnitude_spectrum(X):
+    return [xk.magnitude() for xk in X]
+
+def spectral_analysis(signal, sample_rate):
+    N = len(signal)
+    X = fft(signal)
+    magnitudes = magnitude_spectrum(X)
+    freqs = [k * sample_rate / N for k in range(N)]   <span class="c"># f_k = k·fs/N</span>
+    return freqs[:N // 2 + 1], magnitudes[:N // 2 + 1] <span class="c"># النص المفيد بس</span>
+
+def hann_window(N):
+    return [0.5 * (1 - math.cos(2 * math.pi * n / (N - 1))) for n in range(N)]
+
+def hamming_window(N):
+    return [0.54 - 0.46 * math.cos(2 * math.pi * n / (N - 1)) for n in range(N)]
+
+def apply_window(signal, window):
+    return [s * w for s, w in zip(signal, window)]
+
+def generate_signal(frequencies, amplitudes, N, sample_rate):
+    signal = [0.0] * N
+    for freq, amp in zip(frequencies, amplitudes):
+        for n in range(N):
+            t = n / sample_rate
+            signal[n] += amp * math.sin(2 * math.pi * freq * t)
+    return signal</pre></div>
+
+  <h3>خطوة ٥: الـ convolution مباشر وبالـ FFT</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def convolve_direct(x, h):                  <span class="c"># O(N·M)</span>
+    N, M = len(x), len(h)
+    out_len = N + M - 1
+    result = [0.0] * out_len
+    for n in range(out_len):
+        total = 0.0
+        for k in range(M):
+            if 0 &lt;= n - k &lt; N:
+                total += x[n - k] * h[k]
+        result[n] = total
+    return result
+
+def convolve_fft(x, h):
+    if len(x) == 0 or len(h) == 0:
+        return []
+    N = len(x) + len(h) - 1                  <span class="c"># طول الـ linear convolution</span>
+    padded_N = 1
+    while padded_N &lt; N:                      <span class="c"># أقرب power of 2</span>
+        padded_N *= 2
+    x_padded = list(x) + [0.0] * (padded_N - len(x))
+    h_padded = list(h) + [0.0] * (padded_N - len(h))
+    X = fft(x_padded)
+    H = fft(h_padded)
+    Y = [xk * hk for xk, hk in zip(X, H)]    <span class="c"># ضرب عنصر بعنصر</span>
+    y = ifft(Y)
+    return [y[n].real for n in range(N)]
+
+print(convolve_direct([1., 2, 3, 4, 5], [1., 1, 1]))
+print([round(v, 6) for v in convolve_fft([1., 2, 3, 4, 5], [1., 1, 1])])</pre></div>
+  <details><summary>الناتج المتوقع (حساب مظبوط)</summary><pre class="term">[1.0, 3.0, 6.0, 9.0, 12.0, 9.0, 5.0]
+[1.0, 3.0, 6.0, 9.0, 12.0, 9.0, 5.0]</pre><p>ممكن يطلعلك في التانية <span class="ltr">-0.0</span> أو فرق صغير جدًا لو ما عملتش round، ده float error عادي.</p></details>
+
+  <h3>خطوة ٦: الـ positional encoding</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def positional_encoding(pos, d_model):
+    pe = [0.0] * d_model
+    for i in range(d_model // 2):
+        freq = 1.0 / (10000 ** (2 * i / d_model))  <span class="c"># ترددات متباعدة هندسيًا</span>
+        angle = pos * freq
+        pe[2 * i] = math.sin(angle)
+        pe[2 * i + 1] = math.cos(angle)
+    return pe
+
+<span class="c"># الـ dot product بيعتمد على المسافة بس</span>
+for p1, p2 in [(0, 1), (1, 2), (0, 4), (3, 7)]:
+    a = positional_encoding(p1, 16); b = positional_encoding(p2, 16)
+    print(p1, p2, round(sum(u * v for u, v in zip(a, b)), 4))</pre></div>
+  <details><summary>الناتج المتوقع (حساب مظبوط)</summary><pre class="term">0 1 7.4852
+1 2 7.4852
+0 4 5.5597
+3 7 5.5597</pre><p>ليه؟ لكل زوج أبعاد: <span class="ltr">sin(a)sin(b) + cos(a)cos(b) = cos(a − b)</span>، يعني الناتج مجموع <span class="ltr">cos(المسافة × التردد)</span>. الموقع المطلق اختفى. لما المسافة صفر الناتج = <span class="ltr">d_model/2 = 8</span>.</p></details>
+
+  <h3>اللي هتشوفه لما تشغّل الملف كله</h3>
+  <p>الملف بيشغّل ٩ demos. مش هكتبلك كل الأرقام، بس دي اللي لازم تطلع بالظبط لأنها رياضة مظبوطة، والباقي قارنه بالوصف:</p>
+  <ul class="ex">
+    <li><b>Pure sine:</b> إشارة 5 Hz، 32 عينة. لازم يطلع peak واحد بس عند <span class="ltr">k=5</span> وقيمته <span class="ltr">16</span> (= <span class="ltr">1 × 32/2</span>).</li>
+    <li><b>Summed sines:</b> 3 و7 و15 Hz بقوة 1 و0.5 و0.3، و64 عينة. عمود «Expected amp * N/2» هيطلع <span class="ltr">32.0</span> و<span class="ltr">16.0</span> و<span class="ltr">9.6</span>، والـ <span class="ltr">|X[k]|</span> المحسوب لازم يطابقهم.</li>
+    <li><b>FFT vs DFT:</b> فرق صغير جدًا (رقم بـ e سالب كبير، مجرد float error) و<code>Match: True</code>. وبعدين <code>DFT complexity: O(N^2) = 1024</code> و<code>FFT complexity: O(N*log2(N)) = 160</code> و<code>Speedup: 6.4x</code>.</li>
+    <li><b>Reconstruction:</b> العمودين الأصلي والمرجّع متطابقين و<code>Perfect reconstruction: True</code>.</li>
+    <li><b>Convolution theorem:</b> نفس <span class="ltr">[1, 3, 6, 9, 12, 9, 5]</span> بالطريقتين و<code>Match: True</code>.</li>
+    <li><b>Windowing:</b> عند 7.5 Hz العمود «No window» هيبقى فيه قيم كبيرة عند 7 و8 وتسييح واضح على بقية الـ bins، وعمودين Hann وHamming قيمهم البعيدة أصغر بكتير.</li>
+    <li><b>Parseval:</b> الرقمين متساويين و<code>Energy conserved: True</code>.</li>
+    <li><b>Positional encoding:</b> أول تردد <span class="ltr">1.00000000</span> والـ wavelength <span class="ltr">6.3</span>، وآخر واحد (dim 14,15) wavelength <span class="ltr">19869.2</span>. والـ dot products: <span class="ltr">(0,0)=8.0000</span>، وكل زوج بينهم مسافة 1 = <span class="ltr">7.4852</span>، مسافة 2 = <span class="ltr">6.3683</span>، مسافة 4 = <span class="ltr">5.5597</span>.</li>
+    <li><b>Complexity scaling:</b> جدول من <span class="ltr">N=8</span> (‏<span class="ltr">2.7x</span>) لحد <span class="ltr">N=8192</span> (‏<span class="ltr">630.2x</span>).</li>
+  </ul>
+  <p>قارن باللي طلعلك. لو رقم من دول مختلف، يبقى في غلطة في الكود اللي كتبته.</p>
+
+  <h3>خطوة ٧: نفس الكلام بـ NumPy و SciPy (اللي هتستخدمه في الشغل)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+from scipy.signal import windows, fftconvolve, stft
+
+signal = np.sin(2 * np.pi * 5 * np.arange(256) / 256)
+spectrum = np.fft.fft(signal)
+freqs = np.fft.fftfreq(256, d=1/256)
+power = np.abs(spectrum) ** 2
+print(freqs[np.argmax(power[:128])])                <span class="c"># 5.0</span>
+
+windowed = signal * windows.hann(256)               <span class="c"># window قبل الـ FFT</span>
+spectrum_w = np.fft.fft(windowed)
+
+kernel = np.ones(5) / 5
+result = fftconvolve(signal, kernel, mode='full')   <span class="c"># convolution بالـ FFT</span>
+print(result.shape)                                 <span class="c"># (260,) = 256 + 5 - 1</span>
+
+f, t, Zxx = stft(signal, fs=256, nperseg=64)
+spectrogram = np.abs(Zxx) ** 2                      <span class="c"># (n_frequencies, n_time_frames)</span>
+print(spectrogram.shape[0])                         <span class="c"># 33 = 64/2 + 1</span></pre></div>
+  <p>مصفوفة الـ spectrogram شكلها <span class="ltr">(n_frequencies, n_time_frames)</span>: كل عمود هو power spectrum لشباك زمني واحد. وده بالظبط اللي موديلات الصوت بتاكله.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d20-ex">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <p>اعمل ٣ على الأقل النهاردة. التمرين ٣ و٥ أهم اتنين.</p>
+  <ol class="ex">
+    <li><b>اكتشف التردد:</b> إشارة sine واحدة بتردد مجهول (بين 1 و50 Hz)، sampling بـ 128 Hz لمدة ثانية. استخدم الـ DFT تلاقي التردد. بعدين ضيف Gaussian noise بـ σ = 0.5 وكرر. الـ noise بيأثر إزاي على الطيف؟
+      <details><summary>تلميح</summary>١٢٨ عينة في ثانية = كل bin هو <span class="ltr">k</span> Hz بالظبط. لو التردد رقم صحيح، index أكبر قيمة في الـ bins من 1 لـ 63 هو التردد. اختار عدد صحيح من الـ Hz. لو التردد بين bin والتاني، بيسيح على الجيران والـ peak بيديك أقرب bin بس. استخدم <code>generate_signal</code> و<code>magnitude_spectrum</code>. بعد الـ noise: الـ peak هيفضل في نفس الـ bin، بس باقي الـ bins هتعلى (أرضية noise).</details></li>
+    <li><b>FFT ضد DFT:</b> إشارة عشوائية طولها 64. احسب الاتنين واتأكد إن كل المعاملات متطابقة لحد <span class="ltr">1e-10</span>. بعدين وقّت الاتنين على أطوال 256 و512 و1024 و2048، وارسم نسبة وقت الـ DFT لوقت الـ FFT.
+      <details><summary>تلميح</summary>استخدم أطوال power of 2 لأن <code>fft</code> بيقسم نصين. افحص <code>max(abs(a - b))</code> على كل المعاملات (الـ real والـ imag). النسبة المفروض تكبر تقريبًا زي <span class="ltr">N / log₂N</span>. استخدم <code>time.perf_counter()</code>.</details></li>
+    <li><b>إثبات الـ convolution theorem بمثال:</b> <span class="ltr">x = [1,2,3,4,0,0,0,0]</span> و<span class="ltr">h = [1,1,1,0,0,0,0,0]</span>. احسب الـ circular convolution مباشرة (nested loop)، وبعدين بالـ FFT (حوّل، اضرب، ارجع). اتأكد إنهم زي بعض. بعدين اعمل linear convolution بالـ zero-padding المناسب.
+      <details><summary>تلميح</summary>الـ circular: <span class="ltr">y[n] = Σₖ h[k]·x[(n−k) mod 8]</span>. احسب بإيدك <span class="ltr">n = 0, 1, 2</span> وقارن بأول ٣ قيم من <code>convolve_direct</code> و<code>convolve_fft</code>. الـ linear طوله <span class="ltr">4 + 3 − 1 = 6</span>، فاسأل نفسك الأول: هل الطول 8 كفاية أصلًا؟</details>
+      <details><summary>الإجابة</summary>الـ circular بالطول 8 = <span class="ltr">[1, 3, 6, 9, 7, 4, 0, 0]</span>. أول ٦ قيم هي نفسها الـ linear convolution للجزء غير الصفري <span class="ltr">[1,2,3,4] * [1,1,1] = [1, 3, 6, 9, 7, 4]</span>، لأن 8 ≥ 6 فمفيش أي حاجة لفّت. يعني الأصفار اللي في الإشارات كانت zero-padding كفاية من الأول. لو قصّرت لطول 4 هتلاقي الـ wraparound بيبوظ النتيجة.</details></li>
+    <li><b>تأثير الـ windows:</b> مجموع موجتين 10 Hz و12 Hz (قريبين جدًا)، sampling بـ 128 Hz لمدة ثانية. احسب الـ power spectrum من غير window، وبـ Hann، وبـ Hamming. أنهي واحد بيخليك تفرّق بين الـ peaks أسهل؟ وليه؟
+      <details><summary>تلميح</summary>استخدم <code>hann_window</code> و<code>hamming_window</code> و<code>apply_window</code> و<code>power_spectrum</code>، وعدّ الـ peaks المنفصلة بين 9 و13 Hz. الـ 10 و12 Hz بيكملوا دورات كاملة في ثانية، فممكن «من غير window» يطلع الأحسن (الـ main lobe الأضيق ومفيش leakage). كرر بـ 10.5 و12.5 Hz عشان تشوف الـ leakage اللي الـ windows بتقلله. جربها الأول في المعمل ٠٢ بزرار «10 و 12 Hz».</details></li>
+    <li><b>تحليل الـ positional encoding:</b> اعمل encodings بـ <span class="ltr">d_model = 128</span> و<span class="ltr">max_pos = 512</span>. لكل زوج مواقع احسب الـ dot product. وضّح إنه بيعتمد على <span class="ltr">|p₁ − p₂|</span> بس. بيحصل إيه للـ dot product لما المسافة تكبر؟
+      <details><summary>تلميح</summary>احسب <code>positional_encoding(pos, 128)</code>. قارن (0, 10) بـ (100, 110): لازم يتطابقوا لحد <span class="ltr">1e-10</span> تقريبًا. بعدين ارسم الـ dot product ضد المسافة لـ <span class="ltr">p₁</span> ثابت.</details>
+      <details><summary>الفكرة</summary>زي ما شفت فوق، الناتج = <span class="ltr">Σᵢ cos(d · ωᵢ)</span> حيث <span class="ltr">d</span> المسافة. عند <span class="ltr">d = 0</span> = 64. ومع زيادة المسافة بيقل بشكل عام بس مش بخط مستقيم: فيه تموجات لأنه مجموع cosines. ارسمه وشوف بنفسك.</details></li>
+    <li><b>إضافة مني · كاشف الدورية في metrics حقيقية:</b> انت AI engineer وعندك عدد الـ requests على الـ LLM API بتاعك كل ساعة لمدة ٤ أسابيع (672 رقم). عايز تعرف: في دورة يومية؟ أسبوعية؟ اعمل داتا صناعية: <span class="ltr">1000 + 300·sin(2π·t/24) + 150·sin(2π·t/168) + noise</span>، شيل المتوسط، اعمل FFT، وطلّع أعلى ٢ peaks وحوّلهم لـ «فترة بالساعات».
+      <details><summary>تلميح</summary><span class="ltr">f_s = 1</span> عينة في الساعة و<span class="ltr">N = 672</span>، فالـ bin <span class="ltr">k</span> = <span class="ltr">k/672</span> دورة في الساعة، والفترة = <span class="ltr">672/k</span> ساعة. الدورة اليومية هتطلع عند <span class="ltr">k = 28</span> (672/24) والأسبوعية عند <span class="ltr">k = 4</span> (672/168). شيل المتوسط الأول عشان <span class="ltr">X[0]</span> الضخم ما يغطيش على الترددات الواطية. ده نفس اللي بتعمله لما تخطط الـ autoscaling أو تختار features للـ time series forecasting.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d20-extra">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>الحدس في جملة واحدة</h3>
+  <p>الـ DFT هو ضرب مصفوفة في متجه. المصفوفة <span class="ltr">N×N</span> صفوفها موجات (<span class="ltr">F[k][n] = e^(−2πikn/N)</span>)، والصفوف دي متعامدة على بعض. يعني كل اللي بتعمله إنك بتعمل projection للإشارة على محاور متعامدة، بالظبط زي يوم ١ (Gram-Schmidt والـ projection). والـ FFT مش رياضة جديدة، هو طريقة ذكية تضرب المصفوفة دي من غير ما تبنيها.</p>
+
+  <h3>أخطاء مشهورة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الغلطة</th><th>الصح</th></tr>
+    <tr><td>تقرا الطيف كله لحد <span class="ltr">N−1</span> وتفتكر في ترددات عالية</td><td>للإشارات الحقيقية النص التاني مراية. اقرا لحد <span class="ltr">N/2</span> بس (أو <code>np.fft.rfft</code>).</td></tr>
+    <tr><td>تنسى تحوّل الـ bin لـ Hz</td><td><span class="ltr">f = k · f_s / N</span>، أو <code>np.fft.fftfreq(N, d=1/fs)</code>.</td></tr>
+    <tr><td>تقرا <span class="ltr">|X[k]|</span> كأنه الـ amplitude</td><td>اقسم على <span class="ltr">N/2</span> (للـ bins اللي مش 0 ولا N/2).</td></tr>
+    <tr><td><span class="ltr">X[0]</span> ضخم ومغطي على كل حاجة</td><td>اطرح المتوسط قبل الـ FFT.</td></tr>
+    <tr><td>تضرب FFTs وتنسى الـ padding</td><td>من غير padding لـ <span class="ltr">N+M−1</span> هتاخد circular convolution والأطراف هتلف على بعض.</td></tr>
+    <tr><td>تعمل zero-padding عشان «تزوّد الدقة»</td><td>الدقة الحقيقية = <span class="ltr">1/T</span>. الـ padding بيجمّل الرسمة بس.</td></tr>
+  </table></div>
+
+  <h3>فين هتقابله في الـ LLMs والـ Agents</h3>
+  <ul class="ex">
+    <li><b>الـ positional encodings:</b> الـ sinusoidal في الـ Transformer الأصلي هي اللي شفناها. والـ RoPE (اللي هتقابلها في phase الـ Transformers) بتستخدم نفس جدول الترددات <span class="ltr">10000^(−2i/d)</span> بس بتلف أزواج الأبعاد كأعداد مركبة بدل ما تجمعها. يعني درس الأعداد المركبة + درس النهاردة = RoPE.</li>
+    <li><b>Voice agents:</b> أي agent بيسمع (Whisper وأمثاله) أول خطوة فيه mel-spectrogram، يعني STFT.</li>
+    <li><b>Long-context models:</b> FNet استبدلت الـ attention بـ FFT. والفكرة العامة إن خلط التوكنز بالـ FFT بيكلف <span class="ltr">O(N log N)</span> بدل <span class="ltr">O(N²)</span>.</li>
+    <li><b>Monitoring:</b> زي التمرين ٦، الـ FFT أداة سريعة تكشف بيها دورات الـ traffic أو الـ latency في الـ production.</li>
+  </ul>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: بصمة الـ positional encoding</h3>
+      <p>كل صف في الخريطة دي موقع (0 لـ 63)، وكل عمود بُعد (<span class="ltr">d_model = 64</span>). الأبعاد الأولى (شمال) بتتغير بسرعة، والأخيرة بالراحة: نفس فكرة عقارب الساعة. اختار موقع بالـ slider وشوف تحت الـ dot product بتاعه مع كل المواقع التانية: القمة دايمًا عند نفسه، والشكل بيتنقل مع الموقع من غير ما يتغير، يعني بيعتمد على المسافة بس.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d20-pe" width="520" height="220" aria-label="خريطة الـ positional encoding"></canvas>
+      <canvas id="d20-pedot" width="520" height="120" aria-label="الـ dot product مع باقي المواقع"></canvas>
+      <label style="display:grid;gap:2px">الموقع p = <b class="mono" id="d20-ppv">20</b><input type="range" id="d20-pp" min="0" max="63" step="1" value="20"></label>
+      <div class="readout">
+        <div><small>PE(p)·PE(p)</small><b id="d20-pself">32</b></div>
+        <div><small>PE(p)·PE(p+1)</small><b id="d20-pnext">—</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- QUIZ -->
+<section id="d20-quiz">
+  <div class="station-head"><span class="tag">11</span><h2>كويز</h2></div>
+  <div class="quiz" id="d20-quizbox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d20-done">
+  <div class="station-head"><span class="tag">12</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d20-check">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح الـ DFT كـ correlation بين الإشارة وموجات بتلف</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> أعرف معنى X[0] والـ Nyquist وليه بقرا نص الطيف بس</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> كتبت dft و fft و ifft بإيدي واتأكدت إنهم متطابقين</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> فاهم الـ convolution theorem والفرق بين circular و linear</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> شفت الـ leakage والـ windowing والـ aliasing في المعامل</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> فاهم ليه الـ positional encoding dot product بيعتمد على المسافة بس</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c8"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>DFT / FFT</td><td>تحليل الصوت، الـ time series، FNet</td></tr>
+    <tr><td>Convolution theorem</td><td>الـ CNNs بـ kernels كبيرة، <code>fftconvolve</code></td></tr>
+    <tr><td>Windowing + STFT</td><td>الـ spectrograms والـ mel-spectrograms في Whisper وموديلات الكلام</td></tr>
+    <tr><td>Nyquist / aliasing</td><td>الـ sampling في الصوت، anti-aliased pooling في الـ CNNs</td></tr>
+    <tr><td>Sinusoidal frequencies</td><td>الـ positional encodings في الـ Transformer، وجدول ترددات RoPE</td></tr>
+    <tr><td>Parseval</td><td>حساب الطاقة في أي من الدومينين، sanity check للكود</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Graph Theory for Machine Learning. هنسيب الموجات ونروح للـ graphs: nodes وedges وإزاي الـ GNNs بتشتغل. وهنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F20-fourier-transform" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/20-fourier-transform</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, fmt=A.fmt;
+const $=id=>document.getElementById(id);
+const root=$('d20-root');
+
+// roadmap
+const rm=$('d20-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===20)s.className='now';rm.appendChild(s)}
+
+// ---------- math ----------
+function dft(x){const N=x.length,re=new Array(N).fill(0),im=new Array(N).fill(0);
+  for(let k=0;k<N;k++){let r=0,i=0;for(let n=0;n<N;n++){const a=-2*Math.PI*k*n/N;r+=x[n]*Math.cos(a);i+=x[n]*Math.sin(a)}re[k]=r;im[k]=i}return [re,im]}
+function gauss(){let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+// ---------- Lab 01: winding ----------
+const wc=$('d20-wind'),wx=A.setupCanvas(wc),WW=+wc.dataset.w,WH=+wc.dataset.h;
+const sc=$('d20-windspec'),sx=A.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+const WN=64;
+function windSig(){const a2=+$('d20-a2').value;const s=[];for(let n=0;n<WN;n++)s.push(Math.sin(2*Math.PI*3*n/WN)+a2*Math.sin(2*Math.PI*7*n/WN));return s}
+function xAt(s,k){let r=0,i=0;for(let n=0;n<WN;n++){const a=-2*Math.PI*k*n/WN;r+=s[n]*Math.cos(a);i+=s[n]*Math.sin(a)}return [r,i]}
+function drawWind(){
+  const k=+$('d20-k').value,a2=+$('d20-a2').value,s=windSig();
+  $('d20-kv').textContent=k;$('d20-a2v').textContent=a2;
+  wx.clearRect(0,0,WW,WH);
+  // left: time signal
+  const LW=230,mid=WH/2,amp=(WH/2-20)/2;
+  wx.strokeStyle=css('--grid');wx.lineWidth=1;wx.beginPath();wx.moveTo(10,mid);wx.lineTo(LW,mid);wx.stroke();
+  wx.strokeStyle=css('--vec-a');wx.lineWidth=2;wx.beginPath();
+  s.forEach((v,n)=>{const X=10+n/(WN-1)*(LW-10),Y=mid-v*amp;n?wx.lineTo(X,Y):wx.moveTo(X,Y)});wx.stroke();
+  wx.fillStyle=css('--muted');wx.font='12px JetBrains Mono, monospace';wx.fillText('x[n] (time)',12,16);
+  // right: wound
+  const cx=LW+(WW-LW)/2,cy=mid,R=Math.min((WW-LW)/2,WH/2)-16,sR=R/2;
+  wx.strokeStyle=css('--grid');wx.beginPath();wx.arc(cx,cy,sR*2,0,7);wx.stroke();
+  wx.strokeStyle=css('--muted');wx.beginPath();wx.moveTo(cx-R,cy);wx.lineTo(cx+R,cy);wx.moveTo(cx,cy-R);wx.lineTo(cx,cy+R);wx.stroke();
+  wx.strokeStyle=css('--vec-a');wx.globalAlpha=.55;wx.lineWidth=1.5;wx.beginPath();
+  for(let n=0;n<=WN;n++){const m=n%WN,a=-2*Math.PI*k*m/WN,X=cx+s[m]*Math.cos(a)*sR,Y=cy-s[m]*Math.sin(a)*sR;n?wx.lineTo(X,Y):wx.moveTo(X,Y)}
+  wx.stroke();wx.globalAlpha=1;
+  const [re,im]=xAt(s,k);const mx=re/WN,my=im/WN;
+  A.arrow(wx,cx,cy,cx+mx*sR*2,cy-my*sR*2,css('--vec-b'),3);
+  wx.fillStyle=css('--vec-b');wx.beginPath();wx.arc(cx+mx*sR*2,cy-my*sR*2,6,0,7);wx.fill();
+  wx.fillStyle=css('--muted');wx.fillText('x[n]·e^(-2πikn/N)',LW+8,16);
+  const mag=Math.hypot(re,im);
+  $('d20-wm').textContent=fmt(mag,2);$('d20-wa').textContent=fmt(mag/(WN/2),3);
+  // spectrum strip 0..16
+  sx.clearRect(0,0,SW,SH);
+  const pts=[];for(let q=0;q<=16;q+=0.125){const v=xAt(s,q);pts.push([q,Math.hypot(v[0],v[1])])}
+  const mxv=WN/2*Math.max(1,1+a2)*0.8;
+  sx.strokeStyle=css('--muted');sx.lineWidth=1;sx.beginPath();sx.moveTo(20,SH-18);sx.lineTo(SW-10,SH-18);sx.stroke();
+  sx.strokeStyle=css('--vec-a');sx.lineWidth=2;sx.beginPath();
+  pts.forEach(([q,v],i)=>{const X=20+q/16*(SW-30),Y=SH-18-Math.min(1,v/mxv)*(SH-30);i?sx.lineTo(X,Y):sx.moveTo(X,Y)});sx.stroke();
+  const kx=20+k/16*(SW-30);sx.strokeStyle=css('--vec-b');sx.lineWidth=2;sx.beginPath();sx.moveTo(kx,6);sx.lineTo(kx,SH-18);sx.stroke();
+  sx.fillStyle=css('--muted');sx.font='11px JetBrains Mono, monospace';sx.textAlign='center';
+  for(let q=0;q<=16;q+=2)sx.fillText(q,20+q/16*(SW-30),SH-4);sx.textAlign='left';sx.fillText('|X[k]|',24,14);
+}
+['d20-k','d20-a2'].forEach(id=>$(id).addEventListener('input',drawWind));
+drawWind();
+
+// ---------- Lab 02: synthesis + spectrum ----------
+const yc=$('d20-syn'),yx=A.setupCanvas(yc),YW=+yc.dataset.w,YH=+yc.dataset.h;
+const pc=$('d20-spec'),px=A.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+const SN=64,ids=['f1','a1','f2','a2b','f3','a3','dc','nz'],lbls={f1:'d20-f1v',a1:'d20-a1v',f2:'d20-f2v',a2b:'d20-a2bv',f3:'d20-f3v',a3:'d20-a3v',dc:'d20-dcv',nz:'d20-nzv'};
+let noise=[];function newNoise(){noise=[];for(let n=0;n<SN;n++)noise.push(gauss())}newNoise();
+function val(id){return +$('d20-'+id).value}
+function drawSyn(){
+  ids.forEach(id=>$(lbls[id]).textContent=val(id));
+  const F=[[val('f1'),val('a1')],[val('f2'),val('a2b')],[val('f3'),val('a3')]],dc=val('dc'),nz=val('nz'),w=$('d20-win').value;
+  const x=[];for(let n=0;n<SN;n++){let v=dc+nz*noise[n];F.forEach(([f,a])=>v+=a*Math.sin(2*Math.PI*f*n/SN));x.push(v)}
+  const win=x.map((_,n)=>w==='hann'?0.5*(1-Math.cos(2*Math.PI*n/(SN-1))):w==='hamm'?0.54-0.46*Math.cos(2*Math.PI*n/(SN-1)):1);
+  const xw=x.map((v,n)=>v*win[n]);
+  // time
+  yx.clearRect(0,0,YW,YH);const mid=YH/2,sc2=(YH/2-10)/3;
+  yx.strokeStyle=css('--muted');yx.lineWidth=1;yx.beginPath();yx.moveTo(0,mid);yx.lineTo(YW,mid);yx.stroke();
+  // continuous version
+  yx.strokeStyle=css('--grid');yx.lineWidth=1.5;yx.beginPath();
+  for(let i=0;i<=400;i++){const t=i/400*SN;let v=dc;F.forEach(([f,a])=>v+=a*Math.sin(2*Math.PI*f*t/SN));const X=i/400*YW,Y=mid-v*sc2;i?yx.lineTo(X,Y):yx.moveTo(X,Y)}yx.stroke();
+  yx.strokeStyle=css('--vec-a');yx.lineWidth=2;yx.beginPath();
+  xw.forEach((v,n)=>{const X=n/SN*YW,Y=mid-v*sc2;n?yx.lineTo(X,Y):yx.moveTo(X,Y)});yx.stroke();
+  if(w!=='rect'){yx.strokeStyle=css('--vec-b');yx.setLineDash([4,4]);yx.beginPath();win.forEach((v,n)=>{const X=n/SN*YW,Y=mid-v*sc2*2.5;n?yx.lineTo(X,Y):yx.moveTo(X,Y)});yx.stroke();yx.setLineDash([])}
+  yx.fillStyle=css('--muted');yx.font='12px JetBrains Mono, monospace';yx.fillText('time: x[n]'+(w!=='rect'?' · w[n]':''),6,14);
+  // spectrum
+  const [re,im]=dft(xw),mag=re.map((r,k)=>Math.hypot(r,im[k]));
+  const half=mag.slice(0,SN/2+1),mx=Math.max(32,...half);
+  px.clearRect(0,0,PW,PH);const bw=(PW-30)/(SN/2+1);
+  let pk=1;for(let k=1;k<=SN/2;k++)if(half[k]>half[pk])pk=k;
+  half.forEach((m,k)=>{const h=m/mx*(PH-36);px.fillStyle=k===0?css('--muted'):k===pk?css('--vec-b'):css('--vec-a');px.fillRect(20+k*bw+1,PH-20-h,Math.max(1,bw-2),h)});
+  px.strokeStyle=css('--muted');px.lineWidth=1;px.beginPath();px.moveTo(20,PH-20);px.lineTo(PW-8,PH-20);px.stroke();
+  px.fillStyle=css('--muted');px.font='11px JetBrains Mono, monospace';px.textAlign='center';
+  for(let k=0;k<=32;k+=4)px.fillText(k,20+k*bw+bw/2,PH-6);px.textAlign='left';px.fillText('|X[k]|  (k = Hz)',24,12);
+  $('d20-pk').textContent='k='+pk+' · '+fmt(half[pk],2);
+  $('d20-x0').textContent=fmt(re[0],2);
+  const et=xw.reduce((a,v)=>a+v*v,0),ef=mag.reduce((a,v)=>a+v*v,0)/SN;
+  $('d20-et').textContent=fmt(et,3);$('d20-ef').textContent=fmt(ef,3);
+}
+ids.forEach(id=>$('d20-'+id).addEventListener('input',()=>{if(id==='nz')newNoise();drawSyn()}));
+$('d20-win').addEventListener('change',drawSyn);
+const presets={pure:[5,1,0,0,0,0,0,0],chord:[3,1,7,0.5,15,0.3,0,0],leak:[7.5,1,0,0,0,0,0,0],close:[10,1,12,1,0,0,0,0]};
+root.querySelectorAll('[data-d20p]').forEach(b=>b.addEventListener('click',()=>{const p=presets[b.dataset.d20p];ids.forEach((id,i)=>$('d20-'+id).value=p[i]);$('d20-win').value='rect';drawSyn()}));
+drawSyn();
+
+// ---------- cost ----------
+const cc=$('d20-cost'),cx2=A.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+function drawCost(){
+  const e=+$('d20-n').value,N=2**e,d=N*N,f=N*e;
+  $('d20-nv').textContent=N;$('d20-cd').textContent=d.toLocaleString('en');$('d20-cf').textContent=f.toLocaleString('en');$('d20-cs').textContent=fmt(d/f,1)+'x';
+  cx2.clearRect(0,0,CW,CH);
+  cx2.fillStyle=css('--muted');cx2.globalAlpha=.3;cx2.fillRect(0,18,CW,28);cx2.globalAlpha=1;
+  const fw=Math.max(2,CW*f/d);cx2.fillStyle=css('--vec-a');cx2.fillRect(CW-fw,62,fw,28);
+  cx2.fillStyle=css('--ink');cx2.font='12px JetBrains Mono, monospace';cx2.textAlign='right';
+  cx2.fillText('DFT  N²',CW-6,13);cx2.fillText('FFT  N·log₂N',CW-6,104);cx2.textAlign='left';
+}
+$('d20-n').addEventListener('input',drawCost);drawCost();
+
+// ---------- aliasing ----------
+const ac=$('d20-al'),ax=A.setupCanvas(ac),AW=+ac.dataset.w,AH=+ac.dataset.h;
+function drawAlias(){
+  const tf=+$('d20-tf').value,fs=+$('d20-fs').value;
+  $('d20-tfv').textContent=tf;$('d20-fsv').textContent=fs;
+  let ap=tf%fs;if(ap>fs/2)ap=fs-ap;
+  $('d20-ny').textContent=fmt(fs/2,1);$('d20-ap').textContent=fmt(ap,1);
+  const v=$('d20-alv');
+  if(tf<=fs/2){v.textContent='تحت الـ Nyquist: العينات بتمثل التردد صح';v.style.color=css('--ok')}
+  else{v.textContent='فوق الـ Nyquist: aliasing! العينات شبه موجة '+fmt(ap,1)+' Hz';v.style.color=css('--bad')}
+  const T=0.1,mid=AH/2,amp=AH/2-24;
+  ax.clearRect(0,0,AW,AH);
+  ax.strokeStyle=css('--muted');ax.lineWidth=1;ax.beginPath();ax.moveTo(0,mid);ax.lineTo(AW,mid);ax.stroke();
+  // true wave
+  ax.strokeStyle=css('--vec-a');ax.globalAlpha=.45;ax.lineWidth=1.2;ax.beginPath();
+  for(let i=0;i<=1600;i++){const t=i/1600*T,X=i/1600*AW,Y=mid-Math.sin(2*Math.PI*tf*t)*amp;i?ax.lineTo(X,Y):ax.moveTo(X,Y)}ax.stroke();ax.globalAlpha=1;
+  // alias wave (sign chosen so it passes through the samples)
+  const r=tf%fs,sgn=r>fs/2?-1:1;
+  ax.strokeStyle=css('--vec-b');ax.lineWidth=2.5;ax.beginPath();
+  for(let i=0;i<=400;i++){const t=i/400*T,X=i/400*AW,Y=mid-sgn*Math.sin(2*Math.PI*ap*t)*amp;i?ax.lineTo(X,Y):ax.moveTo(X,Y)}ax.stroke();
+  // samples
+  ax.fillStyle=css('--ink');
+  for(let n=0;n/fs<=T+1e-9;n++){const t=n/fs,X=t/T*AW,Y=mid-Math.sin(2*Math.PI*tf*t)*amp;ax.beginPath();ax.arc(X,Y,4,0,7);ax.fill()}
+  ax.font='12px JetBrains Mono, monospace';ax.fillStyle=css('--vec-a');ax.fillText('true '+tf+' Hz',8,14);
+  ax.fillStyle=css('--vec-b');ax.fillText('apparent '+fmt(ap,1)+' Hz',120,14);ax.fillStyle=css('--muted');ax.fillText('0.1 s',AW-44,AH-6);
+}
+['d20-tf','d20-fs'].forEach(id=>$(id).addEventListener('input',drawAlias));drawAlias();
+
+// ---------- Lab 03: PE ----------
+const ec=$('d20-pe'),ex=A.setupCanvas(ec),EW=+ec.dataset.w,EH=+ec.dataset.h;
+const dc2=$('d20-pedot'),dx=A.setupCanvas(dc2),DW=+dc2.dataset.w,DH=+dc2.dataset.h;
+const DM=64,MP=64;
+function pe(p){const v=new Array(DM);for(let i=0;i<DM/2;i++){const f=1/Math.pow(10000,2*i/DM);v[2*i]=Math.sin(p*f);v[2*i+1]=Math.cos(p*f)}return v}
+const PEs=[];for(let p=0;p<MP;p++)PEs.push(pe(p));
+const dot=(a,b)=>a.reduce((s,v,i)=>s+v*b[i],0);
+function mixColor(v){ // v in [-1,1]
+  const a=css('--vec-a'),b=css('--vec-b');return v>=0?a:b}
+function drawPE(){
+  const p=+$('d20-pp').value;$('d20-ppv').textContent=p;
+  ex.clearRect(0,0,EW,EH);const cw=EW/DM,ch=EH/MP;
+  for(let r=0;r<MP;r++)for(let c=0;c<DM;c++){const v=PEs[r][c];ex.fillStyle=mixColor(v);ex.globalAlpha=Math.abs(v)*0.9+0.05;ex.fillRect(c*cw,r*ch,cw+0.5,ch+0.5)}
+  ex.globalAlpha=1;ex.strokeStyle=css('--ink');ex.lineWidth=2;ex.strokeRect(0,p*ch,EW,ch);
+  const ds=PEs.map(q=>dot(PEs[p],q));
+  dx.clearRect(0,0,DW,DH);const mid=DH/2,sc3=(DH/2-8)/(DM/2);
+  dx.strokeStyle=css('--muted');dx.lineWidth=1;dx.beginPath();dx.moveTo(0,mid);dx.lineTo(DW,mid);dx.stroke();
+  dx.strokeStyle=css('--vec-a');dx.lineWidth=2;dx.beginPath();
+  ds.forEach((v,q)=>{const X=q/(MP-1)*DW,Y=mid-v*sc3;q?dx.lineTo(X,Y):dx.moveTo(X,Y)});dx.stroke();
+  const X=p/(MP-1)*DW;dx.strokeStyle=css('--vec-b');dx.beginPath();dx.moveTo(X,4);dx.lineTo(X,DH-4);dx.stroke();
+  dx.fillStyle=css('--muted');dx.font='11px JetBrains Mono, monospace';dx.fillText('PE(p)·PE(q)  q = 0..63',6,12);
+  $('d20-pself').textContent=fmt(ds[p],2);$('d20-pnext').textContent=p<MP-1?fmt(ds[p+1],4):'—';
+}
+$('d20-pp').addEventListener('input',drawPE);drawPE();
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(wc))return false;drawWind();drawSyn();drawCost();drawAlias();drawPE()});
+
+// ---------- quiz ----------
+const Q=[
+ ['الـ Fourier transform بيعمل إيه في الإشارة؟',['بيفكها لموجات sine بترددات وقوى وphases مختلفة','بيشيل الـ noise منها','بيحولها من analog لـ digital','بيضغطها عشان تاخد مساحة أقل'],0,'بيحول الإشارة من الـ time domain للـ frequency domain. كل X[k] بيقولك قوة وphase موجة sine عند التردد k، والإشارة بتتكتب كمجموع الموجات دي.'],
+ ['تعقيد الـ FFT مقارنة بالـ DFT المباشر؟',['الـ FFT هو O(log N) والـ DFT هو O(N)','الـ FFT هو O(N) والـ DFT هو O(N log N)','الاتنين O(N²)','الـ FFT هو O(N log N) والـ DFT هو O(N²)'],3,'الـ DFT بيحسب N مخرج كل واحد بيجمع N مدخل = O(N²). الـ Cooley-Tukey بيقسم زوجي/فردي recursively، O(N) شغل في كل مستوى من log₂N مستوى = O(N log N). لـ N = مليون: ٢٠ مليون ضد تريليون.'],
+ ['الـ convolution theorem بيقول إيه؟',['الـ convolution في الوقت = جمع في التردد','الـ convolution دايمًا بيطوّل الإشارة','الـ convolution والـ correlation نفس العملية','الـ convolution في الوقت = ضرب عنصر بعنصر في التردد'],3,'x * h = IFFT(FFT(x) · FFT(h)). عشان كده الـ convolution بالـ FFT بقى O(N log N) بدل O(N·M) للـ kernels الكبيرة.'],
+ ['ليه الـ zero-padding قبل الـ FFT مش بيزوّد الـ frequency resolution الحقيقية؟',['بيعمل interpolation بين الـ bins الموجودة بس، ومش بيكشف تفاصيل مش موجودة في العينات الأصلية','بيدخّل noise بيلغي التحسين','بيشتغل بس مع أطوال power of 2','الـ FFT بيتجاهل الأصفار'],0,'الدقة الحقيقية بتعتمد على مدة الملاحظة T = N/fs. الـ padding بيدّي شبكة bins أنعم بس بيعمل interpolation للطيف الموجود، ومش بيفرّق ترددات أقرب من 1/T.'],
+ ['في الـ sinusoidal positional encodings، ليه كل زوج أبعاد واخد تردد مختلف ومتباعدين هندسيًا؟',['عشان كل القيم تبقى بين 0 و1','كل تردد بيدي دقة مختلفة: العالي للموقع الدقيق والواطي للموقع التقريبي، فكل موقع ياخد بصمة فريدة','لأن الـ FFT محتاج تباعد هندسي','عشان يقلل تكلفة الـ attention'],1,'الأبعاد عالية التردد بتتغير بسرعة مع الموقع (دقة عالية)، والواطية بالراحة (دقة تقريبية). مع بعض بيدّوا كل موقع نمط فريد، زي ما معاملات Fourier بتحدد الإشارة.'],
+ ['(إضافة مني) إشارة sine قوتها 0.5 واقعة بالظبط على bin رقم 7، و N = 64. قيمة |X[7]|؟',['0.5','32','16','64'],2,'القاعدة |X[k]| = A·N/2 = 0.5 × 64/2 = 16. ونفس الرقم اللي هيطلعلك في demo الـ summed sines.'],
+ ['(إضافة مني) موجة 90 Hz اتاخدت منها عينات بـ 100 Hz. هتبان بكام؟',['90 Hz','50 Hz','10 Hz','190 Hz'],2,'الـ Nyquist هنا 50 Hz، والـ 90 فوقه، فبيحصل aliasing ويبان 100 − 90 = 10 Hz. جربها في معمل الـ aliasing.']
+];
+A.quiz($('d20-quizbox'),Q,5,()=>{const c=root.querySelector('input[data-ck="c8"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(20,root);
+})();
+</script>

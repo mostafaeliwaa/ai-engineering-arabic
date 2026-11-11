@@ -1,0 +1,578 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 07 · Bayes' Theorem</span>
+  <h1>اليوم ٧: إزاي تغيّر رأيك لما تشوف دليل</h1>
+  <p class="lede">تحليل دقته 99% وطلع إيجابي. احتمال إنك عيّان كام؟ أغلب الناس هيقولوا 99%. لو المرض بيصيب واحد من كل 10,000، الإجابة الحقيقية حوالي <b>1%</b>. ده مش فزورة، ده <b>Bayes' theorem</b>: تبدأ باعتقاد، تشوف دليل، تحدّث. النهاردة هتبني spam filter بالـ Naive Bayes، وتفهم الـ MLE والـ MAP (وليه الـ MAP هو الـ regularization)، وتعمل A/B test بايزي.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Probability and Distributions</b></span>
+    <span>بعده: <b>Optimization</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d7-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d7-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <ol class="ex">
+    <li>اكتب قانون الاحتمال الشرطي.
+      <details><summary>الإجابة</summary><span class="ltr">P(A | B) = P(A و B) / P(B)</span>. النهاردة هنقلبه ونطلّع منه Bayes.</details></li>
+    <li>إمتى حدثين يبقوا مستقلين؟
+      <details><summary>الإجابة</summary>لما <span class="ltr">P(A و B) = P(A) · P(B)</span>، يعني معرفة واحد مش بتغيّر احتمال التاني. الـ Naive Bayes النهاردة بيفترض ده على الكلمات.</details></li>
+    <li>ليه بنجمع logs بدل ما نضرب احتمالات؟
+      <details><summary>الإجابة</summary>عشان ضرب احتمالات صغيرة كتير بيعمل underflow للصفر. الـ classifier بتاع النهاردة بيجمع log probabilities للكلمات.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٧٥ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>Bayes والتحليل الطبي والـ spam + المعمل ١</div>
+    <div><b>15 min</b>Naive Bayes والـ MLE/MAP + المعمل ٢</div>
+    <div><b>25 min</b>اكتب الكود</div>
+    <div><b>15 min</b>Beta والـ A/B test + الكويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d7-bayes">
+  <div class="station-head"><span class="tag">01</span><h2>Bayes من الاحتمال الشرطي</h2></div>
+  <p>من امبارح:</p>
+  <div class="formula" style="white-space:pre-line">P(A | B) = P(A و B) / P(B)        و        P(B | A) = P(A و B) / P(A)</div>
+  <p>الاتنين ليهم نفس البسط <span class="ltr">P(A و B)</span>. ساويهم ورتّب:</p>
+  <div class="formula" style="white-space:pre-line">P(A و B) = P(A | B) · P(B) = P(B | A) · P(A)
+⇒   P(A | B) = P(B | A) · P(A) / P(B)</div>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>اسمه</th><th>معناه</th></tr>
+    <tr><td class="ltr">P(A | B)</td><td>Posterior</td><td>اعتقادك الجديد عن A بعد ما شفت الدليل B</td></tr>
+    <tr><td class="ltr">P(B | A)</td><td>Likelihood</td><td>لو A صح، الدليل ده محتمل قد إيه؟</td></tr>
+    <tr><td class="ltr">P(A)</td><td>Prior</td><td>اعتقادك عن A قبل أي دليل</td></tr>
+    <tr><td class="ltr">P(B)</td><td>Evidence</td><td>احتمال الدليل ده تحت كل الاحتمالات، وبيشتغل كـ normalizer</td></tr>
+  </table></div>
+  <p>والـ evidence بنفكه بقانون الاحتمال الكلي (law of total probability):</p>
+  <div class="formula">P(B) = P(B | A) · P(A) + P(B | not A) · P(not A)</div>
+
+  <h3>التحليل الطبي</h3>
+  <div class="formula" style="white-space:pre-line">P(sick) = 0.0001                 (prior: المرض نادر)
+P(positive | sick) = 0.99         (likelihood: التحليل بيمسكه)
+P(positive | healthy) = 0.01      (false positive rate)
+P(positive) = 0.99 · 0.0001 + 0.01 · 0.9999 = 0.000099 + 0.009999 = 0.010098
+P(sick | positive) = 0.000099 / 0.010098 ≈ 0.0098 = 0.98%</div>
+  <p>أقل من 1%! الـ prior هو المسيطر. لما الحالة نادرة، حتى التحليل الدقيق بيطلّع أغلب الإيجابيات غلط. عشان كده الدكاترة بيطلبوا تحليل تأكيدي.</p>
+  <div class="note"><strong>بالعدد بدل الاحتمالات (أسهل للمخ):</strong> 10,000 شخص. واحد بس عيّان، والتحليل هيمسكه تقريبًا. من الـ 9,999 السليمين، 1% يعني حوالي 100 هيطلعوا إيجابي غلط. يبقى عندك ~101 إيجابي، واحد بس فيهم عيّان فعلًا. ده بالظبط اللي المعمل ١ بيرسمه.</div>
+
+  <h3>فلتر الـ spam</h3>
+  <div class="formula" style="white-space:pre-line">P(spam) = 0.3    P("lottery" | spam) = 0.05    P("lottery" | not spam) = 0.001
+P("lottery") = 0.05 · 0.3 + 0.001 · 0.7 = 0.015 + 0.0007 = 0.0157
+P(spam | "lottery") = 0.015 / 0.0157 ≈ 0.955 = 95.5%</div>
+  <p>كلمة واحدة نقلت الاحتمال من 30% لـ 95.5%. الـ spam filter الحقيقي بيطبّق Bayes على مئات الكلمات مع بعض.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الـ base rate بعينك</h3>
+      <p>كل مربع شخص من 10,000 (أو إيميل). البرتقالي = إيجابي غلط، الأخضر = إيجابي صح. حرّك الـ prior (مدى انتشار الحالة) وشوف الـ posterior بيتغير قد إيه رغم إن دقة التحليل ثابتة.</p>
+      <p>دوس «تحليل تاني إيجابي» وشوف الـ posterior بيبقى الـ prior الجديد. ده تمرين ١.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d7-gCv" width="520" height="290" aria-label="10000 شخص"></canvas>
+      <div class="mrow">
+        <label>prior = <span id="d7-vpr"></span><input type="range" id="d7-pr" min="-4" max="-0.3" step="any" value="-4"></label>
+        <label>sensitivity = <span id="d7-vse">0.99</span><input type="range" id="d7-se" min="0.01" max="1" step="0.01" value="0.99"></label>
+        <label>false positive rate = <span id="d7-vfp">0.01</span><input type="range" id="d7-fp" min="0.001" max="0.3" step="0.001" value="0.01"></label>
+        <label>عدد التحاليل الإيجابية: <b id="d7-nt" class="mono">1</b></label>
+      </div>
+      <div class="readout">
+        <div><small>P(positive)</small><b id="d7-ev"></b></div>
+        <div><small>P(sick | positive)</small><b id="d7-post"></b></div>
+      </div>
+      <div class="btns"><button type="button" id="d7-again" class="primary">تحليل تاني إيجابي</button><button type="button" id="d7-reset">رجّع</button><button type="button" id="d7-med">مثال التحليل</button><button type="button" id="d7-spam">مثال lottery</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d7-nb">
+  <div class="station-head"><span class="tag">02</span><h2>Naive Bayes: افتراض الاستقلال</h2></div>
+  <p>الـ Naive Bayes بيوسّع Bayes لـ features كتير بإنه يفترض إنهم <b>مستقلين بشرط الـ class</b>:</p>
+  <div class="formula">P(class | f₁, …, fₙ) = P(class) · P(f₁ | class) · … · P(fₙ | class) / P(f₁, …, fₙ)</div>
+  <p>الـ «naive» هو الافتراض ده. في النص الكلمات مش مستقلة («New» و«York» بييجوا مع بعض)، بس الافتراض شغال كويس عمليًا لأن الـ classifier محتاج بس <b>يرتب</b> الـ classes صح، مش يطلّع احتمالات مظبوطة. وعشان المقام واحد لكل الـ classes، بنسيبه ونقارن البسط بس:</p>
+  <div class="formula">score(class) = P(class) · Πᵢ P(featureᵢ | class)        اختار الأعلى</div>
+  <h3>MLE: عِد</h3>
+  <p>منين بنجيب <span class="ltr">P(feature | class)</span>؟ بنعد من الداتا: <span class="ltr">P("free" | spam) = عدد مرات free في الـ spam / إجمالي كلمات الـ spam</span>. ده الـ <b>Maximum Likelihood Estimation</b>: اختار الـ parameters اللي بتخلي الداتا اللي شفتها أكتر احتمالًا، ولعدّ متقطع بتطلع النسبة بالظبط.</p>
+  <p><b>المشكلة:</b> كلمة عمرها ما ظهرت في الـ spam وقت التدريب هتاخد احتمال صفر، وصفر واحد بيقتل حاصل الضرب كله. الحل: <b>Laplace smoothing</b>:</p>
+  <div class="formula">P(word | class) = (count(word, class) + 1) / (total_words_in_class + vocabulary_size)</div>
+  <p>زوّد 1 على كل عدّ، فمفيش احتمال صفر أبدًا. والحساب كله بالـ log عشان الـ underflow.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: spam filter حي</h3>
+      <p>الـ classifier ده متدرب على نفس الـ 12 رسالة اللي في الدرس (5 spam و7 ham، vocabulary = 44 كلمة). اكتب رسالة بالإنجليزي وشوف كل كلمة بتزق ناحية أنهي class، بمقدار <span class="ltr">log P(w|spam) − log P(w|ham)</span>.</p>
+      <p>حرّك الـ smoothing لـ 0.01 وشوف الكلمات اللي ظهرت في class واحد بس بقت بتزق بقوة رهيبة (تمرين ٢). وعند صفر بالظبط الـ log مش معرّف.</p>
+    </div>
+    <div class="instrument">
+      <input type="text" id="d7-msg" value="you won a free prize" aria-label="رسالة" style="font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);direction:ltr">
+      <label style="display:grid;gap:2px">smoothing = <b class="mono" id="d7-vsm">1</b><input type="range" id="d7-sm" min="0" max="5" step="0.01" value="1"></label>
+      <div class="btns">
+        <button type="button" data-d7m="free money waiting for you">free money…</button>
+        <button type="button" data-d7m="meeting rescheduled to friday">meeting…</button>
+        <button type="button" data-d7m="please review the attached report">review…</button>
+        <button type="button" data-d7m="urgent free offer claim now">urgent…</button>
+      </div>
+      <canvas id="d7-nbCv" width="520" height="240" aria-label="مساهمة كل كلمة"></canvas>
+      <div class="verdict" id="d7-nbV" style="direction:ltr;text-align:right"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d7-map">
+  <div class="station-head"><span class="tag">03</span><h2>MAP: الـ MLE + prior = الـ regularization</h2></div>
+  <p>الـ MLE بيسأل: أنهي parameters بتعظّم <span class="ltr">P(data | params)</span>؟ الـ MAP بيسأل: أنهي parameters بتعظّم <span class="ltr">P(params | data)</span>؟ وبـ Bayes:</p>
+  <div class="formula">P(params | data) ∝ P(data | params) · P(params)</div>
+  <p>الـ MAP بيضيف prior على الـ parameters نفسها. لو مقتنع إن الـ parameters المفروض تبقى صغيرة، بتحط prior بيعاقب القيم الكبيرة. ده <b>هو نفسه</b> الـ L2 regularization: الـ ridge penalty في ridge regression حرفيًا Gaussian prior على الـ weights. والـ Laplace prior = L1.</p>
+  <div class="tablewrap"><table>
+    <tr><th>التقدير</th><th>بيعظّم</th><th>المقابل في الـ ML</th></tr>
+    <tr><td>MLE</td><td class="ltr">P(data | params)</td><td>تدريب من غير regularization</td></tr>
+    <tr><td>MAP</td><td class="ltr">P(data | params) · P(params)</td><td>L2 / L1 regularization</td></tr>
+  </table></div>
+  <h3>Bayesian ضد Frequentist عمليًا</h3>
+  <p>الـ frequentist بيعامل الـ parameters كأرقام ثابتة مجهولة ويسأل «لو كررت التجربة كتير هيحصل إيه؟». الـ Bayesian بيعاملها كتوزيعات ويسأل «بناءً على اللي شفته، أنا مصدّق إيه؟».</p>
+  <div class="tablewrap"><table>
+    <tr><th>الجانب</th><th>Frequentist</th><th>Bayesian</th></tr>
+    <tr><td>الخرج</td><td>تقدير برقم واحد</td><td>توزيع على القيم</td></tr>
+    <tr><td>عدم اليقين</td><td>Confidence intervals (عن الطريقة)</td><td>Credible intervals (عن الـ parameter نفسه)</td></tr>
+    <tr><td>داتا قليلة</td><td>ممكن يعمل overfit</td><td>الـ prior بيشتغل كـ regularization</td></tr>
+    <tr><td>الحساب</td><td>غالبًا أسرع</td><td>غالبًا محتاج sampling (MCMC)</td></tr>
+  </table></div>
+  <p>أغلب الـ ML في الـ production frequentist (SGD وتقدير برقم). الطرق البايزية بتلمع لما تحتاج uncertainty مظبوط (قرارات طبية، أنظمة حساسة) أو الداتا قليلة (few-shot، cold start).</p>
+  <h3>ليه التفكير البايزي مهم للـ ML</h3>
+  <ul class="checklist">
+    <li><b>الـ priors هي regularization:</b> Gaussian prior = L2، Laplace prior = L1. كل مرة بتضيف regularization بتقول جملة بايزية عن القيم اللي متوقعها.</li>
+    <li><b>الـ posteriors هي uncertainty:</b> احتمال واحد مش بيقولك الموديل واثق قد إيه في تقديره. البايزي بيقولك «<span class="ltr">P(spam)</span> بين 0.8 و0.95».</li>
+    <li><b>التحديث البايزي = online learning:</b> posterior النهاردة هو prior بكرة.</li>
+    <li><b>مقارنة الموديلات بايزية:</b> الـ BIC والـ marginal likelihood والـ Bayes factors.</li>
+  </ul>
+</section>
+
+<!-- STATION 4 -->
+<section id="d7-beta">
+  <div class="station-head"><span class="tag">04</span><h2>Conjugate priors والتحديث المتتابع</h2></div>
+  <p>لو الـ prior والـ posterior من نفس عيلة التوزيعات، الـ prior اسمه <b>conjugate</b>. ساعتها التحديث معادلة مقفولة من غير integrals ولا sampling.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الـ Likelihood</th><th>الـ Conjugate prior</th><th>الـ Posterior</th><th>مثال</th></tr>
+    <tr><td>Bernoulli</td><td class="ltr">Beta(a, b)</td><td class="ltr">Beta(a + successes, b + failures)</td><td>تقدير انحياز عملة</td></tr>
+    <tr><td>Normal (variance معروفة)</td><td class="ltr">Normal(μ₀, σ₀)</td><td>Normal (متوسط موزون، variance أصغر)</td><td>معايرة sensor</td></tr>
+    <tr><td>Poisson</td><td class="ltr">Gamma(a, b)</td><td class="ltr">Gamma(a + مجموع العدّات, b + n)</td><td>معدلات الوصول</td></tr>
+    <tr><td>Multinomial</td><td class="ltr">Dirichlet(α)</td><td class="ltr">Dirichlet(α + counts)</td><td>topic modeling، الـ language models</td></tr>
+  </table></div>
+  <p><span class="ltr">Beta(a, b)</span> بيمثل اعتقادك عن احتمال. الـ mean = <span class="ltr">a/(a+b)</span>، وكل ما <span class="ltr">a+b</span> تكبر يبقى أكتر تركيزًا (ثقة). <span class="ltr">Beta(1,1)</span> = uniform (مالكش رأي). <span class="ltr">Beta(10,10)</span> = مقتنع جدًا إنها حوالين 0.5. <span class="ltr">Beta(1,10)</span> = مقتنع إنها صغيرة.</p>
+  <div class="formula">Prior Beta(a, b)  +  s نجاح و f فشل  ⇒  Posterior Beta(a + s, b + f)</div>
+  <p>مثال الدرس: <span class="ltr">Beta(1,1)</span> → 7 heads و3 tails → <span class="ltr">Beta(8,4)</span>، mean = 0.667. بكرة 5 و5 → <span class="ltr">Beta(13,9)</span>، mean = 0.591: الداتا المتوازنة شدّت التقدير ناحية 0.5. والترتيب مش مهم: 12 head و8 tail مرة واحدة بيدوا نفس <span class="ltr">Beta(13,9)</span>. بس التحديث المتتابع بيخليك تاخد قرار في كل خطوة من غير ما تخزن الداتا الخام. ده أساس الـ online learning: Thompson sampling للـ bandits، والـ recommendation systems المتزايدة، وكاشفات الـ anomalies على الـ streams.</p>
+  <h3>MAP على العملة</h3>
+  <div class="formula">MAP مع Beta(α, β) = (h + α − 1) / (n + α + β − 2)</div>
+  <p>7 heads من 10: الـ MLE = 0.7. مع <span class="ltr">Beta(2,2)</span>: <span class="ltr">8/12 ≈ 0.667</span>. مع <span class="ltr">Beta(10,10)</span>: <span class="ltr">16/28 ≈ 0.571</span>. الـ prior الأقوى بيشد ناحية 0.5، بالظبط زي الـ L2 لما بيشد الـ weights ناحية الصفر.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: حدّث اعتقادك عن عملة</h3>
+      <p>اختار الـ prior، وبعدين ارمي (أو ضيف batches الدرس). المنحنى المتقطع هو الـ prior، والملون هو الـ posterior الحالي. شوف الـ MLE (الخط الأحمر) والـ MAP بيقربوا من بعض كل ما الداتا تزيد: الداتا الكتير بتغلب الـ prior.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d7-bCv" width="520" height="240" aria-label="توزيع Beta"></canvas>
+      <div class="btns">
+        <button type="button" data-d7p="1,1" class="primary">Beta(1,1)</button>
+        <button type="button" data-d7p="2,2">Beta(2,2)</button>
+        <button type="button" data-d7p="10,10">Beta(10,10)</button>
+        <button type="button" data-d7p="1,10">Beta(1,10)</button>
+      </div>
+      <div class="btns">
+        <button type="button" id="d7-H" class="primary">+ Head</button><button type="button" id="d7-T">+ Tail</button>
+        <button type="button" id="d7-batch">Batch الدرس الجاي</button><button type="button" id="d7-flip">ارمي عملة 0.7 ×20</button><button type="button" id="d7-bclr">امسح الداتا</button>
+      </div>
+      <div class="readout">
+        <div><small>Posterior</small><b id="d7-bp"></b></div>
+        <div><small>mean</small><b id="d7-bm"></b></div>
+        <div><small>MLE</small><b id="d7-bmle"></b></div>
+        <div><small>MAP</small><b id="d7-bmap"></b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d7-ab">
+  <div class="station-head"><span class="tag">05</span><h2>A/B testing بايزي</h2></div>
+  <p>بتختبر لونين لزرار. A: 50 click من 1000 view. B: 65 من 1000. مع <span class="ltr">Beta(1,1)</span> لكل واحد:</p>
+  <div class="formula" style="white-space:pre-line">A: Beta(1 + 50, 1 + 950) = Beta(51, 951)    mean ≈ 0.051
+B: Beta(1 + 65, 1 + 935) = Beta(66, 936)    mean ≈ 0.066</div>
+  <p>القرار محتاج <span class="ltr">P(B &gt; A)</span>. تحليليًا صعب، بس بالـ Monte Carlo سهل: اسحب 100,000 عينة من كل posterior، وعِد نسبة المرات اللي B فيها أكبر. لو أكبر من 0.95 → اعتمد B، لو أقل من 0.05 → اعتمد A، وغير كده كمّل جمع داتا.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الجانب</th><th>Frequentist A/B</th><th>Bayesian A/B</th></tr>
+    <tr><td>الخرج</td><td>p-value</td><td class="ltr">P(B &gt; A)</td></tr>
+    <tr><td>التفسير</td><td>«الداتا دي مفاجئة قد إيه لو A = B؟»</td><td>«احتمال B أحسن من A كام؟»</td></tr>
+    <tr><td>الوقف بدري</td><td>بيضخم الـ false positives</td><td>آمن في أي وقت (بشرط prior كويس وموديل مظبوط)</td></tr>
+    <tr><td>معلومات سابقة</td><td>مش بتستخدم</td><td>بتتحط في الـ Beta prior</td></tr>
+    <tr><td>قاعدة القرار</td><td class="ltr">p &lt; 0.05</td><td class="ltr">P(B &gt; A) &gt; threshold</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: اعمل A/B test</h3>
+      <p>حرّك عدد الـ clicks لكل variant. المنحنيين هما الـ posteriors. «احسب» بيعمل 20,000 سحبة Monte Carlo من كل واحد.</p>
+      <p>بأرقام الدرس (50 و65 من 1000) الـ <span class="ltr">P(B &gt; A)</span> حوالي 0.92: مش كفاية عشان تعتمد B، فالقرار «كمّل جمع داتا». جرّب تزود الـ views لـ 3000 بنفس النسب وشوف الثقة بتزيد.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d7-abCv" width="520" height="220" aria-label="posteriors لـ A و B"></canvas>
+      <div class="mrow">
+        <label>views لكل variant = <span id="d7-vabn">1000</span><input type="range" id="d7-abn" min="100" max="5000" step="100" value="1000"></label>
+        <label>clicks A = <span id="d7-vabA">50</span><input type="range" id="d7-abA" min="0" max="300" step="1" value="50"></label>
+        <label>clicks B = <span id="d7-vabB">65</span><input type="range" id="d7-abB" min="0" max="300" step="1" value="65"></label>
+      </div>
+      <div class="readout">
+        <div><small>P(B &gt; A)</small><b id="d7-pb"></b></div>
+        <div><small>القرار</small><b id="d7-dec" style="font-family:var(--f-display)"></b></div>
+      </div>
+      <div class="btns"><button type="button" id="d7-abRun" class="primary">احسب (Monte Carlo)</button><button type="button" id="d7-abScale">نفس النسب × 3</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d7-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/01-math-foundations/07-bayes-theorem/code/bayes.py</pre></div>
+  <p>الملف ده Python بس، ومن غير أي مكتبات خارجية. اكتب الخطوات في <code>my_bayes.py</code>.</p>
+
+  <h3>خطوة ١: دالة Bayes والتحليل المتكرر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bayes(prior, likelihood, false_positive_rate):
+    evidence = likelihood * prior + false_positive_rate * (1 - prior)   <span class="c"># P(B)</span>
+    return likelihood * prior / evidence                                <span class="c"># P(A|B)</span>
+
+def sequential_bayes(prior, likelihood, false_positive_rate, num_tests):
+    current = prior
+    for i in range(num_tests):
+        current = bayes(current, likelihood, false_positive_rate)       <span class="c"># الـ posterior بقى prior</span>
+        print(f"  After test {i + 1}: P(sick|positive) = {current:.6f}")
+    return current
+
+print(f"P(sick|positive) = {bayes(0.0001, 0.99, 0.01):.4f}")
+sequential_bayes(0.0001, 0.99, 0.01, 2)</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">P(sick|positive) = 0.0098
+  After test 1: P(sick|positive) = 0.009804
+  After test 2: P(sick|positive) = 0.495000</pre><p>التحليل التاني نقلك من 1% لـ 50% تقريبًا. ده جواب تمرين ١.</p></details>
+
+  <h3>خطوة ٢: كلاس NaiveBayes</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+from collections import defaultdict
+
+class NaiveBayes:
+    def __init__(self, smoothing=1.0):
+        self.smoothing = smoothing
+        self.class_counts = defaultdict(int)                       <span class="c"># كام رسالة في كل class</span>
+        self.word_counts = defaultdict(lambda: defaultdict(int))   <span class="c"># [class][word] → عدد</span>
+        self.class_word_totals = defaultdict(int)
+        self.vocab = set()
+
+    def train(self, documents, labels):
+        for doc, label in zip(documents, labels):
+            self.class_counts[label] += 1
+            for word in doc.lower().split():
+                self.word_counts[label][word] += 1
+                self.class_word_totals[label] += 1
+                self.vocab.add(word)
+
+    def _log_prior(self, cls):
+        return math.log(self.class_counts[cls] / sum(self.class_counts.values()))
+
+    def _log_likelihood(self, word, cls):                          <span class="c"># Laplace smoothing</span>
+        count = self.word_counts[cls].get(word, 0)
+        total = self.class_word_totals[cls]
+        return math.log((count + self.smoothing) / (total + self.smoothing * len(self.vocab)))
+
+    def predict(self, document):
+        words = document.lower().split()
+        best_class, best_score = None, float("-inf")
+        for cls in self.class_counts:
+            score = self._log_prior(cls) + sum(self._log_likelihood(w, cls) for w in words)
+            if score &gt; best_score:
+                best_score, best_class = score, cls
+        return best_class
+
+    def predict_proba(self, document):                             <span class="c"># softmax على الـ scores!</span>
+        words = document.lower().split()
+        scores = {c: self._log_prior(c) + sum(self._log_likelihood(w, c) for w in words)
+                  for c in self.class_counts}
+        m = max(scores.values())
+        exps = {c: math.exp(s - m) for c, s in scores.items()}
+        total = sum(exps.values())
+        return {c: e / total for c, e in exps.items()}
+
+    def top_words(self, cls, n=10):
+        total, V = self.class_word_totals[cls], len(self.vocab)
+        probs = {w: (self.word_counts[cls].get(w, 0) + self.smoothing) / (total + self.smoothing * V)
+                 for w in self.vocab}
+        return sorted(probs.items(), key=lambda x: x[1], reverse=True)[:n]</pre></div>
+  <p>لاحظ الـ <code>predict_proba</code>: بيحوّل الـ log scores لاحتمالات بنفس الـ softmax trick بتاع امبارح (اطرح الـ max وبعدين exp).</p>
+
+  <h3>خطوة ٣: درّبه وجرّبه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>train_docs = [
+    "win free money now", "free lottery ticket winner", "claim your prize today free",
+    "urgent offer free cash", "congratulations you won free",
+    "meeting tomorrow at noon", "project update attached", "can we schedule a call",
+    "quarterly report review", "lunch on thursday sounds good",
+    "team standup notes attached", "please review the pull request",
+]
+train_labels = ["spam"] * 5 + ["ham"] * 7
+
+clf = NaiveBayes(smoothing=1.0)
+clf.train(train_docs, train_labels)
+print("Vocabulary size:", len(clf.vocab))
+
+for msg in ["free money waiting for you", "meeting rescheduled to friday",
+            "you won a free prize", "please review the attached report",
+            "urgent free offer claim now", "can we discuss the project update"]:
+    pred = clf.predict(msg)
+    print(f"  '{msg}' -> {pred} (confidence: {clf.predict_proba(msg)[pred]:.3f})")
+
+print(clf.top_words("spam", 5))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Vocabulary size: 44
+  'free money waiting for you' -> spam (confidence: 0.968)
+  'meeting rescheduled to friday' -> ham (confidence: 0.638)
+  'you won a free prize' -> spam (confidence: 0.968)
+  'please review the attached report' -> ham (confidence: 0.983)
+  'urgent free offer claim now' -> spam (confidence: 0.992)
+  'can we discuss the project update' -> ham (confidence: 0.957)</pre><p>أعلى كلمة spam هي <code>free</code> بـ 0.0923 (ظهرت 5 مرات). بعدها كلمات كتير متعادلة عند 0.0308 (ظهرت مرة)، وترتيبهم ممكن يختلف من تشغيل للتاني لأن الـ vocab عبارة عن set. لاحظ «meeting rescheduled to friday» ثقته 0.638 بس: كلمة واحدة بس (meeting) شافها قبل كده.</p></details>
+
+  <h3>خطوة ٤: MLE ضد MAP، والتحديث المتتابع</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>heads, total = 7, 10
+print(f"MLE: {heads / total:.4f}")
+for a, b in [(2, 2), (10, 10)]:
+    print(f"MAP Beta({a},{b}): {(heads + a - 1) / (total + a + b - 2):.4f}")
+
+def beta_update(alpha, beta_param, successes, failures):
+    return alpha + successes, beta_param + failures            <span class="c"># بس كده!</span>
+
+a, b = 1, 1
+for s, f in [(7, 3), (5, 5), (3, 7), (6, 4)]:
+    a, b = beta_update(a, b, s, f)
+    var = a * b / ((a + b) ** 2 * (a + b + 1))
+    print(f"Beta({a}, {b})  mean={a / (a + b):.4f}  std={var ** 0.5:.4f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">MLE: 0.7000
+MAP Beta(2,2): 0.6667
+MAP Beta(10,10): 0.5714
+Beta(8, 4)  mean=0.6667  std=0.1307
+Beta(13, 9)  mean=0.5909  std=0.1025
+Beta(16, 16)  mean=0.5000  std=0.0870
+Beta(22, 20)  mean=0.5238  std=0.0762</pre><p>الـ std بيقل مع كل batch: كل ما تشوف داتا أكتر بتبقى واثق أكتر. والملف الأصلي بيتأكد إن الـ batch update مرة واحدة <span class="ltr">Beta(22, 20)</span> هو نفس النتيجة.</p></details>
+
+  <h3>خطوة ٥: A/B test بالـ Monte Carlo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+random.seed(42)
+a_alpha, a_beta = 1 + 50, 1 + 950
+b_alpha, b_beta = 1 + 65, 1 + 935
+
+n = 100_000
+b_wins = sum(random.betavariate(b_alpha, b_beta) &gt; random.betavariate(a_alpha, a_beta)
+             for _ in range(n))
+p = b_wins / n
+print(f"P(B > A) = {p:.4f}")
+print("Ship B" if p &gt; 0.95 else "Ship A" if p &lt; 0.05 else "Keep collecting data")</pre></div>
+  <details><summary>الناتج المتوقع (تقريبًا)</summary><pre class="term">P(B > A) ≈ 0.92
+Keep collecting data</pre><p>هنا استخدمت <code>random.betavariate</code> الجاهزة في Python للاختصار. الملف الأصلي بيعمل sampler بإيده: بيسحب من توزيعين Gamma (بطريقة Marsaglia-Tsang) ويحسب <span class="ltr">x / (x + y)</span>، ده بيطلّع عينة Beta. وكمان بيحسب الـ lift الوسيط و90% credible interval ليه. الرقم الدقيق هيفرق شوية لأن الـ random مختلف.</p></details>
+
+  <h3>خطوة ٦: نفس الكلام بـ scikit-learn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.naive_bayes import MultinomialNB
+
+vectorizer = CountVectorizer()
+X_train = vectorizer.fit_transform(train_docs)          <span class="c"># tokenization + vocabulary</span>
+clf = MultinomialNB().fit(X_train, train_labels)        <span class="c"># smoothing + log-probs جوه</span>
+print(clf.predict(vectorizer.transform(["you won a free prize"])))</pre></div>
+  <p>نفس الـ algorithm. الكلاس بتاعك عمل نفس الحاجة في 40 سطر تقريبًا.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d7-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>تحليلين:</b> مريض طلع إيجابي في تحليلين مستقلين (كل واحد 99%، والانتشار 1 في 10,000). احتمال إنه عيّان كام بعد الاتنين؟
+      <details><summary>الإجابة</summary>نادي <code>bayes</code> مرة، وخد الناتج كـ prior للمرة التانية. <code>sequential_bayes(0.0001, 0.99, 0.01, 2)</code> بيطلع حوالي <b>0.495</b>. جرّبها في المعمل ١.</details></li>
+    <li><b>تأثير الـ smoothing:</b> شغّل الـ classifier بـ smoothing ‏0.01 و0.1 و1 و10. أعلى الكلمات بتتغير إزاي؟ وإيه اللي بيحصل بـ smoothing = 0 مع كلمة ظهرت في الـ ham بس؟
+      <details><summary>تلميح</summary>اعمل <code>NaiveBayes(smoothing=s)</code> لكل قيمة ودرّبهم على نفس الداتا واطبع <code>top_words</code>. الـ smoothing الكبير بيقرّب كل الاحتمالات من بعض (uniform). وعند صفر، كلمة مش موجودة في الـ spam احتمالها صفر، والـ log بتاعها مش معرّف (<code>math.log(0)</code> بيرمي <code>ValueError</code>).</details></li>
+    <li><b>feature جديدة:</b> ضيف طول الرسالة (short/long) كـ feature جنب الكلمات. قدّر <span class="ltr">P(short | spam)</span> و<span class="ltr">P(short | ham)</span> وضيفه للـ score.
+      <details><summary>تلميح</summary>عِد كام رسالة spam وكام ham قصيرة (حدد حد، مثلًا 4 كلمات أو أقل)، اقسم على عدد رسايل كل class، وضيف الـ log بتاع النسبة للـ score في <code>predict</code>. اتأكد إن <span class="ltr">P(short|c) + P(long|c) = 1</span> لكل class.</details></li>
+    <li><b>MAP بالإيد:</b> 7 heads من 10، احسب الـ MAP بـ prior ‏<span class="ltr">Beta(2,2)</span> وقارنه بالـ MLE.
+      <details><summary>الإجابة</summary><span class="ltr">(7 + 2 − 1) / (10 + 2 + 2 − 2) = 8/12 ≈ 0.667</span>. بين الـ MLE (0.7) والـ mode بتاع الـ prior (0.5)، زي ما المفروض.</details></li>
+    <li><b>إضافة مني · base rate في شغل AI حقيقي:</b> عندك detector لـ prompt injection في agent بتاعك: بيمسك 95% من الهجمات، وبيدّي إنذار غلط على 2% من الطلبات العادية. الهجمات 1 في 1000 طلب. احسب: لو جالك إنذار، احتمال إنه هجوم فعلًا كام؟ وكام إنذار هتشوف في اليوم لو عندك 100,000 طلب؟
+      <details><summary>الإجابة</summary><span class="ltr">P(B) = 0.95·0.001 + 0.02·0.999 ≈ 0.02093</span>، يعني الـ posterior <span class="ltr">≈ 0.00095 / 0.02093 ≈ 4.5%</span>. وفي اليوم: حوالي 2,093 إنذار منهم حوالي 95 بس حقيقي. الدرس: لما الحاجة نادرة، الـ false positive rate هو اللي بيحكم، ومحتاج تقلله جدًا أو تحط مرحلة تأكيد تانية (زي تحليل الدكتور التأكيدي).</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d7-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: الحدس والأخطاء وفين في الـ LLMs</h2></div>
+  <ul class="checklist">
+    <li><b>الـ base rate fallacy:</b> أكبر غلطة في قراءة أي metric. «الموديل دقته 99%» مش بتقولك حاجة عن الـ precision لو الـ class اللي بتدور عليه نادر. دايمًا اسأل: الـ prior كام؟</li>
+    <li><b>‏P(A|B) ≠ P(B|A):</b> «احتمال التحليل يطلع إيجابي لو عيّان» (99%) غير «احتمال تبقى عيّان لو التحليل إيجابي» (1%). قلبهم ده غلطة منتشرة جدًا.</li>
+    <li><b>الـ Naive Bayes مش بيطلّع احتمالات معايَرة:</b> افتراض الاستقلال بيخلي الـ confidence مبالغ فيه غالبًا (لو كلمتين بيقولوا نفس الحاجة، بيتحسبوا مرتين). الترتيب صح، بس متعتمدش على الرقم نفسه كـ threshold من غير calibration.</li>
+    <li><b>في الـ LLMs:</b> الـ weight decay في AdamW قريب جدًا من فكرة الـ Gaussian prior (L2). والـ RLHF/DPO بيحطوا عقوبة KL عشان الموديل ميبعدش أوي عن الموديل الأصلي، وده شبه prior بيقول «فضل قريب من اللي انت عارفه». وفي الـ evaluation، لما بتستخدم LLM كـ judge أو classifier، نفس حسبة الـ base rate بتاعة التمرين ٥ بتحدد قد إيه تثق في الـ flags بتاعته.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d7-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d7-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d7-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d7-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشتق Bayes من الاحتمال الشرطي وأسمي الأجزاء الأربعة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فهمت ليه التحليل الـ 99% بيدي 1% بس، وأقدر أشرحه بالأعداد</label></li>
+    <li><label><input type="checkbox" data-ck="3"> كتبت NaiveBayes بإيدي وفاهم ليه الـ Laplace smoothing</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم إن MAP = MLE + prior = regularization</label></li>
+    <li><label><input type="checkbox" data-ck="5"> جربت تحديث Beta والـ A/B test وفهمت القرار</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Bayes + base rates</td><td>thresholds للـ classifiers، الـ anomaly detection، الـ guardrails، قراءة الـ precision/recall</td></tr>
+    <tr><td>Naive Bayes</td><td>baseline سريع لتصنيف النصوص، الـ spam filtering</td></tr>
+    <tr><td>Laplace smoothing</td><td>الـ n-gram language models، أي تقدير احتمالات من عدّ</td></tr>
+    <tr><td>MAP / priors</td><td>الـ L2/L1 regularization، الـ weight decay</td></tr>
+    <tr><td>Conjugate priors / sequential updates</td><td>Thompson sampling، الـ bandits، الـ online learning</td></tr>
+    <tr><td>Bayesian A/B</td><td>تجارب المنتجات، مقارنة prompts أو موديلات في الـ production</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Optimization. SGD والـ momentum وAdam والـ learning rate schedules: إزاي الموديل بينزل فعلًا في الـ loss landscape.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F07-bayes-theorem" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/07-bayes-theorem</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=7,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d7-roadmap').closest('.day');
+const rm=$('d7-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===N)s.className='now';rm.appendChild(s)}
+const alive=c=>document.body.contains(c);
+const bayes=(p,l,fp)=>l*p/(l*p+fp*(1-p));
+
+// ---------- Lab 1: base rate grid ----------
+const gc=$('d7-gCv'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;let tests=1;
+function grid(){const p0=Math.pow(10,+$('d7-pr').value),se=+$('d7-se').value,fp=+$('d7-fp').value;
+  $('d7-vpr').textContent=p0<0.001?p0.toExponential(1):f(p0,4);$('d7-vse').textContent=se;$('d7-vfp').textContent=fp;
+  let p=p0;for(let i=0;i<tests-1;i++)p=bayes(p,se,fp);const ev=se*p+fp*(1-p),post=bayes(p,se,fp);
+  $('d7-nt').textContent=tests;$('d7-ev').textContent=f(ev,5);$('d7-post').textContent=f(post,4)+' ('+f(post*100,2)+'%)';
+  // 10000 cells: 125 x 80
+  const cols=125,rows=80,cw=GW/cols,ch=(GH-30)/rows,total=cols*rows;
+  const sick=Math.round(p*total),tp=Math.round(sick*se),fpN=Math.round((total-sick)*fp);
+  gx.clearRect(0,0,GW,GH);
+  for(let i=0;i<total;i++){const r=Math.floor(i/cols),c=i%cols;let col;
+    if(i<tp)col=css('--ok');else if(i<sick)col=css('--vec-a');else if(i<sick+fpN)col=css('--vec-b');else col=css('--soft');
+    gx.fillStyle=col;gx.fillRect(c*cw,r*ch,Math.max(1,cw-0.6),Math.max(1,ch-0.6))}
+  gx.fillStyle=css('--ink');gx.font='12px JetBrains Mono, monospace';
+  gx.fillText(`10,000 · sick ${sick} · true+ ${tp} · false+ ${fpN} → real: ${tp}/${tp+fpN}`,4,GH-10)}
+['d7-pr','d7-se','d7-fp'].forEach(id=>$(id).addEventListener('input',()=>{tests=1;grid()}));
+$('d7-again').addEventListener('click',()=>{if(tests<5)tests++;grid()});$('d7-reset').addEventListener('click',()=>{tests=1;grid()});
+$('d7-med').addEventListener('click',()=>{$('d7-pr').value=-4;$('d7-se').value=0.99;$('d7-fp').value=0.01;tests=1;grid()});
+$('d7-spam').addEventListener('click',()=>{$('d7-pr').value=Math.log10(0.3);$('d7-se').value=0.05;$('d7-fp').value=0.001;tests=1;grid()});
+grid();
+
+// ---------- Lab 2: Naive Bayes ----------
+const DOCS=["win free money now","free lottery ticket winner","claim your prize today free","urgent offer free cash","congratulations you won free","meeting tomorrow at noon","project update attached","can we schedule a call","quarterly report review","lunch on thursday sounds good","team standup notes attached","please review the pull request"];
+const LAB=["spam","spam","spam","spam","spam","ham","ham","ham","ham","ham","ham","ham"];
+const cc={spam:0,ham:0},wc={spam:{},ham:{}},tot={spam:0,ham:0},vocab=new Set();
+DOCS.forEach((d,i)=>{const l=LAB[i];cc[l]++;d.split(' ').forEach(w=>{wc[l][w]=(wc[l][w]||0)+1;tot[l]++;vocab.add(w)})});
+const V=vocab.size;
+const nc=$('d7-nbCv'),nx=AI.setupCanvas(nc),NW=+nc.dataset.w,NH=+nc.dataset.h;
+function nb(){const s=+$('d7-sm').value;$('d7-vsm').textContent=s;const words=$('d7-msg').value.toLowerCase().split(/\s+/).filter(Boolean);
+  const ll=(w,c)=>{const p=((wc[c][w]||0)+s)/(tot[c]+s*V);return p>0?Math.log(p):-Infinity};
+  const contrib=words.map(w=>[w,ll(w,'spam')-ll(w,'ham'),vocab.has(w)]);
+  const prior=Math.log(5/12)-Math.log(7/12);
+  const scS=Math.log(5/12)+words.reduce((a,w)=>a+ll(w,'spam'),0),scH=Math.log(7/12)+words.reduce((a,w)=>a+ll(w,'ham'),0);
+  nx.clearRect(0,0,NW,NH);const rows=[['prior',prior,true],...contrib].slice(0,10),rh=Math.min(24,(NH-10)/rows.length),mid=NW/2+40;
+  const finite=rows.map(r=>r[1]).filter(isFinite),mx=Math.max(1,...finite.map(Math.abs));
+  nx.strokeStyle=css('--muted');nx.beginPath();nx.moveTo(mid,0);nx.lineTo(mid,rows.length*rh);nx.stroke();
+  rows.forEach(([w,v,known],i)=>{const y=i*rh+3;nx.fillStyle=css('--ink');nx.font='12px JetBrains Mono, monospace';nx.textAlign='right';nx.fillText(w+(known?'':' (new)'),mid-150,y+rh*0.65);
+    if(!isFinite(v)){nx.fillStyle=css('--bad');nx.textAlign='left';nx.fillText('log(0) → undefined',mid-140,y+rh*0.65);return}
+    const L=Math.abs(v)/mx*130;nx.fillStyle=v>0?css('--vec-b'):css('--vec-a');nx.fillRect(v>0?mid:mid-L,y,L,rh-6);
+    nx.fillStyle=css('--muted');nx.textAlign=v>0?'left':'right';nx.fillText(f(v,2),v>0?mid+L+4:mid-L-4,y+rh*0.65)});
+  nx.textAlign='left';nx.fillStyle=css('--muted');nx.fillText('← ham',mid-140,NH-4);nx.fillText('spam →',mid+90,NH-4);
+  const vEl=$('d7-nbV');if(!isFinite(scS)||!isFinite(scH)){vEl.textContent='smoothing = 0 → a word has P = 0 in one class; log undefined';vEl.style.color=css('--bad');return}
+  const m=Math.max(scS,scH),eS=Math.exp(scS-m),eH=Math.exp(scH-m),pS=eS/(eS+eH);const cls=pS>=0.5?'spam':'ham';
+  vEl.textContent=`→ ${cls}   (confidence ${f(cls==='spam'?pS:1-pS,3)})`;vEl.style.color=cls==='spam'?css('--vec-b'):css('--vec-a')}
+$('d7-msg').addEventListener('input',nb);$('d7-sm').addEventListener('input',nb);
+document.querySelectorAll('[data-d7m]').forEach(b=>b.addEventListener('click',()=>{$('d7-msg').value=b.dataset.d7m;nb()}));nb();
+
+// ---------- Beta helpers ----------
+function lgamma(z){const g=7,c=[0.99999999999980993,676.5203681218851,-1259.1392167224028,771.32342877765313,-176.61502916214059,12.507343278686905,-0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7];
+  if(z<0.5)return Math.log(Math.PI/Math.sin(Math.PI*z))-lgamma(1-z);z-=1;let x=c[0];for(let i=1;i<g+2;i++)x+=c[i]/(z+i);const t=z+g+0.5;return 0.5*Math.log(2*Math.PI)+(z+0.5)*Math.log(t)-t+Math.log(x)}
+const betaPdf=(x,a,b)=>x<=0||x>=1?0:Math.exp((a-1)*Math.log(x)+(b-1)*Math.log(1-x)+lgamma(a+b)-lgamma(a)-lgamma(b));
+function gaussR(){let u=0;while(u===0)u=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*Math.random())}
+function gammaS(k){if(k<1)return gammaS(k+1)*Math.pow(Math.random(),1/k);const d=k-1/3,c=1/Math.sqrt(9*d);for(;;){const x=gaussR(),v=Math.pow(1+c*x,3);if(v<=0)continue;const u=Math.random();if(u<1-0.0331*x**4||Math.log(u)<0.5*x*x+d*(1-v+Math.log(v)))return d*v}}
+const betaS=(a,b)=>{const x=gammaS(a),y=gammaS(b);return x/(x+y)};
+function plotCurve(ctx,W,H,fn,col,lw,mx,dash,xr){const pad=20,[lo,hi]=xr||[0,1];ctx.strokeStyle=col;ctx.lineWidth=lw;ctx.setLineDash(dash||[]);ctx.beginPath();for(let i=0;i<=400;i++){const x=lo+(hi-lo)*i/400,y=Math.min(mx,fn(x)),p=[pad+i/400*(W-2*pad),H-pad-y/mx*(H-2*pad)];i?ctx.lineTo(...p):ctx.moveTo(...p)}ctx.stroke();ctx.setLineDash([])}
+
+// ---------- Lab 3: Beta coin ----------
+let pa=1,pb=1,H=0,T=0,bi=0;const BATCH=[[7,3],[5,5],[3,7],[6,4]];
+const bc=$('d7-bCv'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+function beta(){const a=pa+H,b=pb+T,pad=20;bx.clearRect(0,0,BW,BH);
+  let mx=0;for(let i=1;i<400;i++){const x=i/400;mx=Math.max(mx,betaPdf(x,a,b),betaPdf(x,pa,pb))}mx=Math.min(mx*1.1,60)||1;
+  bx.strokeStyle=css('--muted');bx.lineWidth=1;bx.beginPath();bx.moveTo(pad,BH-pad);bx.lineTo(BW-pad,BH-pad);bx.stroke();
+  bx.fillStyle=css('--muted');bx.font='11px JetBrains Mono, monospace';[0,0.25,0.5,0.75,1].forEach(v=>bx.fillText(v,pad+v*(BW-2*pad)-8,BH-4));
+  plotCurve(bx,BW,BH,x=>betaPdf(x,pa,pb),css('--muted'),1.5,mx,[5,4]);plotCurve(bx,BW,BH,x=>betaPdf(x,a,b),css('--vec-a'),3,mx);
+  const n=H+T,mle=n?H/n:null,map=(a>1&&b>1)?(a-1)/(a+b-2):null,X=v=>pad+v*(BW-2*pad);
+  if(mle!==null){bx.strokeStyle=css('--bad');bx.lineWidth=2;bx.beginPath();bx.moveTo(X(mle),pad);bx.lineTo(X(mle),BH-pad);bx.stroke();bx.fillStyle=css('--bad');bx.fillText('MLE',X(mle)+3,pad+10)}
+  if(map!==null){bx.strokeStyle=css('--ok');bx.setLineDash([3,3]);bx.beginPath();bx.moveTo(X(map),pad);bx.lineTo(X(map),BH-pad);bx.stroke();bx.setLineDash([]);bx.fillStyle=css('--ok');bx.fillText('MAP',X(map)+3,pad+24)}
+  bx.fillStyle=css('--ink');bx.fillText(`data: ${H}H ${T}T`,BW-110,16);
+  $('d7-bp').textContent=`Beta(${a}, ${b})`;$('d7-bm').textContent=f(a/(a+b),4);$('d7-bmle').textContent=mle===null?'—':f(mle,4);$('d7-bmap').textContent=map===null?'—':f(map,4)}
+document.querySelectorAll('[data-d7p]').forEach(btn=>btn.addEventListener('click',()=>{[pa,pb]=btn.dataset.d7p.split(',').map(Number);document.querySelectorAll('[data-d7p]').forEach(c=>c.classList.toggle('primary',c===btn));beta()}));
+$('d7-H').addEventListener('click',()=>{H++;beta()});$('d7-T').addEventListener('click',()=>{T++;beta()});
+$('d7-batch').addEventListener('click',()=>{const [s,t]=BATCH[bi%4];bi++;H+=s;T+=t;beta()});
+$('d7-flip').addEventListener('click',()=>{for(let i=0;i<20;i++)Math.random()<0.7?H++:T++;beta()});
+$('d7-bclr').addEventListener('click',()=>{H=0;T=0;bi=0;beta()});beta();
+
+// ---------- Lab 4: A/B ----------
+const ac=$('d7-abCv'),ax=AI.setupCanvas(ac),AW=+ac.dataset.w,AH=+ac.dataset.h;
+function abVals(){const n=+$('d7-abn').value;['abA','abB'].forEach(k=>{const el=$('d7-'+k);el.max=n;if(+el.value>n)el.value=n});
+  const A=+$('d7-abA').value,B=+$('d7-abB').value;$('d7-vabn').textContent=n;$('d7-vabA').textContent=A;$('d7-vabB').textContent=B;return[n,A,B]}
+function abDraw(){const [n,A,B]=abVals(),a1=1+A,b1=1+n-A,a2=1+B,b2=1+n-B;
+  const m1=a1/(a1+b1),m2=a2/(a2+b2),s=Math.sqrt(Math.max(m1*(1-m1)/n,m2*(1-m2)/n,1e-6));
+  const lo=Math.max(0,Math.min(m1,m2)-5*s),hi=Math.min(1,Math.max(m1,m2)+5*s);
+  ax.clearRect(0,0,AW,AH);let mx=0;for(let i=0;i<=400;i++){const x=lo+(hi-lo)*i/400;mx=Math.max(mx,betaPdf(x,a1,b1),betaPdf(x,a2,b2))}mx*=1.1;
+  plotCurve(ax,AW,AH,x=>betaPdf(x,a1,b1),css('--vec-a'),2.5,mx,null,[lo,hi]);plotCurve(ax,AW,AH,x=>betaPdf(x,a2,b2),css('--vec-b'),2.5,mx,null,[lo,hi]);
+  ax.font='12px JetBrains Mono, monospace';ax.fillStyle=css('--vec-a');ax.fillText(`A: Beta(${a1}, ${b1}) mean ${f(m1,4)}`,24,16);ax.fillStyle=css('--vec-b');ax.fillText(`B: Beta(${a2}, ${b2}) mean ${f(m2,4)}`,24,32);
+  ax.fillStyle=css('--muted');ax.fillText(f(lo,3),20,AH-4);ax.fillText(f(hi,3),AW-60,AH-4);
+  $('d7-pb').textContent='دوس احسب';$('d7-dec').textContent='—';$('d7-dec').style.color=''}
+function abRun(){const [n,A,B]=abVals(),M=20000;let w=0;for(let i=0;i<M;i++)if(betaS(1+B,1+n-B)>betaS(1+A,1+n-A))w++;const p=w/M;
+  $('d7-pb').textContent=f(p,4);const d=$('d7-dec');if(p>0.95){d.textContent='اعتمد B';d.style.color=css('--ok')}else if(p<0.05){d.textContent='اعتمد A';d.style.color=css('--ok')}else{d.textContent='كمّل جمع داتا';d.style.color=css('--vec-b')}}
+['d7-abn','d7-abA','d7-abB'].forEach(id=>$(id).addEventListener('input',abDraw));
+$('d7-abRun').addEventListener('click',abRun);
+$('d7-abScale').addEventListener('click',()=>{const n=+$('d7-abn').value,A=+$('d7-abA').value,B=+$('d7-abB').value;const n2=Math.min(5000,n*3);const k=n2/n;$('d7-abn').value=n2;abVals();$('d7-abA').value=Math.round(A*k);$('d7-abB').value=Math.round(B*k);abDraw();abRun()});
+abDraw();abRun();
+
+// ---------- quiz ----------
+AI.quiz($('d7-quizBox'),[
+ ['في Bayes\' theorem، يعني إيه الـ prior؟',['الاحتمال النهائي بعد ما تشوف الدليل','احتمال الدليل لو الفرضية صح','احتمال الدليل نفسه','اعتقادك عن الفرضية قبل ما تشوف أي دليل'],3,'الـ prior P(A) هو اعتقادك المبدئي عن A قبل الداتا. بيتحدّث للـ posterior P(A|B) بعد ما تشوف الدليل B.'],
+ ['مرض بيصيب 1 من كل 10,000. تحليل دقته 99% طلع إيجابي. احتمال إنك عيّان تقريبًا كام؟',['99%','10%','50%','حوالي 1%'],3,'رغم دقة 99%، المرض نادر جدًا (0.01%) فأغلب الإيجابيات من ناس سليمة (false positives). Bayes بيدي P(sick|positive) ≈ 0.98%.'],
+ ['يعني إيه Laplace smoothing في الـ Naive Bayes وليه لازم؟',['بيقلل أبعاد الـ features','بيضيف عدّ صغير لكل feature عشان يمنع احتمالات صفر من كلمات ما اتشافتش، اللي كانت هتصفّر حاصل الضرب كله','بينعّم الحد بين الـ classes','بيخلي الـ features متوسطها صفر والـ variance واحد'],1,'من غيره، كلمة ما ظهرتش في الـ spam هتاخد P = 0 وتصفّر الضرب كله مهما كانت باقي الكلمات بتقول spam. إضافة 1 لكل عدّ بتمنع ده.'],
+ ['الـ MAP بيختلف عن الـ MLE في إيه؟',['الـ MAP أسرع في الحساب','الـ MLE دايمًا أحسن','الـ MAP بيضيف prior على الـ parameters (زي الـ regularization)، والـ MLE بيستخدم الـ likelihood بس','الـ MAP بيستخدم داتا أكتر'],2,'الـ MAP بيعظّم P(data|params)·P(params) والـ MLE بيعظّم P(data|params) بس. الـ prior هو الـ regularization: Gaussian = L2، Laplace = L1.'],
+ ['في التحديث البايزي المتتابع، بدأت بـ Beta(1,1) وشفت 7 heads و3 tails. الـ posterior إيه؟',['Beta(8, 4)','Beta(1.7, 1.3)','Normal(0.7, 0.1)','Beta(7, 3)'],0,'الـ Beta-Binomial update بيضيف النجاحات للأول والفشل للتاني: Beta(1+7, 1+3) = Beta(8, 4)، والـ mean = 8/12 = 0.667.'],
+ ['(سؤال مني) detector دقته 95% والـ false positive rate بتاعه 2%، والحالة 1 في 1000. الـ precision بتاع الإنذارات تقريبًا كام؟',['95%','حوالي 50%','حوالي 5%','98%'],2,'0.95·0.001 / (0.95·0.001 + 0.02·0.999) ≈ 4.5%. لما الحالة نادرة، الـ false positives بتغرق الإنذارات الحقيقية.'],
+ ['(سؤال مني) Bayesian A/B test طلع P(B > A) = 0.92. القرار بقاعدة الدرس إيه؟',['اعتمد B فورًا','اعتمد A','كمّل جمع داتا','التجربة فشلت'],2,'القاعدة: أكبر من 0.95 → B، أقل من 0.05 → A، وبين كده كمّل. 0.92 قريبة بس مش كفاية.']
+],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+AI.onTheme(()=>{if(!alive(gc))return false;grid();nb();beta();abDraw()});
+})();
+</script>

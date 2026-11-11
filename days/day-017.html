@@ -1,0 +1,725 @@
+<div class="day" id="d17-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 17 · Linear Systems</span>
+  <h1>اليوم ١٧: حل Ax = b، المسألة القديمة اللي لسه شغّالة جوه كل موديل</h1>
+  <p class="lede">كل مرة بتدرّب linear regression، أو بتضيف regularization، أو بتستخدم Gaussian process، انت في الآخر بتحل <b>نظام معادلات خطية</b>. النهاردة هتبني كل الطرق الأساسية بإيدك: Gaussian elimination، LU، QR، Cholesky، الـ least squares، الـ pseudoinverse، والـ conjugate gradient، وهتعرف إمتى الإجابة تتصدق وإمتى لأ عن طريق الـ <b>condition number</b>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>اللغة: <b>Python + NumPy</b></span>
+    <span>قبله: <b>Sampling Methods</b></span>
+    <span>بعده: <b>Convex Optimization</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d17-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d17-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كان عن الـ Sampling. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ temperature في الـ LLM بتعمل إيه في توزيع الكلمات؟</summary>
+    <p>بنقسم الـ logits على T قبل الـ softmax. T صغيرة (أقل من 1) بتخلي التوزيع حاد والموديل يختار الكلمة الأكثر احتمالًا تقريبًا دايمًا. T كبيرة بتفرد التوزيع وتزود العشوائية والتنوع.</p></details>
+  <details><summary>٢. إيه الفرق بين top-k وtop-p؟</summary>
+    <p>top-k بياخد أعلى k كلمات بعدد ثابت. top-p (nucleus) بياخد أصغر مجموعة كلمات مجموع احتمالاتها يوصل p، فحجم المجموعة بيتغير حسب ثقة الموديل.</p></details>
+  <details><summary>٣. ليه الـ VAE محتاج reparameterization trick؟</summary>
+    <p>لأن السحب العشوائي نفسه مش differentiable. بدل ما نسحب z من N(μ, σ²) مباشرة، نسحب ε من N(0,1) ونحسب z = μ + σ·ε، فالـ gradient يعدي لـ μ وσ.</p></details>
+</section>
+
+<section>
+  <h2>خطة الساعتين</h2>
+  <div class="plan">
+    <div><b>15 min</b>يعني إيه Ax = b: صورة الصفوف وصورة الأعمدة (معمل ١)</div>
+    <div><b>20 min</b>Gaussian elimination والـ pivoting وLU وQR وCholesky</div>
+    <div><b>20 min</b>Least squares والـ normal equations والـ ridge (معمل ٢)</div>
+    <div><b>15 min</b>Pseudoinverse، الـ condition number، والـ CG (معمل ٣)</div>
+    <div><b>35 min</b>اكتب الكود بإيدك وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 geometry -->
+<section id="d17-geo">
+  <div class="station-head"><span class="tag">01</span><h2>Ax = b يعني إيه بالرسم؟</h2></div>
+  <p>A مصفوفة معاملات معروفة، b متجه نتايج معروفة، وx المجهول اللي بندور عليه. في الـ linear regression: A هي الداتا، b هي الـ targets، وx هي الأوزان. الموديل كله بيتلخص في: «لاقي x اللي تخلي Ax أقرب ما يمكن لـ b».</p>
+  <div class="formula">2x + y = 5     x − y = 1     →  الحل: x = 2, y = 1</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>صورة الصفوف (Row picture)</h3>
+      <p>كل صف معادلة، وكل معادلة خط (في 2D) أو مستوى/hyperplane (في أبعاد أكتر). الحل هو النقطة اللي كل الخطوط بتتقابل فيها. فيه ٣ احتمالات بس:</p>
+      <ul class="checklist" style="padding-inline-start:4px">
+        <li><b>حل واحد:</b> الخطوط بتتقاطع في نقطة واحدة. ده معناه إن A ليها inverse.</li>
+        <li><b>مفيش حل:</b> الخطوط متوازية. النظام inconsistent.</li>
+        <li><b>حلول لا نهائية:</b> الخطوط فوق بعض. A عندها null space.</li>
+      </ul>
+      <h3>صورة الأعمدة (Column picture)</h3>
+      <p>هنا السؤال بيتغير: «أخلط أعمدة A بأنهي نسب عشان أطلع b؟»</p>
+      <div class="formula">x₁·[2, 1] + x₂·[1, −1] = [5, 1]   ←  2·[2,1] + 1·[1,−1] = [5,1] ✓</div>
+      <p>صورة الأعمدة هي الأعمق: لو b جوه الـ <b>column space</b> بتاع A يبقى فيه حل. لو برّه، بندوّر على أقرب نقطة جوه الـ column space، ودي بالظبط حل الـ <b>least squares</b>.</p>
+      <div class="note"><strong>معظم مسائل الـ ML</strong> من نوع «مفيش حل مظبوط»، لأن عندك داتا (معادلات) أكتر بكتير من البارامترز (مجاهيل).</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d17-geoCanvas" width="520" height="400" aria-label="رسم خطين وتقاطعهم أو أعمدة المصفوفة"></canvas>
+      <div class="btns">
+        <button type="button" id="d17-viewRow" class="primary">صورة الصفوف</button>
+        <button type="button" id="d17-viewCol">صورة الأعمدة</button>
+      </div>
+      <div class="mrow">
+        <label>a₁₁ <span id="d17-v0">2</span><input type="range" id="d17-s0" min="-3" max="3" step="0.1" value="2"></label>
+        <label>a₁₂ <span id="d17-v1">1</span><input type="range" id="d17-s1" min="-3" max="3" step="0.1" value="1"></label>
+        <label>a₂₁ <span id="d17-v2">1</span><input type="range" id="d17-s2" min="-3" max="3" step="0.1" value="1"></label>
+        <label>a₂₂ <span id="d17-v3">-1</span><input type="range" id="d17-s3" min="-3" max="3" step="0.1" value="-1"></label>
+        <label>b₁ <span id="d17-v4">5</span><input type="range" id="d17-s4" min="-6" max="6" step="0.1" value="5"></label>
+        <label>b₂ <span id="d17-v5">1</span><input type="range" id="d17-s5" min="-6" max="6" step="0.1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>det(A)</small><b id="d17-det">-3</b></div>
+        <div><small>x</small><b id="d17-x">[2, 1]</b></div>
+        <div><small>κ(A)</small><b id="d17-kap">—</b></div>
+      </div>
+      <div class="verdict" id="d17-geoVerdict">حل واحد</div>
+      <div class="btns">
+        <button type="button" data-d17g="2,1,1,-1,5,1">المثال الأصلي</button>
+        <button type="button" data-d17g="1,1,2,2,2,5">متوازيين</button>
+        <button type="button" data-d17g="1,1,2,2,2,4">فوق بعض</button>
+        <button type="button" data-d17g="1,1,1,1.1,2,2.1">شبه متوازيين</button>
+      </div>
+    </div>
+  </div>
+  <div class="note ai"><strong>جرّب «شبه متوازيين»</strong> وحرّك b₂ حركة صغيرة جدًا: نقطة التقاطع بتطير بعيد. ده إحساس الـ <b>ill-conditioning</b> اللي هنرجعله في المحطة ٠٥.</div>
+</section>
+
+<!-- 02 elimination -->
+<section id="d17-elim">
+  <div class="station-head"><span class="tag">02</span><h2>Gaussian Elimination: صفّر اللي تحت القطر</h2></div>
+  <p>الفكرة: نحوّل Ax = b لنظام مثلثي علوي Ux = c، وبعدين نحل من تحت لفوق (back substitution). زي ما بتحل معادلتين في تالتة إعدادي بالظبط، بس بطريقة منظمة تنفع لألف معادلة.</p>
+  <ol class="ex">
+    <li>لكل عمود k (عمود الـ pivot): دوّر على أكبر قيمة مطلقة في العمود ده من الصف k ولتحت (<b>partial pivoting</b>)، وبدّل الصف ده مع الصف k.</li>
+    <li>لكل صف i تحت k: احسب المضاعف <span class="ltr">m = A[i][k] / A[k][k]</span> واطرح m × صف k من صف i.</li>
+    <li>Back substitution: حل آخر معادلة الأول، وعوّض لفوق.</li>
+  </ol>
+  <p>جرّب بنفسك على مثال الدرس (من غير pivoting عشان تشوف نفس الخطوات اللي في الشرح):</p>
+  <div class="instrument">
+    <div class="tablewrap"><table id="d17-elimTable" class="ltr" style="font-family:var(--f-mono);direction:ltr"></table></div>
+    <div class="verdict" id="d17-elimMsg"></div>
+    <div class="btns"><button type="button" id="d17-elimNext" class="primary">الخطوة الجاية</button><button type="button" id="d17-elimReset">من الأول</button></div>
+  </div>
+  <p>التكلفة <span class="ltr">O(n³)</span>. لنظام 1000×1000 ده حوالي مليار عملية floating-point. سريع، بس فيه أحسن لو هتحل أكتر من نظام بنفس A.</p>
+
+  <h3>ليه الـ partial pivoting مهم؟</h3>
+  <p>لو الـ pivot صفر هتقسم على صفر. ولو صغير جدًا، المضاعف m بيبقى ضخم وبيكبّر أخطاء التقريب. مثال الدرس:</p>
+  <div class="tablewrap"><table>
+    <tr><th>من غير pivoting</th><th>مع pivoting</th></tr>
+    <tr><td class="ltr">[[0.001, 1 | 1.001], [1, 1 | 2]]<br>m = 1/0.001 = 1000<br>R2 → [0, −999 | −999]</td>
+        <td class="ltr">swap → [[1, 1 | 2], [0.001, 1 | 1.001]]<br>m = 0.001<br>R2 → [0, 0.999 | 0.999]</td></tr>
+  </table></div>
+  <p>في المثال ده الاتنين طلعوا x₁ = x₂ = 1، بس في حساب الكمبيوتر بدقة محدودة، النسخة اللي من غير pivoting ممكن تخسر أرقام مهمة. الـ pivoting بيختار أكبر pivot متاح عشان المضاعفات تفضل صغيرة والحساب مستقر.</p>
+  <div class="note"><strong>تشبيه:</strong> لو بتوزن حاجة بميزان، أحسن تحط الحمل على أقوى رجل في الترابيزة. الـ pivot الكبير هو الرجل القوية؛ القسمة على رقم صغير زي إنك تسند كل الوزن على عود كبريت.</div>
+</section>
+
+<!-- 03 factorizations -->
+<section id="d17-fact">
+  <div class="station-head"><span class="tag">03</span><h2>التحليل لعوامل: LU و QR و Cholesky</h2></div>
+  <h3>LU: احفظ شغل الـ elimination</h3>
+  <p>A = L·U. الـ U هي نتيجة الـ elimination، والـ L مثلثية سفلية شايلة المضاعفات اللي استخدمناها.</p>
+  <div class="formula">[[2,1,1],[4,3,3],[2,3,1]] = [[1,0,0],[2,1,0],[1,2,1]] · [[2,1,1],[0,1,1],[0,0,−2]]</div>
+  <p>ليه نعمل كده؟ لأن بعد ما تدفع <span class="ltr">O(n³)</span> مرة واحدة في التحليل، كل b جديدة تتحل في <span class="ltr">O(n²)</span> بس:</p>
+  <div class="formula">LUx = b  →  Ly = b (forward, O(n²))  →  Ux = y (back, O(n²))</div>
+  <p>لو هتحل 1000 نظام بنفس A ومختلفين في b، الـ LU بتوفر حوالي 1000/3 مرة من الشغل الكلي. ومع الـ pivoting بنكتب <span class="ltr">PA = LU</span>، والـ P مصفوفة permutation بتسجل التبديلات.</p>
+  <div class="note"><strong>تشبيه:</strong> زي ما تجهّز عجينة البيتزا مرة واحدة (غالي)، وبعدين كل طلب جديد بتحط عليه الـ toppings بس (رخيص).</div>
+
+  <h3>QR: أعمدة متعامدة × مثلثية</h3>
+  <p>A = Q·R، والـ Q أعمدتها orthonormal (<span class="ltr">QᵀQ = I</span>) يعني بتحافظ على الأطوال والزوايا، والـ R مثلثية علوية. الحل:</p>
+  <div class="formula">QRx = b  →  Rx = Qᵀb  →  back substitution</div>
+  <p>من غير أي inverse، بس ضرب في Qᵀ. الـ QR أثبت عدديًا من الـ LU في مسائل الـ least squares. والـ Q بتتبني بـ Gram-Schmidt اللي شفناه في يوم ١: كل عمود جديد نشيل منه إسقاطه على كل الـ q اللي قبله ونعمله normalize، و<span class="ltr">R[i][j] = qᵢ · aⱼ</span> لكل <span class="ltr">i ≤ j</span>.</p>
+
+  <h3>Cholesky: «الجذر التربيعي» للمصفوفة</h3>
+  <p>لو A <b>symmetric</b> (<span class="ltr">A = Aᵀ</span>) و<b>positive definite</b> (كل الـ eigenvalues موجبة)، نقدر نكتبها <span class="ltr">A = L·Lᵀ</span>:</p>
+  <div class="formula">[[4,2],[2,5]] = [[2,0],[1,2]] · [[2,1],[0,2]]</div>
+  <div class="formula">L[i][i] = √(A[i][i] − Σₖ&lt;ᵢ L[i][k]²)      L[i][j] = (A[i][j] − Σₖ&lt;ⱼ L[i][k]·L[j][k]) / L[j][j]</div>
+  <p>أسرع من LU بالضعف وبتاخد نص المساحة. شرطها صعب بس المصفوفات دي بتظهر في كل حتة:</p>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• الـ covariance matrices (positive semi-definite، وتبقى definite مع regularization).</li>
+    <li>• الـ kernel matrix في الـ Gaussian processes.</li>
+    <li>• الـ Hessian بتاع دالة convex عند الـ minimum.</li>
+    <li>• <span class="ltr">AᵀA</span> دايمًا symmetric positive semi-definite.</li>
+  </ul>
+  <p>في الـ Gaussian processes بنحلل الـ kernel K بـ Cholesky ونحل <span class="ltr">Kα = y</span> للـ predictive mean، وكمان بنطلع منها الـ log-determinant ببلاش:</p>
+  <div class="formula">log det(K) = 2 · Σ log(diag(L))</div>
+</section>
+
+<!-- 04 least squares -->
+<section id="d17-ls">
+  <div class="station-head"><span class="tag">04</span><h2>Least Squares: لما مفيش حل مظبوط</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>A حجمها m×n و<span class="ltr">m &gt; n</span> (overdetermined): معادلات أكتر من المجاهيل. مفيش x تحقق الكل، فبنصغّر مجموع مربعات الأخطاء:</p>
+      <div class="formula">minimize ‖Ax − b‖²</div>
+      <p>نفك المربع: <span class="ltr">xᵀAᵀAx − 2xᵀAᵀb + bᵀb</span>، ناخد الـ gradient بالنسبة لـ x ونساويه بصفر: <span class="ltr">2AᵀAx − 2Aᵀb = 0</span>، فيطلع لنا الـ <b>normal equations</b>:</p>
+      <div class="formula">AᵀA x = Aᵀb</div>
+      <p>ده هو الـ linear regression بالظبط: <span class="ltr">w = (XᵀX)⁻¹Xᵀy</span>. كل مرة بتنادي <code>LinearRegression.fit()</code> في sklearn بيتحسب ده (أو حاجة مكافئة عن طريق QR أو SVD).</p>
+      <h3>Ridge regression</h3>
+      <p>ضيف <span class="ltr">λI</span> للمصفوفة:</p>
+      <div class="formula">(XᵀX + λI) w = Xᵀy</div>
+      <p>ده بيعمل حاجتين: يحسّن الـ conditioning (المصفوفة تتعكس بدقة أحسن)، ويقلل الـ overfitting بإنه يشد الأوزان ناحية الصفر. ولما <span class="ltr">λ &gt; 0</span> المصفوفة دايمًا symmetric positive definite، فينفع نحلها بـ Cholesky.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> اسحب النقط وشوف الخط بيتحرك. الخطوط الرمادية المتقطعة هي الـ residuals، والـ least squares بيصغّر مجموع مربعاتها. علّي λ وشوف الميل بيتشد ناحية الصفر والـ κ بيقل.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d17-lsCanvas" width="520" height="380" aria-label="نقط قابلة للسحب وخط least squares"></canvas>
+      <label style="display:grid;gap:2px">λ (ridge) = <b class="mono" id="d17-lamV">0</b><input type="range" id="d17-lam" min="0" max="20" step="0.1" value="0"></label>
+      <div class="readout">
+        <div><small>intercept w₀</small><b id="d17-w0">1.5</b></div>
+        <div><small>slope w₁</small><b id="d17-w1">1.6</b></div>
+        <div><small>‖Xw − y‖²</small><b id="d17-res">0.3</b></div>
+        <div><small>AᵀA (+λI)</small><b id="d17-ata">[[4,10],[10,30]]</b></div>
+        <div><small>Aᵀb</small><b id="d17-atb">[22, 63]</b></div>
+        <div><small>κ(AᵀA + λI)</small><b id="d17-lsK">—</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d17-lsReset">رجّع مثال الدرس</button><button type="button" id="d17-lsAdd">ضيف نقطة</button></div>
+    </div>
+  </div>
+  <div class="note"><strong>مثال الدرس:</strong> النقط (1,3)، (2,5)، (3,6)، (4,8). <span class="ltr">AᵀA = [[4,10],[10,30]]</span> و<span class="ltr">Aᵀb = [22,63]</span>. لو حليت بإيدك (det = 20): <span class="ltr">w₀ = (30·22 − 10·63)/20 = 1.5</span> و<span class="ltr">w₁ = (4·63 − 10·22)/20 = 1.6</span>. الشرح الأصلي مكتوب فيه 1.7، بس الحساب بيطلع 1.6 والمعمل كمان بيطلعه. اتأكد بنفسك.</div>
+
+  <h3>الـ Pseudoinverse (Moore-Penrose)</h3>
+  <p>تعميم للـ inverse لأي مصفوفة، مربعة أو مستطيلة، singular أو لأ. بنحسبه من الـ SVD (اللي اتعلمته في يوم ١١):</p>
+  <div class="formula">A = UΣVᵀ   →   A⁺ = VΣ⁺Uᵀ      x = A⁺b</div>
+  <p>الـ Σ⁺ بنعملها إننا ناخد مقلوب كل singular value مش صفر وبعدين transpose. مثلًا لو Σ = <span class="ltr">[[5,0],[0,2],[0,0]]</span> تبقى Σ⁺ = <span class="ltr">[[1/5,0,0],[0,1/2,0]]</span>.</p>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• لو فيه حل واحد: <span class="ltr">A⁺b</span> بيديهولك.</li>
+    <li>• لو مفيش حل: بيديك حل الـ least squares.</li>
+    <li>• لو فيه حلول لا نهائية: بيديك الحل اللي <span class="ltr">‖x‖</span> بتاعه أصغر حاجة (minimum-norm).</li>
+  </ul>
+  <p><code>np.linalg.lstsq</code> و<code>np.linalg.pinv</code> الاتنين بيستخدموا الـ SVD من جوه.</p>
+</section>
+
+<!-- 05 condition + CG -->
+<section id="d17-cond">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Condition Number والـ Conjugate Gradient</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>الإجابة دي تتصدق؟</h3>
+      <p>الـ condition number بيقيس قد إيه الحل حساس لتغييرات صغيرة في المدخلات:</p>
+      <div class="formula">κ(A) = ‖A‖·‖A⁻¹‖ = σ_max / σ_min</div>
+      <div class="tablewrap"><table>
+        <tr><th>κ</th><th>المعنى</th></tr>
+        <tr><td class="ltr">&lt; 100</td><td>آمن، الحل دقيق</td></tr>
+        <tr><td class="ltr">≈ 10^k</td><td>بتخسر حوالي k رقم من دقة الـ floating-point</td></tr>
+        <tr><td class="ltr">≈ 10^16 (float64)</td><td>الحل ملوش معنى؛ المصفوفة عمليًا singular</td></tr>
+      </table></div>
+      <p>مثال: <span class="ltr">[[2,0],[0,1]]</span> عندها κ = 2/1 = 2، آمنة. لكن <span class="ltr">[[1,1],[1,1+10⁻¹⁵]]</span> عندها κ حوالي 10¹⁵ والحل زبالة.</p>
+      <p>في الـ ML ده بيحصل لما الـ features تبقى شبه collinear. الـ regularization بيحسّن κ من <span class="ltr">σ_max/σ_min</span> لـ <span class="ltr">(σ_max+λ)/(σ_min+λ)</span>.</p>
+      <h3>Conjugate Gradient (CG)</h3>
+      <p>للأنظمة الضخمة والـ sparse (ملايين مجاهيل)، الـ LU والـ Cholesky غاليين جدًا. الـ CG طريقة iterative بتحسّن تخمين خطوة بخطوة، وشغالة لما A تكون symmetric positive definite. في الحساب المظبوط بتوصل للحل في n خطوة بالكتير، وغالبًا أسرع بكتير لو الـ eigenvalues متجمعة.</p>
+      <p>سرعة الـ CG بتعتمد على κ: الأنظمة الأحسن conditioning بتتقارب أسرع، ودي سبب تاني إن الـ regularization بيساعد.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> المعمل بيرسم الدالة <span class="ltr">f(x) = ½xᵀAx − bᵀx</span> اللي أقل نقطة فيها هي حل Ax = b. علّي κ وشوف الـ steepest descent (برتقالي) بيعمل zig-zag، والـ CG (أزرق) بيوصل في خطوتين بالكتير لأن n = 2. اضغط على الرسم عشان تغيّر نقطة البداية.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d17-cgCanvas" width="520" height="400" aria-label="كنتور دالة تربيعية ومسارات CG وsteepest descent"></canvas>
+      <label style="display:grid;gap:2px">κ(A) = <b class="mono" id="d17-kV">10</b><input type="range" id="d17-k" min="1" max="100" step="1" value="10"></label>
+      <label style="display:grid;gap:2px">زاوية المحاور = <b class="mono" id="d17-thV">30°</b><input type="range" id="d17-th" min="0" max="180" step="5" value="30"></label>
+      <div class="readout">
+        <div><small>CG steps</small><b id="d17-cgN">2</b></div>
+        <div><small>Steepest descent steps</small><b id="d17-sdN">—</b></div>
+        <div><small>tolerance</small><b>1e-6</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d17-cgPlay" class="primary">شغّل الأنيميشن</button></div>
+    </div>
+  </div>
+  <p>الـ algorithm زي ما هو في الدرس:</p>
+  <div class="formula" style="text-align:left">x₀ = 0, r₀ = b − Ax₀, p₀ = r₀<br>α = (rₖ·rₖ)/(pₖ·Apₖ);  xₖ₊₁ = xₖ + αpₖ;  rₖ₊₁ = rₖ − αApₖ<br>β = (rₖ₊₁·rₖ₊₁)/(rₖ·rₖ);  pₖ₊₁ = rₖ₊₁ + βpₖ;  stop if ‖rₖ₊₁‖ &lt; tol</div>
+  <p>الـ CG بيتستخدم في: الـ optimization الكبير (Newton-CG)، حل الـ PDEs بعد ما تتقسم، الـ kernel methods لما الـ kernel matrix تبقى أكبر من إنها تتحلل، والـ preconditioning لـ solvers تانية.</p>
+
+  <h3>تختار أنهي طريقة إمتى؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>الشرط</th><th>التكلفة</th><th>إمتى</th></tr>
+    <tr><td>Gaussian elimination</td><td>A مربعة وnonsingular</td><td class="ltr">O(n³)</td><td>حل واحد لنظام مربع</td></tr>
+    <tr><td>LU</td><td>A مربعة وnonsingular</td><td class="ltr">O(n³) + O(n²)/solve</td><td>حلول كتير بنفس A</td></tr>
+    <tr><td>QR</td><td class="ltr">m ≥ n</td><td class="ltr">O(mn²)</td><td>Least squares بثبات عددي</td></tr>
+    <tr><td>Cholesky</td><td>symmetric positive definite</td><td class="ltr">O(n³/3)</td><td>Covariance، GP، ridge</td></tr>
+    <tr><td>Normal equations</td><td class="ltr">m &gt; n</td><td class="ltr">O(mn² + n³)</td><td>Linear regression لما n صغير</td></tr>
+    <tr><td>SVD / pseudoinverse</td><td>أي A</td><td class="ltr">O(mn²)</td><td>rank-deficient، minimum-norm</td></tr>
+    <tr><td>Conjugate gradient</td><td>SPD وsparse</td><td class="ltr">O(n·k·nnz)</td><td>أنظمة ضخمة sparse (k = عدد الخطوات)</td></tr>
+  </table></div>
+  <h3>فين في الـ ML؟</h3>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• <b>Linear regression:</b> حل الـ normal equations بـ Cholesky (n صغير) أو QR (ثبات) أو SVD (لو ممكن rank-deficient).</li>
+    <li>• <b>Ridge:</b> <span class="ltr">XᵀX + λI</span> SPD دايمًا، فـ Cholesky.</li>
+    <li>• <b>Gaussian processes:</b> Cholesky لـ K، والـ log det منها.</li>
+    <li>• <b>Orthogonal initialization:</b> بنستخدم QR عشان نعمل weight matrices أعمدتها orthonormal، وده بيمنع الإشارة إنها تنهار في الشبكات العميقة.</li>
+    <li>• <b>Preconditioning:</b> incomplete Cholesky أو incomplete LU كـ preconditioners للـ CG.</li>
+    <li>• <b>Feature engineering:</b> κ بتاع <span class="ltr">XᵀX</span> بيقولك لو الـ features collinear؛ لو كبير، شيل features أو ضيف regularization.</li>
+  </ul>
+</section>
+
+<!-- 06 code -->
+<section id="d17-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو، شغّل ملف الدرس الأصلي (محتاج <code>numpy</code>، و<code>scikit-learn</code> اختياري للمقارنة):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/01-math-foundations/17-linear-systems/code/linear_systems.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_linear.py</code> واكتب كل خطوة بنفسك، وارجع للأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: Gaussian elimination مع partial pivoting</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def gaussian_elimination(A, b):
+    n = len(b)
+    Ab = np.hstack([A.astype(float), b.reshape(-1, 1).astype(float)])  <span class="c"># المصفوفة الممددة [A | b]</span>
+
+    for k in range(n):
+        max_row = k + np.argmax(np.abs(Ab[k:, k]))   <span class="c"># أكبر pivot في العمود</span>
+        Ab[[k, max_row]] = Ab[[max_row, k]]           <span class="c"># بدّل الصفين</span>
+
+        if abs(Ab[k, k]) &lt; 1e-12:
+            raise ValueError(f"Matrix is singular at pivot {k}")
+
+        for i in range(k + 1, n):
+            m = Ab[i, k] / Ab[k, k]                  <span class="c"># المضاعف</span>
+            Ab[i, k:] -= m * Ab[k, k:]               <span class="c"># صفّر اللي تحت</span>
+
+    x = np.zeros(n)
+    for i in range(n - 1, -1, -1):                   <span class="c"># back substitution من تحت لفوق</span>
+        x[i] = (Ab[i, -1] - Ab[i, i + 1 : n] @ x[i + 1 : n]) / Ab[i, i]
+    return x
+
+A = np.array([[2, 1, 1], [4, 3, 3], [2, 3, 1]], dtype=float)
+b = np.array([8, 20, 12], dtype=float)
+print(gaussian_elimination(A, b))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">[2. 2. 2.]</pre><p>الحل المظبوط من الشرح x = [2, 2, 2]. في الملف الأصلي هتلاقي كمان مقارنة مع <code>np.linalg.solve</code> والفرق والـ residual هيطلعوا أرقام صغيرة جدًا (قريبة من الصفر) أو صفر.</p></details>
+
+  <h3>خطوة ٢: LU مع pivoting، وحل كذا b بنفس التحليل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def lu_decompose(A):
+    n = A.shape[0]
+    L = np.eye(n)
+    U = A.astype(float).copy()
+    P = np.eye(n)
+    for k in range(n):
+        max_row = k + np.argmax(np.abs(U[k:, k]))
+        if max_row != k:
+            U[[k, max_row]] = U[[max_row, k]]
+            P[[k, max_row]] = P[[max_row, k]]       <span class="c"># سجّل التبديل</span>
+            if k &gt; 0:
+                L[[k, max_row], :k] = L[[max_row, k], :k]   <span class="c"># بدّل المضاعفات القديمة كمان</span>
+        for i in range(k + 1, n):
+            L[i, k] = U[i, k] / U[k, k]              <span class="c"># L بتحفظ المضاعف</span>
+            U[i, k:] -= L[i, k] * U[k, k:]
+    return P, L, U
+
+def lu_solve(P, L, U, b):
+    n = len(b)
+    Pb = P @ b.astype(float)
+    y = np.zeros(n)
+    for i in range(n):                               <span class="c"># forward: Ly = Pb</span>
+        y[i] = Pb[i] - L[i, :i] @ y[:i]
+    x = np.zeros(n)
+    for i in range(n - 1, -1, -1):                   <span class="c"># back: Ux = y</span>
+        x[i] = (y[i] - U[i, i + 1 :] @ x[i + 1 :]) / U[i, i]
+    return x
+
+P, L, U = lu_decompose(A)
+print(P, L, U, sep="\n")
+print(lu_solve(P, L, U, b))
+for b_i in [np.array([1, 0, 0.0]), np.array([0, 1, 0.0]), np.array([0, 0, 1.0])]:
+    print(b_i, "->", np.round(lu_solve(P, L, U, b_i), 4))</pre></div>
+  <details><summary>الناتج المتوقع (محسوب بالإيد، مظبوط)</summary>
+    <p>الـ pivoting هيبدّل الصفوف مرتين، فـ:</p>
+    <pre class="term">P = [[0,1,0],[0,0,1],[1,0,0]]
+L = [[1, 0, 0], [0.5, 1, 0], [0.5, -0.3333, 1]]
+U = [[4, 3, 3], [0, 1.5, -0.5], [0, 0, -0.6667]]
+x = [2, 2, 2]
+e1 -&gt; [ 1.5, -0.5, -1.5]
+e2 -&gt; [-0.5,  0. ,  1. ]
+e3 -&gt; [ 0. ,  0.5, -0.5]</pre>
+    <p>لاحظ: لما b = عمود من الـ identity، الحل هو العمود المقابل في <span class="ltr">A⁻¹</span>. يعني بالـ LU تقدر تجيب الـ inverse كله بـ 3 حلول رخيصة. ممكن يظهر عندك <code>-0.</code> بدل <code>0.</code>، ده طبيعي. NumPy هيطبع الأرقام بشكل مختلف شوية في المسافات والأقواس؛ قارن القيم.</p></details>
+
+  <h3>خطوة ٣: Cholesky والحل بيها</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def cholesky(A):
+    n = A.shape[0]
+    L = np.zeros_like(A, dtype=float)
+    for i in range(n):
+        for j in range(i + 1):
+            s = A[i, j] - L[i, :j] @ L[j, :j]
+            if i == j:
+                if s &lt;= 0:                            <span class="c"># مش positive definite</span>
+                    raise ValueError("Matrix is not positive definite")
+                L[i, j] = np.sqrt(s)                 <span class="c"># القطر: جذر</span>
+            else:
+                L[i, j] = s / L[j, j]                <span class="c"># تحت القطر: قسمة</span>
+    return L
+
+def cholesky_solve(L, b):
+    n = len(b)
+    y = np.zeros(n)
+    for i in range(n):                               <span class="c"># L y = b</span>
+        y[i] = (b[i] - L[i, :i] @ y[:i]) / L[i, i]
+    x = np.zeros(n)
+    Lt = L.T
+    for i in range(n - 1, -1, -1):                   <span class="c"># Lᵀ x = y</span>
+        x[i] = (y[i] - Lt[i, i + 1 :] @ x[i + 1 :]) / Lt[i, i]
+    return x
+
+C = np.array([[4, 2, 1], [2, 5, 3], [1, 3, 6]], dtype=float)
+Lc = cholesky(C)
+print(np.round(Lc, 4))
+print(np.round(cholesky_solve(Lc, np.array([7, 10, 10.])), 4))
+print(2 * np.sum(np.log(np.diag(Lc))), np.log(np.linalg.det(C)))</pre></div>
+  <details><summary>الناتج المتوقع (مظبوط رياضيًا)</summary><pre class="term">L = [[2, 0, 0], [1, 2, 0], [0.5, 1.25, 2.0463]]
+x = [1, 1, 1]
+log det ≈ 4.204693  (det(C) = 67)</pre><p>تقدر تتأكد من x بإيدك: 4+2+1 = 7، 2+5+3 = 10، 1+3+6 = 10. الرقمين بتوع الـ log det لازم يطلعوا متساويين.</p></details>
+
+  <h3>خطوة ٤: Least squares وRidge</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def least_squares_normal(A, b):
+    return gaussian_elimination(A.T @ A, A.T @ b)    <span class="c"># AᵀA x = Aᵀb</span>
+
+def ridge_regression(A, b, lam):
+    n = A.shape[1]
+    AtA = A.T @ A + lam * np.eye(n)                  <span class="c"># + λI → SPD دايمًا</span>
+    return cholesky_solve(cholesky(AtA), A.T @ b)
+
+X = np.array([[1, 1], [1, 2], [1, 3], [1, 4]], dtype=float)
+y = np.array([3, 5, 6, 8], dtype=float)
+print(least_squares_normal(X, y))
+for lam in [0.1, 1.0, 10.0]:
+    print(lam, np.round(ridge_regression(X, y, lam), 3))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">[1.5 1.6]</pre><p>ده المثال الصغير بتاع الشرح، والحل المظبوط w = [1.5, 1.6]. أرقام الـ ridge مش مكتوبة في الدرس: المفروض تلاقي ‖w‖ بيقل كل ما λ تكبر. قارن باللي في المعمل ٠٢ لما تحط نفس λ.</p></details>
+
+  <h3>خطوة ٥: الـ condition number والـ conjugate gradient</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def condition_number(A):
+    _, S, _ = np.linalg.svd(A)
+    if S[-1] &lt; 1e-15:
+        return float("inf")                          <span class="c"># singular</span>
+    return S[0] / S[-1]                              <span class="c"># σ_max / σ_min</span>
+
+def conjugate_gradient(A, b, tol=1e-10, max_iter=None):
+    n = len(b)
+    if max_iter is None:
+        max_iter = n
+    x = np.zeros(n)
+    r = b.astype(float) - A @ x                      <span class="c"># الـ residual</span>
+    p = r.copy()                                     <span class="c"># اتجاه البحث</span>
+    rs_old = r @ r
+    for k in range(max_iter):
+        Ap = A @ p
+        alpha = rs_old / (p @ Ap)
+        x = x + alpha * p
+        r = r - alpha * Ap
+        rs_new = r @ r
+        if np.sqrt(rs_new) &lt; tol:
+            return x, k + 1
+        beta = rs_new / rs_old
+        p = r + beta * p                             <span class="c"># اتجاه conjugate للي قبله</span>
+        rs_old = rs_new
+    return x, max_iter
+
+print(condition_number(np.array([[2, 0], [0, 1.]])))
+np.random.seed(42)
+M = np.random.randn(50, 50)
+A50 = M.T @ M + 0.1 * np.eye(50)
+x_cg, iters = conjugate_gradient(A50, np.random.randn(50))
+print(iters, condition_number(A50))</pre></div>
+  <details><summary>الناتج المتوقع</summary><p>أول سطر لازم يطلع <code>2.0</code> بالظبط. السطر التاني بيعتمد على أرقام عشوائية: هتشوف عدد خطوات الـ CG وκ للمصفوفة. في الملف الأصلي فيه مقارنة مع نظام أحسن conditioning؛ المفروض تلاحظ إن κ الأصغر بياخد خطوات CG أقل. قارن باللي يطلعلك.</p></details>
+
+  <h3>خطوة ٦: شغّل الملف كله وبص على الأقسام</h3>
+  <p>الملف الأصلي فيه ٩ demos. ده اللي تدوّر عليه في الناتج:</p>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• <b>Gaussian / LU / Cholesky:</b> نفس الأرقام اللي فوق.</li>
+    <li>• <b>Least Squares:</b> الأوزان الحقيقية <code>[0, 2, -1, 0.5]</code> والمقدّرة لازم تبقى قريبة منها، و«ours» = «numpy» لحد فرق صغير جدًا.</li>
+    <li>• <b>Ridge:</b> كل ما λ تكبر، <code>||w||</code> بيقل و<code>||Xw-y||</code> بيزيد شوية. الفرق عن sklearn صغير جدًا (لو sklearn متسطب).</li>
+    <li>• <b>Condition Number:</b> الأولى 2.0. المصفوفة السيئة κ ضخم (حوالي 10¹⁰). <span class="ltr">κ(XᵀX)</span> تقريبًا مربع <span class="ltr">κ(X)</span>. الـ feature شبه الـ collinear بيفجّر κ، والـ regularization بيرجعه رقم معقول.</li>
+    <li>• <b>Conjugate Gradient:</b> عدد خطوات ≤ 50، والنظام الأحسن conditioning بياخد خطوات أقل.</li>
+    <li>• <b>All Methods Agree:</b> الخمس طرق نفس الحل، والفروق صغيرة جدًا.</li>
+    <li>• <b>Full Pipeline:</b> الأوزان الحقيقية <code>[7.0, 3.0, -2.0]</code> والمقدّرة قريبة منها، و<code>R^2</code> قريب من 1.</li>
+  </ul>
+</section>
+
+<!-- 07 my addition -->
+<section id="d17-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>١. متحسبش inverse أبدًا تقريبًا</h3>
+  <p>المعادلة <span class="ltr">w = (XᵀX)⁻¹Xᵀy</span> حلوة على الورق، بس في الكود اكتب <code>np.linalg.solve(XtX, Xty)</code> أو <code>lstsq</code>، مش <code>np.linalg.inv(XtX) @ Xty</code>. الـ solve أسرع وأدق، لأن حساب الـ inverse نفسه شغل زيادة وبيضيف أخطاء تقريب.</p>
+  <h3>٢. الـ normal equations بتربّع المشكلة</h3>
+  <p><span class="ltr">κ(XᵀX) = κ(X)²</span> (التلميح بتاع تمرين ٢ في الدرس بيقول كده). يعني لو κ(X) = 10⁶، الـ normal equations بتشتغل على κ = 10¹² وبتخسر حوالي ١٢ رقم من ١٥. عشان كده المكتبات الجادة بتحل بـ QR أو SVD على X مباشرة.</p>
+  <h3>٣. أخطاء شائعة</h3>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• تنسى عمود الـ ones للـ intercept، فالخط يتجبر يعدّي من الصفر.</li>
+    <li>• تستخدم Cholesky على مصفوفة مش SPD، فيطلعلك <code>ValueError</code> أو <code>LinAlgError</code>. الحل غالبًا تضيف jitter صغير على القطر (<span class="ltr">+1e-6·I</span>)، ودي نفس فكرة الـ ridge.</li>
+    <li>• تصدّق حل لمجرد إن الـ residual صغير. في نظام ill-conditioned ممكن الـ residual يبقى صغير والـ x نفسه أرقامه ضخمة ومالهاش معنى (تمرين ٣ بيوريك ده).</li>
+    <li>• تعمل ridge وتعاقب الـ intercept كمان. في sklearn الـ intercept بيتعامل لوحده لما <code>fit_intercept=True</code>؛ الملف الأصلي بيحط <code>fit_intercept=False</code> عشان يقارن مع الكود اليدوي اللي بيعاقب كل الأوزان.</li>
+  </ul>
+  <h3>٤. فين ده في الـ LLMs والـ agents؟</h3>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• <b>الـ linear probes:</b> لما حد يقول «لقينا اتجاه للصدق جوه الموديل»، غالبًا درّب logistic/linear regression على الـ hidden states، والـ ridge هنا أساسي لأن الأبعاد كتير والـ features متشابهة.</li>
+    <li>• <b>الـ optimizers من الدرجة التانية:</b> أي optimizer بيستخدم معلومات الـ Hessian بيحتاج يحل نظام خطي، والـ CG طريقة لحله من غير ما يبني الـ Hessian كاملة (Newton-CG اللي اتذكر في الدرس).</li>
+    <li>• <b>الـ RAG والـ evals:</b> لو بتظبط أوزان لمزج كذا score (BM25 + embedding similarity مثلًا) على داتا تقييم صغيرة، ده least squares بسيط، والـ ridge بيحميك من الـ overfitting على عدد أسئلة قليل.</li>
+  </ul>
+</section>
+
+<!-- 08 exercises -->
+<section id="d17-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ١ و٢ و٣ النهاردة على الأقل. ٤ و٥ ممكن تأجلهم.</p>
+  <ol class="ex">
+    <li><b>تلات طرق لنفس الحل:</b> حل <span class="ltr">[[1,2,3],[4,5,6],[7,8,10]] x = [6, 15, 27]</span> بالـ Gaussian elimination بتاعك، والـ LU بتاعك، و<code>np.linalg.solve</code>. اتأكد إن التلاتة بيدّوا نفس الإجابة.
+      <details><summary>تلميح وإجابة</summary>نادي <code>gaussian_elimination(A, b)</code>، وبعدين <code>lu_decompose(A)</code> و<code>lu_solve(P, L, U, b)</code>، وبعدين <code>np.linalg.solve</code>. اتأكد بـ <code>np.allclose(A @ x, b)</code> وقارن الإجابات ببعض بـ <code>np.allclose</code>. الحل المظبوط <span class="ltr">x = [3, −3, 3]</span>: (3 − 6 + 9 = 6، 12 − 15 + 18 = 15، 21 − 24 + 30 = 27).</details></li>
+    <li><b>أربع طرق للـ least squares:</b> اعمل X حجمها 50×5 عشوائية و<span class="ltr">y = X @ w_true + noise</span>. حل بالـ normal equations، والـ QR (<code>np.linalg.qr</code>)، والـ SVD (<code>np.linalg.svd</code>)، و<code>np.linalg.lstsq</code>. قارن الأربعة، واحسب κ بتاع <span class="ltr">XᵀX</span> واشرح ده بيأثر إزاي على أنهي طريقة تثق فيها.
+      <details><summary>تلميح</summary>استخدم <code>least_squares_normal</code> للأولى. QR: <span class="ltr">Q, R = np.linalg.qr(X)</span> وبعدين حل <span class="ltr">R w = Qᵀy</span>. SVD: <span class="ltr">w = Vt.T @ ((U.T @ y) / S)</span> (مع <code>full_matrices=False</code>). الأربعة لازم يقربوا من <code>w_true</code>. قارن <code>condition_number(X.T @ X)</code> مع <code>condition_number(X)</code>: الأولى مربع التانية، فالـ normal equations هي اللي بتخسر دقة أكتر.</details></li>
+    <li><b>مصفوفة شبه singular:</b> خلّي عمودين تقريبًا زي بعض (عمود ٢ = عمود ١ + <span class="ltr">1e-10 × noise</span>). احسب κ. حل Ax = b من غير regularization ومع <span class="ltr">0.01·I</span>، وقارن الحلول والـ residuals. ليه الـ regularization بيساعد؟
+      <details><summary>تلميح</summary>توقّع κ أكبر من 10⁹. حل بـ <code>np.linalg.solve</code> وبـ <code>ridge_regression(A, b, 0.01)</code>، وقارن <code>np.linalg.norm(x)</code> والـ residual norm لكل واحد. الاتنين ممكن الـ residual بتاعهم يبقى صغير، بس الحل من غير regularization غالبًا أرقامه ضخمة جدًا. السبب: <span class="ltr">(σ_max+λ)/(σ_min+λ)</span> أصغر بكتير من <span class="ltr">σ_max/σ_min</span> لما σ_min قريبة من الصفر.</details></li>
+    <li><b>CG على 100×100:</b> نفّذ الـ CG على مصفوفة SPD عشوائية 100×100. عِد الخطوات لحد tolerance <span class="ltr">1e-8</span>، وقارن بالحد النظري n = 100.
+      <details><summary>تلميح</summary>اعمل المصفوفة كده <span class="ltr">B @ B.T + n * np.eye(n)</span> عشان كل الـ eigenvalues تبقى موجبة. ضيف عدّاد في الـ loop، واتأكد إن الـ residual النهائي أقل من 1e-8 وإن العدد ≤ 100.</details></li>
+    <li><b>سباق السرعة:</b> قيس وقت Cholesky بتاعك مقابل LU بتاعك مقابل <code>np.linalg.solve</code> على مصفوفات SPD بأحجام 10، 50، 200، 500. ارسم النتايج. اتأكد إن Cholesky تقريبًا أسرع بالضعف من LU.
+      <details><summary>تلميح</summary>نفس المصفوفات <span class="ltr">B @ B.T + n * np.eye(n)</span> للتلاتة، وقيس بـ <code>time.perf_counter</code> وخد أحسن وقت من كذا تشغيلة. الـ Cholesky بتحتاج حوالي نص الحساب بتاع LU، فالنسبة بتبان أوضح في الأحجام الكبيرة. <code>np.linalg.solve</code> هيكسب الاتنين بفرق كبير لأنه مكتوب بـ LAPACK مش loops في Python.</details></li>
+    <li><b>إضافة مني · مزج scores لنظام RAG:</b> عندك 30 سؤال تقييم، ولكل (سؤال، document) عندك 3 scores: BM25، وcosine similarity، وهل الـ document حديث (0/1)، وlabel بيقول الـ document مفيد قد إيه (0 لـ 1). اعمل داتا وهمية بنفسك، وابني X (عمود ones + الـ 3 scores) واحسب الأوزان بالـ ridge بتاعك بـ λ = 0، 0.1، 1. شوف κ بتاع <span class="ltr">XᵀX</span>. بعدين خلّي feature رابع = BM25 × 2 + noise صغير جدًا وشوف κ بيعمل إيه والأوزان بتتهز إزاي.
+      <details><summary>تلميح</summary>الـ feature المكرر هيفجّر κ والأوزان من غير ridge هتطلع أرقام كبيرة بإشارات متعاكسة (واحد موجب كبير وواحد سالب كبير بيلغوا بعض). مع λ = 1 الأوزان بتهدى وتتوزع. ده بالظبط اللي بيحصل لما تضيف signals متشابهة في ranking pipeline حقيقي.</details></li>
+  </ol>
+</section>
+
+<!-- 09 quiz -->
+<section id="d17-quizSec">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d17-quiz"></div>
+</section>
+
+<!-- 10 wrap -->
+<section id="d17-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d17-checklist">
+    <li><label><input type="checkbox" data-ck="geo"> أقدر أشرح صورة الصفوف وصورة الأعمدة، وإمتى النظام ملوش حل</label></li>
+    <li><label><input type="checkbox" data-ck="elim"> كتبت Gaussian elimination مع pivoting وفاهم ليه الـ pivot الصغير خطر</label></li>
+    <li><label><input type="checkbox" data-ck="fact"> أعرف أختار بين LU وQR وCholesky حسب شكل المصفوفة</label></li>
+    <li><label><input type="checkbox" data-ck="ls"> أقدر أشتق الـ normal equations وأربطها بالـ linear وridge regression</label></li>
+    <li><label><input type="checkbox" data-ck="cond"> فاهم الـ condition number وجربت الـ CG في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="quiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Normal equations</td><td>الحل المغلق للـ linear regression</td></tr>
+    <tr><td>Ridge (λI)</td><td>الـ regularization، الـ linear probes على الـ hidden states</td></tr>
+    <tr><td>Cholesky</td><td>Gaussian processes، covariance، ridge</td></tr>
+    <tr><td>QR</td><td>least squares بثبات، orthogonal initialization</td></tr>
+    <tr><td>SVD / pseudoinverse</td><td><code>np.linalg.lstsq</code>، أنظمة rank-deficient</td></tr>
+    <tr><td>Condition number</td><td>كشف الـ features الـ collinear، الثقة في الحل</td></tr>
+    <tr><td>Conjugate gradient</td><td>Newton-CG، الـ kernel methods الكبيرة، الـ preconditioning</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Convex Optimization. هنشوف إمتى الـ optimization ليه minimum واحد مضمون، وليه الـ least squares والـ ridge اللي حليناهم النهاردة مسائل convex.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F17-linear-systems" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/17-linear-systems</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI,css=A.css,F=A.fmt;
+const root=document.getElementById('d17-root');
+
+// roadmap
+const rm=document.getElementById('d17-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===17)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: row / column picture ----------
+const gc=document.getElementById('d17-geoCanvas'),gx=A.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h,GS=36,gox=GW/2,goy=GH/2;
+let G=[2,1,1,-1,5,1],gview='row';
+const gP=(x,y)=>[gox+x*GS,goy-y*GS];
+function svd2(a,b,c,d){ // singular values of 2x2
+  const s1=a*a+b*b+c*c+d*d,det=a*d-b*c,disc=Math.sqrt(Math.max(0,s1*s1-4*det*det));
+  return [Math.sqrt((s1+disc)/2),Math.sqrt(Math.max(0,(s1-disc)/2))];
+}
+function drawLine(a,b,c,col){ // a x + b y = c
+  gx.strokeStyle=col;gx.lineWidth=2.5;gx.beginPath();
+  const xr=GW/2/GS+1,yr=GH/2/GS+1;
+  if(Math.abs(b)>1e-9){const y1=(c-a*(-xr))/b,y2=(c-a*xr)/b;gx.moveTo(...gP(-xr,y1));gx.lineTo(...gP(xr,y2))}
+  else if(Math.abs(a)>1e-9){const x0=c/a;gx.moveTo(...gP(x0,-yr));gx.lineTo(...gP(x0,yr))}
+  gx.stroke();
+}
+function geo(){
+  const [a,b,c,d,b1,b2]=G;
+  G.forEach((v,i)=>{document.getElementById('d17-s'+i).value=v;document.getElementById('d17-v'+i).textContent=F(v,1)});
+  const det=a*d-b*c,[s1,s2]=svd2(a,b,c,d);
+  gx.clearRect(0,0,GW,GH);A.grid(gx,GW,GH,GS,gox,goy);
+  let verdict,x=null;
+  if(Math.abs(det)>1e-9){x=[(d*b1-b*b2)/det,(a*b2-c*b1)/det];verdict='حل واحد'}
+  else{
+    // consistent if rank([A|b]) == rank(A)
+    const r1=Math.abs(a*b2-c*b1)<1e-9&&Math.abs(b*b2-d*b1)<1e-9;
+    verdict=r1?'حلول لا نهائية (الخطين فوق بعض)':'مفيش حل (الخطين متوازيين)';
+  }
+  if(gview==='row'){
+    drawLine(a,b,b1,css('--vec-a'));drawLine(c,d,b2,css('--vec-b'));
+    gx.font='13px JetBrains Mono, monospace';
+    gx.fillStyle=css('--vec-a');gx.fillText('row 1: '+F(a,1)+'x + '+F(b,1)+'y = '+F(b1,1),10,20);
+    gx.fillStyle=css('--vec-b');gx.fillText('row 2: '+F(c,1)+'x + '+F(d,1)+'y = '+F(b2,1),10,38);
+    if(x){const [px,py]=gP(x[0],x[1]);gx.fillStyle=css('--ink');gx.beginPath();gx.arc(px,py,6,0,7);gx.fill()}
+  }else{
+    const c1=[a,c],c2=[b,d];
+    A.arrow(gx,gox,goy,...gP(b1,b2),css('--ink'),2);
+    gx.fillStyle=css('--ink');gx.font='13px JetBrains Mono, monospace';gx.fillText('b',...gP(b1+0.2,b2+0.2));
+    if(x){
+      const e1=[x[0]*c1[0],x[0]*c1[1]],e2=[e1[0]+x[1]*c2[0],e1[1]+x[1]*c2[1]];
+      A.arrow(gx,gox,goy,...gP(e1[0],e1[1]),css('--vec-a'),3.5);
+      A.arrow(gx,...gP(e1[0],e1[1]),...gP(e2[0],e2[1]),css('--vec-b'),3.5);
+      gx.fillStyle=css('--vec-a');gx.fillText('x1·col1',...gP(e1[0]/2+0.2,e1[1]/2-0.4));
+      gx.fillStyle=css('--vec-b');gx.fillText('x2·col2',...gP((e1[0]+e2[0])/2+0.2,(e1[1]+e2[1])/2+0.3));
+    }else{
+      A.arrow(gx,gox,goy,...gP(c1[0],c1[1]),css('--vec-a'),2.5);A.arrow(gx,gox,goy,...gP(c2[0],c2[1]),css('--vec-b'),2.5);
+      gx.fillStyle=css('--muted');gx.fillText('columns on one line: span is a line, not the plane',10,20);
+    }
+  }
+  document.getElementById('d17-det').textContent=F(det);
+  document.getElementById('d17-x').textContent=x?'['+F(x[0])+', '+F(x[1])+']':'—';
+  document.getElementById('d17-kap').textContent=s2>1e-9?F(s1/s2,1):'∞';
+  const v=document.getElementById('d17-geoVerdict');v.textContent=verdict+(x&&s2>1e-9&&s1/s2>20?' · بس κ كبير: الحل حساس جدًا':'');
+  v.style.color=x?(s1/s2>20?css('--vec-b'):css('--ok')):css('--bad');
+}
+for(let i=0;i<6;i++)document.getElementById('d17-s'+i).addEventListener('input',e=>{G[i]=+e.target.value;geo()});
+root.querySelectorAll('[data-d17g]').forEach(b=>b.addEventListener('click',()=>{G=b.dataset.d17g.split(',').map(Number);geo()}));
+const vr=document.getElementById('d17-viewRow'),vcb=document.getElementById('d17-viewCol');
+vr.addEventListener('click',()=>{gview='row';vr.classList.add('primary');vcb.classList.remove('primary');geo()});
+vcb.addEventListener('click',()=>{gview='col';vcb.classList.add('primary');vr.classList.remove('primary');geo()});
+geo();
+
+// ---------- elimination stepper (lesson example, no pivoting) ----------
+const E0=[[2,1,1,8],[4,3,3,20],[2,3,1,12]];
+const steps=[
+ {op:null,msg:'المصفوفة الممددة [A | b] زي ما هي.'},
+ {op:[1,0,2],msg:'R2 = R2 − 2·R1 (المضاعف 4/2 = 2)'},
+ {op:[2,0,1],msg:'R3 = R3 − 1·R1 (المضاعف 2/2 = 1)'},
+ {op:[2,1,2],msg:'R3 = R3 − 2·R2 (المضاعف 2/1 = 2). كده بقت مثلثية علوية.'},
+ {back:true,msg:'Back substitution: −2·x3 = −4 → x3 = 2، x2 + 2 = 4 → x2 = 2، 2·x1 + 2 + 2 = 8 → x1 = 2'}
+];
+let E,es;
+function elimRender(hl){
+  const t=document.getElementById('d17-elimTable');
+  t.innerHTML='<tr><th></th><th>x1</th><th>x2</th><th>x3</th><th>| b</th></tr>'+E.map((r,i)=>'<tr'+(i===hl?' style="background:var(--soft)"':'')+'><th>R'+(i+1)+'</th>'+r.map(v=>'<td>'+F(v,3)+'</td>').join('')+'</tr>').join('');
+}
+function elimReset(){E=E0.map(r=>r.slice());es=0;elimRender(-1);document.getElementById('d17-elimMsg').textContent=steps[0].msg;document.getElementById('d17-elimNext').disabled=false}
+document.getElementById('d17-elimNext').addEventListener('click',()=>{
+  if(es>=steps.length-1)return;es++;const s=steps[es];
+  if(s.op){const [i,k,m]=s.op;E[i]=E[i].map((v,j)=>v-m*E[k][j]);elimRender(i)}else elimRender(-1);
+  document.getElementById('d17-elimMsg').textContent=s.msg;
+  if(es===steps.length-1)document.getElementById('d17-elimNext').disabled=true;
+});
+document.getElementById('d17-elimReset').addEventListener('click',elimReset);
+elimReset();
+
+// ---------- Lab 2: least squares + ridge ----------
+const lc=document.getElementById('d17-lsCanvas'),lx=A.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+const LX0=40,LY0=LH-36,LSX=(LW-60)/6,LSY=(LH-60)/10; // x in [0,6], y in [0,10]
+const L2P=(x,y)=>[LX0+x*LSX,LY0-y*LSY],P2L=(px,py)=>[(px-LX0)/LSX,(LY0-py)/LSY];
+const base=[[1,3],[2,5],[3,6],[4,8]];
+let pts=base.map(p=>p.slice()),ldrag=-1;
+function lsSolve(lam){
+  let s00=0,s01=0,s11=0,t0=0,t1=0;
+  pts.forEach(([x,y])=>{s00+=1;s01+=x;s11+=x*x;t0+=y;t1+=x*y});
+  const a=s00+lam,b=s01,d=s11+lam,det=a*d-b*b;
+  const w=Math.abs(det)>1e-12?[(d*t0-b*t1)/det,(a*t1-b*t0)/det]:[NaN,NaN];
+  return {w,M:[a,b,d],t:[t0,t1]};
+}
+function lsDraw(){
+  const lam=+document.getElementById('d17-lam').value;
+  document.getElementById('d17-lamV').textContent=F(lam,1);
+  const {w,M,t}=lsSolve(lam),ols=lsSolve(0).w;
+  lx.clearRect(0,0,LW,LH);
+  lx.strokeStyle=css('--grid');lx.lineWidth=1;
+  for(let i=0;i<=6;i++){lx.beginPath();lx.moveTo(...L2P(i,0));lx.lineTo(...L2P(i,10));lx.stroke()}
+  for(let j=0;j<=10;j++){lx.beginPath();lx.moveTo(...L2P(0,j));lx.lineTo(...L2P(6,j));lx.stroke()}
+  lx.strokeStyle=css('--muted');lx.lineWidth=1.2;lx.beginPath();lx.moveTo(...L2P(0,0));lx.lineTo(...L2P(6,0));lx.moveTo(...L2P(0,0));lx.lineTo(...L2P(0,10));lx.stroke();
+  lx.fillStyle=css('--muted');lx.font='11px JetBrains Mono, monospace';
+  for(let i=0;i<=6;i++)lx.fillText(i,L2P(i,0)[0]-3,LY0+14);
+  for(let j=0;j<=10;j+=2)lx.fillText(j,LX0-18,L2P(0,j)[1]+4);
+  const line=(ww,col,wid,dash)=>{if(!isFinite(ww[0]))return;lx.save();lx.beginPath();lx.rect(LX0,L2P(0,10)[1],6*LSX,10*LSY);lx.clip();lx.setLineDash(dash||[]);lx.strokeStyle=col;lx.lineWidth=wid;lx.beginPath();lx.moveTo(...L2P(0,ww[0]));lx.lineTo(...L2P(6,ww[0]+6*ww[1]));lx.stroke();lx.restore()};
+  if(lam>0)line(ols,css('--muted'),1.5,[6,5]);
+  let res=0;
+  pts.forEach(([x,y])=>{const yh=w[0]+w[1]*x;res+=(y-yh)**2;lx.setLineDash([3,3]);lx.strokeStyle=css('--muted');lx.lineWidth=1.2;lx.beginPath();lx.moveTo(...L2P(x,y));lx.lineTo(...L2P(x,yh));lx.stroke();lx.setLineDash([])});
+  line(w,css('--vec-a'),3);
+  pts.forEach(([x,y])=>{const [px,py]=L2P(x,y);lx.fillStyle=css('--vec-b');lx.beginPath();lx.arc(px,py,8,0,7);lx.fill()});
+  lx.fillStyle=css('--ink');lx.font='12px JetBrains Mono, monospace';
+  lx.fillText(lam>0?'blue: ridge   dashed: OLS (λ=0)':'blue: least squares fit',LX0+8,18);
+  document.getElementById('d17-w0').textContent=F(w[0],3);
+  document.getElementById('d17-w1').textContent=F(w[1],3);
+  document.getElementById('d17-res').textContent=F(res,3);
+  document.getElementById('d17-ata').textContent='[['+F(M[0],1)+','+F(M[1],1)+'],['+F(M[1],1)+','+F(M[2],1)+']]';
+  document.getElementById('d17-atb').textContent='['+F(t[0],1)+', '+F(t[1],1)+']';
+  const [s1,s2]=svd2(M[0],M[1],M[1],M[2]);
+  document.getElementById('d17-lsK').textContent=s2>1e-9?F(s1/s2,1):'∞';
+}
+lc.addEventListener('pointerdown',e=>{const [px,py]=A.evPos(lc,e);let best=-1,bd=20;pts.forEach((p,i)=>{const [qx,qy]=L2P(...p),dd=Math.hypot(px-qx,py-qy);if(dd<bd){bd=dd;best=i}});ldrag=best;if(best>=0){lc.setPointerCapture(e.pointerId)}});
+lc.addEventListener('pointermove',e=>{if(ldrag<0)return;let [x,y]=P2L(...A.evPos(lc,e));x=Math.max(0,Math.min(6,Math.round(x*10)/10));y=Math.max(0,Math.min(10,Math.round(y*10)/10));pts[ldrag]=[x,y];lsDraw()});
+lc.addEventListener('pointerup',()=>ldrag=-1);
+lc.addEventListener('pointercancel',()=>ldrag=-1);
+document.getElementById('d17-lam').addEventListener('input',lsDraw);
+document.getElementById('d17-lsReset').addEventListener('click',()=>{pts=base.map(p=>p.slice());document.getElementById('d17-lam').value=0;lsDraw()});
+document.getElementById('d17-lsAdd').addEventListener('click',()=>{if(pts.length>=12)return;pts.push([+(0.5+Math.random()*5).toFixed(1),+(1+Math.random()*8).toFixed(1)]);lsDraw()});
+lsDraw();
+
+// ---------- Lab 3: CG vs steepest descent ----------
+const cc=document.getElementById('d17-cgCanvas'),cx=A.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h,CS=34,cox=CW/2,coy=CH/2;
+let x0=[-6,4],anim=null,shown=1e9;
+function makeA(){
+  const k=+document.getElementById('d17-k').value,th=+document.getElementById('d17-th').value*Math.PI/180;
+  const l1=1,l2=1/k,c=Math.cos(th),s=Math.sin(th); // eigen 1 and 1/k -> kappa=k
+  return [[l1*c*c+l2*s*s,(l1-l2)*c*s],[(l1-l2)*c*s,l1*s*s+l2*c*c]];
+}
+const mv=(M,v)=>[M[0][0]*v[0]+M[0][1]*v[1],M[1][0]*v[0]+M[1][1]*v[1]],dt=(a,b)=>a[0]*b[0]+a[1]*b[1];
+const cb=[0,0]; // b = 0 so the solution is the origin; makes contours centred
+function cg(M){let x=x0.slice(),r=[cb[0]-mv(M,x)[0],cb[1]-mv(M,x)[1]],p=r.slice(),rs=dt(r,r);const path=[x.slice()];
+  for(let k=0;k<2;k++){if(Math.sqrt(rs)<1e-6)break;const Ap=mv(M,p),al=rs/dt(p,Ap);x=[x[0]+al*p[0],x[1]+al*p[1]];r=[r[0]-al*Ap[0],r[1]-al*Ap[1]];path.push(x.slice());const rn=dt(r,r);p=[r[0]+rn/rs*p[0],r[1]+rn/rs*p[1]];rs=rn}
+  return path}
+function sd(M){let x=x0.slice();const path=[x.slice()];
+  for(let k=0;k<2000;k++){const r=[cb[0]-mv(M,x)[0],cb[1]-mv(M,x)[1]],rr=dt(r,r);if(Math.sqrt(rr)<1e-6)break;const al=rr/dt(r,mv(M,r));x=[x[0]+al*r[0],x[1]+al*r[1]];path.push(x.slice())}
+  return path}
+const C2P=(x,y)=>[cox+x*CS,coy-y*CS];
+function cgDraw(n){
+  const M=makeA();
+  document.getElementById('d17-kV').textContent=document.getElementById('d17-k').value;
+  document.getElementById('d17-thV').textContent=document.getElementById('d17-th').value+'°';
+  cx.clearRect(0,0,CW,CH);A.grid(cx,CW,CH,CS,cox,coy);
+  // contours: ellipses x^T M x = c ; eigen axes
+  const th=+document.getElementById('d17-th').value*Math.PI/180,k=+document.getElementById('d17-k').value;
+  cx.strokeStyle=css('--muted');cx.globalAlpha=.55;cx.lineWidth=1;
+  [0.25,1,2.5,5,9,15,24].forEach(lev=>{const a=Math.sqrt(lev/1),b=Math.sqrt(lev*k);cx.beginPath();
+    for(let t=0;t<=64;t++){const u=t/64*2*Math.PI,ex=a*Math.cos(u),ey=b*Math.sin(u),X=ex*Math.cos(th)-ey*Math.sin(th),Y=ex*Math.sin(th)+ey*Math.cos(th);const [px,py]=C2P(X,Y);t?cx.lineTo(px,py):cx.moveTo(px,py)}cx.stroke()});
+  cx.globalAlpha=1;
+  const ps=sd(M),pc=cg(M),lim=n==null?1e9:n;
+  const poly=(p,col,w,cnt)=>{cx.strokeStyle=col;cx.fillStyle=col;cx.lineWidth=w;cx.beginPath();p.slice(0,Math.min(p.length,cnt+1)).forEach((q,i)=>{const [px,py]=C2P(...q);i?cx.lineTo(px,py):cx.moveTo(px,py)});cx.stroke();
+    p.slice(0,Math.min(p.length,cnt+1)).forEach(q=>{const [px,py]=C2P(...q);cx.beginPath();cx.arc(px,py,3,0,7);cx.fill()})};
+  poly(ps,css('--vec-b'),1.6,lim);poly(pc,css('--vec-a'),3,Math.min(lim,2));
+  const [sx,sy]=C2P(...x0);cx.fillStyle=css('--ink');cx.beginPath();cx.arc(sx,sy,6,0,7);cx.fill();
+  cx.font='12px JetBrains Mono, monospace';cx.fillText('start',sx+8,sy-8);
+  cx.fillStyle=css('--ok');cx.beginPath();cx.arc(cox,coy,5,0,7);cx.fill();cx.fillText('x*',cox+8,coy-8);
+  document.getElementById('d17-cgN').textContent=pc.length-1;
+  document.getElementById('d17-sdN').textContent=(ps.length-1>=2000?'≥ ':'')+(ps.length-1);
+  return ps.length;
+}
+function cgRedraw(){cancelAnimationFrame(anim);cgDraw()}
+['d17-k','d17-th'].forEach(id=>document.getElementById(id).addEventListener('input',cgRedraw));
+cc.addEventListener('pointerdown',e=>{const [px,py]=A.evPos(cc,e);x0=[(px-cox)/CS,(coy-py)/CS];cgRedraw()});
+document.getElementById('d17-cgPlay').addEventListener('click',()=>{
+  cancelAnimationFrame(anim);
+  if(matchMedia('(prefers-reduced-motion:reduce)').matches){cgDraw();return}
+  let n=0,last=0;const total=cgDraw(0);
+  const step=t=>{if(!document.body.contains(cc))return;if(t-last>140){n++;last=t;cgDraw(n)}if(n<Math.min(total,60))anim=requestAnimationFrame(step);else cgDraw()};
+  anim=requestAnimationFrame(step);
+});
+cgDraw();
+
+// ---------- quiz ----------
+A.quiz(document.getElementById('d17-quiz'),[
+ ['يعني إيه بالرسم لما النظام Ax = b ملوش حل مظبوط؟',['المتجه b مش جوه الـ column space بتاع A','كل خانات A أصفار','النظام فيه مجاهيل أكتر من المعادلات','المصفوفة A symmetric'],0,'في صورة الأعمدة، Ax = b بيسأل: أنهي خليط من أعمدة A يطلع b؟ لو b برّه الـ span بتاع الأعمدة، مفيش حل مظبوط. ده بيحصل لما النظام overdetermined (معادلات أكتر من المجاهيل).'],
+ ['ليه بنستخدم partial pivoting في الـ Gaussian elimination؟',['بيختار أكبر pivot متاح عشان يقلل تضخيم الأخطاء من القسمة على أرقام صغيرة','بيلغي الحاجة للـ back substitution','بيقلل التعقيد من O(n³) لـ O(n²)','بيضمن إن النتيجة تبقى integer'],0,'من غير pivoting، القسمة على pivot صغير بتكبّر أخطاء التقريب. الـ pivoting بيبدّل الصفوف عشان أكبر قيمة مطلقة تبقى في مكان الـ pivot، فالمضاعفات تفضل صغيرة والحساب مستقر.'],
+ ['ليه Cholesky أفضل من LU في حل (XᵀX + λI)w = Xᵀy في الـ ridge؟',['Cholesky بتدّي إجابة أدق من LU','Cholesky شغالة على أي مصفوفة وLU محتاجة مربعة','LU مش بتعرف تتعامل مع الـ regularization','المصفوفة XᵀX + λI symmetric positive definite، فالـ Cholesky أسرع بالضعف وبتاخد نص المساحة'],3,'لما λ > 0 المصفوفة دايمًا SPD. الـ Cholesky بتحلل A = LLᵀ في حوالي O(n³/3)، تقريبًا نص الـ O(2n³/3) بتاعة LU، ومحتاجة المثلث السفلي بس. بتستغل الـ symmetry اللي LU مش بتستغلها.'],
+ ['مصفوفة الـ condition number بتاعها κ = 10⁸ وانت شغال float64 (~15 رقم دقة). كام رقم في الحل تقدر تثق فيه؟',['حوالي 15 رقم','حوالي 7 أرقام (15 − log10(10⁸) = 15 − 8)','ولا رقم، الحل ملوش معنى','حوالي 8 أرقام'],1,'بتخسر حوالي log10(κ) رقم. مع κ = 10⁸ بتخسر 8 من الـ 15، فيفضل حوالي 7 أرقام تتصدق. لو κ قرّب من 10¹⁶ الحل يبقى ملوش معنى في float64.'],
+ ['إيه الميزة الأساسية للـ LU على الـ Gaussian elimination لما تحل Ax = b لـ b كتير مختلفة؟',['التحليل O(n³) بيتعمل مرة واحدة، وكل حل بعد كده بـ b جديدة بـ O(n²) بس','الـ LU أثبت عدديًا','الـ LU شغالة على مصفوفات مستطيلة','الـ LU دايمًا بتدّي حل وحيد'],0,'بتحلل A = LU مرة واحدة بـ O(n³). لكل b جديدة بتحل Ly = b (forward) وUx = y (back) وكل واحدة O(n²). الـ Gaussian elimination كانت هتعيد الـ O(n³) كلها مع كل b.'],
+ ['(سؤال إضافي) X عندها κ(X) = 10⁵. لو حليت بالـ normal equations (XᵀX)، κ اللي بتشتغل عليه فعلًا تقريبًا كام؟',['10⁵','10¹⁰','√10⁵','10⁵ + λ'],1,'κ(XᵀX) = κ(X)². عشان كده الـ normal equations بتخسر دقة أكتر من QR أو SVD اللي بيشتغلوا على X مباشرة.'],
+ ['(سؤال إضافي) عندك نظام 10 مليون مجهول، المصفوفة SPD وsparse جدًا. أنسب طريقة؟',['Gaussian elimination','np.linalg.inv وبعدين ضرب','Conjugate gradient','Pseudoinverse بالـ SVD الكامل'],2,'الطرق المباشرة O(n³) ومش بتحافظ على الـ sparsity. الـ CG بيحتاج ضرب مصفوفة في متجه بس في كل خطوة، فتكلفته O(n·k·nnz).']
+],5,()=>{const c=root.querySelector('input[data-ck="quiz"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(17,document.getElementById('d17-checklist'));
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(gc))return false;geo();lsDraw();cgDraw()});
+})();
+</script>

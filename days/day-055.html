@@ -1,0 +1,652 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 12 · Introduction to JAX</span>
+  <h1>اليوم ٥٥: JAX — الموديل دالة نضيفة، والكومبايلر يعمل الباقي</h1>
+  <p class="lede">امبارح اشتغلت بـ PyTorch: tensors بتتغير في مكانها و<code>.backward()</code>. النهاردة هتشوف الفلسفة التانية: <b>JAX</b> بياخد <b>دوال pure</b> ويحوّلها: يطلع منها الـ gradient بـ <code>grad</code>، ويعملها compile بـ <code>jit</code>، ويخليها تشتغل على batch كامل بـ <code>vmap</code>، وعلى أجهزة كتير بـ <code>pmap</code>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>نوع الدرس: <b>Build</b></span>
+    <span>بعده: <b>Debugging Neural Networks</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d55-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d55-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر PyTorch؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. إيه ترتيب الخطوات الخمسة في training loop بتاع PyTorch؟</summary><p><code>optimizer.zero_grad()</code> ← forward (<code>model(x)</code>) ← حساب الـ loss ← <code>loss.backward()</code> ← <code>optimizer.step()</code>. لو نسيت <code>zero_grad</code> الـ gradients بتتجمع فوق بعض.</p></details>
+  <details><summary>٢. ليه PyTorch كسب في الأبحاث قدام TensorFlow القديم؟</summary><p>عشان الـ <b>eager execution</b>: السطر بيتنفذ فورًا، فـ <code>print</code> و<code>pdb</code> و<code>if/else</code> شغالين عادي. الدرس لخصها: سهولة الـ debugging بتكسب حتى لو أبطأ شوية.</p></details>
+  <details><summary>٣. الـ weights في PyTorch عايشة فين؟</summary><p>جوه object من نوع <code>nn.Module</code>، وبتتعدل في مكانها (mutation) لما الـ optimizer يعمل <code>step()</code>. افتكر النقطة دي كويس، لأن JAX بيعمل عكسها بالظبط.</p></details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>15 min</b>الفلسفة: pure functions وجدول PyTorch ضد JAX</div>
+    <div><b>25 min</b>grad و jit و vmap و pmap مع المعامل التفاعلية</div>
+    <div><b>10 min</b>pytrees، الـ random keys، والـ ecosystem</div>
+    <div><b>25 min</b>اكتب MLP على MNIST بإيدك</div>
+    <div><b>15 min</b>تمرين + كويز + checklist</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d55-philo">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة والفلسفة: ليه JAX أصلًا؟</h2></div>
+  <p>PyTorch بيشغّل العمليات <b>واحدة واحدة</b> من Python: كل <code>tensor + tensor</code> هي kernel launch لوحدها، وكل training step بيعيد تفسير نفس كود Python من الأول. ده ممتاز وانت بتجرّب، بس لما تيجي تدرب موديل بمئات المليارات من البارامترز على آلاف الـ TPUs، الـ overhead ده بيبقى مكلف جدًا.</p>
+  <p>الدرس بيقول إن Google DeepMind بتدرب Gemini على JAX، وإن Anthropic دربت Claude على JAX، والسبب إن JAX بيتعامل مع الـ training loop كـ <b>برنامج يتعمله compile</b>، مش سلسلة نداءات Python.</p>
+  <div class="note"><strong>تشبيه:</strong> PyTorch زي مترجم فوري في مؤتمر: بيترجم كل جملة أول ما تتقال، مرن جدًا بس بيعيد الشغل كل مرة. JAX زي إنك تدي الخطبة لمترجم يترجمها مرة واحدة كاملة ويطبعها، وبعد كده أي حد يقراها بسرعة. بس عشان ده يشتغل، الخطبة لازم تبقى <b>ثابتة</b>: نفس الدخل يدي نفس الخرج.</div>
+  <p><b>JAX = NumPy + ٣ قوى خارقة:</b> automatic differentiation، و JIT compilation لـ XLA، و automatic vectorization. بتكتب دالة لمثال واحد، و JAX يطلعلك منها دالة لـ batch، وبتحسب gradients، ومتكومبايلة، وبتشتغل على أجهزة كتير، من غير ما تغيّر الدالة الأصلية.</p>
+  <div class="tablewrap"><table>
+    <tr><th>PyTorch</th><th>JAX</th></tr>
+    <tr><td class="ltr"><code>nn.Module</code> class with state</td><td>دالة pure: <code>f(params, x) -&gt; y</code></td></tr>
+    <tr><td class="ltr"><code>loss.backward()</code></td><td><code>jax.grad(loss_fn)(params, x, y)</code></td></tr>
+    <tr><td>Eager execution</td><td>JIT compilation عن طريق XLA</td></tr>
+    <tr><td><code>for x in batch:</code> loop يدوي</td><td><code>jax.vmap(f)</code> تلقائي</td></tr>
+    <tr><td><code>DataParallel</code> / <code>FSDP</code></td><td><code>jax.pmap(f)</code></td></tr>
+    <tr><td><code>model.parameters()</code> بتتغير</td><td>pytree من arrays مبتتغيرش (immutable)</td></tr>
+  </table></div>
+  <div class="note ai"><strong>مهم:</strong> ده مش ذوق في الكتابة. ده <b>شرط الكومبايلر</b>. الـ JIT محتاج دوال pure: نفس الدخل = نفس الخرج، ومن غير side effects. القيد ده هو اللي بيخلي الـ speedups الكبيرة ممكنة.</div>
+
+  <h3>jax.numpy: نفس الوش اللي تعرفه</h3>
+  <p><code>jax.numpy</code> نفس أسماء دوال NumPy، ونفس قواعد الـ broadcasting، ونفس الـ slicing. الفرق إن الـ arrays عايشة على GPU/TPU، وكل عملية الكومبايلر يقدر يتتبعها.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import jax.numpy as jnp
+a = jnp.array([1.0, 2.0, 3.0])
+b = jnp.array([4.0, 5.0, 6.0])
+c = jnp.dot(a, b)
+
+<span class="c"># a[0] = 5          ← ممنوع! الـ arrays في JAX immutable</span>
+a = a.at[0].set(5)  <span class="c"># ← بيرجع array جديدة، والقديمة زي ما هي</span></pre></div>
+  <p>الـ immutability دي هتضايقك أول أسبوع، وبعدين هتفهم إنها هي اللي بتخلي <code>grad</code> و<code>jit</code> و<code>vmap</code> يتركبوا فوق بعض من غير مفاجآت.</p>
+</section>
+
+<!-- STATION 2: grad -->
+<section id="d55-grad">
+  <div class="station-head"><span class="tag">02</span><h2>jax.grad: الـ gradient دالة، مش خانة في tensor</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>في PyTorch الـ gradient بيتلزق في الـ tensor (<code>x.grad</code>). في JAX الـ gradient بيتلزق في <b>الدالة</b>: <code>jax.grad(f)</code> بياخد دالة ويرجعلك <b>دالة جديدة</b> بتحسب المشتقة. مفيش <code>.backward()</code>، ومفيش graph متخزن على الـ tensors.</p>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>import jax
+def f(x):
+    return x ** 2
+
+df  = jax.grad(f)           <span class="c"># دالة جديدة</span>
+df(3.0)                     <span class="c"># 6.0</span>
+d2f = jax.grad(jax.grad(f)) <span class="c"># المشتقة التانية بالتركيب</span>
+d2f(3.0)                    <span class="c"># 2.0</span></pre></div>
+      <p>تقدر تركّب <code>grad</code> زي ما تحب: مشتقة تانية، تالتة، Jacobians، Hessians. PyTorch يقدر يعمل ده برضه (<code>torch.autograd.functional.hessian</code>) بس كإضافة، أما في JAX فهو الأساس.</p>
+      <div class="note"><strong>القيد:</strong> <code>grad</code> بيشتغل على دوال pure بس. مفيش <code>print</code> جوه (هيتنفذ وقت الـ tracing مش وقت التنفيذ)، مفيش تعديل في state برا الدالة، ومفيش random من غير key صريح.</div>
+      <div class="note"><strong>جرّب:</strong> اختار دالة وحرّك x. الخط البرتقالي هو المماس (ميله = f′)، والمنحنيات الباهتة هي f′ و f″ اللي طالعين من تركيب <code>grad</code>.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d55-gc" width="520" height="380" aria-label="دالة ومشتقاتها"></canvas>
+      <label style="display:grid;gap:2px">x = <b class="mono" id="d55-gxv">2</b><input type="range" id="d55-gx" min="-2.5" max="2.5" step="0.05" value="2"></label>
+      <div class="btns">
+        <button type="button" data-d55f="cube">x³ (زي كود الدرس)</button>
+        <button type="button" data-d55f="sq">x²</button>
+        <button type="button" data-d55f="sin">sin(2x)</button>
+      </div>
+      <div class="readout">
+        <div><small>f(x)</small><b id="d55-gf">8</b></div>
+        <div><small>grad(f)(x)</small><b id="d55-gd1">12</b></div>
+        <div><small>grad(grad(f))(x)</small><b id="d55-gd2">12</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: jit -->
+<section id="d55-jit">
+  <div class="station-head"><span class="tag">03</span><h2>jit: اعمل compile مرة، وشغّل ألف مرة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>أول ما تنادي دالة عليها <code>@jax.jit</code>، JAX بيعمل <b>tracing</b>: بيشغّلها بقيم «وهمية» (abstract) عشان يسجّل العمليات اللي بتحصل من غير ما يحسب نتايج حقيقية. بعدين بيدّي التسجيل ده لـ <b>XLA</b> (Accelerated Linear Algebra)، الكومبايلر بتاع Google للـ TPUs والـ GPUs، اللي بيدمج العمليات (fusion)، ويشيل نسخ الذاكرة الزيادة، ويطلّع machine code متظبط.</p>
+      <p>المرات اللي بعد كده Python مش بيتلمس خالص: الكود المتكومبايل بيشتغل على الـ accelerator مباشرة.</p>
+      <div class="tablewrap"><table>
+        <tr><th>الـ JIT بيفيد</th><th>الـ JIT بيضر</th></tr>
+        <tr><td>training steps (نفس الحساب آلاف المرات)</td><td>control flow بيعتمد على القيم (<code>if x &gt; 0</code> و x traced)</td></tr>
+        <tr><td>inference (نفس الموديل، دخل مختلف)</td><td>حسابة بتتعمل مرة واحدة (الـ compile أغلى من التشغيل)</td></tr>
+        <tr><td>أي دالة بتتنادى كذا مرة بـ shapes شبه بعض</td><td>الـ debugging (الـ tracing بيخبي التنفيذ الحقيقي)</td></tr>
+      </table></div>
+      <p>بدل <code>if/else</code> بتستخدم <code>jax.lax.cond</code>، وبدل <code>for</code> بتستخدم <code>jax.lax.scan</code> (أو <code>jax.lax.fori_loop</code>). دول مش اختياريين؛ ده تمن الـ compilation.</p>
+      <div class="note"><strong>المعمل ده توضيحي:</strong> الأرقام مش قياس حقيقي، هي موديل بسيط للفكرة: eager = تكلفة ثابتة كل نداء (overhead + تشغيل)، و jit = تكلفة compile كبيرة أول مرة وبعدين نداء رخيص. حرّك وشوف نقطة التعادل. قِس الرقم الحقيقي بنفسك في التمرين ٤.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d55-jc" width="520" height="300" aria-label="مقارنة الوقت التراكمي بين eager و jit"></canvas>
+      <div class="mrow">
+        <label>eager ms/call <span id="d55-jev">5</span><input type="range" id="d55-je" min="1" max="20" step="1" value="5"></label>
+        <label>jit ms/call <span id="d55-jjv">0.5</span><input type="range" id="d55-jj" min="0.1" max="5" step="0.1" value="0.5"></label>
+        <label>compile ms <span id="d55-jcv">300</span><input type="range" id="d55-jcomp" min="0" max="2000" step="50" value="300"></label>
+        <label>calls <span id="d55-jnv">200</span><input type="range" id="d55-jn" min="1" max="1000" step="1" value="200"></label>
+      </div>
+      <div class="readout">
+        <div><small>eager total</small><b id="d55-jte">1000 ms</b></div>
+        <div><small>jit total</small><b id="d55-jtj">400 ms</b></div>
+        <div><small>نقطة التعادل</small><b id="d55-jbe">67 calls</b></div>
+      </div>
+      <div class="verdict" id="d55-jverd"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: vmap -->
+<section id="d55-vmap">
+  <div class="station-head"><span class="tag">04</span><h2>vmap: اكتب لمثال واحد، واشتغل على batch</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>def predict(params, x):            <span class="c"># مثال واحد بس</span>
+    return jnp.dot(params['w'], x) + params['b']
+
+batch_predict = jax.vmap(predict, in_axes=(None, 0))</pre></div>
+      <p><code>in_axes=(None, 0)</code> معناها: <code>params</code> متقسمهاش (مشتركة بين كل الأمثلة)، و<code>x</code> قسّمها على المحور 0. مفيش loop يدوي، ومفيش reshape، ومفيش إنك تمرر batch dimension في كل حتة.</p>
+      <p>ده مش سكر في الكتابة: <code>vmap</code> بيطلّع كود vectorized مدموج، والدرس بيقول إنه أسرع من loop في Python بـ 10-100 مرة. وكمان بيتركب مع <code>jit</code> و<code>grad</code>:</p>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>per_example_grads = jax.vmap(jax.grad(loss_fn), in_axes=(None, 0, 0))</pre></div>
+      <p>gradient لكل مثال لوحده في سطر واحد. الدرس بيقول إن ده تقريبًا مستحيل في PyTorch من غير حيل.</p>
+      <div class="note"><strong>جرّب:</strong> شغّل «Python loop» وشوف الأمثلة بتعدي واحد واحد، وبعدين «vmap» وشوفهم بيعدوا مرة واحدة. غيّر <code>in_axes</code> للـ params لـ 0 وشوف إيه اللي بيبوظ.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d55-vc" width="520" height="320" aria-label="مقارنة loop و vmap"></canvas>
+      <div class="btns">
+        <button type="button" id="d55-vloop">▶ Python loop</button>
+        <button type="button" id="d55-vvmap" class="primary">▶ vmap</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">in_axes للـ params:
+          <select id="d55-vax"><option value="none">None (مشتركة)</option><option value="0">0 (اتقسمت)</option></select></label>
+      </div>
+      <label style="display:grid;gap:2px">batch size = <b class="mono" id="d55-vbv">5</b><input type="range" id="d55-vb" min="2" max="10" step="1" value="5"></label>
+      <div class="verdict" id="d55-vmsg">x.shape = (5, 3) ← out.shape = (5,)</div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5: pmap, pytrees, random -->
+<section id="d55-tree">
+  <div class="station-head"><span class="tag">05</span><h2>pmap و pytrees والـ random keys</h2></div>
+  <h3>pmap: نفس الدالة على كل الأجهزة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>parallel_step = jax.pmap(train_step, axis_name='devices')</pre></div>
+  <p><code>pmap</code> بينسخ الدالة على كل الأجهزة المتاحة (GPUs/TPUs) ويقسم الـ batch عليهم. جوه الدالة، <code>jax.lax.pmean</code> و<code>jax.lax.psum</code> بيوحّدوا الـ gradients بين الأجهزة. الدرس بيذكر إن خليفته اسمه <code>shard_map</code>. الطريقة: اكتب نسخة لجهاز واحد، لفّها بـ <code>pmap</code>، وخلاص.</p>
+  <div class="note"><strong>تشبيه:</strong> عندك ٨ طباخين وكل واحد معاه نفس الوصفة (نفس الدالة)، وقسمت الطلبات عليهم. في الآخر كلهم بيتفقوا على متوسط واحد للتعديلات (pmean) عشان الوصفة تفضل واحدة عند الكل.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>Pytrees: الموديل هو الشجرة</h3>
+      <p>الـ pytree هو أي تركيبة متداخلة من lists و tuples و dicts و arrays. بارامترات الموديل pytree:</p>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>params = {
+    'layer1': {'w': jnp.zeros((784, 256)), 'b': jnp.zeros(256)},
+    'layer2': {'w': jnp.zeros((256, 128)), 'b': jnp.zeros(128)},
+    'layer3': {'w': jnp.zeros((128, 10)),  'b': jnp.zeros(10)},
+}
+<span class="c"># تحديث كل الأوراق مرة واحدة = SGD كامل</span>
+params = jax.tree.map(lambda p, g: p - lr * g, params, grads)</pre></div>
+      <p>كل تحويلات JAX عارفة تمشي على الـ pytrees. <code>jax.tree.map(f, tree)</code> بيطبّق <code>f</code> على كل ورقة. مفيش <code>.parameters()</code> ومفيش تسجيل للبارامترز: شكل الشجرة هو الموديل.</p>
+      <div class="note"><strong>جرّب:</strong> اضغط «خطوة SGD» وشوف كل ورقة في الشجرة اتحدثت بنفس القاعدة، وإن الشجرة القديمة فضلت زي ما هي (immutable): بيطلع params جديدة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d55-tc" width="520" height="300" aria-label="شجرة البارامترز و tree.map"></canvas>
+      <div class="btns">
+        <button type="button" id="d55-tstep" class="primary">خطوة SGD: tree.map</button>
+        <button type="button" id="d55-treset">رجّع</button>
+      </div>
+      <label style="display:grid;gap:2px">lr = <b class="mono" id="d55-tlrv">0.1</b><input type="range" id="d55-tlr" min="0.01" max="0.5" step="0.01" value="0.1"></label>
+      <div class="readout">
+        <div><small>عدد الأوراق</small><b>6</b></div>
+        <div><small>عدد البارامترز</small><b id="d55-tcount">0</b></div>
+        <div><small>الخطوة</small><b id="d55-tst">0</b></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Functional ضد Object-Oriented</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># PyTorch: الـ state جوه الـ object</span>
+class Model(nn.Module):
+    def __init__(self):
+        self.linear = nn.Linear(784, 10)
+    def forward(self, x):
+        return self.linear(x)
+
+<span class="c"># JAX: الـ params بتتبعت صريح، ومفيش حاجة بتتخزن</span>
+def predict(params, x):
+    return jnp.dot(x, params['w']) + params['b']</pre></div>
+  <p>مفيش حاجة بتتخزن ولا بتتغير، فكل دالة سهل تختبرها وتركّبها وتعملها compile. التمن إنك انت اللي بتدير الـ params، أو تستخدم مكتبة زي Flax أو Equinox.</p>
+
+  <h3>الأرقام العشوائية: مفيش global seed</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>key = jax.random.PRNGKey(42)
+key1, key2 = jax.random.split(key)        <span class="c"># قسّم المفتاح، متعيدش استخدامه</span>
+w = jax.random.normal(key1, shape=(784, 256))</pre></div>
+  <p>كل عملية random محتاجة <b>key صريح</b>. مزعج في الأول، بس بيضمن إن النتايج تتكرر بالظبط على أجهزة كتير ومع الـ compilation، والدرس بيقول إن <code>torch.manual_seed</code> مش بيقدر يضمن ده في إعدادات multi-GPU.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ key زي تذكرة يانصيب ليها رقم. نفس التذكرة = نفس النتيجة دايمًا. عايز نتيجة جديدة؟ اقسم التذكرة لتذكرتين جداد بـ <code>split</code>.</div>
+</section>
+
+<!-- STATION 6: ecosystem -->
+<section id="d55-eco">
+  <div class="station-head"><span class="tag">06</span><h2>الـ Ecosystem: ومتى JAX ومتى PyTorch</h2></div>
+  <p>JAX بيديك primitives، والمكتبات بتديك الراحة:</p>
+  <div class="tablewrap"><table>
+    <tr><th>المكتبة</th><th>دورها</th><th>الأسلوب</th></tr>
+    <tr><td><b>Flax</b> (Google)</td><td>layers للشبكات</td><td><code>nn.Module</code> بس الـ state صريح</td></tr>
+    <tr><td><b>Equinox</b> (Patrick Kidger)</td><td>layers للشبكات</td><td>الموديل نفسه pytree، Pythonic</td></tr>
+    <tr><td><b>Optax</b> (DeepMind)</td><td>optimizers + LR schedules</td><td>gradient transforms بتتركب</td></tr>
+    <tr><td><b>Orbax</b> (Google)</td><td>checkpointing</td><td>حفظ واسترجاع pytrees</td></tr>
+    <tr><td><b>CLU</b> (Google)</td><td>metrics + logging</td><td>أدوات للـ training loop</td></tr>
+  </table></div>
+  <p><b>Optax</b> هي المكتبة القياسية للـ optimizers. بتفصل تحويل الـ gradient (Adam، SGD، clipping) عن تحديث البارامترز، فتقدر تركّب سلسلة: كل حلقة تشوف الـ gradients وتعدّلها وتسلّمها للي بعدها.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>optimizer = optax.chain(
+    optax.clip_by_global_norm(1.0),   <span class="c"># الأول: قص الـ gradient</span>
+    optax.adam(learning_rate=1e-3),   <span class="c"># بعدين: Adam</span>
+)</pre></div>
+  <div class="tablewrap"><table>
+    <tr><th>العامل</th><th>JAX</th><th>PyTorch</th></tr>
+    <tr><td>TPU</td><td>first-class (Google عاملة الاتنين)</td><td>community عن طريق torch_xla</td></tr>
+    <tr><td>GPU</td><td>كويس (CUDA عن طريق XLA)</td><td>الأفضل (CUDA native)</td></tr>
+    <tr><td>Debugging</td><td>صعب (tracing + compilation)</td><td>سهل (eager سطر بسطر)</td></tr>
+    <tr><td>Ecosystem</td><td>بحثي (Flax، Equinox)</td><td>ضخم (HuggingFace، torchvision…)</td></tr>
+    <tr><td>التوظيف</td><td>niche (Google/DeepMind/Anthropic)</td><td>في كل حتة</td></tr>
+    <tr><td>تدريب على نطاق ضخم</td><td>أقوى (XLA، pmap، mesh)</td><td>كويس (FSDP، DeepSpeed)</td></tr>
+    <tr><td>سرعة التجريب</td><td>أبطأ (overhead الأسلوب الـ functional)</td><td>أسرع (عدّل وامشي)</td></tr>
+    <tr><td>Production inference</td><td>TensorFlow Serving، Vertex AI</td><td>TorchServe، Triton، ONNX</td></tr>
+    <tr><td>مين بيستخدمه (حسب الدرس)</td><td>DeepMind (Gemini)، Anthropic (Claude)</td><td>Meta (Llama)، OpenAI (GPT)، Stability AI</td></tr>
+  </table></div>
+  <div class="note"><strong>نصيحة الدرس بصراحة:</strong> استخدم PyTorch إلا لو عندك سبب محدد لـ JAX: عندك TPUs، أو محتاج per-example gradients، أو تدريب multi-device على نطاق ضخم، أو بتشتغل في Google/DeepMind/Anthropic.</div>
+</section>
+
+<!-- CODE -->
+<section id="d55-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: MLP على MNIST بـ JAX و Optax</h2></div>
+  <p>هنبني MLP بـ ٣ طبقات: 784 دخل ← 256 ← 128 ← 10 classes. نزّل المكتبات الأول (لو عندك GPU شوف قسم Ship It تحت):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>pip install jax jaxlib optax flax
+pip install scikit-learn   <span class="c"># عشان fetch_openml بتاعة MNIST</span></pre></div>
+  <p><b>القاعدة:</b> اكتب الملف بنفسك في <code>my_jax.py</code> خطوة بخطوة، وارجع للأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الداتا</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import jax
+import jax.numpy as jnp
+from jax import random
+import optax
+
+def get_mnist_data():
+    from sklearn.datasets import fetch_openml
+    mnist = fetch_openml('mnist_784', version=1, as_frame=False, parser='auto')
+    X = mnist.data.astype('float32') / 255.0   <span class="c"># البيكسلز من 0 لـ 1</span>
+    y = mnist.target.astype('int')
+    X_train, X_test = X[:60000], X[60000:]
+    y_train, y_test = y[:60000], y[60000:]
+    return X_train, y_train, X_test, y_test</pre></div>
+
+  <h3>خطوة ٢: init_params — مفيش class، دالة بترجع pytree</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def init_params(key):
+    k1, k2, k3 = random.split(key, 3)          <span class="c"># ٣ مفاتيح من seed واحد</span>
+    scale1 = jnp.sqrt(2.0 / 784)               <span class="c"># He init بإيدنا (درس ٥١)</span>
+    scale2 = jnp.sqrt(2.0 / 256)
+    scale3 = jnp.sqrt(2.0 / 128)
+    params = {
+        'layer1': {'w': scale1 * random.normal(k1, (784, 256)), 'b': jnp.zeros(256)},
+        'layer2': {'w': scale2 * random.normal(k2, (256, 128)), 'b': jnp.zeros(128)},
+        'layer3': {'w': scale3 * random.normal(k3, (128, 10)),  'b': jnp.zeros(10)},
+    }
+    return params</pre></div>
+
+  <h3>خطوة ٣: forward و loss — دوال pure</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def forward(params, x):
+    x = jnp.dot(x, params['layer1']['w']) + params['layer1']['b']
+    x = jax.nn.relu(x)
+    x = jnp.dot(x, params['layer2']['w']) + params['layer2']['b']
+    x = jax.nn.relu(x)
+    x = jnp.dot(x, params['layer3']['w']) + params['layer3']['b']
+    return x                                    <span class="c"># logits</span>
+
+def loss_fn(params, x, y):
+    logits = forward(params, x)
+    one_hot = jax.nn.one_hot(y, 10)
+    <span class="c"># cross-entropy من الصفر: log_softmax × one_hot، وبعدين سالب المتوسط</span>
+    return -jnp.mean(jnp.sum(jax.nn.log_softmax(logits) * one_hot, axis=-1))</pre></div>
+
+  <h3>خطوة ٤: train_step متكومبايل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>optimizer = optax.adam(learning_rate=1e-3)
+
+@jax.jit
+def train_step(params, opt_state, x, y):
+    loss, grads = jax.value_and_grad(loss_fn)(params, x, y)        <span class="c"># الـ loss والـ grads في لفة واحدة</span>
+    updates, opt_state = optimizer.update(grads, opt_state, params) <span class="c"># Adam يحوّل الـ grads</span>
+    params = optax.apply_updates(params, updates)                   <span class="c"># params جديدة، مش تعديل في المكان</span>
+    return params, opt_state, loss
+
+@jax.jit
+def accuracy(params, x, y):
+    preds = jnp.argmax(forward(params, x), axis=-1)
+    return jnp.mean(preds == y)</pre></div>
+
+  <h3>خطوة ٥: الـ training loop</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>X_train, y_train, X_test, y_test = get_mnist_data()
+X_train, X_test = jnp.array(X_train), jnp.array(X_test)
+y_train, y_test = jnp.array(y_train), jnp.array(y_test)
+
+key = random.PRNGKey(0)
+params = init_params(key)
+opt_state = optimizer.init(params)
+batch_size, n_epochs = 128, 10
+
+for epoch in range(n_epochs):
+    key, subkey = random.split(key)                     <span class="c"># مفتاح جديد كل epoch للـ shuffle</span>
+    perm = random.permutation(subkey, len(X_train))
+    X_shuffled, y_shuffled = X_train[perm], y_train[perm]
+    epoch_loss = 0.0
+    n_batches = len(X_train) // batch_size
+    for i in range(n_batches):
+        start = i * batch_size
+        xb = X_shuffled[start:start + batch_size]
+        yb = y_shuffled[start:start + batch_size]
+        params, opt_state, loss = train_step(params, opt_state, xb, yb)
+        epoch_loss += loss
+    train_acc = accuracy(params, X_train[:5000], y_train[:5000])
+    test_acc = accuracy(params, X_test, y_test)
+    print(f"Epoch {epoch + 1:2d} | Loss: {epoch_loss / n_batches:.4f} | "
+          f"Train Acc: {train_acc:.4f} | Test Acc: {test_acc:.4f}")</pre></div>
+  <p>لاحظ اللي <b>مش موجود</b>: لا <code>.zero_grad()</code> ولا <code>.backward()</code> ولا <code>.step()</code>. التحديث كله نداء واحد متركب جوه <code>train_step</code>. أول epoch بطيء (الـ JIT بيكومبايل) والباقي سريع.</p>
+
+  <h3>شغّل ملف الدرس من جذر الريبو</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/03-deep-learning-core/12-intro-to-jax/code/jax_intro.py</pre></div>
+  <p>الملف بيشغل ٣ demos الأول (<code>demo_grad</code> على <span class="ltr">f(x)=x³</span>، و<code>demo_vmap</code>، و<code>demo_jit</code> على ضرب مصفوفات 1000×1000) وبعدين تدريب MNIST.</p>
+  <details><summary>الناتج المتوقع (اللي نعرفه)</summary>
+    <pre class="term">=== jax.grad demo ===
+f(2.0)   = 8.0
+f'(2.0)  = 12.0      <span class="c"># 3x² = 12</span>
+f''(2.0) = 12.0      <span class="c"># 6x = 12</span>
+
+=== jax.vmap demo ===
+Input shape:  (5, 3)
+Output shape: (5,)
+Predictions:  [... 5 أرقام ...]
+
+=== jax.jit demo ===
+Eager: ...s   JIT: ...s   Speedup: ...x   <span class="c"># بيختلف حسب جهازك</span>
+
+=== MNIST Training ===
+Epoch  1 | Loss: ... | Train Acc: ... | Test Acc: ...
+...
+<span class="c"># الدرس بيقول: بعد ١٠ epochs حوالي 97% test accuracy</span></pre>
+  </details>
+
+  <h3>Use It: نفس الكلام بالمكتبات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># Flax: رجّع nn.Module بس الـ params برا الموديل</span>
+import flax.linen as nn
+class MLP(nn.Module):
+    @nn.compact
+    def __call__(self, x):
+        x = nn.relu(nn.Dense(256)(x))
+        x = nn.relu(nn.Dense(128)(x))
+        return nn.Dense(10)(x)
+
+model = MLP()
+params = model.init(jax.random.PRNGKey(0), jnp.ones((1, 784)))  <span class="c"># بيعمل الـ params</span>
+logits = model.apply(params, x_batch)                            <span class="c"># الموديل نفسه ملوش state</span>
+
+<span class="c"># Equinox: الموديل نفسه pytree، من غير apply</span>
+import equinox as eqx
+model = eqx.nn.MLP(in_size=784, out_size=10, width_size=256, depth=2,
+                   activation=jax.nn.relu, key=jax.random.PRNGKey(0))
+logits = model(x)
+
+<span class="c"># Optax: warmup + cosine + clipping + weight decay في سلسلة واحدة (درس ٥٢)</span>
+schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0, peak_value=1e-3, warmup_steps=1000, decay_steps=50000)
+optimizer = optax.chain(
+    optax.clip_by_global_norm(1.0),
+    optax.adamw(learning_rate=schedule, weight_decay=0.01))</pre></div>
+
+  <h3>Ship It: التثبيت والمطبات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>pip install jax[cuda12]     <span class="c"># GPU</span>
+pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html   <span class="c"># TPU على Google Cloud</span></pre></div>
+  <ul class="checklist">
+    <li>• أول نداء JIT بطيء (compile). سخّن الدالة قبل ما تقيس.</li>
+    <li>• متعملش loops بـ Python على JAX arrays جوه JIT؛ استخدم <code>jax.lax.scan</code> أو <code>jax.lax.fori_loop</code>.</li>
+    <li>• <code>jax.debug.print()</code> بيشتغل جوه JIT، و<code>print()</code> العادي لأ.</li>
+    <li>• اعمل profiling بـ <code>jax.profiler</code> أو TensorBoard؛ الـ XLA compilation ممكن يخبي الـ bottlenecks.</li>
+    <li>• JAX بيحجز 75% من ذاكرة الـ GPU تلقائيًا. <code>XLA_PYTHON_CLIENT_PREALLOCATE=false</code> بيلغي ده.</li>
+  </ul>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import orbax.checkpoint as ocp           <span class="c"># checkpointing للـ pytree</span>
+checkpointer = ocp.PyTreeCheckpointer()
+checkpointer.save('/tmp/model', params)
+restored = checkpointer.restore('/tmp/model')</pre></div>
+  <p>الدرس كمان بيطلع ملفين في <code>outputs/</code>: <code>prompt-jax-optimizer.md</code> (prompt لاختيار إعداد optimizer في JAX) و<code>skill-jax-patterns.md</code> (skill للأنماط الـ functional). افتحهم واقراهم.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d55-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة (أنصحك بـ ٢ و ٤).</p>
+  <ol class="ex">
+    <li><b>Dropout:</b> ضيف dropout للـ MLP. في JAX الـ dropout محتاج PRNG key: مرّر key في الـ forward، واقسمه لكل dropout layer. قارن الـ test accuracy بيه ومن غيره.
+      <details><summary>تلميح</summary><code>forward(params, x, key, train=True)</code>. جوه: <code>k1, k2 = random.split(key)</code>، والماسك <code>random.bernoulli(k1, keep, x.shape)</code>، و<code>x = jnp.where(mask, x / keep, 0)</code> (inverted dropout من درس ٥٠). في الـ accuracy شغّل من غير dropout. في الـ loop اعمل <code>key, sub = random.split(key)</code> كل step ومتعيدش نفس الـ key.</details></li>
+    <li><b>Per-example gradients:</b> استخدم <code>jax.vmap</code> عشان تحسب gradient لكل صورة في batch من 32. احسب الـ norm لكل واحد. أنهي أمثلة الـ gradient بتاعها أكبر، وليه؟
+      <details><summary>تلميح</summary><code>loss_fn</code> متعمول لـ batch، فاعمل نسخة لمثال واحد بتعمل <code>x[None]</code> و<code>y[None]</code>. <code>g = jax.vmap(jax.grad(single_loss), in_axes=(None,0,0))(params, xb, yb)</code>. الـ norm: <code>jnp.sqrt(sum(jnp.sum(l**2, axis=tuple(range(1,l.ndim))) for l in jax.tree.leaves(g)))</code>. هتلاقي الأكبر غالبًا الأمثلة اللي الموديل غلطان فيها أو مش واثق، لأن الـ cross-entropy gradient بيكبر لما الاحتمال الصح يبقى صغير.</details></li>
+    <li><b>MLP عام:</b> بدّل الـ forward اليدوي بـ <code>mlp_forward(params, x)</code> يشتغل مع أي عدد طبقات. استخدم <code>jax.tree.leaves</code> عشان تعرف العمق.
+      <details><summary>تلميح</summary>خلي params list من dicts. <code>n = len(jax.tree.leaves(params)) // 2</code> (كل طبقة w و b). اعمل loop على أول n−1 طبقة بـ relu والأخيرة من غير. الـ Python loop هنا تمام جوه jit لأن عدد الطبقات ثابت وقت الـ tracing (مش قيمة traced).</details></li>
+    <li><b>Benchmark:</b> قِس train_step بـ <code>@jax.jit</code> ومن غيره لـ 100 step. السرعة اتضاعفت كام مرة عندك؟ وتكلفة الـ compile في أول نداء قد إيه؟
+      <details><summary>تلميح</summary>استخدم <code>time.perf_counter()</code>، وقيس أول نداء لوحده. لازم تعمل <code>.block_until_ready()</code> على الناتج، لأن JAX بيشتغل asynchronous ومن غيرها هتقيس وقت الإرسال بس (زي <code>demo_jit</code> في ملف الدرس). قارن رقمك بالمعمل ٠٣.</details></li>
+    <li><b>Gradient clipping:</b> استخدم <code>optax.chain(optax.clip_by_global_norm(1.0), optax.adam(1e-3))</code>. درّب بيه ومن غيره، وارسم الـ gradient norm على مدار التدريب.
+      <details><summary>تلميح</summary>رجّع <code>optax.global_norm(grads)</code> من <code>train_step</code> كقيمة رابعة، واجمعهم في list وارسمهم بـ matplotlib. لاحظ إن الـ norm اللي بتحسبه هو قبل القص.</details></li>
+    <li><b>إضافة مني · تقييم embeddings بـ vmap:</b> في شغل RAG بتحتاج تحسب cosine similarity بين سؤال و1000 document. اكتب <code>cos(q, d)</code> لمتجهين بس، وبعدين <code>jax.vmap(cos, in_axes=(None, 0))</code> على مصفوفة documents (1000, 384) عشوائية، ولفّها بـ <code>jax.jit</code>، وطلّع أعلى ٥ بـ <code>jnp.argsort</code>. خطوة كمان: <code>vmap</code> تاني بـ <code>in_axes=(0, None)</code> عشان 50 سؤال مرة واحدة ← مصفوفة (50, 1000).
+      <details><summary>تلميح</summary><code>cos = lambda q, d: jnp.dot(q, d) / (jnp.linalg.norm(q) * jnp.linalg.norm(d))</code>. <code>all_q = jax.vmap(jax.vmap(cos, (None, 0)), (0, None))</code>. اتأكد إن الناتج بيساوي <code>Qn @ Dn.T</code> بعد ما تعمل normalize للصفوف (<code>jnp.allclose</code>).</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d55-mine">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالهوش صريح</h2></div>
+  <h3>الحدس: JAX «بيقرا» دالتك مرة واحدة بس</h3>
+  <p>أهم فكرة تمسكها: جوه <code>jit</code>، الـ Python بيتنفذ <b>مرة واحدة وقت الـ tracing</b> بقيم وهمية (shape و dtype بس). أي حاجة Python عادية (print، append في list برا الدالة، <code>if</code> على قيمة) بتحصل في اللحظة دي وخلاص، ومش هتتكرر في كل نداء. عشان كده:</p>
+  <ul class="checklist">
+    <li>• <b>غلطة:</b> <code>print(loss)</code> جوه <code>train_step</code> بيطبع حاجة زي <code>Traced&lt;...&gt;</code> مرة واحدة وبعدين يسكت. الحل: <code>jax.debug.print("{}", loss)</code> أو اطبع برا.</li>
+    <li>• <b>غلطة:</b> <code>if x &gt; 0:</code> على array traced بيضرب error. الحل: <code>jnp.where</code> أو <code>jax.lax.cond</code>.</li>
+    <li>• <b>غلطة:</b> تغيير الـ shape كل نداء (batch آخره أصغر مثلًا) بيعمل re-compile جديد لكل shape. خلي الـ batches بنفس الحجم (الكود بتاعنا بيرمي آخر batch ناقص بـ <code>// batch_size</code>).</li>
+    <li>• <b>غلطة:</b> استخدام نفس الـ key مرتين = نفس الأرقام العشوائية بالظبط (نفس ماسك الـ dropout كل step!). دايمًا <code>split</code>.</li>
+    <li>• <b>غلطة:</b> القياس من غير <code>block_until_ready()</code> بيديك أرقام سريعة بشكل كاذب.</li>
+  </ul>
+  <h3>فين ده بيظهر في الـ LLMs والـ agents؟</h3>
+  <p>تدريب الموديلات الكبيرة هو أكتر مكان الـ jit و pmap/sharding بيفرقوا فيه، لأن نفس الـ step بيتكرر ملايين المرات على آلاف الشرايح. والـ per-example gradients (vmap+grad) هي حجر أساس في تقنيات زي differential privacy (قص gradient كل مثال لوحده) وتحليل أنهي أمثلة في الداتا مأثرة على الموديل. وحتى لو هتفضل PyTorch، الأفكار دي دخلت هناك: <code>torch.compile</code> فكرته compile للدالة، و<code>torch.func</code> فيه <code>vmap</code> و<code>grad</code> بأسلوب functional. فاللي اتعلمته النهاردة طريقة تفكير، مش مكتبة وبس.</p>
+  <div class="note ai"><strong>قاعدة عملية:</strong> اكتب الدالة لمثال واحد ← اتأكد إنها صح من غير jit ← ضيف <code>vmap</code> ← ضيف <code>grad</code> ← ضيف <code>jit</code> في الآخر. لو حاجة باظت، شيل الـ jit الأول وابدأ debug.</div>
+</section>
+
+<!-- QUIZ -->
+<section id="d55-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d55-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d55-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d55-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الفرق بين eager mutation في PyTorch و pure functions في JAX</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم grad و jit و vmap و pmap، وإمتى الـ jit بيضر</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ pytrees و <code>jax.tree.map</code> والـ PRNG keys</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ MLP بـ JAX و Optax بإيدي وشغّلته</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6" id="d55-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td><code>jax.grad</code> / functional autodiff</td><td>أي تدريب، Hessians و meta-learning</td></tr>
+    <tr><td><code>jit</code> + XLA</td><td>تدريب وinference الموديلات الكبيرة؛ نفس الفكرة في <code>torch.compile</code></td></tr>
+    <tr><td><code>vmap</code></td><td>per-example gradients، تقييم batch من embeddings</td></tr>
+    <tr><td><code>pmap</code> / <code>shard_map</code></td><td>تدريب على TPU pods وآلاف الأجهزة</td></tr>
+    <tr><td>Pytrees</td><td>الـ params والـ optimizer state والـ checkpoints (Orbax)</td></tr>
+    <tr><td>PRNG keys</td><td>dropout، الـ shuffle، و reproducibility على أجهزة كتير</td></tr>
+    <tr><td>Optax chain</td><td>clipping + warmup + AdamW في تدريب الـ LLMs</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Debugging Neural Networks. هنتعلم إزاي نلاقي ليه الموديل مش بيتعلم، ونبدأ بمراجعة ٥ دقايق على JAX.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F12-intro-to-jax" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/12-intro-to-jax</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI,css=A.css,f=A.fmt,$=id=>document.getElementById(id);
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// roadmap
+const rm=$('d55-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===12)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: grad ----------
+const FN={
+  cube:{f:x=>x*x*x,d1:x=>3*x*x,d2:x=>6*x,lab:'x³',sy:3},
+  sq:{f:x=>x*x,d1:x=>2*x,d2:x=>2,lab:'x²',sy:6},
+  sin:{f:x=>Math.sin(2*x),d1:x=>2*Math.cos(2*x),d2:x=>-4*Math.sin(2*x),lab:'sin(2x)',sy:30}
+};
+let fk='cube';
+const gc=$('d55-gc'),gx=A.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h,GS=90,gox=GW/2,goy=GH/2;
+function drawGrad(){
+  const F=FN[fk],x=+$('d55-gx').value,sy=F.sy;
+  const P=(X,Y)=>[gox+X*GS,goy-Y*sy];
+  gx.clearRect(0,0,GW,GH);A.grid(gx,GW,GH,GS/2,gox,goy);
+  const curve=(fn,col,w,alpha)=>{gx.strokeStyle=col;gx.lineWidth=w;gx.globalAlpha=alpha;gx.beginPath();
+    for(let px=0;px<=GW;px+=2){const X=(px-gox)/GS,[a,b]=P(X,fn(X));px?gx.lineTo(a,b):gx.moveTo(a,b)}gx.stroke();gx.globalAlpha=1};
+  curve(F.d2,css('--muted'),1.5,.6);
+  curve(F.d1,css('--vec-b'),1.5,.45);
+  curve(F.f,css('--vec-a'),3,1);
+  const y=F.f(x),m=F.d1(x);
+  gx.strokeStyle=css('--vec-b');gx.lineWidth=2.5;gx.beginPath();
+  const [a1,b1]=P(x-1.2,y-1.2*m),[a2,b2]=P(x+1.2,y+1.2*m);gx.moveTo(a1,b1);gx.lineTo(a2,b2);gx.stroke();
+  const [px,py]=P(x,y);gx.fillStyle=css('--vec-a');gx.beginPath();gx.arc(px,py,7,0,7);gx.fill();
+  gx.font='13px JetBrains Mono, monospace';
+  gx.fillStyle=css('--vec-a');gx.fillText('f = '+F.lab,10,18);
+  gx.fillStyle=css('--vec-b');gx.fillText("grad(f)",10,36);
+  gx.fillStyle=css('--muted');gx.fillText("grad(grad(f))",10,54);
+  $('d55-gxv').textContent=f(x);
+  $('d55-gf').textContent=f(y,3);$('d55-gd1').textContent=f(m,3);$('d55-gd2').textContent=f(F.d2(x),3);
+}
+$('d55-gx').addEventListener('input',drawGrad);
+document.querySelectorAll('[data-d55f]').forEach(b=>b.addEventListener('click',()=>{fk=b.dataset.d55f;drawGrad()}));
+drawGrad();
+
+// ---------- Lab 2: jit ----------
+const jc=$('d55-jc'),jx=A.setupCanvas(jc),JW=+jc.dataset.w,JH=+jc.dataset.h;
+function drawJit(){
+  const e=+$('d55-je').value,j=+$('d55-jj').value,c=+$('d55-jcomp').value,n=+$('d55-jn').value;
+  $('d55-jev').textContent=e;$('d55-jjv').textContent=f(j,1);$('d55-jcv').textContent=c;$('d55-jnv').textContent=n;
+  const te=e*n,tj=c+j*n,be=e>j?Math.ceil(c/(e-j)):Infinity;
+  $('d55-jte').textContent=Math.round(te)+' ms';$('d55-jtj').textContent=Math.round(tj)+' ms';
+  $('d55-jbe').textContent=isFinite(be)?be+' calls':'never';
+  const v=$('d55-jverd');
+  if(tj<te){v.textContent='الـ jit كسب: أسرع بـ ×'+f(te/tj,1)+' بعد '+n+' نداء';v.style.color=css('--ok')}
+  else{v.textContent='الـ eager أحسن هنا: النداءات قليلة والـ compile لسه ماتسددش';v.style.color=css('--bad')}
+  jx.clearRect(0,0,JW,JH);
+  const L=44,B=JH-28,T=14,R=JW-12,ymax=Math.max(te,tj,1)*1.08;
+  jx.strokeStyle=css('--muted');jx.lineWidth=1;jx.beginPath();jx.moveTo(L,T);jx.lineTo(L,B);jx.lineTo(R,B);jx.stroke();
+  const X=k=>L+(R-L)*k/n,Y=t=>B-(B-T)*t/ymax;
+  const line=(fn,col)=>{jx.strokeStyle=col;jx.lineWidth=3;jx.beginPath();jx.moveTo(X(0),Y(fn(0)));for(let k=1;k<=n;k+=Math.max(1,Math.floor(n/200)))jx.lineTo(X(k),Y(fn(k)));jx.lineTo(X(n),Y(fn(n)));jx.stroke()};
+  line(k=>e*k,css('--vec-b'));
+  line(k=>k===0?0:c+j*k,css('--vec-a'));
+  if(isFinite(be)&&be<=n){const bx=X(be),by=Y(e*be);jx.setLineDash([4,4]);jx.strokeStyle=css('--ink');jx.lineWidth=1;jx.beginPath();jx.moveTo(bx,B);jx.lineTo(bx,by);jx.stroke();jx.setLineDash([]);
+    jx.fillStyle=css('--ink');jx.beginPath();jx.arc(bx,by,5,0,7);jx.fill()}
+  jx.font='12px JetBrains Mono, monospace';
+  jx.fillStyle=css('--vec-b');jx.fillText('eager',L+8,T+12);
+  jx.fillStyle=css('--vec-a');jx.fillText('jit (compile + calls)',L+8,T+28);
+  jx.fillStyle=css('--muted');jx.fillText('calls →',R-60,JH-8);jx.fillText('ms',6,T+10);
+}
+['d55-je','d55-jj','d55-jcomp','d55-jn'].forEach(id=>$(id).addEventListener('input',drawJit));
+drawJit();
+
+// ---------- Lab 3: vmap ----------
+const vc=$('d55-vc'),vx=A.setupCanvas(vc),VW=+vc.dataset.w,VH=+vc.dataset.h;
+let vmode='idle',vt=0,vraf=null,vlast=0;
+function drawV(){
+  const n=+$('d55-vb').value,ax=$('d55-vax').value,bad=ax==='0'&&n!==1;
+  vx.clearRect(0,0,VW,VH);
+  const rowH=Math.min(26,(VH-40)/n),y0=20,xIn=30,cw=22,xFn=VW/2-50,xOut=VW-90;
+  vx.font='12px JetBrains Mono, monospace';vx.fillStyle=css('--muted');
+  vx.fillText('x  ('+n+', 3)',xIn,14);vx.fillText('out ('+n+',)',xOut,14);
+  // fn box
+  vx.strokeStyle=bad?css('--bad'):css('--ink');vx.lineWidth=2;vx.strokeRect(xFn,y0,100,n*rowH);
+  vx.fillStyle=css('--ink');vx.textAlign='center';vx.fillText('predict',xFn+50,y0+n*rowH/2-4);
+  vx.fillStyle=bad?css('--bad'):css('--vec-b');vx.fillText(ax==='none'?'params: shared':'params: split?',xFn+50,y0+n*rowH/2+12);vx.textAlign='left';
+  for(let i=0;i<n;i++){
+    const y=y0+i*rowH;let st;
+    if(vmode==='loop'){st=vt>i+1?2:vt>i?1:0}else if(vmode==='vmap'){st=vt>=1?2:vt>0?1:0}else st=0;
+    for(let k=0;k<3;k++){vx.fillStyle=st===1?css('--vec-b'):css('--vec-a');vx.globalAlpha=st===2?.35:.85;vx.fillRect(xIn+k*cw,y+2,cw-3,rowH-5)}
+    vx.globalAlpha=1;
+    if(st===1){A.arrow(vx,xIn+3*cw+4,y+rowH/2,xFn-4,y+rowH/2,css('--vec-b'),2)}
+    if(st===2){vx.fillStyle=bad?css('--bad'):css('--ok');vx.fillRect(xOut,y+2,cw*2,rowH-5);vx.fillStyle=css('--paper');vx.fillText(bad?'✗':'y'+i,xOut+6,y+rowH/2+4)}
+  }
+  vx.fillStyle=css('--muted');
+  const steps=vmode==='loop'?n:1;
+  vx.fillText(vmode==='idle'?'':(vmode==='loop'?'Python loop: '+n+' calls':'vmap: 1 vectorized call'),xIn,VH-8);
+  const m=$('d55-vmsg');
+  if(bad){m.textContent='خطأ: in_axes=0 للـ params معناها إن JAX هيقسّم الـ w (شكلها (3,)) على المحور 0 كأن فيه نسخة مختلفة لكل مثال، والـ b رقم scalar ملوش محور 0 أصلًا، فـ vmap هيضرب error. الـ params مشتركة بين كل الأمثلة، فلازم None.';m.style.color=css('--bad')}
+  else{m.textContent='x.shape = ('+n+', 3) ← out.shape = ('+n+',)';m.style.color=''}
+}
+function runV(mode){
+  vmode=mode;vt=0;cancelAnimationFrame(vraf);
+  const n=+$('d55-vb').value,end=mode==='loop'?n+1:1.01;
+  if(reduce){vt=end;drawV();return}
+  const speed=mode==='loop'?2.2:1.6;vlast=performance.now();
+  const step=t=>{vt+=(t-vlast)/1000*speed;vlast=t;if(vt>=end)vt=end;drawV();if(vt<end&&document.body.contains(vc))vraf=requestAnimationFrame(step)};
+  vraf=requestAnimationFrame(step);
+}
+$('d55-vloop').addEventListener('click',()=>runV('loop'));
+$('d55-vvmap').addEventListener('click',()=>runV('vmap'));
+$('d55-vax').addEventListener('change',drawV);
+$('d55-vb').addEventListener('input',()=>{$('d55-vbv').textContent=$('d55-vb').value;vmode='idle';drawV()});
+drawV();
+
+// ---------- Lab 4: pytree tree.map ----------
+const tc=$('d55-tc'),tx=A.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+const shapes=[['layer1','w','784×256',784*256],['layer1','b','256',256],['layer2','w','256×128',256*128],['layer2','b','128',128],['layer3','w','128×10',1280],['layer3','b','10',10]];
+const init=[0.8,0.0,-0.6,0.0,0.5,0.0],grads=[0.9,-0.4,-0.7,0.3,0.6,-0.2];
+let vals=init.slice(),old=init.slice(),stepN=0,flash=0;
+$('d55-tcount').textContent=shapes.reduce((a,s)=>a+s[3],0).toLocaleString('en');
+function drawT(){
+  tx.clearRect(0,0,TW,TH);tx.font='12px JetBrains Mono, monospace';tx.textAlign='center';
+  const rx=TW/2,ry=24;
+  tx.fillStyle=css('--ink');tx.fillText('params',rx,ry);
+  for(let l=0;l<3;l++){
+    const lx=TW*(l+.5)/3,ly=95;
+    tx.strokeStyle=css('--muted');tx.lineWidth=1.2;tx.beginPath();tx.moveTo(rx,ry+6);tx.lineTo(lx,ly-14);tx.stroke();
+    tx.fillStyle=css('--ink');tx.fillText("'layer"+(l+1)+"'",lx,ly);
+    for(let k=0;k<2;k++){
+      const i=l*2+k,leafX=lx+(k?40:-40),leafY=175;
+      tx.strokeStyle=css('--muted');tx.beginPath();tx.moveTo(lx,ly+6);tx.lineTo(leafX,leafY-18);tx.stroke();
+      const v=vals[i],h=Math.abs(v)*50;
+      tx.fillStyle=flash>0?css('--vec-b'):css('--vec-a');
+      tx.fillRect(leafX-14,v>=0?leafY+40-h:leafY+40,28,Math.max(1,h));
+      tx.strokeStyle=css('--line');tx.beginPath();tx.moveTo(leafX-20,leafY+40);tx.lineTo(leafX+20,leafY+40);tx.stroke();
+      tx.fillStyle=css('--ink');tx.fillText("'"+shapes[i][1]+"'",leafX,leafY-4);
+      tx.fillStyle=css('--muted');tx.fillText(shapes[i][2],leafX,leafY+10);
+      tx.fillText(f(v,2),leafX,TH-12);
+      if(stepN){tx.globalAlpha=.4;tx.fillText('old '+f(old[i],2),leafX,TH-28);tx.globalAlpha=1}
+    }
+  }
+  tx.textAlign='left';
+}
+$('d55-tlr').addEventListener('input',()=>{$('d55-tlrv').textContent=$('d55-tlr').value});
+$('d55-tstep').addEventListener('click',()=>{const lr=+$('d55-tlr').value;old=vals.slice();vals=vals.map((p,i)=>p-lr*grads[i]*(1+0.3*Math.sin(stepN+i)));stepN++;$('d55-tst').textContent=stepN;flash=1;drawT();setTimeout(()=>{flash=0;if(document.body.contains(tc))drawT()},reduce?0:350)});
+$('d55-treset').addEventListener('click',()=>{vals=init.slice();old=init.slice();stepN=0;$('d55-tst').textContent=0;drawT()});
+drawT();
+
+// ---------- quiz ----------
+const Q=[
+ ['إيه الفرق الجوهري في التصميم بين PyTorch و JAX؟',['PyTorch أسرع','PyTorch بيغيّر الـ tensors بشكل eager، و JAX بيعمل compile لدوال pure من غير side effects','PyTorch مش بيدعم automatic differentiation','JAX مش بيدعم GPUs'],1,'PyTorch eager ومعاه state بيتغير (زي tensor.grad). JAX functional: الدوال pure، والـ state صريح، والـ jit بيظبط الـ graph كله.'],
+ ['jax.jit بيعمل إيه؟',['بيضيف dropout','بيعمل compile لدالة Python لكود XLA متظبط أسرع بكتير من Python المفسَّر','بيحسب الـ gradients','بيعمل init للأوزان'],1,'بيعمل trace للدالة ويكومبايلها لـ XLA. أول نداء بطيء (compile) والباقي بيشغّل النسخة المتكومبايلة.'],
+ ['jax.vmap بيعمل إيه؟',['بيحسب مشتقات من الدرجة التانية','بيدير ذاكرة الـ GPU','بيتأكد من شكل الموديل','بيعمل vectorize لدالة عشان تشتغل على batch من غير loops صريحة'],3,'بتكتب لمثال واحد و vmap يتعامل مع الـ batching، وغالبًا أكفأ من loops يدوية.'],
+ ['JAX بيتعامل مع state الموديل (الأوزان) إزاي غير PyTorch؟',['JAX محتاج تمرير state صريح: الأوزان arguments للدالة، مش attributes بتتغير في object','الاتنين زي بعض','JAX مش بيدعم أوزان قابلة للتدريب','JAX بيخزن الأوزان على CPU بس'],0,'في PyTorch الأوزان جوه nn.Module وبتتعدل في مكانها. في JAX بتتبعت كـ arguments وبترجع كقيم جديدة.'],
+ ['إمتى تختار JAX بدل PyTorch؟',['لما تحتاج أكبر ecosystem لموديلات pretrained','للنشر على الموبايل','للتجريب السريع لموديلات صغيرة','لما تدرّب على نطاق ضخم على TPU pods، حيث الـ compilation والتحويلات الـ functional بتدي speedups كبيرة'],3,'jit بيشيل overhead الـ Python، و pmap بيتعامل مع أجهزة كتير، و XLA بيظبط الحساب كله على clusters الـ TPU.'],
+ ['(سؤال مني) كتبت a[0] = 5 على jnp.array. إيه اللي يحصل والحل إيه؟',['هيشتغل عادي زي NumPy','error لأن arrays الـ JAX immutable؛ استخدم a = a.at[0].set(5)','لازم تحوّلها لـ list','هيتجاهل السطر في صمت'],1,'الـ immutability هي اللي بتخلي grad و jit و vmap يتركبوا بأمان. .at[].set() بيرجع array جديدة.'],
+ ['(سؤال مني) حطيت print(loss) جوه دالة عليها @jax.jit. هيحصل إيه؟',['هيطبع الـ loss كل step','هيطبع مرة واحدة وقت الـ tracing (قيمة traced مش رقم)؛ استخدم jax.debug.print','هيوقف الـ compile','هيطبع آخر step بس'],1,'الـ Python جوه jit بيتنفذ وقت الـ tracing بس. jax.debug.print بيشتغل جوه الكود المتكومبايل.']
+];
+A.quiz($('d55-quizBox'),Q,5,()=>{const c=$('d55-ckq');c.checked=true;A.store.set('aiefs-d55-6','1')});
+
+// ---------- checklist ----------
+A.checklist(55,$('d55-checklist'));
+
+// theme redraw
+A.onTheme(()=>{if(!document.body.contains(gc))return false;drawGrad();drawJit();drawV();drawT()});
+})();
+</script>

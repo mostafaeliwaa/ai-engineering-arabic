@@ -1,0 +1,717 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 21 · Feature Stores and Training-Serving Skew</span>
+  <h1>اليوم ٤٣: نفس الـ feature، قارئين اتنين، وحقيقة واحدة</h1>
+  <p class="lede">الموديل بتاعك جاب <b>0.948</b> offline ووقع في الـ production؟ غالبًا المشكلة مش في الموديل، المشكلة إن الـ training والـ serving حسبوا «نفس الـ feature» بطريقتين مختلفتين. النهاردة هتبني feature store صغير من الصفر: <b>registry</b> و<b>backfill</b> و<b>point-in-time join</b> و<b>online store بـ TTL</b> و<b>skew check</b>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٠٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (standard library بس)</b></span>
+    <span>آخر درس في Phase 2 · بعده: <b>The Perceptron</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d43-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d43-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 42) اتكلمنا عن مراقبة الموديل في الـ production والـ drift. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. إيه الفرق بين covariate drift و concept drift؟</summary>الـ covariate drift معناه إن <span class="ltr">P(x)</span> اتغيرت (شكل الداتا اللي داخلة)، لكن العلاقة <span class="ltr">P(y|x)</span> زي ما هي. الـ concept drift معناه إن <span class="ltr">P(y|x)</span> نفسها اتغيرت: نفس المدخل بقى ليه إجابة مختلفة، ودي مش بتبان غير في مراقبة الـ outcomes.</details>
+  <details><summary>٢. ليه input monitoring مهم مع إنه مش بيقيس الـ accuracy؟</summary>لأنه شغال فورًا من غير ما تستنى الـ labels، اللي ممكن تتأخر أسابيع. بس ليه حد: في تغييرات (زي concept drift) مش بتلمس المدخلات خالص.</details>
+  <details><summary>٣. اكتب اسم مقياس واحد من اللي بنيناه امبارح لمقارنة توزيعين.</summary>الـ PSI (Population Stability Index)، أو الـ KS statistic، أو الـ chi-square للـ categorical. النهاردة هنشوف سبب تاني لإن المدخلات «تبان مختلفة»: مش العالم اللي اتغير، إحنا اللي حسبنا الـ feature بطريقتين.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>15 min</b>المشكلة + القارئين: offline و online</div>
+    <div><b>20 min</b>معمل ٠١: الـ point-in-time join بإيدك</div>
+    <div><b>15 min</b>أسباب الـ skew الأربعة + معمل ٠٢</div>
+    <div><b>10 min</b>Registry و backfill + معمل ٠٣</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>التمارين والكويز</div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section id="d43-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: موديل churn «ممتاز» على الورق</h2></div>
+  <p>فريق عامل موديل <b>churn</b>. كل label بيقول: هل اليوزر ده <b>مشتراش أي حاجة</b> في الـ ٣٠ يوم اللي بعد يوم الـ label؟ عملوا join بين الـ labels وجدول الـ features على <code>user_id</code> بس، ودرّبوا rule بسيطة على <code>days_since_last_purchase</code>. الـ accuracy offline طلعت 0.948.</p>
+  <p>على الترافيك الحقيقي، الموديل طلع أسوأ من نسخة قديمة أبسط منه. ليه؟ عيبين:</p>
+  <ol class="ex">
+    <li><b>سفر عبر الزمن:</b> جدول الـ features كان فيه <b>أحدث</b> قيمة لكل يوزر، من أسابيع بعد أيام الـ labels. يوزر آخر شراء ليه يوم 115 كان ظاهر في snapshot يوم 175 إنه بقاله 60 يوم مشتراش. يعني الـ feature كان شايل الإجابة نفسها.</li>
+    <li><b>كود تاني للـ serving:</b> فريق تاني كتب الـ features من الأول في service تانية. الـ window بتاعتهم (٣٠ يوم) فيها يوم زيادة، والـ default لليوزر الجديد عندهم <code>-1</code> بدل <code>365</code>.</li>
+  </ol>
+  <div class="note"><strong>السبب واحد:</strong> الـ training والـ serving حسبوا «نفس الـ feature» بطريقتين مختلفتين. الحل: تعريف واحد، الاتنين بيقروا منه. ده بالظبط اللي الـ feature store بيعمله.</div>
+
+  <h3>قارئين لنفس الـ feature</h3>
+  <p>تخيل مطعم: المحاسب آخر الشهر عايز يعرف «كان عندنا كام كيلو رز في المخزن <b>يوم ٣ و يوم ١٧ و يوم ٢٥</b>؟» (تاريخ كامل). والشيف دلوقتي عايز يعرف «فيه كام كيلو رز <b>دلوقتي</b>؟» وعايز الإجابة في ثانية. نفس المعلومة، بس سؤالين بشكلين مختلفين خالص.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الخاصية</th><th>Training (offline)</th><th>Serving (online)</th></tr>
+    <tr><td>السؤال</td><td>إيه القيمة لكل واحد من ١٠ مليون زوج (entity, time)؟</td><td>إيه القيمة للـ entity ده دلوقتي؟</td></tr>
+    <tr><td>الوقت</td><td>نقط كتير في الماضي</td><td>الحاضر</td></tr>
+    <tr><td>الحجم</td><td>ملايين الصفوف في الـ job</td><td>صف واحد لكل request</td></tr>
+    <tr><td>الـ Latency</td><td>دقايق عادي</td><td>كام millisecond</td></tr>
+    <tr><td>التخزين</td><td><b>Offline store</b>: تاريخ كامل بالـ timestamps، في columnar files أو warehouse</td><td><b>Online store</b>: أحدث قيمة لكل entity في key-value database</td></tr>
+  </table></div>
+  <p>الـ feature store بيملا الاتنين من <b>مجموعة تعريفات واحدة</b>. والـ job اللي بتنقل أحدث القيم من الـ offline للـ online اسمها <b>materialization</b>.</p>
+  <div class="formula">Raw events → Registry (definitions) → Offline store → { PIT join → Training set ,  Materialize → Online store → Serving → Logged features } → Skew check</div>
+
+  <h3>أربع كلمات بتوصف أي صف features</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المصطلح</th><th>المعنى</th><th>مثال</th></tr>
+    <tr><td><b>Entity</b></td><td>المفتاح اللي الـ feature بيوصفه</td><td><code>user_id</code>، <code>card_id</code></td></tr>
+    <tr><td><b>Event timestamp</b></td><td>الوقت اللي القيمة بقت فيه صح</td><td>عدد المشتريات «لحد يوم 14» ← event timestamp = 14</td></tr>
+    <tr><td><b>Created timestamp</b></td><td>الوقت اللي السيستم كتب فيه الصف</td><td>backfill اتعمل النهاردة بيكتب صفوف بـ event timestamps قديمة و created timestamp جديد</td></tr>
+    <tr><td><b>TTL</b></td><td>أقصى عمر للقيمة. لو أقدم من كده تتعامل كأنها missing وتاخد الـ default</td><td>TTL = 10 أيام</td></tr>
+  </table></div>
+  <p>مجموعة features ليها نفس الـ entity ونفس المصدر ونفس الـ TTL اسمها غالبًا <b>feature view</b>.</p>
+</section>
+
+<!-- LAB 1 -->
+<section id="d43-pit">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Point-in-Time Join: صورة الماضي زي ما كانت</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>كل صف training بيجمع label مع قيم الـ features <b>اللي كانت موجودة وقت الـ label</b>. الخطوات لكل label:</p>
+      <ol class="ex">
+        <li>هات صفوف الـ features لنفس الـ entity.</li>
+        <li>خلّي بس الصفوف اللي الـ event timestamp بتاعها <b>≤</b> وقت الـ label.</li>
+        <li>خد أحدث واحد فيهم.</li>
+        <li>لو (وقت الـ label − وقت الصف) &gt; TTL، ارميه واستخدم الـ default.</li>
+      </ol>
+      <p>تشبيه: محقق بيسأل «كنت فين يوم الحادثة؟» لازم يبص على صور الكاميرا لحد اللحظة دي بس. لو بص على صور بعدها، هيعرف النتيجة قبل ما يحقق.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> اسحب علامة الـ label (الخط الأزرق) على الـ timeline، وغيّر الـ TTL. الـ PIT join بيختار آخر صف قبله، والـ naive join (على <code>user_id</code> بس) بيختار دايمًا آخر صف خالص، حتى لو من المستقبل.</div>
+      <p>المثال من الدرس: label يوم 16، صفوف أسبوعية. الـ PIT بياخد يوم 14 (<code>purchases_30d=3</code>). الـ naive بياخد يوم 28 (<code>0</code>) لأن اليوزر بطّل يشتري، وده بالظبط الحدث اللي الـ label بيقيسه. الـ naive join نسخ الإجابة جوه المدخل.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d43-pitCanvas" width="520" height="260" aria-label="timeline لصفوف الـ features وعلامة الـ label"></canvas>
+      <label style="display:grid;gap:2px"><span>TTL = <b class="mono" id="d43-ttlV">7</b> أيام</span><input type="range" id="d43-ttl" min="1" max="21" step="1" value="7"></label>
+      <div class="readout">
+        <div><small>يوم الـ label</small><b id="d43-lblDay">16</b></div>
+        <div><small>PIT اختار</small><b id="d43-pitPick">day 14 → 3</b></div>
+        <div><small>Naive اختار</small><b id="d43-naivePick">day 28 → 0</b></div>
+        <div><small>عمر صف الـ PIT</small><b id="d43-pitAge">2</b></div>
+      </div>
+      <div class="verdict" id="d43-pitVerdict"></div>
+      <div class="btns">
+        <button type="button" data-d43lbl="16">مثال الدرس: يوم 16</button>
+        <button type="button" data-d43lbl="20">يوم 20 (سؤال الكويز)</button>
+        <button type="button" data-d43lbl="4">قبل أول صف</button>
+      </div>
+    </div>
+  </div>
+  <p>ده نفس المنطق اللي خلانا في درس الـ time series نقسم الداتا بالزمن. الـ point-in-time join بيطبق القاعدة دي على <b>كل صف</b> بدل نقطة تقسيم واحدة.</p>
+  <h3>الأرقام من الـ demo</h3>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Naive join</th><th>PIT join</th></tr>
+    <tr><td>accuracy offline</td><td class="ltr">0.948</td><td class="ltr">0.893</td></tr>
+    <tr><td>الـ threshold اللي اتعلمته</td><td class="ltr">idle &gt; 53 days</td><td class="ltr">idle &gt; 19 days</td></tr>
+    <tr><td>accuracy على labels يوم 145 (داتا جديدة)</td><td class="ltr">0.763</td><td class="ltr">0.876</td></tr>
+  </table></div>
+  <p>الـ naive شكله أحسن offline وأسوأ على الداتا الجديدة. الـ feature المسرّب حرّك الـ threshold من 19 لـ 53 يوم.</p>
+</section>
+
+<!-- SKEW CAUSES + LAB 2 -->
+<section id="d43-skew">
+  <div class="station-head"><span class="tag">03</span><h2>أسباب الـ Training-Serving Skew الأربعة</h2></div>
+  <p>دليل Google «Rules of Machine Learning» بيعرّف الـ training-serving skew إنه فرق بين أداء الموديل في التدريب وأداؤه في الـ serving، وبيذكر ٣ أسباب: معالجة مختلفة للداتا في الـ pipelines، داتا اتغيرت بين التدريب والـ serving، و feedback loop. في الـ feature pipelines بالذات، أربع أسباب بتتكرر:</p>
+  <div class="tablewrap"><table>
+    <tr><th>السبب</th><th>اللي بيحصل</th><th>من الـ demo</th></tr>
+    <tr><td><b>Two code paths</b></td><td>الـ training والـ serving بيحسبوا بكود مختلف</td><td>window الـ serving فيها يوم <code>now - 30</code>، والـ training لأ</td></tr>
+    <tr><td><b>Stale features</b></td><td>عمر القيمة في الـ serving مختلف عن اللي اتدرب عليه</td><td>الـ training بيقرا snapshots أسبوعية، و service جديدة بتحسب قيم fresh</td></tr>
+    <tr><td><b>Different defaults</b></td><td>كل path بيملا الـ missing بشكل</td><td>الـ training: 365 لـ «لسه مشتراش»، الـ serving: -1</td></tr>
+    <tr><td><b>Time travel</b></td><td>الـ training قرا قيمة من بعد وقت الـ label</td><td>الـ naive join قرا أحدث snapshot لكل label</td></tr>
+  </table></div>
+  <p>Rule #32 في نفس الدليل: استخدم نفس الكود بين الـ training pipeline والـ serving pipeline كل ما تقدر. الـ feature store بيطبقها بتعريف واحد الاتنين بينادوه.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: شوف الـ skew بعينك</h3>
+      <p>دي مشتريات يوزر واحد (النقط البرتقاني). حرّك «دلوقتي» (يوم الـ request) وقارن ٣ طرق لحساب نفس الـ features:</p>
+      <ul class="checklist">
+        <li>• <b>Training/Online store:</b> آخر snapshot أسبوعي ≤ دلوقتي (ده اللي الموديل اتعلم عليه).</li>
+        <li>• <b>Fresh compute:</b> نفس التعريف بس محسوب دلوقتي بالظبط.</li>
+        <li>• <b>Legacy path:</b> كود الفريق التاني: window فيها يوم زيادة و default = -1.</li>
+      </ul>
+      <p>جرب «يوزر جديد» وشوف <code>days_since_last_purchase</code>: 365 قصاد -1. وحط «دلوقتي» على يوم يكون فيه شراء بالظبط عند حافة الـ window (<span class="ltr">now − 30</span>) وشوف الـ count بيختلف.</p>
+      <div class="note"><strong>ملاحظة مهمة:</strong> الـ fresh مش «أصح» هنا. الموديل اتعلم على قيم عمرها لحد ٦ أيام، فلو غذيته بقيم fresh انت بتديله توزيع ماشافهوش. الـ freshness جزء من تعريف الـ feature.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d43-skewCanvas" width="520" height="200" aria-label="مشتريات يوزر على timeline"></canvas>
+      <label style="display:grid;gap:2px"><span>دلوقتي = يوم <b class="mono" id="d43-nowV">145</b></span><input type="range" id="d43-now" min="141" max="160" step="1" value="145"></label>
+      <div class="btns">
+        <button type="button" id="d43-newUser">يوزر جديد (من غير تاريخ)</button>
+        <button type="button" id="d43-reshuffle">مشتريات عشوائية تانية</button>
+      </div>
+      <div class="tablewrap"><table id="d43-skewTable">
+        <tr><th>feature</th><th>Training</th><th>Fresh</th><th>Legacy</th></tr>
+      </table></div>
+      <div class="verdict" id="d43-skewVerdict"></div>
+    </div>
+  </div>
+
+  <h3>إزاي تكتشف الـ skew</h3>
+  <p>Rule #29: سجّل (log) الـ features وقت الـ serving واستخدمها في التدريب. حتى sample صغير مسجل بيخليك تقارن: كل قيمة مسجلة مع اللي الـ training path بيطلّعه لنفس الـ entity ونفس الوقت. لكل feature طلّع <b>نسبة الاختلاف (mismatch rate)</b> و<b>متوسط الفرق المطلق (mean |diff|)</b>.</p>
+  <p>عشان تعرف السبب، قارن ٣ أزواج:</p>
+  <ol class="ex">
+    <li><b>Online store read مقابل training join:</b> بيختبر السيستم كله، ولازم يطلع skew = صفر.</li>
+    <li><b>Fresh compute مقابل training join:</b> بيعزل الـ staleness.</li>
+    <li><b>Second code path مقابل fresh compute:</b> بيعزل اختلاف الكود (windows و defaults).</li>
+  </ol>
+  <p>زي الدكتور اللي بيعزل السبب: يغير متغير واحد في كل مرة.</p>
+</section>
+
+<!-- REGISTRY + BACKFILL + LAB3 -->
+<section id="d43-registry">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Registry والـ Backfill</h2></div>
+  <h3>الـ Feature Registry: كتالوج التعريفات</h3>
+  <p>كل entry فيه: name، entity، source، transformation، window، default، TTL، owner، version، description. وقاعدتين بيحموه:</p>
+  <ul class="checklist">
+    <li>• الـ path الاتنين بيقروا التعريف من الـ registry. ولا service عندها نسخة خاصة من الـ transformation.</li>
+    <li>• أي تغيير في التعريف = <b>version جديدة</b>. القديمة بتفضل موجودة، عشان الموديلات القديمة تفضل تاخد الـ feature اللي اتدربت عليه.</li>
+  </ul>
+  <p>تشبيه: وصفة المطعم المكتوبة في كتاب واحد. لو الشيف غيّر كمية الملح، يكتب «وصفة v2» ومايمسحش v1، عشان الفرع اللي لسه شغال على v1 مايتفاجئش.</p>
+  <p>الموديل بيثبّت التعريف بمرجع زي <code>spend_30d@1</code>. اسم من غير <code>@</code> بيقرا أحدث version. ولو كتبت <code>@</code> من غير رقم الكود بيرمي <code>ValueError</code>، عشان typo مايقراش أحدث version من غير ما تاخد بالك.</p>
+
+  <h3>الـ Backfill: تاريخ لـ feature لسه مولود</h3>
+  <p>feature جديد ملوش تاريخ، بس التدريب محتاج قيمته عند كل label قديم. الـ backfill بيشغّل التعريف عند كل تاريخ قديم ويكتب صف لكل (entity, date). كل run <b>بيقرا بس</b> الـ events اللي timestamp بتاعها ≤ التاريخ ده.</p>
+  <div class="note"><strong>فخ خفي:</strong> backfill اتعمل النهاردة بيكتب صفوف بـ event timestamps قديمة، بس ممكن يكون قرا داتا وصلت متأخر أو اتصححت بعدين. عشان كده الـ strict PIT join بيشيك كمان إن الـ <b>created timestamp ≤ وقت الـ label</b>. الـ event timestamp بيقول القيمة كانت صح امتى، والـ created timestamp بيقول السيستم <b>عرفها</b> امتى.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: تكلفة الـ backfill</h3>
+      <p>التكلفة بتكبر بـ (عدد الـ entities × عدد التواريخ). الـ demo: 299 يوزر × 25 snapshot يوم = <b>7475</b> صف. حرّك وشوف إزاي الرقم بيتفجر لما تروح لملايين اليوزرز أو snapshots يومية بدل أسبوعية.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px"><span>عدد الـ entities = <b class="mono" id="d43-entV">299</b></span><input type="range" id="d43-ent" min="0" max="6" step="1" value="0"></label>
+      <label style="display:grid;gap:2px"><span>الـ snapshot كل <b class="mono" id="d43-intV">7</b> أيام على ١٧٥ يوم</span><input type="range" id="d43-int" min="1" max="30" step="1" value="7"></label>
+      <label style="display:grid;gap:2px"><span>عدد الـ features = <b class="mono" id="d43-nfV">3</b></span><input type="range" id="d43-nf" min="1" max="50" step="1" value="3"></label>
+      <div class="readout">
+        <div><small>snapshot days</small><b id="d43-days">25</b></div>
+        <div><small>rows</small><b id="d43-rows">7,475</b></div>
+        <div><small>feature values</small><b id="d43-vals">22,425</b></div>
+      </div>
+      <canvas id="d43-bfCanvas" width="520" height="70" aria-label="حجم الـ backfill"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d43-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: ابني الـ feature store</h2></div>
+  <p>من الـ root بتاع الريبو، شغّل الأصل الأول عشان تشوف الصورة الكاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/21-feature-stores-and-training-serving-skew/code/main.py
+python3 phases/02-ml-fundamentals/21-feature-stores-and-training-serving-skew/code/tests/test_main.py</pre></div>
+  <p><b>القاعدة:</b> بعد ما تشوف الناتج، افتح ملف جديد <code>my_feature_store.py</code> واكتب الخطوات دي بإيدك. الوقت في الكود كله أيام صحيحة (int)، والـ snapshots كل ٧ أيام من 7 لـ 175.</p>
+
+  <h3>خطوة ١: الـ FeatureDefinition (التحويل كـ data)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import bisect, random
+from collections import defaultdict
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Event:
+    entity: str
+    day: int
+    amount: float
+
+@dataclass(frozen=True)
+class FeatureDefinition:
+    name: str
+    entity: str
+    aggregate: str               <span class="c"># count / sum / days_since_last</span>
+    window_days: int | None      <span class="c"># None = كل التاريخ</span>
+    default: float
+    version: int = 1
+    owner: str = "growth-team"
+    description: str = ""
+
+    def compute(self, events: list[Event], as_of: int) -> float:
+        visible = [e for e in events if e.day &lt;= as_of]          <span class="c"># ممنوع المستقبل</span>
+        if self.window_days is not None:
+            visible = [e for e in visible if e.day &gt; as_of - self.window_days]  <span class="c"># الحافة الشمال مستبعدة</span>
+        if self.aggregate == "count":
+            return float(len(visible))
+        if self.aggregate == "sum":
+            return round(sum(e.amount for e in visible), 2)
+        if self.aggregate == "days_since_last":
+            return float(as_of - max(e.day for e in visible)) if visible else self.default
+        raise ValueError(f"unknown aggregate {self.aggregate!r}")</pre></div>
+
+  <h3>خطوة ٢: الـ Registry بالـ versions</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class FeatureRegistry:
+    def __init__(self) -&gt; None:
+        self._definitions: dict[tuple[str, int], FeatureDefinition] = {}
+
+    def register(self, definition: FeatureDefinition) -&gt; None:
+        key = (definition.name, definition.version)
+        existing = self._definitions.get(key)
+        if existing is not None and existing != definition:   <span class="c"># نفس الاسم والـ version بتعريف مختلف = ممنوع</span>
+            raise ValueError(f"{definition.name} v{definition.version} already exists: bump the version")
+        self._definitions[key] = definition
+
+    def get(self, name: str, version: int | None = None) -&gt; FeatureDefinition:
+        versions = [v for (n, v) in self._definitions if n == name]
+        if not versions:
+            raise KeyError(name)
+        return self._definitions[(name, version if version is not None else max(versions))]
+
+    def resolve(self, ref: str) -&gt; FeatureDefinition:          <span class="c"># "spend_30d@1" أو "spend_30d"</span>
+        if "@" not in ref:
+            return self.get(ref)
+        name, _, version = ref.partition("@")
+        if not version.isdigit():
+            raise ValueError(f"bad feature reference {ref!r}: use name@version, such as spend_30d@1")
+        return self.get(name, int(version))
+
+    def names(self) -&gt; list[str]:
+        return sorted({n for (n, _) in self._definitions})
+
+    def compute(self, names, events, as_of):
+        return {name: self.resolve(name).compute(events, as_of) for name in names}
+
+    def fill_defaults(self, names, values):                     <span class="c"># نفس الـ default للـ path الاتنين</span>
+        values = values or {}
+        return {name: values.get(name, self.resolve(name).default) for name in names}</pre></div>
+
+  <h3>خطوة ٣: الصفوف والـ backfill</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass(frozen=True)
+class FeatureRow:
+    entity: str
+    day: int
+    values: dict[str, float]
+
+@dataclass(frozen=True)
+class LabelRow:
+    entity: str
+    day: int
+    label: int
+
+@dataclass(frozen=True)
+class JoinedRow:
+    entity: str
+    day: int
+    label: int
+    feature_day: int | None
+    values: dict[str, float] | None
+
+def group_events(events):
+    grouped = defaultdict(list)
+    for event in events:
+        grouped[event.entity].append(event)
+    return grouped
+
+def backfill(registry, names, events, days):
+    rows = []
+    for entity, entity_events in sorted(group_events(events).items()):
+        for day in days:                                  <span class="c"># صف لكل (entity, day)</span>
+            rows.append(FeatureRow(entity, day, registry.compute(names, entity_events, day)))
+    return rows</pre></div>
+
+  <h3>خطوة ٤: الـ point-in-time join (والـ naive للمقارنة)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def point_in_time_join(labels, rows, ttl_days=None):
+    by_entity = defaultdict(list)
+    for row in rows:
+        by_entity[row.entity].append(row)
+    days_index = {}
+    for entity, entity_rows in by_entity.items():
+        entity_rows.sort(key=lambda r: r.day)            <span class="c"># رتّب مرة واحدة</span>
+        days_index[entity] = [r.day for r in entity_rows]
+    joined = []
+    for label in labels:
+        days = days_index.get(label.entity, [])
+        pos = bisect.bisect_right(days, label.day) - 1  <span class="c"># آخر صف ≤ يوم الـ label</span>
+        match = by_entity[label.entity][pos] if pos &gt;= 0 else None
+        if match is not None and ttl_days is not None and label.day - match.day &gt; ttl_days:
+            match = None                                 <span class="c"># قديم أوي → default</span>
+        joined.append(JoinedRow(label.entity, label.day, label.label,
+                                match.day if match else None, match.values if match else None))
+    return joined
+
+def naive_latest_join(labels, rows):                     <span class="c"># الغلط: join على الـ entity بس</span>
+    latest = {}
+    for row in rows:
+        if row.entity not in latest or row.day &gt; latest[row.entity].day:
+            latest[row.entity] = row
+    return [JoinedRow(l.entity, l.day, l.label,
+                      latest[l.entity].day if l.entity in latest else None,
+                      latest[l.entity].values if l.entity in latest else None) for l in labels]</pre></div>
+
+  <h3>خطوة ٥: الـ online store بـ TTL والـ materialization</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class OnlineStore:
+    def __init__(self, ttl_days: int):
+        self.ttl_days = ttl_days
+        self._latest: dict[str, FeatureRow] = {}         <span class="c"># صف واحد لكل entity</span>
+
+    def write(self, row):
+        current = self._latest.get(row.entity)
+        if current is None or row.day &gt;= current.day:    <span class="c"># القديم مايكتبش فوق الجديد</span>
+            self._latest[row.entity] = row
+
+    def read(self, entity, now):
+        row = self._latest.get(entity)
+        if row is None or row.day &gt; now or now - row.day &gt; self.ttl_days:
+            return None                                  <span class="c"># منتهي → الـ caller يحط defaults</span>
+        return dict(row.values)
+
+    def age(self, entity, now):
+        row = self._latest.get(entity)
+        return None if row is None else now - row.day
+
+def materialize(rows, store, up_to_day):
+    written = 0
+    for row in rows:
+        if row.day &lt;= up_to_day:                         <span class="c"># عمره ما يكتب صف من المستقبل</span>
+            store.write(row); written += 1
+    return written
+
+def training_features(registry, names, joined):
+    return [registry.fill_defaults(names, row.values) for row in joined]
+
+def serving_features(registry, names, store, entity, now):
+    return registry.fill_defaults(names, store.read(entity, now))</pre></div>
+
+  <h3>خطوة ٦: الـ legacy path (الغلط عن قصد) والـ skew check</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def legacy_serving_features(events, now):
+    recent = [e for e in events if now - 30 &lt;= e.day &lt;= now]   <span class="c"># يوم زيادة: &lt;= بدل &lt;</span>
+    past = [e.day for e in events if e.day &lt;= now]
+    return {
+        "days_since_last_purchase": float(now - max(past)) if past else -1.0,  <span class="c"># default غلط</span>
+        "purchases_30d": float(len(recent)),
+        "spend_30d": round(sum(e.amount for e in recent), 2),
+    }
+
+@dataclass(frozen=True)
+class SkewReport:
+    feature: str
+    compared: int
+    mismatch_rate: float
+    mean_abs_diff: float
+    flagged: bool
+
+def detect_skew(training, serving, features, tolerance=1e-6, max_mismatch_rate=0.01):
+    if set(training) != set(serving):                   <span class="c"># request ناقص ممكن يخبي skew</span>
+        raise ValueError(f"{len(set(training) ^ set(serving))} keys are in only one view: log and compare the same requests")
+    if not training:
+        raise ValueError("no requests to compare")
+    keys = sorted(training)
+    reports = []
+    for feature in features:
+        diffs = [abs(training[k][feature] - serving[k][feature]) for k in keys]
+        mismatches = sum(1 for d in diffs if d &gt; tolerance)
+        rate = mismatches / len(keys)
+        reports.append(SkewReport(feature, len(keys), rate, sum(diffs) / len(keys), rate &gt; max_mismatch_rate))
+    return reports</pre></div>
+  <p>باقي الملف (<code>build_registry</code> و <code>make_events</code> و <code>make_labels</code> و <code>fit_idle_rule</code> و <code>log_serving_requests</code> و <code>main</code>) بيعمل الداتا الصناعية (300 يوزر، 180 يوم، نص اليوزرز بيبطلوا يشتروا في يوم عشوائي) ويشغّل التجارب. اقراه من الأصل واكتبه، خصوصًا <code>log_serving_requests</code> اللي بيعمل materialize لحد يوم كل request وبعدين يقرا من الـ online store.</p>
+  <details><summary>الناتج المتوقع</summary><pre class="term">=== Feature registry ===
+  days_since_last_purchase   v1  entity=user  window=all  default=365  days since the last purchase
+  purchases_30d              v1  entity=user  window=30d  default=0  purchases in the last 30 days
+  spend_30d                  v1  entity=user  window=30d  default=0  spend in the last 30 days
+  backfilled 7475 rows on 25 weekly snapshot days
+
+=== Point-in-time join versus naive latest join ===
+  897 labels, churn rate 0.35
+  naive join used a snapshot from after the label day for 100% of rows
+  offline accuracy, naive join: 0.948 (rule: idle &gt; 53 days)
+  offline accuracy, PIT join:   0.893 (rule: idle &gt; 19 days)
+  accuracy on day 145, trained with naive join: 0.763
+  accuracy on day 145, trained with PIT join:   0.876
+
+=== Online store with a TTL of 10 days ===
+  day 145: u001 row age 5 days -&gt; {'days_since_last_purchase': 22.0, 'purchases_30d': 3.0, 'spend_30d': 102.97}
+  day 160: u001 row age 20 days -&gt; {'days_since_last_purchase': 365.0, 'purchases_30d': 0.0, 'spend_30d': 0.0} (expired, defaults)
+
+=== Skew checks on 383 logged requests, days 141 to 150 ===
+  online store read  vs  training join (one definition, same snapshots)
+    ok   days_since_last_purchase   mismatch   0.0%  mean |diff|    0.00
+    ok   purchases_30d              mismatch   0.0%  mean |diff|    0.00
+    ok   spend_30d                  mismatch   0.0%  mean |diff|    0.00
+  fresh compute      vs  training join (staleness only)
+    SKEW days_since_last_purchase   mismatch  83.0%  mean |diff|    2.77
+    SKEW purchases_30d              mismatch  30.5%  mean |diff|    0.38
+    SKEW spend_30d                  mismatch  37.1%  mean |diff|   16.77
+  second code path   vs  fresh compute (code differences only)
+    SKEW days_since_last_purchase   mismatch   5.5%  mean |diff|   20.07
+    SKEW purchases_30d              mismatch  12.5%  mean |diff|    0.13
+    SKEW spend_30d                  mismatch  12.5%  mean |diff|    5.09</pre></details>
+  <p><b>اقرا الـ ٣ blocks بالترتيب:</b> (١) نفس التعريف ونفس الـ snapshots ← skew = صفر. (٢) القيمة الـ fresh مختلفة عن الـ snapshot الأسبوعي في أغلب الـ requests. (٣) الـ legacy مختلف في 12.5% من الـ counts بسبب اليوم الزيادة، ومختلف في <code>days_since_last_purchase</code> لليوزرز الجداد بس، بس بفرق ضخم: -1 قصاد 365. والـ tests لازم تطلع <code>Ran 21 tests ... OK</code>.</p>
+
+  <h3>خطوة ٧: نفس الفكرة في Feast (للمعرفة، مش لازم تشغّله)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>From scratch</th><th>Feast</th></tr>
+    <tr><td class="ltr">FeatureDefinition, FeatureRegistry</td><td class="ltr">Entity, FeatureView, Field + feast apply</td></tr>
+    <tr><td class="ltr">FeatureRow history</td><td>offline store، زي <code>FileSource</code> على Parquet أو warehouse table</td></tr>
+    <tr><td class="ltr">point_in_time_join + TTL</td><td class="ltr">store.get_historical_features(entity_df=..., features=[...])</td></tr>
+    <tr><td class="ltr">materialize</td><td class="ltr">feast materialize-incremental &lt;end time&gt;</td></tr>
+    <tr><td class="ltr">OnlineStore.read</td><td class="ltr">store.get_online_features(features=[...], entity_rows=[...])</td></tr>
+    <tr><td>Created timestamp check</td><td class="ltr">created_timestamp_column + filter_by_created_timestamp=True</td></tr>
+  </table></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from datetime import timedelta
+from feast import Entity, FeatureView, Field, FileSource, FeatureStore
+from feast.types import Float32, Int64
+
+user = Entity(name="user", join_keys=["user_id"])
+user_activity_source = FileSource(
+    name="user_activity_source",
+    path="data/user_activity.parquet",
+    timestamp_field="event_timestamp",
+    created_timestamp_column="created",
+)
+user_activity = FeatureView(
+    name="user_activity", entities=[user], ttl=timedelta(days=10),
+    schema=[Field(name="purchases_30d", dtype=Int64),
+            Field(name="spend_30d", dtype=Float32),
+            Field(name="days_since_last_purchase", dtype=Int64)],
+    source=user_activity_source,
+)
+
+store = FeatureStore(repo_path=".")
+training_df = store.get_historical_features(            <span class="c"># training: PIT join</span>
+    entity_df=labels_df,                                  <span class="c"># user_id + event_timestamp + label</span>
+    features=["user_activity:purchases_30d", "user_activity:days_since_last_purchase"],
+    filter_by_created_timestamp=True,
+).to_df()
+online = store.get_online_features(                       <span class="c"># serving: نفس الـ view</span>
+    features=["user_activity:purchases_30d", "user_activity:days_since_last_purchase"],
+    entity_rows=[{"user_id": 42}],
+).to_dict()</pre></div>
+  <p>توثيق Feast بيقول إن الـ TTL محسوب بالنسبة لكل timestamp في الـ entity dataframe، مش وقت الـ query، وده نفس الـ TTL check في <code>point_in_time_join</code>. ومش كل offline store بيدعم <code>filter_by_created_timestamp</code>؛ اللي مش بيدعمه بيرمي error بدل ما يتجاهله. Tecton و Hopsworks والـ feature stores في الـ cloud ML platforms الكبيرة بيستخدموا نفس التقسيم offline/online. وللـ skew check، TensorFlow Data Validation يقدر يقارن training data بالـ serving data.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d43-exercises">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Snapshot يومي:</b> غيّر الـ interval من 7 لـ 1 (<code>SNAPSHOT_DAYS = list(range(1, 176))</code>). شغّل مقارنة الـ staleness تاني واشرح النتيجة.
+      <details><summary>تلميح</summary>الـ snapshot بقى عمره دايمًا صفر أيام وقت الـ request، فالـ fresh compute والـ training join هيقربوا جدًا لبعض (الـ mismatch المفروض يقرب من صفر). الـ staleness كانت جاية من إن الـ snapshot عمره لحد ٦ أيام. التمن: rows أكتر بـ ٧ مرات تقريبًا في الـ backfill (جربها في معمل ٠٣).</details></li>
+    <li><b>TTL = 3 أيام:</b> عدّ صفوف الـ training اللي فقدت الـ features وخدت defaults.
+      <details><summary>تلميح</summary>بعد <code>pit = point_in_time_join(train_labels, offline, 3)</code> عدّ <code>sum(1 for r in pit if r.values is None)</code>. الـ labels أيام 100 و 120 و 140؛ شوف إيه أقرب snapshot قبل كل يوم (98، 119، 140) وعمره كام. اللي عمره أكبر من 3 هيقع.</details></li>
+    <li><b>Created day:</b> زوّد <code>created_day</code> في <code>FeatureRow</code>، وخلّي الـ join يتجاهل الصفوف المكتوبة بعد يوم الـ label.
+      <details><summary>تلميح</summary>قبل الـ bisect، فلتر صفوف الـ entity لـ <code>r.created_day &lt;= label.day</code> (أو اعمل index منفصل). اختبرها بصف event_day=14 بس created_day=30 وlabel يوم 20: لازم مايتاخدش.</details></li>
+    <li><b>Version 2:</b> سجّل <code>spend_7d</code> كـ version 2 من <code>spend_30d</code>. اعمله backfill واطبع الـ version الاتنين من الـ registry.
+      <details><summary>تلميح</summary><code>FeatureDefinition("spend_30d", "user", "sum", 7, 0.0, version=2, description="spend in the last 7 days")</code>. بعدين <code>backfill(registry, ["spend_30d@1", "spend_30d@2"], events, SNAPSHOT_DAYS)</code>. لاحظ إن الاسم بقى مضلل؛ في الحقيقة غالبًا تسميه اسم جديد، والتمرين ده بيوريك ميكانيزم الـ versions.</details></li>
+    <li><b>صلّح الـ legacy:</b> عدّل <code>legacy_serving_features</code> لحد ما الـ skew check التالت يعدّي. اكتب كل تغيير.
+      <details><summary>الإجابة</summary>(١) الـ window: <code>now - 30 &lt; e.day &lt;= now</code> بدل <code>&lt;=</code> على الشمال. (٢) الـ default: <code>365.0</code> بدل <code>-1.0</code>. والأحسن من الاتنين: امسح الدالة دي ونادي <code>registry.compute(FEATURES, events, now)</code>، يعني Rule #32.</details></li>
+    <li><b>إضافة مني · features لـ RAG / LLM app:</b> عندك chatbot لخدمة العملاء بيحط في الـ prompt «خطة اليوزر» و«عدد التذاكر المفتوحة». اكتب <code>FeatureDefinition</code> لـ <code>open_tickets_7d</code> وابني eval set من محادثات قديمة بالـ point-in-time join (القيمة وقت المحادثة، مش النهاردة). بعدين اعمل log لقيم الـ prompt الحقيقية لـ 50 request وشغّل <code>detect_skew</code> عليها مقابل الـ training path.
+      <details><summary>تلميح</summary>نفس الكود بالظبط: الـ entity = <code>user_id</code>، الـ events = فتح/قفل التذاكر، والـ label مش لازم (حط 0). المهم إن الـ eval بتاعك يشوف نفس اللي الـ LLM كان هيشوفه وقتها، وإلا الـ eval هيبان أحسن من الحقيقة.</details></li>
+  </ol>
+</section>
+
+<!-- OWN ADDITION -->
+<section id="d43-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ماقالوش صريح</h2></div>
+  <h3>الـ intuition في جملة</h3>
+  <p>الـ feature مش «رقم»، هو <b>رقم + لحظة + طريقة حساب</b>. لو أي واحد من التلاتة اختلف بين التدريب والـ serving، الموديل بيشوف مدخل ماتعلمش عليه.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li>• <b>الـ «accuracy عالية أوي» مش خبر حلو:</b> لو الـ offline أحسن بكتير من المتوقع، أول حاجة تشك فيها هي leakage زمني.</li>
+    <li>• <b>الـ timezones والـ off-by-one:</b> الفرق بين <code>&lt;</code> و<code>&lt;=</code> على حافة الـ window هو اللي عمل 12.5% mismatch في الـ demo.</li>
+    <li>• <b>الـ default كـ «قيمة عادية»:</b> <code>-1</code> لـ «أيام من آخر شراء» معناها للموديل «اشترى من شوية»، عكس المقصود تمامًا.</li>
+    <li>• <b>«هحسبها fresh أحسن»:</b> لو الموديل اتدرب على snapshots، الـ fresh بيعمل skew. يا تدرّب على نفس الـ freshness، يا تخلّي الاتنين من نفس المصدر.</li>
+    <li>• <b>مقارنة requests مختلفة:</b> الـ <code>detect_skew</code> بيرمي error لو المفاتيح مختلفة عشان مقارنة ناقصة ممكن تخبي المشكلة.</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents</h3>
+  <ul class="checklist">
+    <li>• <b>Evals بـ RAG:</b> لو بتقيّم agent على أسئلة قديمة بس الـ retriever بيدور في الـ documents بتاعة النهاردة، ده time travel: الـ agent ممكن يلاقي الإجابة في مستند اتكتب بعد السؤال.</li>
+    <li>• <b>الـ prompt features:</b> أي context بتحطه في الـ prompt من DB (بيانات اليوزر، history) هو feature. لو الـ eval بيبنيه بكود والـ production بكود تاني، ده نفس الـ two code paths.</li>
+    <li>• <b>Fine-tuning من logs:</b> Rule #29 (سجّل اللي اتبعت فعلًا) بالظبط هو اللي بيخليك تعمل fine-tune على الـ prompts الحقيقية مش نسخة متخيلة منها.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d43-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز</h2></div>
+  <div class="quiz" id="d43-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d43-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d43-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الفرق بين الـ offline store والـ online store، والـ entity والـ event/created timestamp والـ TTL</label></li>
+    <li><label><input type="checkbox" data-ck="2"> لعبت في معمل الـ PIT join وفهمت ليه الـ naive join بيسرّب الإجابة</label></li>
+    <li><label><input type="checkbox" data-ck="3"> أعرف أسباب الـ skew الأربعة والـ ٣ مقارنات اللي بتعزل السبب</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ registry والـ backfill والـ join والـ online store والـ skew check بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرين ٥ (صلّحت الـ legacy path)</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Point-in-time join</td><td>بناء أي training set أو eval set من داتا بتتغير مع الوقت</td></tr>
+    <tr><td>Feature registry + versions</td><td>Feast، Tecton، Hopsworks، و feature stores الـ cloud ML platforms</td></tr>
+    <tr><td>Online store + TTL</td><td>الـ serving بالـ milliseconds: ranking، fraud، recommendations</td></tr>
+    <tr><td>Backfill + created timestamp</td><td>إضافة feature جديد لموديل قديم من غير leakage</td></tr>
+    <tr><td>Skew check على logged features</td><td>TensorFlow Data Validation، و monitoring الـ prompt context في الـ LLM apps</td></tr>
+    <tr><td>One definition, two readers</td><td>Rule #32: نفس الكود للـ training والـ serving</td></tr>
+  </table></div>
+  <p><b>مبروك، خلصت Phase 2 كلها.</b> بكرة نبدأ Phase 3 بـ <b>The Perceptron</b>: أول neuron، ونبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F21-feature-stores-and-training-serving-skew" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/21-feature-stores-and-training-serving-skew</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+
+// roadmap
+const rm=$('d43-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===21)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: point-in-time join ----------
+const pc=$('d43-pitCanvas'),pctx=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+const ROWS=[[7,4],[14,3],[21,1],[28,0]];
+const D0=0,D1=32,px=d=>30+(d-D0)/(D1-D0)*(PW-60),dx=x=>D0+(x-30)/(PW-60)*(D1-D0);
+let label=16,dragL=false;
+function pit(){
+  const ttl=+$('d43-ttl').value;
+  let pick=null;ROWS.forEach(r=>{if(r[0]<=label)pick=r});
+  let expired=false;if(pick&&label-pick[0]>ttl){expired=true}
+  return {ttl,pick,expired,naive:ROWS[ROWS.length-1]};
+}
+function drawPit(){
+  const s=pit(),ty=150;
+  pctx.clearRect(0,0,PW,PH);
+  // ttl window
+  pctx.fillStyle=css('--vec-a');pctx.globalAlpha=.12;
+  pctx.fillRect(px(Math.max(D0,label-s.ttl)),40,px(label)-px(Math.max(D0,label-s.ttl)),150);pctx.globalAlpha=1;
+  // future region
+  pctx.fillStyle=css('--bad');pctx.globalAlpha=.07;pctx.fillRect(px(label),40,PW-30-px(label),150);pctx.globalAlpha=1;
+  // axis
+  pctx.strokeStyle=css('--muted');pctx.lineWidth=1.2;pctx.beginPath();pctx.moveTo(30,ty);pctx.lineTo(PW-30,ty);pctx.stroke();
+  pctx.fillStyle=css('--muted');pctx.font='11px JetBrains Mono, monospace';pctx.textAlign='center';
+  for(let d=0;d<=32;d+=4){pctx.beginPath();pctx.moveTo(px(d),ty-4);pctx.lineTo(px(d),ty+4);pctx.stroke();pctx.fillText(d,px(d),ty+18)}
+  pctx.fillText('day',PW-16,ty+18);
+  // rows
+  ROWS.forEach(r=>{
+    const x=px(r[0]),isP=s.pick===r&&!s.expired,isN=s.naive===r,fut=r[0]>label;
+    const c=isP?css('--ok'):fut?css('--bad'):css('--ink');
+    pctx.fillStyle=css('--panel');pctx.strokeStyle=c;pctx.lineWidth=isP||isN?3:1.5;
+    pctx.beginPath();pctx.rect(x-26,ty-58,52,40);pctx.fill();pctx.stroke();
+    pctx.fillStyle=c;pctx.font='bold 15px JetBrains Mono, monospace';pctx.fillText(r[1],x,ty-33);
+    pctx.font='10px JetBrains Mono, monospace';pctx.fillText('day '+r[0],x,ty-62);
+    pctx.beginPath();pctx.moveTo(x,ty-18);pctx.lineTo(x,ty);pctx.stroke();
+    if(isP){pctx.fillStyle=css('--ok');pctx.fillText('PIT',x,ty+34)}
+    if(isN){pctx.fillStyle=css('--vec-b');pctx.fillText('naive',x,ty+(isP?46:34))}
+  });
+  // label marker
+  const lx=px(label);pctx.strokeStyle=css('--vec-a');pctx.lineWidth=3;pctx.beginPath();pctx.moveTo(lx,28);pctx.lineTo(lx,ty+8);pctx.stroke();
+  pctx.fillStyle=css('--vec-a');pctx.beginPath();pctx.arc(lx,24,10,0,7);pctx.fill();
+  pctx.fillStyle=css('--paper');pctx.font='bold 10px JetBrains Mono, monospace';pctx.fillText('L',lx,28);
+  pctx.fillStyle=css('--vec-a');pctx.font='11px JetBrains Mono, monospace';pctx.fillText('label day '+label,lx,PH-30);
+  pctx.fillStyle=css('--muted');pctx.textAlign='left';pctx.fillText('TTL window',8,PH-8);pctx.textAlign='right';pctx.fillText('future (forbidden)',PW-8,PH-8);pctx.textAlign='left';
+  // readouts
+  $('d43-ttlV').textContent=s.ttl;$('d43-lblDay').textContent=label;
+  $('d43-pitPick').textContent=!s.pick?'none → default':s.expired?'day '+s.pick[0]+' expired → default':'day '+s.pick[0]+' → '+s.pick[1];
+  $('d43-naivePick').textContent='day '+s.naive[0]+' → '+s.naive[1];
+  $('d43-pitAge').textContent=s.pick?(label-s.pick[0])+' d':'—';
+  const v=$('d43-pitVerdict');
+  if(s.naive[0]>label){v.textContent='الـ naive join قرا صف من المستقبل (day '+s.naive[0]+' > '+label+'): leakage';v.style.color=css('--bad')}
+  else{v.textContent='الاتنين اختاروا نفس الصف: مفيش صفوف بعد الـ label';v.style.color=css('--ok')}
+}
+pc.addEventListener('pointerdown',e=>{dragL=true;pc.setPointerCapture(e.pointerId);moveL(e)});
+function moveL(e){if(!dragL)return;const [x]=AI.evPos(pc,e);label=Math.max(D0,Math.min(D1,Math.round(dx(x))));drawPit()}
+pc.addEventListener('pointermove',moveL);pc.addEventListener('pointerup',()=>dragL=false);
+$('d43-ttl').addEventListener('input',drawPit);
+document.querySelectorAll('[data-d43lbl]').forEach(b=>b.addEventListener('click',()=>{label=+b.dataset.d43lbl;drawPit()}));
+drawPit();
+
+// ---------- Lab 2: skew between paths ----------
+const sc=$('d43-skewCanvas'),sctx=AI.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+let seed=7,events=[],newUser=false;
+function rnd(){seed=(seed*16807)%2147483647;return (seed-1)/2147483646}
+function genEvents(){events=[];for(let d=95;d<=160;d++){if(rnd()<0.18)events.push([d,Math.round((5+rnd()*75)*100)/100])}
+  // make sure one purchase sits on a window edge for day 145
+  if(!events.some(e=>e[0]===115))events.push([115,42.5]);events.sort((a,b)=>a[0]-b[0])}
+genEvents();
+const SNAP=[];for(let d=7;d<=175;d+=7)SNAP.push(d);
+const S0=95,S1=162,sx=d=>20+(d-S0)/(S1-S0)*(SW-40);
+function defn(evs,asOf){ // registry definition
+  const vis=evs.filter(e=>e[0]<=asOf),win=vis.filter(e=>e[0]>asOf-30);
+  return {days_since_last_purchase:vis.length?asOf-Math.max(...vis.map(e=>e[0])):365,purchases_30d:win.length,spend_30d:Math.round(win.reduce((a,e)=>a+e[1],0)*100)/100};
+}
+function legacy(evs,now){
+  const rec=evs.filter(e=>now-30<=e[0]&&e[0]<=now),past=evs.filter(e=>e[0]<=now);
+  return {days_since_last_purchase:past.length?now-Math.max(...past.map(e=>e[0])):-1,purchases_30d:rec.length,spend_30d:Math.round(rec.reduce((a,e)=>a+e[1],0)*100)/100};
+}
+function drawSkew(){
+  const now=+$('d43-now').value,evs=newUser?[]:events;
+  let snap=null;SNAP.forEach(d=>{if(d<=now)snap=d});
+  const age=now-snap,ttl=10;
+  const train=age>ttl?{days_since_last_purchase:365,purchases_30d:0,spend_30d:0}:defn(evs,snap);
+  const fresh=defn(evs,now),leg=legacy(evs,now);
+  sctx.clearRect(0,0,SW,SH);
+  const ty=120;
+  // windows
+  sctx.fillStyle=css('--vec-a');sctx.globalAlpha=.12;sctx.fillRect(sx(snap-30+0.5),30,sx(snap)-sx(snap-30+0.5),80);
+  sctx.globalAlpha=.10;sctx.fillStyle=css('--vec-b');sctx.fillRect(sx(now-30-0.5),40,sx(now)-sx(now-30-0.5),60);sctx.globalAlpha=1;
+  sctx.strokeStyle=css('--muted');sctx.lineWidth=1.2;sctx.beginPath();sctx.moveTo(20,ty);sctx.lineTo(SW-20,ty);sctx.stroke();
+  sctx.font='10px JetBrains Mono, monospace';sctx.textAlign='center';sctx.fillStyle=css('--muted');
+  for(let d=100;d<=160;d+=10){sctx.beginPath();sctx.moveTo(sx(d),ty-3);sctx.lineTo(sx(d),ty+3);sctx.stroke();sctx.fillText(d,sx(d),ty+16)}
+  SNAP.filter(d=>d>=S0&&d<=S1).forEach(d=>{sctx.fillStyle=d===snap?css('--vec-a'):css('--line');sctx.fillRect(sx(d)-1.5,ty-10,3,20)});
+  evs.forEach(e=>{if(e[0]<S0||e[0]>S1)return;const fut=e[0]>now;sctx.fillStyle=css('--vec-b');sctx.globalAlpha=fut?.25:1;sctx.beginPath();sctx.arc(sx(e[0]),ty-24,5,0,7);sctx.fill();sctx.globalAlpha=1});
+  sctx.strokeStyle=css('--ink');sctx.lineWidth=2.5;sctx.beginPath();sctx.moveTo(sx(now),18);sctx.lineTo(sx(now),ty+4);sctx.stroke();
+  sctx.fillStyle=css('--ink');sctx.fillText('now '+now,sx(now),14);
+  sctx.fillStyle=css('--vec-a');sctx.fillText('snapshot '+snap+' (age '+age+')',sx(snap),ty+32);
+  sctx.textAlign='left';sctx.fillStyle=css('--muted');sctx.fillText(newUser?'new user: no purchases':'● purchases  | snapshot days',20,SH-10);
+  // table
+  const tb=$('d43-skewTable');while(tb.rows.length>1)tb.deleteRow(1);
+  let anyLeg=false,anyFresh=false;
+  ['days_since_last_purchase','purchases_30d','spend_30d'].forEach(k=>{
+    const r=tb.insertRow(),a=train[k],b=fresh[k],c=leg[k];
+    const cells=[k,a,b,c];cells.forEach((v,i)=>{const td=r.insertCell();td.textContent=i?f(v,2):v;if(i)td.className='ltr';
+      if(i===2&&Math.abs(b-a)>1e-6){td.style.color=css('--vec-b');anyFresh=true}
+      if(i===3&&Math.abs(c-b)>1e-6){td.style.color=css('--bad');td.style.fontWeight='600';anyLeg=true}});
+  });
+  const v=$('d43-skewVerdict');
+  v.textContent=(anyFresh?'staleness: الـ fresh مختلف عن الـ training. ':'الـ fresh = الـ training هنا. ')+(anyLeg?'code skew: الـ legacy مختلف عن الـ fresh!':'الـ legacy = الـ fresh في اللحظة دي.');
+  v.style.color=anyLeg?css('--bad'):anyFresh?css('--vec-b'):css('--ok');
+  $('d43-nowV').textContent=now;
+}
+$('d43-now').addEventListener('input',drawSkew);
+$('d43-newUser').addEventListener('click',()=>{newUser=!newUser;$('d43-newUser').textContent=newUser?'رجّع اليوزر القديم':'يوزر جديد (من غير تاريخ)';drawSkew()});
+$('d43-reshuffle').addEventListener('click',()=>{seed=Math.floor(Math.random()*1e6)+1;genEvents();newUser=false;$('d43-newUser').textContent='يوزر جديد (من غير تاريخ)';drawSkew()});
+drawSkew();
+
+// ---------- Lab 3: backfill cost ----------
+const ENTS=[299,10000,100000,1000000,10000000,50000000,100000000];
+const bc=$('d43-bfCanvas'),bctx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+function bf(){
+  const n=ENTS[+$('d43-ent').value],step=+$('d43-int').value,nf=+$('d43-nf').value;
+  let days=0;for(let d=step;d<=175;d+=step)days++;
+  const rows=n*days,vals=rows*nf;
+  $('d43-entV').textContent=n.toLocaleString('en');$('d43-intV').textContent=step;$('d43-nfV').textContent=nf;
+  $('d43-days').textContent=days;$('d43-rows').textContent=rows.toLocaleString('en');$('d43-vals').textContent=vals.toLocaleString('en');
+  bctx.clearRect(0,0,BW,BH);
+  const lg=Math.log10(Math.max(1,vals)),maxL=Math.log10(1e8*175*50);
+  bctx.fillStyle=css('--soft');bctx.fillRect(0,22,BW,22);
+  bctx.fillStyle=lg>10?css('--bad'):lg>7?css('--vec-b'):css('--vec-a');bctx.fillRect(BW-BW*lg/maxL,22,BW*lg/maxL,22);
+  bctx.fillStyle=css('--ink');bctx.font='11px JetBrains Mono, monospace';bctx.textAlign='right';
+  bctx.fillText('feature values (log scale): 10^'+f(lg,1),BW-4,14);bctx.textAlign='left';bctx.fillText('demo = 22,425',4,62);
+}
+['d43-ent','d43-int','d43-nf'].forEach(id=>$(id).addEventListener('input',bf));bf();
+
+// ---------- quiz ----------
+const ck6=document.querySelector('#d43-checklist input[data-ck="6"]');
+AI.quiz($('d43-quizBox'),[
+ ['فريق عمل join بين labels الـ churn وجدول features على user_id بس، والجدول فيه أحدث قيم لكل يوزر. إيه اللي بيبوظ؟',['الـ join بيشيل كل يوزر عنده أكتر من label','صفوف التدريب بتاخد قيم features من بعد وقت الـ label','ولا حاجة، الأحدث هو الأدق','التدريب بيبقى أبطأ عشان أعمدة كتير'],1,'أحدث القيم جاية من بعد أغلب أوقات الـ labels. في الـ churn هي أصلًا بتوري فترة السكون اللي الـ label بيقيسها، فالمدخل فيه الإجابة.'],
+ ['label يوم 20، وفيه صفوف features أيام 6 و17 و24، والـ TTL 7 أيام. الـ PIT join هياخد أنهي صف؟',['ولا صف، هيستخدم الـ default','صف يوم 6','صف يوم 17','صف يوم 24'],2,'بياخد الصفوف ≤ يوم 20، أحدثهم يوم 17، وعمره 3 أيام جوه الـ TTL. جربها في معمل ٠٢.'],
+ ['الـ training بيملا history المشتريات الناقص بـ 365، والـ serving بـ -1. ده نوع skew إيه؟',['Different defaults بين الـ path الاتنين','Stale features من materialization فشلت','Concept drift في العلاقة بين المدخل والـ label','Time travel من naive join'],0,'الاختلاف بيظهر بس لما القيمة missing، فاليوزرز الجداد بياخدوا مدخل الموديل عمره ما شافه.'],
+ ['ليه الـ registry بيعمل version جديدة لما تعريف يتغير بدل ما يعدّل القديم؟',['التعديل بيمسح الـ history من الـ offline store','الموديلات اللي اتدربت على التعريف القديم لسه محتاجة القيم القديمة','الـ online store بيشيل feature واحد بس لكل entity','الـ versions بتسرّع الـ PIT join'],1,'الموديل المنشور مستني الـ feature زي ما كان وقت التدريب بالظبط. تعديل صامت بيغير مدخلاته من غير retrain.'],
+ ['القيم المسجلة في الـ serving بتطابق الـ training join بالظبط، بس القيم المحسوبة fresh مختلفة في 83% من الـ requests. ده بيوري إيه؟',['الـ online store بايظ لأن الـ fresh دايمًا صح','الـ PIT join بيسرّب المستقبل','الموديل اتدرب على قيم snapshots، فـ path fresh هيضيف skew','الـ registry فيه version اتنين والـ serving بيقرا الغلط'],2,'الـ freshness جزء من الـ feature. path أحدث من داتا التدريب بيدي الموديل مدخلات من توزيع تاني.'],
+ ['backfill شغال النهاردة بيكتب صفوف لتواريخ السنة اللي فاتت، من داتا اتصححت الشهر اللي فات. الـ strict PIT join بيمنع الـ leak إزاي؟',['بيعمل join على الـ entity بس وياخد الأحدث','بيشترط كمان إن الـ created timestamp يكون ≤ وقت الـ label','بيقصّر الـ TTL','بيعيد الـ backfill من الـ online store'],1,'الـ event timestamp بيقول القيمة كانت صح امتى، والـ created timestamp بيقول السيستم عرفها امتى. الـ strict join بيشيك على الاتنين.'],
+ ['(إضافة مني) في الـ demo، الـ legacy path مختلف في 12.5% من قيم purchases_30d. السبب المباشر؟',['الـ TTL قصير','الـ window بتاعته فيها يوم زيادة (now − 30 داخل)','الـ snapshots أسبوعية','اليوزرز الجداد'],1,'الـ legacy بيستخدم now − 30 <= day، والتعريف الرسمي day > now − 30. فرق <= و < على الحافة.'],
+ ['(إضافة مني) بتقيّم RAG agent على أسئلة عملاء من السنة اللي فاتت، والـ retriever بيدور في الـ knowledge base بتاعة النهاردة. المشكلة الأقرب؟',['Different defaults','Time travel: الـ agent ممكن يلاقي مستندات اتكتبت بعد السؤال','Concept drift','مفيش مشكلة'],1,'نفس فكرة الـ naive join: الـ eval بيشوف معلومات من المستقبل فبيطلع أحسن من الحقيقة. الحل: snapshot أو فلتر بالـ timestamp للمستندات.']
+],6,()=>{if(ck6&&!ck6.checked){ck6.checked=true;ck6.dispatchEvent(new Event('change'))}});
+
+AI.checklist(43,$('d43-checklist'));
+
+AI.onTheme(()=>{if(!document.body.contains(pc))return false;drawPit();drawSkew();bf()});
+})();
+</script>

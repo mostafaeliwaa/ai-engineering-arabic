@@ -1,0 +1,562 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 71 · Classical Metrics</span>
+  <h1>اليوم ٤٩٩: BLEU وROUGE-L وF1 بإيدك، عشان تفهم الرقم بيقول إيه</h1>
+  <p class="lede">النهاردة هتكتب من الصفر خمس metrics لسه بيطلع بيها أغلب أرقام الـ LLM eval المنشورة: <b>exact_match</b> و<b>accuracy</b> و<b>F1</b> و<b>BLEU-4</b> و<b>ROUGE-L</b>. وكلهم بيمشوا على <b>tokenizer واحد</b> و<b>dispatcher واحد</b> بيقرا الـ <code>metric_name</code> اللي اتفقنا عليه في درس امبارح.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (stdlib + numpy)</span>
+    <span>النوع: <b>Build</b></span>
+    <span>قبله: <b>Task Spec Format</b></span>
+    <span>بعده: <b>Code Exec Metric</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Days 431–515</span>
+    <div class="roadmap" id="d499-roadmap" aria-label="أيام الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d499-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ Task Spec؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه الحقول المطلوبة (required) في أي task record في الـ JSONL؟
+      <details><summary>الإجابة</summary><code>task_id</code> و<code>category</code> و<code>prompt</code> و<code>targets</code> و<code>metric_name</code> و<code>post_process</code>. أما <code>few_shot_examples</code> و<code>metadata</code> فاختياريين، وأي حقل مش معروف بيفشّل الـ validation.</details></li>
+    <li>ليه قلنا إن الـ <code>metric_name</code> لازم يبقى vocabulary مقفول؟
+      <details><summary>الإجابة</summary>عشان الدروس اللي بعده (زي النهاردة) تعمل dispatch على حقل واحد من غير مفاجآت. القايمة: <span class="ltr">exact_match, f1, bleu_4, rouge_l, accuracy, code_exec</span>. أي metric جديدة محتاجة درس جديد وإضافة صريحة للقايمة.</details></li>
+    <li>الـ <code>targets</code> بتتعامل إزاي مع <code>exact_match</code> مقابل <code>f1</code>؟
+      <details><summary>الإجابة</summary>في <code>exact_match</code> أي target يطابق يبقى صح. في <code>f1</code> و<code>rouge_l</code> بناخد <b>أعلى</b> score على كل الـ targets. والنهاردة هتشوف الكلام ده مكتوب حرفيًا في دالة <code>score</code>.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>الـ tokenizer وEM وF1 + معمل ١</div>
+    <div><b>25 min</b>BLEU-4 وROUGE-L + معمل ٢ و٣</div>
+    <div><b>25 min</b>اكتب main.py بإيدك وشغّل الـ tests</div>
+    <div><b>15 min</b>التمارين والكويز</div>
+  </div>
+</section>
+
+<!-- WHY -->
+<section id="d499-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه نكتبهم بإيدينا أصلًا؟</h2></div>
+  <p>هتقرا paper بيقول BLEU = 28.3 وواحد تاني بيقول BLEU = 0.283. وهتلاقي ROUGE-L بيختلف ١٠ نقط بين مكتبتين لمجرد إن واحدة بتحوّل لـ lowercase والتانية لأ. أسرع طريقة تبطل تتلخبط: تكتب الـ metrics بنفسك، وتقدر تشاور على <b>السطر اللي اتحدد فيه الـ tokenizer</b> و<b>السطر اللي اتعمل فيه الـ smoothing</b>. بعدها مقارنة الأرقام بين الـ papers بتبقى قراية للـ setup، مش خناقة على مكتبات.</p>
+  <p>مش محتاج غير stdlib وnumpy: BLEU عبارة عن عدّ وclamp، وROUGE-L عبارة عن dynamic programming، وF1 تقاطع tokens. أصعب حاجة فعلًا هي إنك <b>تختار tokenizer وتلتزم بيه</b>.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ metric زي ميزان في سوق. لو كل تاجر بيستخدم ميزان مختلف، كلمة «كيلو» ملهاش معنى. الـ tokenizer هو معايرة الميزان: لو غيّرته، انت بتوزن حاجة تانية، حتى لو الرقم شكله زي بعض.</div>
+</section>
+
+<!-- TOKENIZER + EM + F1 -->
+<section id="d499-tok">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Tokenizer عقد، مش زرار تلعب فيه</h2></div>
+  <p>الـ tokenizer هنا: <code>re.findall(r"\w+", text.lower())</code>. يعني: حوّل لـ lowercase، وخد أي سلسلة word characters (حروف وأرقام و underscore)، وارمي أي حاجة تانية (علامات ترقيم، مسافات...). <b>كل</b> metric في الدرس بتستخدم نفس الـ tokenizer ده بالظبط، والـ runner مالوش رأي. لو بدّلته، انت بتشغّل benchmark تاني.</p>
+  <div class="formula">tokenize("The Cat, sat!")  →  ["the", "cat", "sat"]</div>
+  <p>ده تبسيط مقصود. في الـ production هتهتم بالـ CJK (صيني/ياباني/كوري) والـ contractions زي <span class="ltr">don't</span> والـ code identifiers. بس الفكرة الأساسية: <b>الـ tokenizer عقد</b>.</p>
+
+  <h3>Exact Match: يا أبيض يا أسود</h3>
+  <p>بيرجع 1.0 لو الـ prediction (بعد <code>strip</code>) بيطابق أي target (بعد <code>strip</code>)، وإلا 0.0. على مستوى الـ dataset بناخد المتوسط. ده الحصان الشغيل للحساب والـ MCQ والـ classification القصيرة. لاحظ: الـ exact_match <b>مش</b> بيستخدم الـ tokenizer، المقارنة على النص نفسه بعد شيل المسافات من الأطراف. ولو مفيش targets خالص يرجع 0.0.</p>
+
+  <h3>Accuracy: نفس الـ EM باسم تاني</h3>
+  <p>في الـ classification الـ accuracy بتتحول لـ exact_match. طب ليه دالة لوحدها؟ عشان الـ dispatcher يعمل dispatch على <code>metric_name</code> مباشرة من غير مقارنات strings جوه الـ runner.</p>
+
+  <h3>Token-level F1: درجة جزئية</h3>
+  <p>حوّل الـ prediction والـ target لـ <b>multiset</b> من الـ tokens (يعني بنعد التكرار). التقاطع = مجموع أقل عدد لكل token في الاتنين.</p>
+  <div class="formula">precision = overlap / |pred|     recall = overlap / |target|     F1 = 2·P·R / (P + R)</div>
+  <p>الحالات الطرفية: الاتنين فاضيين ← 1.0 (اتفاق كامل بالاصطلاح). واحد بس فاضي ← 0.0. مفيش تقاطع ← 0.0. ولو فيه أكتر من target بناخد <b>أعلى</b> F1، وده نفس سلوك SQuAD المعروف.</p>
+  <div class="note ai"><strong>مثال الدرس:</strong> pred = <span class="ltr">"the cat sat"</span>، target = <span class="ltr">"a cat sat on the mat"</span>. التقاطع 3 (the, cat, sat). P = 3/3 = 1، R = 3/6 = 0.5، F1 = 0.667.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ملعب الـ Metrics</h3>
+      <p>اكتب prediction وreference وشوف الخمس metrics بيتحسبوا قدامك بنفس قواعد <code>main.py</code>. الـ tokens المشتركة بتتلوّن.</p>
+      <p>جرّب الأزرار: «حروف كبيرة» هتوريك إن F1 بيدي 1 والـ EM بيدي 0 (لأن EM مش بيعمل lowercase). و«تكرار» هيوريك الـ clipping في BLEU. و«ترتيب معكوس» هيوريك ليه ROUGE-L بيهتم بالترتيب وF1 لأ.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:4px">prediction<input id="d499-pred" class="ltr" style="font:inherit;font-family:var(--f-mono);font-size:14px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)" value="the cat sat"></label>
+      <label style="display:grid;gap:4px">reference<input id="d499-ref" class="ltr" style="font:inherit;font-family:var(--f-mono);font-size:14px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)" value="the cat sat on the mat"></label>
+      <div class="btns">
+        <button type="button" data-d499p="0" class="primary">مثال الدرس</button>
+        <button type="button" data-d499p="1">حروف كبيرة</button>
+        <button type="button" data-d499p="2">تكرار</button>
+        <button type="button" data-d499p="3">ترتيب معكوس</button>
+        <button type="button" data-d499p="4">إجابة قصيرة</button>
+        <button type="button" data-d499p="5">مطابقة تامة</button>
+      </div>
+      <div id="d499-toks" style="direction:ltr;font-family:var(--f-mono);font-size:13px;display:grid;gap:4px"></div>
+      <div class="readout">
+        <div><small>exact_match</small><b id="d499-em">0</b></div>
+        <div><small>F1 (P / R)</small><b id="d499-f1">0</b></div>
+        <div><small>BLEU-4</small><b id="d499-bl">0</b></div>
+        <div><small>ROUGE-L</small><b id="d499-rl">0</b></div>
+      </div>
+      <div id="d499-bars"></div>
+    </div>
+  </div>
+</section>
+
+<!-- BLEU -->
+<section id="d499-bleu">
+  <div class="station-head"><span class="tag">03</span><h2>BLEU-4 من الأرض</h2></div>
+  <p>BLEU هو الـ metric الكلاسيكي للـ machine translation، ولسه بيظهر في شغل الـ summarisation. اللي هنكتبه هو <b>sentence-level BLEU-4</b>: بيتحسب لكل زوج (prediction, reference)، ومعاه الـ brevity penalty العادي، ومعاه smoothing بإضافة واحد.</p>
+  <h3>١. Modified n-gram precision</h3>
+  <p>لكل n من 1 لـ 4: عدّ الـ n-grams في الـ candidate. كل n-gram عدده <b>بيتقص (clip)</b> عند أقصى عدد ظهر بيه في الـ reference. يعني الـ candidate مينفعش ينفخ الـ score بتكرار كلمة واحدة مضمونة.</p>
+  <div class="formula">p_n = Σ min(count_cand(g), count_ref(g)) / Σ count_cand(g)</div>
+  <div class="note"><strong>تشبيه:</strong> زي امتحان «اكتب أسماء ٣ عواصم». لو كتبت «القاهرة» ١٠ مرات، المصحح هيحسبهالك مرة واحدة بس. ده الـ clipping.</div>
+  <h3>٢. المتوسط الهندسي على n = 1..4</h3>
+  <p>بناخد log لكل precision ونجمعهم ونقسم على 4 ونرجع بالـ exp. الـ geometric mean معناه إن لو precision واحدة صفر، الكل يبقى صفر. وهنا ييجي دور الـ smoothing.</p>
+  <h3>٣. الـ Smoothing (method 1)</h3>
+  <p>الدرس بيسميها method 1 بتاعة Lin وOch: <b>ضيف 1 على البسط والمقام</b> لكل n-gram precision قبل الـ log. ده بيمنع <code>log 0</code> لما مفيش ولا 4-gram مطابق، وبيفضل قريب من القيمة الأصلية في الجمل الطويلة.</p>
+  <div class="formula">p̃_n = (clipped_n + 1) / (total_n + 1)</div>
+  <h3>٤. الـ Brevity Penalty</h3>
+  <p>الـ precision لوحدها بتكافئ الإجابات القصيرة: لو قلت كلمتين صح بس، الـ precision عالية جدًا. فالـ BP بيعاقب أي candidate أقصر من الـ reference:</p>
+  <div class="formula">BP = 1  if c ≥ r     else  exp(1 − r / c)          (BP = 0 لو c = 0)</div>
+  <div class="formula">BLEU = BP · exp( (1/4) · Σ log p̃_n )</div>
+  <p>c = طول الـ candidate بالـ tokens، r = طول الـ reference. ولو الـ candidate فاضي، BLEU = 0 على طول.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: الـ Brevity Penalty بعينك</h3>
+      <p>الـ reference طوله r. حرّك طول الـ candidate (c) وشوف منحنى <span class="ltr">exp(1 − r/c)</span>. الخط المتقطع هو «precision بس» لو كل كلمة قلتها صح: دايمًا 1، حتى لو قلت كلمة واحدة. الـ BP هو اللي بيكسر الغش ده.</p>
+      <div class="note ai"><strong>لاحظ:</strong> لما c ≥ r المنحنى بيبقى 1 ثابت. BLEU مش بيعاقب الطول الزيادة بالـ BP؛ الطول الزيادة بيتعاقب لوحده لأن الـ precision بتقل.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d499-bpCv" width="520" height="280" aria-label="منحنى الـ brevity penalty"></canvas>
+      <div class="mrow">
+        <label>c (candidate) = <span id="d499-vc">5</span><input type="range" id="d499-c" min="1" max="24" value="5"></label>
+        <label>r (reference) = <span id="d499-vr">10</span><input type="range" id="d499-r" min="1" max="20" value="10"></label>
+      </div>
+      <div class="readout">
+        <div><small>BP</small><b id="d499-bp">0</b></div>
+        <div><small>r / c</small><b id="d499-rc">0</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ROUGE-L -->
+<section id="d499-rouge">
+  <div class="station-head"><span class="tag">04</span><h2>ROUGE-L: أطول subsequence مشترك</h2></div>
+  <p>ROUGE-L بيقارن الـ <b>Longest Common Subsequence (LCS)</b> بين tokens الـ candidate وtokens الـ reference. الـ subsequence معناها الكلمات بنفس الترتيب <b>بس مش لازم ورا بعض</b>. عشان كده بيمسك ترتيب الكلام من غير ما يجبره يبقى متلاصق، وده سبب إنه الـ default في الـ summarisation.</p>
+  <div class="formula">R = LCS / |ref|      P = LCS / |cand|      F_β = (1+β²)·P·R / (R + β²·P)      (β = 1 → F1)</div>
+  <p>الـ LCS بيتحسب بجدول dynamic programming: الخانة <span class="ltr">dp[i+1][j+1]</span> = لو الكلمتين زي بعض ← <span class="ltr">dp[i][j] + 1</span>، غير كده ← <span class="ltr">max(dp[i+1][j], dp[i][j+1])</span>. والإجابة في آخر خانة. التكلفة <span class="ltr">O(n·m)</span> لكل task، ولأطوال الملخصات العادية ده أقل من millisecond. الدرس بيستخدم جدول numpy عشان الكود يبقى واضح، بس lists عادية تنفع برضه.</p>
+  <div class="note"><strong>تشبيه:</strong> زي ما تقارن قايمتين مشتريات: أطول قايمة كلمات تقدر تشطب عليها في الاتنين <b>بنفس الترتيب</b>، ومسموحلك تفوّت حاجات في النص.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: املا جدول الـ LCS</h3>
+      <p>دوس «شغّل» وشوف الجدول بيتملي خانة خانة. الخانات الخضرا هي اللي الكلمتين فيها متطابقين (قطري +1). وفي الآخر هيتلوّن المسار اللي بيطلّع الـ LCS نفسه.</p>
+      <p>جرّب «معكوس»: <span class="ltr">"c b a"</span> مقابل <span class="ltr">"a b c d"</span>. الـ LCS = 1 بس، رغم إن F1 كان هيشوف 3 كلمات مشتركة. ده بالظبط الـ test اسمه <code>test_word_order_matters</code>.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d499-lcsCv" width="520" height="340" aria-label="جدول الـ LCS"></canvas>
+      <div class="formula" id="d499-lcsTxt">—</div>
+      <div class="btns">
+        <button type="button" id="d499-lcsPlay" class="primary">شغّل ▶</button>
+        <button type="button" data-d499l="the cat sat|the cat sat on the mat">مثال الدرس</button>
+        <button type="button" data-d499l="a b c|a b c d">بالترتيب</button>
+        <button type="button" data-d499l="c b a|a b c d">معكوس</button>
+        <button type="button" data-d499l="the model answered fast|a fast model answered">جملة</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DISPATCH -->
+<section id="d499-disp">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Dispatch Contract: باب واحد لكل الـ metrics</h2></div>
+  <p>نقطة الدخول الوحيدة: <code>score(metric_name, prediction, targets)</code>، وبترجع float بين 0 و1. الـ runner <b>مش</b> بيعمل if على اسم الـ metric؛ بيسلّم المكالمة ويكتب النتيجة. ده السطح اللي درس 75 هيلزقه على الـ task spec بتاع درس 70.</p>
+  <div class="tablewrap"><table>
+    <tr><th>metric_name</th><th>بتعمل إيه مع الـ targets</th><th>مناسبة لـ</th></tr>
+    <tr><td class="ltr">exact_match</td><td>أي target يطابق = 1 (scalar)</td><td>حساب، MCQ</td></tr>
+    <tr><td class="ltr">accuracy</td><td>زي exact_match</td><td>classification</td></tr>
+    <tr><td class="ltr">f1</td><td>أعلى F1 على كل target</td><td>QA قصيرة</td></tr>
+    <tr><td class="ltr">bleu_4</td><td>أعلى BLEU على كل target</td><td>ترجمة، ملخصات</td></tr>
+    <tr><td class="ltr">rouge_l</td><td>أعلى ROUGE-L على كل target</td><td>ملخصات</td></tr>
+    <tr><td class="ltr">code_exec</td><td>درس 72 (بكرة)</td><td>كود</td></tr>
+  </table></div>
+  <p>لو الـ targets فاضية: 0.0. ولو الاسم مش معروف: <code>ValueError</code>. وفيه كمان <code>corpus_mean</code> (متوسط الـ scores) و<code>corpus_bleu</code>.</p>
+  <h3>Corpus BLEU مش متوسط Sentence BLEU</h3>
+  <p><code>corpus_bleu</code> بيجمع الـ clipped counts والـ totals لكل n على <b>كل</b> الجمل الأول، ويجمع أطوال الـ candidates والـ references، وبعدين يحسب precision وBP مرة واحدة. ده رقم مختلف عن متوسط BLEU لكل جملة، وده من أسباب إن الأرقام بتختلف بين الـ papers.</p>
+  <h3>الدرس ده مش بيعمل إيه</h3>
+  <p>مش بينادي model. مش بيعمل normalisation للـ generations غير اللي قواعد الـ post-process في درس 70 عملته. مش بيحسب confidence intervals. ومفيهوش BLEURT ولا BERTScore (دول محتاجين model وليهم درس تاني). الهدف هو «الأرضية»: خمس metrics، tokenizer واحد، dispatch table واحد.</p>
+</section>
+
+<!-- CODE -->
+<section id="d499-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب main.py</h2></div>
+  <p>من جذر الريبو شغّل الأصل الأول عشان تشوف الناتج، وبعدين الـ tests:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/71-classical-metrics/code/main.py
+<span class="c"># الـ tests</span>
+python3 -m unittest discover -s phases/19-capstone-projects/71-classical-metrics/code/tests -v</pre></div>
+  <p><b>القاعدة:</b> افتح <code>my_metrics.py</code> واكتب الخطوات دي بإيدك. الملف مترتب حسب الصعوبة: EM وaccuracy سطر واحد، F1 ست سطور، وBLEU وROUGE-L هما الجزء التقيل.</p>
+
+  <h3>خطوة ١: الـ tokenizer وEM وaccuracy</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import re
+import sys
+from collections import Counter
+
+import numpy as np
+
+TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+def tokenize(text):
+    return TOKEN_RE.findall(text.lower())     <span class="c"># العقد: lowercase + \w+</span>
+
+def exact_match(prediction, targets):
+    if not targets:
+        return 0.0
+    pred = prediction.strip()                 <span class="c"># strip بس، من غير lowercase</span>
+    return 1.0 if any(pred == t.strip() for t in targets) else 0.0
+
+def accuracy(prediction, targets):
+    return exact_match(prediction, targets)   <span class="c"># اسم تاني عشان الـ dispatch</span></pre></div>
+
+  <h3>خطوة ٢: Token F1</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def f1_score(prediction, target):
+    pred_tokens = tokenize(prediction)
+    tgt_tokens = tokenize(target)
+    if not pred_tokens and not tgt_tokens:
+        return 1.0                            <span class="c"># فاضي + فاضي = اتفاق كامل</span>
+    if not pred_tokens or not tgt_tokens:
+        return 0.0
+    pred_counts = Counter(pred_tokens)
+    tgt_counts = Counter(tgt_tokens)
+    overlap = sum((pred_counts &amp; tgt_counts).values())   <span class="c"># تقاطع multiset</span>
+    if overlap == 0:
+        return 0.0
+    precision = overlap / sum(pred_counts.values())
+    recall = overlap / sum(tgt_counts.values())
+    return 2.0 * precision * recall / (precision + recall)</pre></div>
+
+  <h3>خطوة ٣: n-grams والـ clipping والـ BP</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _ngram_counts(tokens, n):
+    if n &lt;= 0:
+        raise ValueError("n must be positive")
+    if len(tokens) &lt; n:
+        return Counter()
+    return Counter(tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1))
+
+def _modified_precision(cand_tokens, ref_tokens, n):
+    cand_ngrams = _ngram_counts(cand_tokens, n)
+    if not cand_ngrams:
+        return (0, 0)
+    ref_ngrams = _ngram_counts(ref_tokens, n)
+    clipped = 0
+    for gram, count in cand_ngrams.items():
+        clipped += min(count, ref_ngrams.get(gram, 0))   <span class="c"># القص عند عدد الـ reference</span>
+    total = sum(cand_ngrams.values())
+    return (clipped, total)
+
+def _brevity_penalty(cand_len, ref_len):
+    if cand_len == 0:
+        return 0.0
+    if cand_len >= ref_len:
+        return 1.0
+    return math.exp(1.0 - ref_len / cand_len)</pre></div>
+
+  <h3>خطوة ٤: BLEU-4 بالـ smoothing</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bleu4(prediction, reference, max_n=4):
+    cand = tokenize(prediction)
+    ref = tokenize(reference)
+    if not cand:
+        return 0.0
+    log_p_sum = 0.0
+    for n in range(1, max_n + 1):
+        clipped, total = _modified_precision(cand, ref, n)
+        smoothed_num = clipped + 1            <span class="c"># method 1: +1 فوق وتحت</span>
+        smoothed_den = total + 1
+        log_p_sum += math.log(smoothed_num / smoothed_den)
+    geo_mean = math.exp(log_p_sum / max_n)   <span class="c"># المتوسط الهندسي</span>
+    bp = _brevity_penalty(len(cand), len(ref))
+    return float(bp * geo_mean)</pre></div>
+
+  <h3>خطوة ٥: LCS وROUGE-L</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def lcs_length(a, b):
+    n, m = len(a), len(b)
+    if n == 0 or m == 0:
+        return 0
+    dp = np.zeros((n + 1, m + 1), dtype=np.int32)
+    for i in range(n):
+        ai = a[i]
+        row_prev = dp[i]
+        row_curr = dp[i + 1]
+        for j in range(m):
+            if ai == b[j]:
+                row_curr[j + 1] = row_prev[j] + 1                  <span class="c"># تطابق: قطري + 1</span>
+            else:
+                row_curr[j + 1] = max(row_curr[j], row_prev[j + 1])  <span class="c"># أحسن جار</span>
+    return int(dp[n, m])
+
+def rouge_l(prediction, reference, beta=1.0):
+    cand = tokenize(prediction)
+    ref = tokenize(reference)
+    if not cand and not ref:
+        return 1.0
+    if not cand or not ref:
+        return 0.0
+    lcs = lcs_length(cand, ref)
+    if lcs == 0:
+        return 0.0
+    precision = lcs / len(cand)
+    recall = lcs / len(ref)
+    beta_sq = beta * beta
+    denom = recall + beta_sq * precision
+    if denom == 0:
+        return 0.0
+    return float((1 + beta_sq) * precision * recall / denom)</pre></div>
+  <p>ملاحظة: <code>row_prev</code> و<code>row_curr</code> هنا views على صفوف الـ numpy array، فالكتابة فيهم بتكتب في <code>dp</code> نفسه.</p>
+
+  <h3>خطوة ٦: الـ dispatcher والـ corpus helpers</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def score(metric_name, prediction, targets):
+    if not targets:
+        return 0.0
+    if metric_name == "exact_match":
+        return exact_match(prediction, targets)
+    if metric_name == "accuracy":
+        return accuracy(prediction, targets)
+    if metric_name == "f1":
+        return max(f1_score(prediction, t) for t in targets)   <span class="c"># أحسن target</span>
+    if metric_name == "bleu_4":
+        return max(bleu4(prediction, t) for t in targets)
+    if metric_name == "rouge_l":
+        return max(rouge_l(prediction, t) for t in targets)
+    raise ValueError(f"unknown metric_name: {metric_name}")
+
+def corpus_mean(scores):
+    if not scores:
+        return 0.0
+    return float(np.mean(scores))
+
+def corpus_bleu(predictions, references, max_n=4):
+    if len(predictions) != len(references):
+        raise ValueError("predictions and references must align")
+    if not predictions:
+        return 0.0
+    total_cand_len = total_ref_len = 0
+    clipped_sums = [0] * max_n
+    total_sums = [0] * max_n
+    for cand_text, ref_text in zip(predictions, references):
+        cand, ref = tokenize(cand_text), tokenize(ref_text)
+        total_cand_len += len(cand)
+        total_ref_len += len(ref)
+        for n in range(1, max_n + 1):           <span class="c"># اجمع العدّ على كل الجمل</span>
+            clipped, total = _modified_precision(cand, ref, n)
+            clipped_sums[n - 1] += clipped
+            total_sums[n - 1] += total
+    if total_cand_len == 0:
+        return 0.0
+    log_p_sum = 0.0
+    for n in range(1, max_n + 1):
+        log_p_sum += math.log((clipped_sums[n - 1] + 1) / (total_sums[n - 1] + 1))
+    geo = math.exp(log_p_sum / max_n)
+    return float(_brevity_penalty(total_cand_len, total_ref_len) * geo)</pre></div>
+
+  <h3>خطوة ٧: جرّب على الـ reference vectors</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>examples = [
+    ("exact_match", "41", ["41"]),
+    ("exact_match", "42", ["41"]),
+    ("f1", "the cat sat", ["a cat sat on the mat"]),
+    ("f1", "", ["the cat"]),
+    ("bleu_4", "the cat sat on the mat", ["the cat sat on the mat"]),
+    ("bleu_4", "the the the the", ["the cat sat on the mat"]),
+    ("rouge_l", "the cat sat", ["the cat sat on the mat"]),
+    ("accuracy", "positive", ["positive"]),
+]
+for metric, pred, targets in examples:
+    print(f"{metric:10s} {pred!r:30s} -> {score(metric, pred, targets):.4f}")
+print(corpus_bleu(["the cat sat on the mat", "the runner won the race"],
+                  ["the cat sat on the mat", "the runner crossed the finish line first"]))</pre></div>
+  <details><summary>الناتج المتوقع من main.py الأصلي</summary><pre class="term">metric demos (using example vectors):
+  exact_match pred='41'                           -> 1.0000 expected=1.0
+  exact_match pred='42'                           -> 0.0000 expected=0.0
+  f1         pred='the cat sat'                  -> 0.6667 approx=0.667
+  f1         pred=''                             -> 0.0000 expected=0.0
+  bleu_4     pred='the cat sat on the mat'       -> 1.0000 approx=1.0
+  bleu_4     pred='the the the the'              -> 0.2412 < 0.5
+  rouge_l    pred='the cat sat'                  -> 0.6667 approx=0.667
+  accuracy   pred='positive'                     -> 1.0000 expected=1.0
+  corpus_bleu over 2 examples -> 0.5854</pre><p>الأرقام دي محسوبة بنفس المعادلات. لو طلعلك رقم مختلف في BLEU، راجع الـ clipping (في <span class="ltr">"the the the the"</span> الـ reference فيه <span class="ltr">"the"</span> مرتين، فالـ unigram clipped = 2 مش 1).</p></details>
+  <p>الـ tests في <code>code/tests/test_metrics.py</code> بتثبّت الـ reference vectors وبتضغط على كل edge case: prediction فاضي، reference فاضي، مفيش tokens مشتركة، تطابق تام، وclipping للعبارة المكررة.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d499-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>الدرس الأصلي مفيهوش قسم تمارين منفصل، فدي تمارين مبنية على أهدافه وعلى الـ tests بتاعته:</p>
+  <ol class="ex">
+    <li><b>احسب بإيدك قبل الكود:</b> F1 لـ <span class="ltr">"cat cat cat"</span> مقابل <span class="ltr">"cat"</span>، وبعدين بالعكس. هل هيطلعوا زي بعض؟
+      <details><summary>الإجابة</summary>التقاطع = min(3,1) = 1. الأولى: P = 1/3، R = 1/1 ← F1 = 0.5. العكس: P = 1، R = 1/3 ← F1 = 0.5. متساويين، وده بالظبط <code>test_repeated_token_counts_once_per_overlap</code>: الـ F1 متماثل لأن الـ harmonic mean مش بيفرق مين P ومين R.</details></li>
+    <li><b>BLEU يدوي:</b> احسب الـ BP لـ candidate طوله 5 والـ reference طوله 10.
+      <details><summary>الإجابة</summary><span class="ltr">exp(1 − 10/5) = exp(−1) ≈ 0.368</span>. يعني حتى لو كل الـ n-grams صح، أقصى BLEU حوالي 0.37. جرّبها في معمل ٢.</details></li>
+    <li><b>ROUGE-L بـ β مختلفة:</b> غيّر <code>beta</code> لـ 2 واحسب <span class="ltr">rouge_l("the cat sat", "the cat sat on the mat", beta=2)</span>. الرقم زاد ولا قل؟ وليه؟
+      <details><summary>الإجابة</summary>P = 1، R = 0.5. بـ β = 2: <span class="ltr">(1+4)·1·0.5 / (0.5 + 4·1) = 2.5/4.5 ≈ 0.556</span>، أقل من 0.667. β أكبر من 1 بتدي وزن أكبر للـ recall، والـ recall هنا ضعيف (الملخص فوّت نص الـ reference).</details></li>
+    <li><b>Corpus مقابل متوسط:</b> احسب <code>corpus_bleu</code> على الجملتين في الـ demo، وقارنه بـ <code>corpus_mean</code> لـ <code>bleu4</code> على كل جملة لوحدها.
+      <details><summary>تلميح</summary>الـ corpus بيجمع العدّ والأطوال الأول ويحسب BP مرة واحدة على الطول الكلي. الجملة التانية قصيرة عن الـ reference بتاعها، فالـ BP بتاعها لوحدها بيعاقبها أكتر، بس في الـ corpus الجملة الأولى (المطابقة) بتخفف العقاب. هتلاقي الرقمين مختلفين، وده الدرس: لازم تكتب في التقرير أنهي واحد استخدمت.</details></li>
+    <li><b>إضافة مني · تقرير eval حقيقي:</b> عندك 20 سؤال QA من الـ RAG system بتاعك، كل واحد ليه 2–3 إجابات مقبولة. اكتب script يقرا JSONL بحقول <span class="ltr">prediction, targets, metric_name</span>، ويطلّع جدول: متوسط كل metric، وعدد الـ tasks اللي EM = 0 بس F1 &gt; 0.5 (يعني «صح تقريبًا»).
+      <details><summary>تلميح</summary>استخدم <code>score</code> لكل سطر، وخزّن النتايج في <code>dict</code> بالـ metric_name، وفي الآخر <code>corpus_mean</code>. الحالات «EM صفر وF1 عالي» غالبًا مشكلة formatting (نقطة زيادة، حروف كبيرة) مش مشكلة معرفة، وده بيقولك تراجع قاعدة الـ <code>post_process</code> في الـ task spec بدل ما تلوم الموديل.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d499-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: الحدس، والأخطاء الشائعة، وفين بتقابلهم</h2></div>
+  <ul class="checklist">
+    <li><b>الحدس في جملة:</b> EM بيسأل «هو هو؟»، F1 بيسأل «الكلمات قريبة؟»، BLEU بيسأل «العبارات الصغيرة (n-grams) موجودة في الـ reference؟» (precision)، وROUGE-L بيسأل «قد إيه من الـ reference اتغطى بنفس الترتيب؟».</li>
+    <li><b>خطأ: تقارن BLEU بمقياس 0–100 مع BLEU بمقياس 0–1.</b> الدالة هنا بترجع 0–1. اكتب المقياس صريح في أي تقرير.</li>
+    <li><b>خطأ: تغيّر الـ tokenizer «بس عشان العربي».</b> لو عايز تقيس عربي، ده benchmark جديد بتعريف جديد. متقارنش أرقامه بأرقام قديمة. (للعلم: <code>\w</code> في Python بالـ Unicode بيمسك الحروف العربية.)</li>
+    <li><b>خطأ: تفتكر BLEU/ROUGE عالي = إجابة صح.</b> الـ metrics دي بتكافئ التشابه السطحي. إجابة بتقول «الدواء آمن» وreference بيقول «الدواء مش آمن» هيطلعوا متشابهين جدًا. الدرس نفسه بيقول إنهم «ضروريين مش كفاية»، والخطوة اللي بعدها model-based metrics زي BLEURT وBERTScore.</li>
+    <li><b>في الـ LLMs:</b> الـ EM والـ accuracy هما الأساس في benchmarks الحساب والـ MCQ، والـ F1 بأسلوب SQuAD في الـ QA، وROUGE في الـ summarisation. في الـ agents والـ RAG هتستخدم EM/F1 كـ regression test سريع ورخيص قبل ما تدفع على LLM-as-judge.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d499-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d499-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d499-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d499-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه الـ tokenizer جزء من الـ metric مش من الـ runner</label></li>
+    <li><label><input type="checkbox" data-ck="2"> كتبت EM وaccuracy وF1 بالحالات الطرفية</label></li>
+    <li><label><input type="checkbox" data-ck="3"> كتبت BLEU-4 بالـ clipping والـ smoothing والـ BP وفاهم كل جزء</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت LCS وROUGE-L وملّيت الجدول في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="5"> الـ tests عدّت وطلعلي نفس أرقام الـ demo</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Exact match / accuracy</td><td>benchmarks الحساب والـ MCQ والـ classification</td></tr>
+    <tr><td>Token F1</td><td>الـ QA بأسلوب SQuAD، تقييم إجابات الـ RAG</td></tr>
+    <tr><td>BLEU-4</td><td>الـ machine translation، وأحيانًا الـ summarisation</td></tr>
+    <tr><td>ROUGE-L</td><td>تقييم الملخصات</td></tr>
+    <tr><td>Dispatcher على metric_name</td><td>أي eval harness (أسلوب lm-eval وHELM)، ودرس 75 في الكورس</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Code Exec Metric. الـ metric السادسة: بدل ما نقارن نص، هنشغّل الكود ونشوف بيعدّي الـ tests ولا لأ.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F71-classical-metrics" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/71-classical-metrics</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=499,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d499-roadmap').closest('.day');
+
+// roadmap
+const rm=$('d499-roadmap');
+for(let i=431;i<=515;i++){const s=document.createElement('span');s.textContent=i;s.style.width='38px';if(i===N)s.className='now';rm.appendChild(s)}
+setTimeout(()=>{const now=rm.querySelector('.now');if(now)rm.scrollLeft=now.offsetLeft-rm.clientWidth/2},50);
+
+// ---------- metrics in JS (same rules as main.py) ----------
+const tok=t=>(t.toLowerCase().match(/[\p{L}\p{N}\p{M}_]+/gu)||[]);
+const cnt=a=>{const m=new Map();a.forEach(x=>m.set(x,(m.get(x)||0)+1));return m};
+const ngr=(a,n)=>{const r=[];for(let i=0;i+n<=a.length;i++)r.push(a.slice(i,i+n).join(' '));return cnt(r)};
+function modp(c,r,n){const C=ngr(c,n),R=ngr(r,n);let cl=0,t=0;C.forEach((v,k)=>{cl+=Math.min(v,R.get(k)||0);t+=v});return[cl,t]}
+const bpen=(c,r)=>c===0?0:c>=r?1:Math.exp(1-r/c);
+function em(p,t){return p.trim()===t.trim()?1:0}
+function f1(p,t){const a=tok(p),b=tok(t);if(!a.length&&!b.length)return[1,1,1];if(!a.length||!b.length)return[0,0,0];
+  const A=cnt(a),B=cnt(b);let o=0;A.forEach((v,k)=>o+=Math.min(v,B.get(k)||0));if(!o)return[0,0,0];const P=o/a.length,R=o/b.length;return[2*P*R/(P+R),P,R]}
+function bleu(p,t){const c=tok(p),r=tok(t);if(!c.length)return{s:0,ps:[],bp:0};let s=0;const ps=[];
+  for(let n=1;n<=4;n++){const[a,b]=modp(c,r,n);ps.push([a,b]);s+=Math.log((a+1)/(b+1))}const bp=bpen(c.length,r.length);return{s:bp*Math.exp(s/4),ps,bp}}
+function lcsT(a,b){const dp=[];for(let i=0;i<=a.length;i++)dp.push(new Array(b.length+1).fill(0));
+  for(let i=0;i<a.length;i++)for(let j=0;j<b.length;j++)dp[i+1][j+1]=a[i]===b[j]?dp[i][j]+1:Math.max(dp[i+1][j],dp[i][j+1]);return dp}
+function rl(p,t){const c=tok(p),r=tok(t);if(!c.length&&!r.length)return 1;if(!c.length||!r.length)return 0;const L=lcsT(c,r)[c.length][r.length];if(!L)return 0;const P=L/c.length,R=L/r.length;return 2*P*R/(R+P)}
+
+// ---------- Lab 1 ----------
+const PRE=[['the cat sat','the cat sat on the mat'],['The Cat Sat','the cat sat'],['the the the the','the cat sat on the mat'],['mat the on sat cat the','the cat sat on the mat'],['the cat','the cat sat on the mat in the sun on a quiet day'],['the cat sat on the mat','the cat sat on the mat']];
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function chips(a,other){const O=cnt(other),used=new Map();return a.map(w=>{const u=used.get(w)||0;const hit=u<(O.get(w)||0);used.set(w,u+1);
+  return `<span style="display:inline-block;padding:0 6px;margin:1px;border-radius:4px;background:${hit?'color-mix(in srgb,var(--ok) 22%,var(--panel))':'var(--soft)'}">${esc(w)}</span>`}).join('')||'<i>[]</i>'}
+function lab1(){
+  const p=$('d499-pred').value,r=$('d499-ref').value,a=tok(p),b=tok(r);
+  $('d499-toks').innerHTML=`<div>pred → ${chips(a,b)}</div><div>ref&nbsp; → ${chips(b,a)}</div>`;
+  const E=em(p,r),F=f1(p,r),B=bleu(p,r),R=rl(p,r);
+  $('d499-em').textContent=f(E,0);$('d499-f1').textContent=f(F[0],3)+' ('+f(F[1],2)+'/'+f(F[2],2)+')';$('d499-bl').textContent=f(B.s,4);$('d499-rl').textContent=f(R,4);
+  let h='<div style="direction:ltr;font-family:var(--f-mono);font-size:13px;display:grid;gap:3px">';
+  B.ps.forEach(([cl,t],i)=>{const v=(cl+1)/(t+1);h+=`<div style="display:grid;grid-template-columns:150px 1fr 60px;gap:8px;align-items:center"><span>p${i+1}: ${cl}/${t} → (${cl}+1)/(${t}+1)</span><span style="display:block;height:10px;border-radius:5px;background:var(--soft);overflow:hidden"><i style="display:block;height:100%;width:${v*100}%;background:var(--vec-a)"></i></span><span>${f(v,3)}</span></div>`});
+  if(B.ps.length)h+=`<div>BP = ${f(B.bp,4)}  (c=${a.length}, r=${b.length})</div>`;
+  $('d499-bars').innerHTML=h+'</div>';
+}
+['d499-pred','d499-ref'].forEach(id=>$(id).addEventListener('input',()=>{document.querySelectorAll('[data-d499p]').forEach(x=>x.classList.remove('primary'));lab1()}));
+document.querySelectorAll('[data-d499p]').forEach(b=>b.addEventListener('click',()=>{const[p,r]=PRE[+b.dataset.d499p];$('d499-pred').value=p;$('d499-ref').value=r;
+  document.querySelectorAll('[data-d499p]').forEach(x=>x.classList.toggle('primary',x===b));lab1()}));
+lab1();
+
+// ---------- Lab 2: brevity penalty ----------
+const bc=$('d499-bpCv'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+function lab2(){
+  const c=+$('d499-c').value,r=+$('d499-r').value;$('d499-vc').textContent=c;$('d499-vr').textContent=r;
+  const bp=bpen(c,r);$('d499-bp').textContent=f(bp,4);$('d499-rc').textContent=f(r/c,2);
+  bx.clearRect(0,0,BW,BH);const L=44,T=16,Rr=BW-14,Bt=BH-34,maxC=24;
+  const X=v=>L+(v/maxC)*(Rr-L),Y=v=>Bt-v*(Bt-T);
+  bx.strokeStyle=css('--grid');bx.lineWidth=1;for(let k=0;k<=4;k++){bx.beginPath();bx.moveTo(L,Y(k/4));bx.lineTo(Rr,Y(k/4));bx.stroke()}
+  bx.strokeStyle=css('--muted');bx.beginPath();bx.moveTo(L,T);bx.lineTo(L,Bt);bx.lineTo(Rr,Bt);bx.stroke();
+  bx.fillStyle=css('--muted');bx.font='12px JetBrains Mono, monospace';bx.textAlign='right';for(let k=0;k<=4;k++)bx.fillText((k/4).toFixed(2),L-6,Y(k/4)+4);
+  bx.textAlign='center';for(let v=0;v<=maxC;v+=4)bx.fillText(v,X(v),Bt+16);bx.fillText('candidate length c',(L+Rr)/2,BH-4);
+  bx.setLineDash([6,5]);bx.strokeStyle=css('--vec-b');bx.lineWidth=2;bx.beginPath();bx.moveTo(X(1),Y(1));bx.lineTo(X(maxC),Y(1));bx.stroke();bx.setLineDash([]);
+  bx.strokeStyle=css('--vec-a');bx.lineWidth=3;bx.beginPath();for(let v=1;v<=maxC;v+=0.1){const y=Y(bpen(v,r));v===1?bx.moveTo(X(v),y):bx.lineTo(X(v),y)}bx.stroke();
+  bx.strokeStyle=css('--muted');bx.setLineDash([3,3]);bx.beginPath();bx.moveTo(X(r),T);bx.lineTo(X(r),Bt);bx.stroke();bx.setLineDash([]);
+  bx.fillStyle=css('--muted');bx.textAlign='left';bx.fillText('c = r',X(r)+4,T+12);
+  bx.fillStyle=css('--ok');bx.beginPath();bx.arc(X(c),Y(bp),7,0,7);bx.fill();
+  bx.fillStyle=css('--ink');bx.font='bold 13px JetBrains Mono, monospace';bx.textAlign=X(c)>BW-140?'right':'left';bx.fillText('BP='+f(bp,3),X(c)+(X(c)>BW-140?-10:10),Y(bp)+(bp>0.85?18:-8));
+  bx.font='12px JetBrains Mono, monospace';bx.fillStyle=css('--vec-b');bx.textAlign='right';bx.fillText('precision-only (all correct)',Rr,Y(1)-6);
+}
+['d499-c','d499-r'].forEach(id=>$(id).addEventListener('input',lab2));lab2();
+
+// ---------- Lab 3: LCS table ----------
+const lc=$('d499-lcsCv'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+let LA=tok('the cat sat'),LB=tok('the cat sat on the mat'),Ldp=lcsT(LA,LB),shownK=Infinity,ltimer=null;
+function path(){const p=new Set();let i=LA.length,j=LB.length;while(i>0&&j>0){if(LA[i-1]===LB[j-1]){p.add(i+','+j);i--;j--}else if(Ldp[i-1][j]>=Ldp[i][j-1])i--;else j--}return p}
+function lab3(){
+  const n=LA.length,m=LB.length;lx.clearRect(0,0,LW,LH);
+  const hx=90,hy=34,cw=Math.min(52,(LW-hx-6)/(m+1)),ch=Math.min(40,(LH-hy-6)/(n+1));
+  const total=n*m,done=Math.min(shownK,total),pth=done>=total?path():new Set();
+  lx.font='12px JetBrains Mono, monospace';lx.textAlign='center';lx.fillStyle=css('--vec-b');
+  LB.forEach((w,j)=>lx.fillText(w.slice(0,7),hx+(j+1)*cw+cw/2,hy-10));
+  lx.fillStyle=css('--vec-a');lx.textAlign='right';LA.forEach((w,i)=>lx.fillText(w.slice(0,10),hx-6,hy+(i+1)*ch+ch/2+4));lx.textAlign='center';
+  for(let i=0;i<=n;i++)for(let j=0;j<=m;j++){
+    const x=hx+j*cw,y=hy+i*ch,k=(i-1)*m+(j-1),filled=i===0||j===0||k<done,cur=i>0&&j>0&&k===done-1&&done<total;
+    const match=i>0&&j>0&&LA[i-1]===LB[j-1];
+    lx.fillStyle=pth.has(i+','+j)?css('--vec-b'):(match&&filled?'color-mix(in srgb,'+css('--ok')+' 30%,'+css('--panel')+')':css('--panel'));
+    if(pth.has(i+','+j))lx.globalAlpha=.55;lx.fillRect(x+1,y+1,cw-2,ch-2);lx.globalAlpha=1;
+    lx.strokeStyle=cur?css('--ink'):css('--line');lx.lineWidth=cur?2.5:1;lx.strokeRect(x+1,y+1,cw-2,ch-2);
+    if(filled){lx.fillStyle=css('--ink');lx.font=(i===n&&j===m?'bold 15px':'13px')+' JetBrains Mono, monospace';lx.fillText(Ldp[i][j],x+cw/2,y+ch/2+5)}
+  }
+  const t=$('d499-lcsTxt');
+  if(done<total&&done>0){const i=Math.floor((done-1)/m),j=(done-1)%m;t.textContent=LA[i]===LB[j]?`dp[${i+1}][${j+1}] = '${LA[i]}' == '${LB[j]}' → dp[${i}][${j}] + 1 = ${Ldp[i+1][j+1]}`:`dp[${i+1}][${j+1}] = max(dp[${i+1}][${j}], dp[${i}][${j+1}]) = ${Ldp[i+1][j+1]}`}
+  else if(done>=total){const L=Ldp[n][m],P=n?L/n:0,R=m?L/m:0,F=L?2*P*R/(P+R):0;t.textContent=`LCS = ${L}   P = ${L}/${n} = ${f(P,3)}   R = ${L}/${m} = ${f(R,3)}   ROUGE-L = ${f(F,3)}`}
+  else t.textContent='—';
+}
+function setL(s){const[a,b]=s.split('|');LA=tok(a).slice(0,8);LB=tok(b).slice(0,8);Ldp=lcsT(LA,LB);clearInterval(ltimer);shownK=Infinity;lab3()}
+document.querySelectorAll('[data-d499l]').forEach(b=>b.addEventListener('click',()=>setL(b.dataset.d499l)));
+$('d499-lcsPlay').addEventListener('click',()=>{clearInterval(ltimer);shownK=0;lab3();const total=LA.length*LB.length;
+  ltimer=setInterval(()=>{if(!document.body.contains(lc)){clearInterval(ltimer);return}shownK++;lab3();if(shownK>=total)clearInterval(ltimer)},matchMedia('(prefers-reduced-motion:reduce)').matches?40:380)});
+lab3();
+
+// ---------- quiz ----------
+AI.quiz($('d499-quizBox'),[
+ ['ليه الـ tokenizer بيتحدد في طبقة الـ metric مش في الـ runner؟',['الـ tokenizers خاصة بكل model والـ runner مش شايف الـ model','الـ tokenizer بيحدد إيه اللي يتحسب token match، فتغييره بيغير الـ benchmark','الـ metrics كلها O(n) مهما كان الـ tokenizer','numpy محتاج tokenizer وقت الـ import'],1,'BLEU وF1 حساسين للـ tokenisation. ربط الـ tokenizer بالـ metric بيخلي الأرقام قابلة للتكرار وتقدر تشاور على القاعدة.'],
+ ['الـ modified n-gram precision بتعمل إيه زيادة عن الـ precision العادية؟',['بتقص عدد كل n-gram في الـ candidate عند أقصى عدد ظهر بيه في أي reference','أسرع من الـ precision العادية','بتستخدم أساس log مختلف','بترجع رقم من 0 لـ 100 بدل 0 لـ 1'],0,'القص عند سقف الـ reference بيمنع الـ candidate إنه ينفخ الـ score بتكرار كلمة واحدة مضمونة.'],
+ ['ليه BLEU بيستخدم brevity penalty؟',['الـ candidates الطويلة بتخلي الـ geometric mean غير مستقر رقميًا','الـ BP بيحل محل سقف عدّ الـ n-grams','بيعوّض الـ smoothing بإضافة واحد','من غيره، candidate قصير جدًا بيطابق كلمتين هياخد precision عالية وBLEU عالي ظلم'],3,'الـ precision لوحدها بتكافئ الإجابات القصيرة. الـ BP بيقلل وزن أي candidate أقصر من الـ reference بـ exp(1 − r/c).'],
+ ['ROUGE-L بيقارن إيه؟',['الـ Levenshtein distance بين النصين','الـ 4-gram precision مقابل أي 4-gram في الـ reference','أطول subsequence مشترك بين tokens الـ candidate والـ reference','الـ Jaccard index على مستوى الحروف'],2,'ROUGE-L بياخد طول الـ LCS ويحسب precision (LCS/طول الـ candidate) وrecall (LCS/طول الـ reference) ويجمعهم بـ F-beta.'],
+ ['الـ token F1 بيرجع 1.0 في أنهي حالة؟',['لما الـ prediction والـ target يشتركوا في token واحد بالظبط','لما الـ prediction يبقى superset للـ target ومعاه كلام زيادة','لما الـ prediction فاضي والـ target مش فاضي','لما الاتنين فاضيين'],3,'بالاصطلاح، فاضي مع فاضي = تطابق كامل. أي target مش فاضي مع prediction فاضي = 0.0.'],
+ ['ليه الـ score بيعمل dispatch على metric_name مش على category؟',['الـ runner مش شايف حقل الـ category','عشان نفس الـ category تقدر تستخدم metrics مختلفة في tasks مختلفة، والـ dispatcher يفضل مش فارق معاه','الـ category أصعب في الـ validation','metric_name أقصر من category'],1,'الـ metric_name هو العقد. task ملخص ممكن يستخدم rouge_l في record وbleu_4 في record تاني، والـ dispatcher مش محتاج يهتم.'],
+ ['(سؤال مني) pred = "Paris." وtarget = "paris". إيه قيمة exact_match وf1؟',['EM = 1 وF1 = 1','EM = 0 وF1 = 1','EM = 0 وF1 = 0','EM = 1 وF1 = 0'],1,'الـ exact_match بيقارن النص بعد strip بس، فالنقطة والحرف الكبير بيبوظوه. الـ F1 بيعدّي على الـ tokenizer (lowercase و\\w+) فالاتنين بيبقوا ["paris"].'],
+ ['(سؤال مني) candidate طوله 3 tokens والـ reference طوله 6، وكل الـ n-grams صح. أقصى BLEU ممكن حوالي كام؟',['1.0','0.61','0.37','0'],2,'BP = exp(1 − 6/3) = exp(−1) ≈ 0.37، وده سقف لأن باقي المعادلة ≤ 1. هنا كل precision بعد الـ smoothing = 1 (حتى الـ 4-grams: (0+1)/(0+1))، فالـ BLEU ≈ 0.37 بالظبط.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(bc))return false;lab2();lab3()});
+})();
+</script>

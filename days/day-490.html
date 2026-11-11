@@ -1,0 +1,474 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 62 · Vision-Language Pretraining</span>
+  <h1>اليوم ٤٩٠: درّب الـ encoder والـ decoder مع بعض بلوسين</h1>
+  <p class="lede">الـ encoder والـ projection والـ decoder اتوصلوا في الدروس اللي فاتت. النهاردة بندرّبهم <b>سوا</b> بهدفين: <b>InfoNCE</b> (contrastive) يقرّب كل صورة من الكابشن بتاعها ويبعدها عن الباقي، و<b>LM loss</b> يخلي الـ decoder يكتب الكابشن. الأول بيعلّم الموديل <b>يرتّب</b> (يلاقي الصورة الصح للكابشن)، والتاني بيعلّمه <b>يولّد</b> (يكتب كابشن للصورة).</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (PyTorch + NumPy)</span>
+    <span>قبله: <b>Cross-Attention Fusion</b></span>
+    <span>بعده: <b>Multimodal Evaluation</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone lessons</span>
+    <div class="roadmap" id="d490-roadmap" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d490-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ Cross-Attention؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>في الـ cross-attention جوه الـ decoder، الـ Q جاية منين والـ K/V جايين منين؟
+      <details><summary>الإجابة</summary>الـ Q من الـ text tokens، والـ K والـ V من الـ image tokens (الـ memory اللي طالعة من الـ vision encoder). النص «بيسأل» والصورة «بترد».</details></li>
+    <li>ليه الـ self-attention بتاع النص عليه causal mask والـ cross-attention مالوش mask؟
+      <details><summary>الإجابة</summary>النص بيتولد كلمة كلمة، فممنوع التوكن يبص على اللي بعده. لكن الصورة كلها معروفة من الأول ومفيش ترتيب زمني بين الـ patches، فأي توكن نص يقدر يبص على أي patch.</details></li>
+    <li>إيه اللي بيخلي توليد الكابشن سريع رغم إن الـ ViT تقيل؟
+      <details><summary>الإجابة</summary>الـ KV cache بتاع الصورة: الـ keys والـ values بتوع الصورة بيتحسبوا مرة واحدة في الأول، وكل توكن نص جديد بيستخدمهم من غير ما يعيد الحساب. النهاردة الـ decoder ده نفسه هو اللي هيتدرّب بالـ LM loss.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>InfoNCE والـ temperature + معمل ١ و٢</div>
+    <div><b>15 min</b>الـ LM loss والـ padding + معمل ٣</div>
+    <div><b>30 min</b>اكتب الكود وشغّل الـ 50 step</div>
+    <div><b>20 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d490-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: موديل واحد محتاج مهارتين</h2></div>
+  <p>أي vision-language model محتاج يعمل حاجتين:</p>
+  <ol class="ex">
+    <li><b>Ranking:</b> تديله كابشن، يلاقي الصورة الصح وسط صور كتير.</li>
+    <li><b>Generation:</b> تديله صورة، يكتب كابشن ليها.</li>
+  </ol>
+  <p>لو دربته على مهارة واحدة بس، معاك نص سيستم. <b>CLIP</b> ممتاز في الـ ranking بس مبيعرفش يكتب كابشن. والدرس بيقول إن GPT-4V بيكتب كابشن بس بيستخدم retrieval head منفصل للـ ranking. الحل: <b>multi-objective pretraining</b>، تدرّب على الاتنين في نفس الـ pass.</p>
+  <div class="note"><strong>تشبيه:</strong> طالب بيذاكر لغة. تمرين «وصّل الصورة بالجملة» (matching) بيعلّمه يفرّق بين المعاني، وتمرين «اوصف الصورة بكلامك» (writing) بيعلّمه يعبّر. لو عمل واحد بس هيبقى ناقص. الاتنين مع بعض بيبنوا فهم مشترك في نفس الدماغ (هنا: نفس الـ encoder والـ projection).</div>
+  <div class="formula">batch → vision encoder → CLS pool + projection → image emb (N×D)
+captions → text encoder (mean pool) → text emb (N×D)
+image emb · text embᵀ → sim (N×N) → InfoNCE (الاتجاهين)
+encoder memory + captions → cross-attention decoder → LM cross-entropy
+total = contrastive + lm_weight · LM</div>
+</section>
+
+<section id="d490-nce">
+  <div class="station-head"><span class="tag">02</span><h2>InfoNCE في فقرة واحدة</h2></div>
+  <p>عندك batch فيه N زوج (صورة، كابشن). رصّ الـ N image embeddings كصفوف، والـ N text embeddings كصفوف. اعمل لكل واحد <b>L2-normalize</b> (طوله يبقى 1). احسب المصفوفة:</p>
+  <div class="formula">S = (I · Tᵀ) / τ        shape: (N × N)</div>
+  <p>القطر (<span class="ltr">S[i][i]</span>) هو الأزواج الصح: الـ <b>positives</b>، وعددهم N. كل اللي برا القطر <b>negatives</b>، وعددهم <span class="ltr">N² − N = N(N−1)</span>. بعدين اعمل <b>cross-entropy</b> على كل صف والـ target هو القطر: الصف i لازم أعلى قيمة فيه تبقى في العمود i (صورة → نص). واعمل نفس الحكاية على الأعمدة (نص → صورة). الـ loss النهائي = متوسط الاتنين. دي <b>CLIP loss</b> في تمن سطور.</p>
+  <div class="note"><strong>تشبيه:</strong> فكّر فيها كامتحان «اختيار من متعدد» لكل صورة: الاختيارات هي كل الكابشنز اللي في الـ batch، والإجابة الصح واحدة. الـ cross-entropy بيعاقبك لو اديت احتمال عالي لإجابة غلط. وعشان كده لو الموديل لسه بيخمّن عشوائي، الـ loss بيبقى <span class="ltr">ln(N)</span>: لـ batch 16 يعني <span class="ltr">ln(16) ≈ 2.77</span>.</div>
+
+  <h3>الـ Temperature مهمة</h3>
+  <p>الـ τ بتتحكم في قد إيه الـ softmax «مدبّب». لو صغيرة جدًا (مثلًا <span class="ltr">τ = 0.01</span>) الـ gradient بييجي تقريبًا من أصعب negative بس، والتدريب بيبقى noisy. لو كبيرة جدًا الـ softmax بيتفرد والـ gradient بيختفي. CLIP بيتعلّم τ كـ parameter، والديمو هنا بيعمل نفس الحاجة: بيخزّن <code>log_tau</code> ويستخدم <span class="ltr">exp(log_tau)</span> كـ scale (يعني <span class="ltr">1/τ</span>)، وبيبدأ من <span class="ltr">1/0.07 ≈ 14.3</span>، ومحطوط عليه clamp بين <span class="ltr">1e-3</span> و<span class="ltr">100</span>.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: مصفوفة التشابه والـ loss على الهوا</h3>
+      <p>عندك batch فيه 8 أزواج في فضاء 16 بُعد. «قوة المحاذاة» بتتحكم في قد إيه كل كابشن قريب من صورته. حرّك الـ τ وشوف القطر بينوّر والـ loss بيتغير.</p>
+      <p>دوس على أي صف عشان تشوف توزيع الـ softmax بتاعه تحت: ده بالظبط «وزن» كل negative في الـ gradient.</p>
+      <div class="note ai"><strong>لاحظ:</strong> لما المحاذاة = 0 الـ loss حوالين <span class="ltr">ln(8) ≈ 2.08</span>. ولما المحاذاة عالية وτ صغيرة، الـ loss بيقرب من صفر (ده بالظبط test في الكود: قطر مثالي بقيم كبيرة → loss ≈ 0).</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d490-simCv" width="520" height="400" aria-label="مصفوفة التشابه"></canvas>
+      <div class="mrow">
+        <label>alignment = <span id="d490-va">0.5</span><input type="range" id="d490-al" min="0" max="1" step="0.05" value="0.5"></label>
+        <label>τ = <span id="d490-vt">0.07</span><input type="range" id="d490-tau" min="-4.6" max="0" step="0.05" value="-2.66"></label>
+      </div>
+      <div class="readout">
+        <div><small>loss i→t</small><b id="d490-li2t">0</b></div>
+        <div><small>loss t→i</small><b id="d490-lt2i">0</b></div>
+        <div><small>InfoNCE</small><b id="d490-lnce">0</b></div>
+        <div><small>ln(N) baseline</small><b>2.079</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d490-reroll">batch جديد</button></div>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: اسحب النقط في الـ joint space</h3>
+      <p>بعد الـ normalize كل embedding بيبقى على دايرة (هنا 2D للتبسيط). الدواير المليانة صور، والمربعات كابشنز، وكل لون زوج. اسحب أي نقطة وشوف الـ loss. أو دوس «درّب» وشوف الـ gradient بيشد كل صورة ناحية الكابشن بتاعها ويزقّها بعيد عن الباقي.</p>
+      <p>جرّب τ صغيرة جدًا وكبيرة جدًا وشوف سرعة التدريب وثباته.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d490-jsCv" width="520" height="380" aria-label="الـ joint embedding space"></canvas>
+      <div class="mrow">
+        <label>τ = <span id="d490-vt2">0.3</span><input type="range" id="d490-tau2" min="0.02" max="2" step="0.01" value="0.3"></label>
+        <label>step = <span id="d490-vst">0</span></label>
+      </div>
+      <div class="readout">
+        <div><small>InfoNCE</small><b id="d490-jl">0</b></div>
+        <div><small>ln(4)</small><b>1.386</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" id="d490-train" class="primary">درّب ▶</button>
+        <button type="button" id="d490-jsReset">لخبطهم من جديد</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="d490-lm">
+  <div class="station-head"><span class="tag">03</span><h2>الـ LM loss: الـ decoder بيتعلم يكتب</h2></div>
+  <p>الـ decoder بياخد الـ image memory tokens عن طريق الـ cross-attention، ويتنبأ بالتوكن الجاي في كل موضع. الـ loss هو cross-entropy عادي والـ target هو التوكن اللي بعده. في الكود:</p>
+  <div class="formula">inputs = ids[:, :-1]      targets = ids[:, 1:]</div>
+  <p>يعني الموضع t بياخد التوكنز لحد t ويحاول يتوقع التوكن t+1. والـ <b>padding</b> (التوكن رقم 0) بيتشال من الـ loss بـ <code>ignore_index=PAD_ID</code>. ليه؟ لأن الكابشنز أطوالها مختلفة وبنكمّلها بأصفار عشان تبقى نفس الطول. لو حسبنا عليها loss، الموديل هيتعلم «يتنبأ بالـ pad» ويتعاقب على حاجة مالهاش معنى.</p>
+  <p>الـ baseline: لو الموديل بيدي احتمال متساوي لكل الـ 512 كلمة في الـ vocab، الـ loss = <span class="ltr">ln(512) ≈ 6.24</span>.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: الـ shift والـ mask</h3>
+      <p>غيّر طول الكابشن (الـ max length ثابت 16 زي الكود). الصف الأول هو الـ input، والتاني الـ target بعد الـ shift. الخانات الباهتة pad ومش داخلة في الـ loss.</p>
+      <p>«ثقة الموديل» هي الاحتمال اللي بيديه للتوكن الصح. شوف الـ loss المتوسط بيتحسب على المواضع الحقيقية بس.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d490-lmCv" width="520" height="230" aria-label="الـ shift والـ padding mask"></canvas>
+      <div class="mrow">
+        <label>caption length = <span id="d490-vlen">9</span><input type="range" id="d490-len" min="2" max="16" step="1" value="9"></label>
+        <label>p(correct) = <span id="d490-vp">0.002</span><input type="range" id="d490-p" min="-6.24" max="0" step="0.02" value="-6.24"></label>
+      </div>
+      <div class="readout">
+        <div><small>positions counted</small><b id="d490-cnt">0</b></div>
+        <div><small>masked (pad)</small><b id="d490-msk">0</b></div>
+        <div><small>LM loss</small><b id="d490-lml">0</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="d490-combine">
+  <div class="station-head"><span class="tag">04</span><h2>دمج اللوسين: مين بياخد gradient من مين؟</h2></div>
+  <div class="formula">total = contrastive + lm_weight · lm        (lm_weight غالبًا = 1.0)</div>
+  <p>اللوسين بيشاركوا الـ gradient في الـ encoder والـ projection. الـ decoder بياخد gradient من الـ LM loss بس. والـ text-side encoder (embedding + mean pool) بياخد من الـ contrastive بس. ده الـ multi-task recipe اللي CoCa وBLIP بيستخدموه بأوزان مختلفة. أما <b>SigLIP</b> فبيسيب الـ contrastive لوحده وبيبدّل الـ softmax بـ <b>sigmoid pair loss</b>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>بيتعلم إيه</th><th>بيأثر على</th></tr>
+    <tr><td>InfoNCE</td><td>ترتيب الأزواج في الـ joint space</td><td>Encoder + projection + text head</td></tr>
+    <tr><td>LM</td><td>توقع التوكن بشرط الصورة</td><td>Encoder + projection + decoder</td></tr>
+    <tr><td>Combined</td><td>Multi-task</td><td>الـ stack كله</td></tr>
+  </table></div>
+  <div class="note"><strong>تشبيه:</strong> الـ encoder زي مترجم عنده مديرين: واحد بيقيّمه «هل وصفك للصورة بيفرّقها عن الباقي؟» والتاني «هل وصفك يكفي حد يكتب كابشن؟». الاتنين بيعدّلوا في نفس المترجم، بس كل مدير عنده موظف خاص بيه (الـ text encoder للأول، والـ decoder للتاني).</div>
+
+  <h3>ليه 50 step كفاية للديمو؟</h3>
+  <p>الـ corpus هنا synthetic: 200 زوج، صور عشوائية (noise + bias حسب <span class="ltr">i % 7</span>) وكابشنز ids مرتبطة شوية برقم الصورة، فيه إشارة صغيرة يتعلمها. بعد 50 step بـ Adam وbatch 16 اللوسين بينزلوا بشكل واضح، حتى لو القيم لسه بعيدة عن موديل مدرّب على داتا حقيقية. الهدف إنك تتأكد إن <b>الـ gradient plumbing</b> شغال من أوله لآخره، وإن إضافة الـ LM loss مبتبوظش الـ contrastive. الموديلات الحقيقية بتتدرب ملايين الـ steps، والـ dynamics نفسها.</p>
+
+  <h3>فين الوصفة دي في الموديلات المشهورة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الموديل</th><th>الوصفة</th></tr>
+    <tr><td>CLIP (2021)</td><td>Contrastive بس، ومعاه caption probe منفصل على encoder متجمّد</td></tr>
+    <tr><td>CoCa (2022)</td><td>Contrastive + captioning LM في موديل واحد: بالظبط اللي بنبنيه النهاردة</td></tr>
+    <tr><td>BLIP (2022) و BLIP-2</td><td>Contrastive + LM + image-text matching head: تلات لوسات</td></tr>
+    <tr><td>SigLIP (2023)</td><td>بيبدّل InfoNCE بـ sigmoid pair loss: نفس الدور، شكل رياضي تاني</td></tr>
+    <tr><td>عيلة LLaVA</td><td>مرحلتين: الأولى alignment (cosine على LM متجمّد) = درس 60، والتانية بتضيف LM loss والـ LM مش متجمّد = الدرس ده</td></tr>
+  </table></div>
+</section>
+
+<section id="d490-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من فولدر الريبو شغّل الأصل الأول (محتاج <code>torch</code> و<code>numpy</code>، والملف بيحمّل كود دروس 59 و60 و61 من الفولدرات اللي جنبه، فلازم الريبو كامل):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/62-vision-language-pretraining/code/main.py</pre></div>
+  <details><summary>الناتج المتوقع (حسب الدرس)</summary><p>هيطبع الـ config (vocab 512، max length 16، embed 128، 200 pair، batch 16، 50 step، lm weight 1.0، initial tau 0.070)، وبعدين سطر كل 5 steps فيه <code>contrast</code> و<code>lm</code> و<code>tau</code> و<code>diag</code> و<code>off</code>. الـ contrastive بيبدأ حوالين <span class="ltr">ln(16) = 2.77</span> وينزل ناحية 2.4، والـ LM بيبدأ حوالين <span class="ltr">ln(512) ≈ 6.24</span> وينزل ناحية 4.7، وفي الآخر <code>ok: both losses decreased</code>. الأرقام بالظبط ممكن تختلف شوية حسب الجهاز ونسخة torch.</p></details>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_vlp.py</code> واكتب الخطوات دي بإيدك. متعملش Copy غير لو اتزنقت.</p>
+
+  <h3>خطوة ١: InfoNCE بالاتجاهين</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+PAD_ID = 0
+
+def info_nce_loss(image_emb, text_emb, log_tau):
+    if image_emb.shape != text_emb.shape:          <span class="c"># لازم نفس (N, D)</span>
+        raise ValueError(f"shape mismatch {tuple(image_emb.shape)} vs {tuple(text_emb.shape)}")
+    n = image_emb.shape[0]
+    img_n = F.normalize(image_emb, dim=-1)         <span class="c"># طول 1 → الضرب = cosine</span>
+    txt_n = F.normalize(text_emb, dim=-1)
+
+    scale = log_tau.exp().clamp(min=1e-3, max=100.0)   <span class="c"># scale = 1/τ</span>
+    sim = (img_n @ txt_n.T) * scale                <span class="c"># (N, N): صفوف صور، أعمدة نصوص</span>
+
+    targets = torch.arange(n, device=sim.device)   <span class="c"># الإجابة الصح = القطر</span>
+    loss_i2t = F.cross_entropy(sim, targets)       <span class="c"># صورة → نص</span>
+    loss_t2i = F.cross_entropy(sim.T, targets)     <span class="c"># نص → صورة</span>
+    return (loss_i2t + loss_t2i) * 0.5, sim</pre></div>
+
+  <h3>خطوة ٢: الـ LM loss مع الـ padding mask</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def lm_loss(logits, target_ids, padding_id=PAD_ID):
+    <span class="c"># logits: (B, L, V)   target_ids: (B, L)   الـ shift بيتعمل برا</span>
+    if logits.dim() != 3 or target_ids.dim() != 2:
+        raise ValueError(f"logits must be 3D and targets 2D, got {logits.shape} {target_ids.shape}")
+    b, l, v = logits.shape
+    flat_logits = logits.reshape(b * l, v)
+    flat_target = target_ids.reshape(b * l)
+    return F.cross_entropy(flat_logits, flat_target, ignore_index=padding_id)   <span class="c"># الـ pad مش محسوب</span></pre></div>
+
+  <h3>خطوة ٣: text encoder صغير (embedding + mean pool)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class TextSideEncoder(nn.Module):
+    def __init__(self, vocab_size, embed_dim):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, embed_dim, padding_idx=PAD_ID)
+
+    def forward(self, ids):                        <span class="c"># ids: (B, L)</span>
+        x = self.embed(ids)                        <span class="c"># (B, L, D)</span>
+        mask = (ids != PAD_ID).float().unsqueeze(-1)
+        denom = mask.sum(dim=1).clamp(min=1.0)     <span class="c"># عدد التوكنز الحقيقية</span>
+        return (x * mask).sum(dim=1) / denom       <span class="c"># متوسط من غير الـ pad → (B, D)</span></pre></div>
+
+  <h3>خطوة ٤: الـ forward بتاع الموديل كله</h3>
+  <p>الموديل بيجمّع: ViT صغير من درس 59 (صورة 32×32، patch 16، hidden 128، depth 2، 4 heads)، والـ <code>MLPProjector</code> من درس 60، والـ text encoder، والـ <code>VisionLanguageDecoder</code> من درس 61 (vision_tokens = 4 patches + CLS = 5)، وparameter اسمه <code>log_tau</code> يبدأ من <span class="ltr">log(1/0.07)</span>.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    <span class="c"># جوه class MultimodalModel(nn.Module)</span>
+    def encode_image(self, images):
+        tokens, cls = self.encoder(images)         <span class="c"># tokens = memory للـ decoder</span>
+        return tokens, self.projector(cls)         <span class="c"># CLS بعد الـ projection = image emb</span>
+
+    def forward(self, images, text_ids):
+        memory, image_emb = self.encode_image(images)
+        text_emb = self.text_encoder(text_ids)
+
+        contrast, sim = info_nce_loss(image_emb, text_emb, self.log_tau)
+
+        b, l = text_ids.shape
+        inputs = text_ids[:, :-1]                  <span class="c"># اللي الـ decoder بيشوفه</span>
+        targets = text_ids[:, 1:]                  <span class="c"># اللي المفروض يتوقعه</span>
+        logits = self.decoder(inputs, memory)      <span class="c"># cross-attention على الصورة</span>
+        lm = lm_loss(logits, targets, padding_id=PAD_ID)
+
+        diag = sim.diag().mean().item()            <span class="c"># متوسط الـ positives</span>
+        offdiag = (sim.sum() - sim.diag().sum()).item() / max(1, b * b - b)
+        stats = {"diag": diag, "off_diag": offdiag, "tau": self.log_tau.exp().item()}
+        return contrast, lm, stats</pre></div>
+  <p>ملاحظة: الـ <code>stats["tau"]</code> بيطبع <span class="ltr">exp(log_tau)</span>، يعني الـ scale. والكود الأصلي فيه شرط لو <code>inputs</code> فاضي يرجّع LM = 0.</p>
+
+  <h3>خطوة ٥: الـ training loop</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def train(cfg):
+    torch.manual_seed(cfg.seed)
+    model = MultimodalModel(cfg).train()
+    opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)        <span class="c"># lr = 5e-4</span>
+    corpus = make_mock_corpus(cfg.seed + 1, cfg.n_pairs, cfg.text_vocab, cfg.max_text_len)
+    rng = np.random.default_rng(cfg.seed + 2)
+
+    for step in range(cfg.steps):                                <span class="c"># 50 step</span>
+        idx = rng.choice(len(corpus), size=cfg.batch_size, replace=False).tolist()
+        imgs, ids = sample_batch(corpus, idx)                    <span class="c"># (16,3,32,32), (16,16)</span>
+        contrast, lm, stats = model(imgs, ids)
+        total = contrast + cfg.lm_weight * lm                    <span class="c"># الدمج</span>
+        opt.zero_grad(set_to_none=True)
+        total.backward()                                         <span class="c"># gradient لكل الـ stack</span>
+        opt.step()
+        if step % 5 == 0 or step == cfg.steps - 1:
+            print(f"step {step:3d} contrast {contrast.item():.4f} "
+                  f"lm {lm.item():.4f} tau {stats['tau']:.3f}")</pre></div>
+  <p><code>replace=False</code> مهم: مينفعش نفس الزوج يتكرر في الـ batch، وإلا هيبقى positive وnegative في نفس الوقت. وعشان كده الكود بيرمي error لو الـ batch أكبر من الـ corpus.</p>
+
+  <h3>خطوة ٦: شغّل الـ tests</h3>
+  <p>الـ tests بتعمل <code>from main import ...</code>، فشغّلها من جوه فولدر <code>code</code>:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd phases/19-capstone-projects/62-vision-language-pretraining/code
+python3 -m unittest test_main -v</pre></div>
+  <p>بتغطي: InfoNCE متماثل لو بدّلت الصور والنصوص، و≈ 0 لقطر مثالي بقيم كبيرة، وبيرمي <code>ValueError</code> لو الأشكال مختلفة، والـ LM loss بيتجاهل الـ pad، والـ forward بيطلّع لوسين finite، و10 steps بتنزّل الـ total loss، وأشكال الـ mock corpus.</p>
+</section>
+
+<section id="d490-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>SigLIP:</b> بدّل InfoNCE بـ sigmoid pair loss وقارن سرعة النزول على الـ mock corpus.
+      <details><summary>تلميح</summary>بدل softmax على الصف، كل خانة في <span class="ltr">S</span> بقت مسألة binary لوحدها: label = +1 على القطر و−1 برا. الـ loss = <span class="ltr">−mean(logsigmoid(labels · (S·scale + bias)))</span>. ضيف <code>bias</code> كـ parameter (ورقة SigLIP بتبدأه بقيمة سالبة عشان أغلب الأزواج negatives). مفيش normalization على الصف كله، فكل زوج مستقل.</details></li>
+    <li><b>Hard-negative mining:</b> كل batch والتاني، خد أصعب زوج برا القطر من الـ batch اللي فات وضيفه. هل الـ contrastive بينزل أسرع؟
+      <details><summary>تلميح</summary>الأصعب = أعلى قيمة برا القطر: <code>sim.fill_diagonal_(-inf)</code> على نسخة وبعدين <code>argmax</code>. خزّن الـ index بتاع الصورة والنص، وفي الـ batch الجاي ضيف الاتنين للـ indices (وخلي بالك متكررش نفس الزوج). قارن منحنيين الـ contrastive.</details></li>
+    <li><b>Image-text matching head:</b> ضيف head ثنائي (match / no match) فوق الـ joint embedding كلوس تالت، زي BLIP.
+      <details><summary>تلميح</summary>خد <span class="ltr">concat(img_emb, txt_emb)</span> لأزواج صح (القطر) وأزواج غلط (مثلًا shift الـ text بواحد)، وعديهم على <code>nn.Linear(2D, 1)</code> وBCE. الـ total = contrastive + lm + itm.</details></li>
+    <li><b>Markov captions:</b> بدّل الكابشنز العشوائية بسلاسل من Markov chain مصفوفة الانتقال بتاعتها بتعتمد على hash الصورة. المفروض الـ LM loss ينزل أكتر لأن فيه إشارة حقيقية تتعلمها.
+      <details><summary>تلميح</summary>اعمل مثلًا 7 مصفوفات انتقال (واحدة لكل <span class="ltr">i % 7</span>، نفس الـ bias اللي في الصورة)، وولّد كل توكن من صف التوكن اللي قبله. كده الـ decoder يقدر يعرف «أنهي مصفوفة» من الصورة.</details></li>
+    <li><b>lm_weight = 0 ضد 1:</b> درّب مرتين وقارن الـ contrastive. المفروض الـ LM ميبوظش الـ ranking.
+      <details><summary>تلميح</summary><code>PretrainConfig(lm_weight=0.0)</code> وبعدين <code>1.0</code>، نفس الـ seed. ارسم <code>history["contrast"]</code> للاتنين. لو منحنى <span class="ltr">lm_weight=1</span> قريب أو أحسن، يبقى الـ multi-task مش بيضر.</details></li>
+    <li><b>إضافة مني · Recall@K زي الشغل الحقيقي:</b> في أي سيستم image search (أو multimodal RAG) المقياس الأساسي مش الـ loss، هو «هل الصورة الصح طلعت في أول K نتايج؟». اكتب دالة تاخد الـ <code>sim</code> وترجّع Recall@1 وRecall@5 للاتجاهين، واطبعها كل 10 steps.
+      <details><summary>الإجابة</summary><code>t = torch.arange(n)</code><br><code>r1 = (sim.argmax(1) == t).float().mean()</code><br><code>r5 = (sim.topk(5, dim=1).indices == t[:, None]).any(1).float().mean()</code><br>ونفس الكلام على <code>sim.T</code> للاتجاه التاني. على batch 16 عشوائي Recall@1 المتوقع ≈ <span class="ltr">1/16</span>. ده تمهيد مباشر لدرس بكرة (Multimodal Evaluation).</details></li>
+  </ol>
+</section>
+
+<section id="d490-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: الحدس، الأخطاء الشائعة، وفين بيظهر</h2></div>
+  <ul class="checklist">
+    <li><b>InfoNCE = classification بعدد classes = حجم الـ batch:</b> كل صورة بتصنّف «أنهي كابشن من الـ N بتاعي». عشان كده الـ batch الأكبر = negatives أكتر = مهمة أصعب وإشارة أغنى. ورقة CLIP استخدمت batch ضخم جدًا (حوالي 32 ألف) لنفس السبب، وفي التدريب الموزع بيجمعوا الـ embeddings من كل الـ GPUs عشان يكبّروا عدد الـ negatives.</li>
+    <li><b>نسيان الـ normalize:</b> من غير L2-normalize الموديل يقدر «يغش» ويكبّر طول المتجهات بدل ما يحسّن الاتجاه، والـ loss بيبقى مش مستقر. الـ normalize بيخلي الضرب = cosine similarity.</li>
+    <li><b>ليه <code>log_tau</code> مش <code>tau</code> مباشرة؟</b> عشان الـ exp دايمًا موجب، فالـ optimizer مستحيل يخلي الـ scale سالب. والـ clamp لحد 100 بيمنع الـ softmax يتدبّب لدرجة الـ overflow.</li>
+    <li><b>False negatives:</b> لو فيه في الـ batch كابشنين بنفس المعنى («قطة على كنبة» مرتين)، InfoNCE هيعاقب الموديل على حاجة صح. في الداتا الحقيقية ده بيحصل، وده جزء من سبب إن SigLIP والـ dedup مهمين.</li>
+    <li><b>الـ pad والـ shift:</b> أشهر bug صامت إنك تنسى الـ shift (الموديل يتعلم ينسخ التوكن الحالي فالـ loss ينزل بسرعة مريبة)، أو تنسى <code>ignore_index</code> (الـ loss يتحسن من مجرد توقع الأصفار).</li>
+    <li><b>في الـ LLMs والـ agents:</b> الـ vision encoder اللي بيتدرب بالطريقة دي (زي CLIP/SigLIP) هو اللي بيتركّب قدام LLMs زي عيلة LLaVA. وفي agent بيدوّر في صور أو screenshots أو PDFs، الـ joint embedding ده هو اللي بيخليك تعمل search بالنص على الصور في الـ vector DB.</li>
+  </ul>
+</section>
+
+<section id="d490-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d490-quizBox"></div>
+</section>
+
+<section id="d490-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d490-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الـ similarity matrix: مين positive ومين negative وعددهم كام</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه الـ loss العشوائي = <span class="ltr">ln(N)</span> ودور الـ τ</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ shift والـ <code>ignore_index</code> في الـ LM loss</label></li>
+    <li><label><input type="checkbox" data-ck="4"> أعرف مين بياخد gradient من أنهي loss</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت InfoNCE والـ LM loss بإيدي وشغّلت الـ 50 step والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل (منهم Recall@K)</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>InfoNCE / contrastive</td><td>CLIP، SigLIP، embedding models للنص والصور، image search</td></tr>
+    <tr><td>Learned temperature</td><td>الـ <span class="ltr">logit_scale</span> في CLIP، أي contrastive training</td></tr>
+    <tr><td>LM loss + padding mask</td><td>أي captioning أو تدريب LLM (SFT، pretraining)</td></tr>
+    <tr><td>Multi-task loss</td><td>CoCa، BLIP/BLIP-2، المرحلة التانية في LLaVA</td></tr>
+    <tr><td>Joint embedding space</td><td>Multimodal RAG، البحث في الصور بالنص، الـ vector DBs</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Multimodal Evaluation. إزاي تقيس إن الموديل ده بيرتّب وبيكتب صح فعلًا.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F62-vision-language-pretraining" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/62-vision-language-pretraining</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=490,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d490-roadmap').closest('.day');
+
+// roadmap: Phase 19 lesson numbers
+const rm=$('d490-roadmap');
+const L=[];for(let i=1;i<=17;i++)L.push(i);for(let i=20;i<=87;i++)L.push(i);
+L.forEach(i=>{const s=document.createElement('span');s.textContent=i;if(i===62)s.className='now';rm.appendChild(s)});
+
+// helpers
+function softmax(a){const m=Math.max(...a);const e=a.map(v=>Math.exp(v-m));const s=e.reduce((x,y)=>x+y,0);return e.map(v=>v/s)}
+function ce(row,t){const m=Math.max(...row);const lse=m+Math.log(row.reduce((s,v)=>s+Math.exp(v-m),0));return lse-row[t]}
+function norm(v){const n=Math.hypot(...v)||1;return v.map(x=>x/n)}
+function randn(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+// ---------- Lab 1: similarity matrix ----------
+const sc=$('d490-simCv'),sx=AI.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+const NB=8,D=16;let IMG=[],NOI=[],selRow=0;
+function reroll(){IMG=[];NOI=[];for(let i=0;i<NB;i++){IMG.push(norm(Array.from({length:D},randn)));NOI.push(norm(Array.from({length:D},randn)))}}
+function simLab(){
+  const a=+$('d490-al').value,tau=Math.exp(+$('d490-tau').value);
+  $('d490-va').textContent=f(a);$('d490-vt').textContent=f(tau,3);
+  const TXT=IMG.map((v,i)=>norm(v.map((x,k)=>a*x+(1-a)*NOI[i][k])));
+  const S=IMG.map(u=>TXT.map(t=>u.reduce((s,x,k)=>s+x*t[k],0)/tau));
+  const ST=S[0].map((_,j)=>S.map(r=>r[j]));
+  let li=0,lt=0;for(let i=0;i<NB;i++){li+=ce(S[i],i);lt+=ce(ST[i],i)}li/=NB;lt/=NB;
+  $('d490-li2t').textContent=f(li,3);$('d490-lt2i').textContent=f(lt,3);$('d490-lnce').textContent=f((li+lt)/2,3);
+  sx.clearRect(0,0,SW,SH);
+  const cell=26,x0=50,y0=26;
+  sx.font='11px JetBrains Mono, monospace';sx.textAlign='center';
+  const cos=IMG.map(u=>TXT.map(t=>u.reduce((s,x,k)=>s+x*t[k],0)));
+  for(let i=0;i<NB;i++){for(let j=0;j<NB;j++){const c=cos[i][j];const k=(c+1)/2;
+    sx.fillStyle=i===j?css('--vec-a'):css('--vec-b');sx.globalAlpha=.08+.9*Math.pow(Math.max(0,k),3);
+    sx.fillRect(x0+j*cell,y0+i*cell,cell-2,cell-2);sx.globalAlpha=1}
+    sx.fillStyle=i===selRow?css('--ink'):css('--muted');sx.fillText('I'+i,x0-14,y0+i*cell+cell/2+3);sx.fillText('T'+i,x0+i*cell+cell/2,y0-8)}
+  sx.strokeStyle=css('--ink');sx.lineWidth=2;sx.strokeRect(x0-1,y0+selRow*cell-1,NB*cell,cell);
+  sx.textAlign='left';sx.fillStyle=css('--muted');sx.fillText('rows = images, cols = texts (cosine)',x0,y0+NB*cell+16);
+  // softmax bars for selected row
+  const p=softmax(S[selRow]);const bx=x0+NB*cell+30,bw=SW-bx-14,by=y0;
+  sx.fillStyle=css('--ink');sx.font='12px JetBrains Mono, monospace';sx.fillText('softmax(row I'+selRow+')',bx,by-8);
+  p.forEach((v,j)=>{const y=by+j*cell;sx.fillStyle=css('--soft');sx.fillRect(bx,y+4,bw-40,cell-10);
+    sx.fillStyle=j===selRow?css('--ok'):css('--vec-b');sx.fillRect(bx,y+4,(bw-40)*v,cell-10);
+    sx.fillStyle=css('--ink');sx.fillText(f(v,2),bx+bw-36,y+cell/2+3)});
+  sx.fillStyle=css('--muted');sx.fillText('green = positive',bx,by+NB*cell+16);
+  // footer
+  sx.fillStyle=css('--ink');sx.font='13px JetBrains Mono, monospace';
+  sx.fillText('N='+NB+'  positives='+NB+'  negatives='+(NB*NB-NB)+'  1/τ='+f(1/tau,1),x0,SH-20);
+}
+sc.addEventListener('pointerdown',e=>{const [px,py]=AI.evPos(sc,e);const i=Math.floor((py-26)/26);if(px>=50&&px<50+NB*26&&i>=0&&i<NB){selRow=i;simLab()}});
+['d490-al','d490-tau'].forEach(id=>$(id).addEventListener('input',simLab));
+$('d490-reroll').addEventListener('click',()=>{reroll();simLab()});
+reroll();simLab();
+
+// ---------- Lab 2: joint space on circle ----------
+const jc=$('d490-jsCv'),jx=AI.setupCanvas(jc),JW=+jc.dataset.w,JH=+jc.dataset.h,cx=JW/2,cy=JH/2,R=140;
+const COLS=['--vec-a','--vec-b','--ok','--bad'];
+let ang={img:[],txt:[]},drag=null,timer=null,steps=0;
+function scramble(){ang.img=[0,1,2,3].map(()=>Math.random()*2*Math.PI);ang.txt=[0,1,2,3].map(()=>Math.random()*2*Math.PI);steps=0}
+function jLoss(A){const t=+$('d490-tau2').value;const S=A.img.map(a=>A.txt.map(b=>Math.cos(a-b)/t));const ST=S[0].map((_,j)=>S.map(r=>r[j]));let l=0;for(let i=0;i<4;i++)l+=ce(S[i],i)+ce(ST[i],i);return l/8}
+function drawJ(){
+  $('d490-vt2').textContent=f(+$('d490-tau2').value);$('d490-vst').textContent=steps;
+  jx.clearRect(0,0,JW,JH);
+  jx.strokeStyle=css('--line');jx.lineWidth=1.5;jx.beginPath();jx.arc(cx,cy,R,0,2*Math.PI);jx.stroke();
+  jx.strokeStyle=css('--grid');jx.beginPath();jx.moveTo(cx-R-10,cy);jx.lineTo(cx+R+10,cy);jx.moveTo(cx,cy-R-10);jx.lineTo(cx,cy+R+10);jx.stroke();
+  for(let i=0;i<4;i++){const c=css(COLS[i]);
+    const pi=[cx+R*Math.cos(ang.img[i]),cy-R*Math.sin(ang.img[i])],pt=[cx+R*Math.cos(ang.txt[i]),cy-R*Math.sin(ang.txt[i])];
+    jx.strokeStyle=c;jx.globalAlpha=.35;jx.setLineDash([4,4]);jx.beginPath();jx.moveTo(...pi);jx.lineTo(...pt);jx.stroke();jx.setLineDash([]);jx.globalAlpha=1;
+    jx.fillStyle=c;jx.beginPath();jx.arc(pi[0],pi[1],10,0,7);jx.fill();
+    jx.fillRect(pt[0]-9,pt[1]-9,18,18);
+    jx.fillStyle=css('--paper');jx.font='bold 11px JetBrains Mono, monospace';jx.textAlign='center';jx.fillText('I'+i,pi[0],pi[1]+4);jx.fillText('T'+i,pt[0],pt[1]+4)}
+  jx.textAlign='left';jx.fillStyle=css('--muted');jx.font='12px JetBrains Mono, monospace';jx.fillText('● image   ■ text   (unit circle after L2-normalize)',10,JH-10);
+  $('d490-jl').textContent=f(jLoss(ang),3);
+}
+function trainStep(){const lr=.15,h=1e-4;const g={img:[0,0,0,0],txt:[0,0,0,0]};const base=jLoss(ang);
+  ['img','txt'].forEach(k=>{for(let i=0;i<4;i++){const A={img:ang.img.slice(),txt:ang.txt.slice()};A[k][i]+=h;g[k][i]=(jLoss(A)-base)/h}});
+  const t=+$('d490-tau2').value;
+  ['img','txt'].forEach(k=>{for(let i=0;i<4;i++){ang[k][i]-=lr*t*Math.max(-20,Math.min(20,g[k][i]))}});steps++}
+$('d490-train').addEventListener('click',e=>{if(timer){clearInterval(timer);timer=null;e.target.textContent='درّب ▶';return}
+  e.target.textContent='وقّف ⏸';timer=setInterval(()=>{if(!document.body.contains(jc)){clearInterval(timer);return}trainStep();drawJ();if(steps>=300){clearInterval(timer);timer=null;$('d490-train').textContent='درّب ▶'}},60)});
+$('d490-jsReset').addEventListener('click',()=>{scramble();drawJ()});
+$('d490-tau2').addEventListener('input',drawJ);
+jc.addEventListener('pointerdown',e=>{const [px,py]=AI.evPos(jc,e);
+  for(const k of ['img','txt'])for(let i=0;i<4;i++){const x=cx+R*Math.cos(ang[k][i]),y=cy-R*Math.sin(ang[k][i]);if(Math.hypot(px-x,py-y)<16){drag=[k,i];jc.setPointerCapture(e.pointerId);return}}});
+jc.addEventListener('pointermove',e=>{if(!drag)return;const [px,py]=AI.evPos(jc,e);ang[drag[0]][drag[1]]=Math.atan2(cy-py,px-cx);drawJ()});
+jc.addEventListener('pointerup',()=>{drag=null});
+scramble();drawJ();
+
+// ---------- Lab 3: LM shift & pad mask ----------
+const lc=$('d490-lmCv'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h,ML=16;
+const tokIds=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15].map(j=>1+(17*3+j*3+3)%511);
+function lmLab(){
+  const len=+$('d490-len').value,lp=+$('d490-p').value,p=Math.exp(lp);
+  $('d490-vlen').textContent=len;$('d490-vp').textContent=f(p,3);
+  const ids=Array.from({length:ML},(_,j)=>j<len?tokIds[j]:0);
+  const inp=ids.slice(0,-1),tgt=ids.slice(1);
+  const cnt=tgt.filter(v=>v!==0).length,msk=tgt.length-cnt;
+  $('d490-cnt').textContent=cnt;$('d490-msk').textContent=msk;$('d490-lml').textContent=cnt?f(-Math.log(p),3):'—';
+  lx.clearRect(0,0,LW,LH);
+  const cw=(LW-90)/15,x0=80;
+  lx.font='12px JetBrains Mono, monospace';
+  lx.fillStyle=css('--ink');lx.textAlign='left';lx.fillText('inputs',6,60);lx.fillText('targets',6,140);
+  for(let j=0;j<15;j++){const x=x0+j*cw;
+    const a=inp[j],b=tgt[j];
+    lx.fillStyle=a?css('--vec-a'):css('--soft');lx.globalAlpha=a?.85:1;lx.fillRect(x,40,cw-3,30);lx.globalAlpha=1;
+    lx.fillStyle=b?css('--vec-b'):css('--soft');lx.globalAlpha=b?.85:1;lx.fillRect(x,120,cw-3,30);lx.globalAlpha=1;
+    lx.textAlign='center';lx.font='10px JetBrains Mono, monospace';
+    lx.fillStyle=a?css('--paper'):css('--muted');lx.fillText(a?a:'PAD',x+(cw-3)/2,59);
+    lx.fillStyle=b?css('--paper'):css('--muted');lx.fillText(b?b:'PAD',x+(cw-3)/2,139);
+    if(b){AI.arrow(lx,x+(cw-3)/2,74,x+(cw-3)/2,114,css('--muted'),1.2)}
+    else{lx.strokeStyle=css('--bad');lx.lineWidth=1.5;lx.beginPath();lx.moveTo(x+4,124);lx.lineTo(x+cw-7,146);lx.stroke()}
+    lx.fillStyle=css('--muted');lx.fillText(j,x+(cw-3)/2,30)}
+  lx.textAlign='left';lx.font='12px JetBrains Mono, monospace';lx.fillStyle=css('--muted');
+  lx.fillText('inputs = ids[:, :-1]   targets = ids[:, 1:]   ignore_index = 0',x0,180);
+  lx.fillText('uniform baseline: ln(512) = 6.238',x0,200);
+}
+['d490-len','d490-p'].forEach(id=>$(id).addEventListener('input',lmLab));lmLab();
+
+// ---------- quiz ----------
+AI.quiz($('d490-quizBox'),[
+ ['دمج InfoNCE مع الـ LM loss بيدرّب مهارتين مختلفتين في موديل واحد. هما إيه؟',['Ranking (تلاقي الصورة الصح لكابشن) وGeneration (تكتب كابشن لصورة)','Compression وdecompression','السرعة والدقة','Tokenization وdetokenization'],0,'InfoNCE مسؤول عن الـ ranking، والـ LM loss عن الـ generation. CoCa وBLIP وأمثالهم بيدمجوا الاتنين في نفس الـ training pass.'],
+ ['في InfoNCE لـ batch فيه N زوج، كام positive وكام negative؟',['N positives على قطر مصفوفة التشابه وN×(N−1) negatives برا القطر','N positives وN negatives','positive واحد وN negatives','N² positives'],0,'الـ N زوج الصح على القطر، وكل اللي برا القطر negative.'],
+ ['ليه الـ contrastive temperature غالبًا بتبقى parameter بيتعلم؟',['عشان منستخدمش Adam','PyTorch بيطلب كده','الـ τ المتعلمة أسرع على الـ GPU','الضبط باليد هش؛ لما τ تتعلم الموديل يلاقي درجة الـ peakedness المناسبة للـ softmax مع تغير حجم الـ embeddings أثناء التدريب'],3,'CLIP قدّم الـ log-tau المتعلمة عشان الـ contrastive softmax يفضل في المنطقة المفيدة مع كبر الـ norms.'],
+ ['أنهي جزء بياخد gradient من الـ LM loss ومش بياخد من الـ contrastive؟',['الـ MLP projector','الـ vision encoder','الـ text-side encoder','الـ cross-attention decoder'],3,'الـ contrastive مبيلمسش الـ decoder، والـ LM مبيلمسش الـ text-side mean-pool encoder.'],
+ ['‎ignore_index=PAD_ID‎ في الـ LM cross-entropy بيعمل إيه؟',['بيسرّع الـ loss','بيشفّر توكنز الـ pad','بيشيل مواضع الـ padding من الـ loss عشان الموديل ميتعاقبش على توقع توكنز بعد نهاية الكابشن','بيعيد ترتيب التوكنز'],2,'مواضع الـ padding مفيهاش إشارة؛ تجاهلها بيمنع الـ loss إنه يعلّم الموديل يتوقع pad.'],
+ ['ليه ديمو 50 step على داتا synthetic كفاية نعتبر الدرس خلص؟',['الموديل بيوصل لـ state of the art في 50 step','50 هو أقصى عدد مسموح','الديمو بيثبت إن الـ gradient plumbing شغال من أوله لآخره؛ شكل التدريب الحقيقي نفسه بس بيشتغل ملايين الـ steps على داتا حقيقية','الداتا الحقيقية هتغير الـ architecture'],2,'الـ dynamics اللي اتشافت (اللوسين بينزلوا، مفيش NaN، الـ τ مستقرة) هي نفسها اللي هتشوفها في run بمليار صورة، بس على نطاق أكبر.'],
+ ['(سؤال مني) batch فيه 16 زوج والموديل لسه بيخمّن عشوائي تمامًا. الـ InfoNCE هيبقى حوالين كام؟',['0','ln(16) ≈ 2.77','ln(512) ≈ 6.24','16'],1,'كل صف softmax متساوي على 16 اختيار، فالـ cross-entropy = ln(16). ده بالظبط رقم البداية اللي الدرس بيذكره.'],
+ ['(سؤال مني) نسيت تعمل L2-normalize للـ embeddings قبل الضرب. إيه المشكلة الأساسية؟',['الكود هيرمي error','الموديل يقدر يقلل الـ loss بتكبير طول المتجهات بدل تحسين اتجاهها، والتشابه مبقاش cosine','الـ LM loss هيبقى صفر','مفيش أي فرق'],1,'الـ normalize بيخلي القيمة cosine similarity في مدى [−1, 1]، والـ τ هي اللي بتتحكم في الحدة. من غيره الـ norm نفسه بيبقى طريقة «غش».']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(sc))return false;simLab();drawJ();lmLab()});
+})();
+</script>

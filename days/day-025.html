@@ -1,0 +1,821 @@
+<div class="day" id="d25-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 03 · Logistic Regression</span>
+  <h1>اليوم ٢٥: اثني الخط لحرف S، وجاوب بـ «آه» أو «لأ»</h1>
+  <p class="lede">امبارح الـ Linear Regression كانت بتتوقع رقم. النهاردة السؤال بقى: <b>آه ولا لأ؟</b> (spam ولا لأ، الورم خبيث ولا حميد). هتاخد نفس الـ <code>wx + b</code> وتعديه على <b>sigmoid</b> يطلّع احتمال بين 0 و1، وتدربه بالـ <b>binary cross-entropy</b>، وتقيسه بالـ <b>precision</b> والـ <b>recall</b> والـ <b>F1</b> بدل الـ accuracy لوحدها. وفي الآخر هتعمّمه لأكتر من كلاس بالـ <b>softmax</b>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia)</span>
+    <span>قبله: <b>Linear Regression</b></span>
+    <span>بعده: <b>Decision Trees and Random Forests</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d25-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d25-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كنا في الـ Linear Regression. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ cost function اللي استخدمناها في الـ linear regression اسمها إيه، وبتحسب إيه؟</summary>
+    <p><b>Mean Squared Error</b>: متوسط مربع الفرق بين التوقع والحقيقة. التربيع بيخلي الغلطة الكبيرة تتعاقب أكتر بكتير من الصغيرة.</p></details>
+  <details><summary>٢. إيه الفرق بين gradient descent والـ normal equation؟</summary>
+    <p>الـ gradient descent بيمشي خطوة خطوة عكس الـ gradient لحد ما يوصل للقاع. الـ normal equation بتحسب الأوزان مرة واحدة بمعادلة مقفولة (closed-form). النهاردة مفيش معادلة مقفولة للـ logistic regression، فهنرجع للـ gradient descent.</p></details>
+  <details><summary>٣. الـ Ridge regression بتضيف إيه على الـ MSE؟</summary>
+    <p>عقوبة <b>L2</b> على حجم الأوزان، عشان تمنعها تكبر أوي وتقلل الـ overfitting. خليها في بالك: النهاردة هنشوف إن الـ L2 هي اللي بتنقذ الـ logistic regression لما الداتا تكون منفصلة تمامًا.</p></details>
+  <p>النهاردة هنستخدم نفس الـ <code>wx + b</code> ونفس الـ gradient descent، بس هنغير حاجتين: الـ output يعدي على sigmoid، والـ loss تبقى cross-entropy.</p>
+</section>
+
+<section>
+  <h2>خطة الساعة ونص</h2>
+  <div class="plan">
+    <div><b>10 min</b>التسخين + ليه الخط بيفشل</div>
+    <div><b>15 min</b>الـ sigmoid والمعمل ٠١</div>
+    <div><b>15 min</b>الـ BCE والـ gradient والمعمل ٠٢</div>
+    <div><b>15 min</b>الـ decision boundary والمعمل ٠٣</div>
+    <div><b>10 min</b>الـ softmax والـ metrics</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>5 min</b>تمرين + كويز</div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section id="d25-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الخط المستقيم بيدّيك أرقام ملهاش معنى</h2></div>
+  <p>عايز تتوقع الورم خبيث (1) ولا حميد (0) من حجمه. جربت linear regression فطلعلك أرقام زي 0.3 و1.7 و-0.5. يعني إيه 1.7؟ «خبيث أوي»؟ ويعني إيه -0.5؟ الـ linear regression بتطلع أرقام ملهاش حدود، والـ classification محتاجة <b>احتمال بين 0 و1</b> وقرار واضح: آه أو لأ.</p>
+  <p>مثال الدرس: ساعات مذاكرة وناجح/ساقط:</p>
+  <div class="formula">hours:  1  2  3  4  5  6  7  8  9  10<br>actual: 0  0  0  0  1  1  1  1  1  1</div>
+  <p>الخط اللي بيتحط على الداتا دي بيطلّع حوالي -0.055 عند ساعة 1 و1.255 عند ساعة 10 (هتشوف الأرقام دي بالظبط لما تشغل الكود). دي مش احتمالات: نزلت تحت الصفر وطلعت فوق الواحد. والأسوأ: لو واحد ذاكر 50 ساعة، النقطة دي هتشد الخط كله وتغير التوقع لكل الناس.</p>
+  <p>فإحنا محتاجين function:</p>
+  <ol class="ex">
+    <li>تطلّع قيم بين 0 و1 (احتمالات).</li>
+    <li>تعمل انتقال حاد (decision boundary) بين الكلاسين.</li>
+    <li>متتأثرش بالـ outliers البعيدة عن الحدود.</li>
+  </ol>
+  <div class="note"><strong>معلومة مهمة:</strong> رغم إن اسمها «regression»، الـ logistic regression خوارزمية <b>classification</b>. الاسم جاي من الـ logistic function (الـ sigmoid) اللي بتستخدمها.</div>
+</section>
+
+<!-- SIGMOID + LAB 1 -->
+<section id="d25-sigmoid">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Sigmoid: عصّارة بتكبس أي رقم بين 0 و1</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <div class="formula">σ(z) = 1 / (1 + e^(−z))</div>
+      <p>خواصها:</p>
+      <ol class="ex">
+        <li>لما z كبير وموجب → σ(z) بتقرب من 1.</li>
+        <li>لما z كبير وسالب → σ(z) بتقرب من 0.</li>
+        <li>عند <span class="ltr">z = 0</span> → <span class="ltr">σ = 0.5</span> بالظبط.</li>
+        <li>الناتج دايمًا بين 0 و1، والـ function ناعمة وليها derivative في كل حتة.</li>
+      </ol>
+      <p>والـ derivative شكلها لطيف جدًا وبيوفر حسابات:</p>
+      <div class="formula">σ'(z) = σ(z) · (1 − σ(z))</div>
+      <p><b>الموديل كله:</b> احسب <span class="ltr">z = wx + b</span> زي امبارح بالظبط، وعدّيه على الـ sigmoid. الناتج p هو <span class="ltr">P(y=1 | x)</span>: احتمال إن الحاجة دي من كلاس 1. لو <span class="ltr">p ≥ 0.5</span> قول 1، غير كده قول 0.</p>
+      <div class="note"><strong>التشبيه:</strong> تخيل منظم صوت (dimmer). الخط المستقيم زي سلك بيوصل أي جهد مهما كان. الـ sigmoid زي منظم بيقص الجهد: مهما زودت، مش هيعدي 100٪، ومهما قللت، مش هينزل تحت 0٪. وفي النص بالظبط بيتحرك بسرعة.</div>
+      <div class="note"><strong>جرب بإيدك:</strong> حرّك w وb وشوف المنحنى البرتقالي (logistic) بيفضل جوه [0, 1] والخط الأزرق (linear) بيطلع بره. دوس «ضيف outlier 50 ساعة» وشوف الخط بيتشد وبيغير قراره لناس كتير.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d25-sig" width="520" height="340" aria-label="مقارنة الخط المستقيم والـ sigmoid على داتا ناجح وساقط"></canvas>
+      <div class="mrow">
+        <label>w (الميل) <span id="d25-wv">3</span><input type="range" id="d25-w" min="0.2" max="6" step="0.1" value="3"></label>
+        <label>b (الإزاحة) <span id="d25-bv">-13.5</span><input type="range" id="d25-b" min="-30" max="0" step="0.5" value="-13.5"></label>
+      </div>
+      <div class="readout">
+        <div><small>الحدود (p = 0.5) عند</small><b id="d25-bd">4.50 h</b></div>
+        <div><small>BCE loss</small><b id="d25-bce">—</b></div>
+        <div><small>أقل/أعلى توقع للخط</small><b id="d25-lin">—</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" id="d25-out">ضيف outlier 50 ساعة</button>
+        <button type="button" id="d25-fit">درّب (gradient descent)</button>
+        <button type="button" id="d25-rst">رجّع</button>
+      </div>
+      <div class="verdict" id="d25-sigv"></div>
+    </div>
+  </div>
+</section>
+
+<!-- BCE + LAB 2 -->
+<section id="d25-bce-sec">
+  <div class="station-head"><span class="tag">03</span><h2>Binary Cross-Entropy: عقاب الغلطة الواثقة</h2></div>
+  <p>ليه منستخدمش الـ MSE بتاعة امبارح؟ لأن الـ MSE مع الـ sigmoid بتعمل سطح cost <b>مش convex</b>، فيه وديان صغيرة كتير (local minima) ممكن الـ gradient descent يقع فيها. بدلها بنستخدم الـ <b>binary cross-entropy</b> (اسمها كمان log loss):</p>
+  <div class="formula">Loss = −(1/n) Σ [ y·log(p) + (1−y)·log(1−p) ]</div>
+  <div class="tablewrap"><table>
+    <tr><th>الحقيقة</th><th>التوقع</th><th>اللي بيحصل</th><th>الـ loss</th></tr>
+    <tr><td class="ltr">y = 1</td><td class="ltr">p ≈ 1</td><td><span class="ltr">log(1) = 0</span></td><td>قريبة من صفر (صح)</td></tr>
+    <tr><td class="ltr">y = 1</td><td class="ltr">p ≈ 0</td><td><span class="ltr">log(0) → −∞</span></td><td>ضخمة (غلط بثقة)</td></tr>
+    <tr><td class="ltr">y = 0</td><td class="ltr">p ≈ 0</td><td><span class="ltr">log(1−0) = 0</span></td><td>قريبة من صفر (صح)</td></tr>
+    <tr><td class="ltr">y = 0</td><td class="ltr">p ≈ 1</td><td><span class="ltr">log(1−1) → −∞</span></td><td>ضخمة (غلط بثقة)</td></tr>
+  </table></div>
+  <p>الـ loss دي <b>convex</b> بالنسبة للـ logistic regression: أي قاع محلي هو القاع الكبير، فالـ gradient descent مستحيل يتزنق في وادي وحش.</p>
+  <div class="note"><strong>تفصيلة الدرس قالها:</strong> لو الداتا <b>منفصلة تمامًا</b> (في خط بيفصل الكلاسين من غير ولا غلطة)، الـ loss بتفضل تنزل كل ما الأوزان تكبر، فمفيش minimum محدود أصلًا: الأوزان بتجري لما لا نهاية. الحل: <b>L2 regularization</b> (اللي شفتها امبارح في الـ Ridge) بتخلي فيه minimum واحد ووحيد.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: قارن الـ BCE بالـ MSE لتوقع واحد</h3>
+      <p>اختار الحقيقة (y = 1 أو 0) وحرّك الاحتمال p. لاحظ إن الـ MSE أقصى عقاب ليها 1 بس حتى لو الموديل غلطان بثقة 99.9٪، لكن الـ BCE بتضرب في السما. ده اللي بيخلي الموديل «يخاف» يبقى واثق وغلطان.</p>
+      <h3>الـ Gradient: نفس شكل امبارح</h3>
+      <div class="formula">∂L/∂w = (1/n) Σ (p − y)·x<br>∂L/∂b = (1/n) Σ (p − y)</div>
+      <p>نفس معادلات الـ linear regression بالظبط! الفرق الوحيد إن <span class="ltr">p = σ(wx + b)</span> بدل <span class="ltr">p = wx + b</span>. الـ sigmoid جابت الـ nonlinearity، بس قاعدة التحديث فضلت زي ما هي. الـ <span class="ltr">(p − y)</span> هي ببساطة «الغلطة»: لو موجبة الموديل متفائل زيادة، لو سالبة متشائم زيادة.</p>
+      <div class="formula">ابدأ w=0, b=0 → z = wx+b, p = σ(z) → احسب BCE → احسب dw, db → w −= lr·dw, b −= lr·db → كرر لحد ما يتقارب</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d25-loss" width="520" height="300" aria-label="منحنى الـ BCE والـ MSE"></canvas>
+      <div class="btns">
+        <button type="button" data-y="1" class="primary" id="d25-y1">الحقيقة y = 1</button>
+        <button type="button" data-y="0" id="d25-y0">الحقيقة y = 0</button>
+      </div>
+      <label style="display:grid;gap:2px">الاحتمال اللي الموديل قاله p = <b class="mono" id="d25-pv">0.70</b><input type="range" id="d25-p" min="0.001" max="0.999" step="0.001" value="0.7"></label>
+      <div class="readout">
+        <div><small>BCE</small><b id="d25-lb">—</b></div>
+        <div><small>MSE</small><b id="d25-lm">—</b></div>
+        <div><small>p − y (الغلطة)</small><b id="d25-le">—</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- BOUNDARY + LAB 3 -->
+<section id="d25-boundary">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Decision Boundary والـ Threshold والـ Metrics</h2></div>
+  <p>لو عندك feature-ين، الحدود بين الكلاسين هي الخط اللي عنده:</p>
+  <div class="formula">w₁x₁ + w₂x₂ + b = 0   ⇔   p = 0.5</div>
+  <p>النقط على ناحية بتتصنف 1، والناحية التانية 0. الـ logistic regression <b>دايمًا</b> بتعمل حدود خطية. لو محتاج حدود منحنية، يا تضيف polynomial features (زي <span class="ltr">x₁², x₂², x₁x₂</span>)، يا تستخدم موديل nonlinear.</p>
+
+  <h3>الـ Accuracy لوحدها بتكدب</h3>
+  <p>داتا فيها 95٪ سالب و5٪ موجب: موديل بيقول «سالب» على طول ياخد 95٪ accuracy وهو ملوش أي لازمة. عشان كده بنبص على الـ <b>confusion matrix</b>:</p>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>توقع موجب</th><th>توقع سالب</th></tr>
+    <tr><th>موجب فعلًا</th><td>True Positive (TP)</td><td>False Negative (FN)</td></tr>
+    <tr><th>سالب فعلًا</th><td>False Positive (FP)</td><td>True Negative (TN)</td></tr>
+  </table></div>
+  <div class="formula">Precision = TP / (TP + FP)      Recall = TP / (TP + FN)<br>F1 = 2 · P · R / (P + R)</div>
+  <ol class="ex">
+    <li><b>Precision:</b> من كل اللي قلت عليهم موجب، كام فعلًا موجب؟ مهمة لما الـ <b>false positive</b> غالية: فلتر spam مش عايزه يبلوك إيميل مهم.</li>
+    <li><b>Recall</b> (اسمها كمان sensitivity): من كل الموجب الحقيقي، مسكت كام؟ مهمة لما الـ <b>false negative</b> غالية: فحص سرطان مش عايزه يفوّت ورم.</li>
+    <li><b>F1:</b> المتوسط التوافقي (harmonic mean) للاتنين، لما تحتاج رقم واحد متوازن.</li>
+  </ol>
+  <p><b>الـ Threshold:</b> الـ 0.5 مش قانون. لو نزّلته الموديل بيقول «موجب» أكتر: الـ recall بيطلع والـ precision غالبًا بتنزل. لو طلّعته العكس. ده آخر جزء في الكود (threshold tuning).</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: درّب بإيدك وشوف الحدود</h3>
+      <p>النقط الزرقا كلاس 0 والبرتقاني كلاس 1، زي داتا الدرس (مراكز قريبة من (2,2) و(5,5)). <b>اسحب أي نقطة</b>، أو دوس على مكان فاضي عشان تضيف نقطة (اختار لونها). بعدين دوس «درّب» وشوف الخط بيتحرك مع كل epoch والـ loss بتنزل.</p>
+      <p>حرّك الـ threshold وراقب الـ confusion matrix والـ precision والـ recall بيتبادلوا. والخط المتقطع بيوريك الحدود عند الـ threshold ده.</p>
+      <div class="note"><strong>جرب:</strong> حط نقطة برتقاني جوه الزرق وشوف الحدود بتتشد قد إيه (أقل بكتير من الخط في المعمل ٠١، لأن النقطة البعيدة الـ <span class="ltr">p − y</span> بتاعها بيبقى محدود). وجرب «داتا دواير»: مستحيل خط واحد يفصلها. ده تمرين ١.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d25-bnd" width="520" height="440" aria-label="نقط كلاسين وخط الحدود بتاع الموديل"></canvas>
+      <div class="btns">
+        <button type="button" id="d25-train" class="primary">درّب 300 epoch</button>
+        <button type="button" id="d25-c0">النقطة الجاية: كلاس 0</button>
+        <button type="button" id="d25-c1">النقطة الجاية: كلاس 1</button>
+        <button type="button" id="d25-blobs">داتا الدرس</button>
+        <button type="button" id="d25-circ">داتا دواير</button>
+      </div>
+      <label style="display:grid;gap:2px">الـ threshold = <b class="mono" id="d25-tv">0.50</b><input type="range" id="d25-t" min="0.05" max="0.95" step="0.05" value="0.5"></label>
+      <div class="readout">
+        <div><small>epoch</small><b id="d25-ep">0</b></div>
+        <div><small>BCE loss</small><b id="d25-bl">—</b></div>
+        <div><small>w₁, w₂, b</small><b id="d25-wb">—</b></div>
+      </div>
+      <div class="tablewrap"><table class="ltr" style="direction:ltr">
+        <tr><th style="text-align:left"></th><th style="text-align:left">Pred 1</th><th style="text-align:left">Pred 0</th></tr>
+        <tr><th style="text-align:left">Actual 1</th><td style="text-align:left" id="d25-tp">TP</td><td style="text-align:left" id="d25-fn">FN</td></tr>
+        <tr><th style="text-align:left">Actual 0</th><td style="text-align:left" id="d25-fp">FP</td><td style="text-align:left" id="d25-tn">TN</td></tr>
+      </table></div>
+      <div class="readout">
+        <div><small>Accuracy</small><b id="d25-ma">—</b></div>
+        <div><small>Precision</small><b id="d25-mp">—</b></div>
+        <div><small>Recall</small><b id="d25-mr">—</b></div>
+        <div><small>F1</small><b id="d25-mf">—</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SOFTMAX + LAB 4 -->
+<section id="d25-softmax">
+  <div class="station-head"><span class="tag">05</span><h2>أكتر من كلاسين: Softmax</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ binary logistic regression بتتعامل مع كلاسين بس. لو عندك k كلاسات، كل كلاس بياخد <b>weight vector خاص بيه</b>، والموديل بيحسب score <span class="ltr">zᵢ</span> لكل كلاس، وبعدين الـ softmax بتحول الـ scores لاحتمالات مجموعها 1:</p>
+      <div class="formula">softmax(zᵢ) = e^(zᵢ) / Σⱼ e^(zⱼ)</div>
+      <p>الكلاس المتوقع هو اللي احتماله أعلى. والـ loss بتبقى <b>categorical cross-entropy</b>:</p>
+      <div class="formula">Loss = −(1/n) Σ Σₖ yₖ · log(pₖ)</div>
+      <p>و<span class="ltr">yₖ</span> هنا <b>one-hot</b>: متجه أصفار فيه 1 في مكان الكلاس الصح بس. يعني عمليًا الـ loss = <span class="ltr">−log</span> احتمال الكلاس الصح.</p>
+      <div class="note ai"><strong>شفتها قبل كده:</strong> في الكود، الـ softmax بتطرح <code>max(scores)</code> قبل الـ <code>exp</code>. دي حيلة الـ stable softmax من يوم ١٣ (Numerical Stability) بالظبط، عشان الـ exp ما يعملش overflow.</div>
+      <p>حرّك الـ scores (اسمها <b>logits</b>) وشوف: لما تزود score كلاس، احتماله بيطلع واحتمال الباقيين بينزل، لأن المجموع لازم يفضل 1.</p>
+    </div>
+    <div class="instrument">
+      <div class="mrow" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+        <label>z₀ <span id="d25-z0v">2.0</span><input type="range" id="d25-z0" min="-5" max="5" step="0.1" value="2"></label>
+        <label>z₁ <span id="d25-z1v">1.0</span><input type="range" id="d25-z1" min="-5" max="5" step="0.1" value="1"></label>
+        <label>z₂ <span id="d25-z2v">0.1</span><input type="range" id="d25-z2" min="-5" max="5" step="0.1" value="0.1"></label>
+      </div>
+      <canvas id="d25-sm" width="520" height="220" aria-label="احتمالات الـ softmax لتلات كلاسات"></canvas>
+      <label style="display:flex;gap:8px;align-items:center">الكلاس الصح: <select id="d25-true"><option value="0">0</option><option value="1">1</option><option value="2">2</option></select></label>
+      <div class="readout">
+        <div><small>المجموع</small><b id="d25-ssum">1.00</b></div>
+        <div><small>التوقع</small><b id="d25-spred">0</b></div>
+        <div><small>cross-entropy</small><b id="d25-sce">—</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d25-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو، شغّل الملف الأصلي الأول عشان تشوف الصورة كاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/02-ml-fundamentals/03-logistic-regression/code/logistic_regression.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_logreg.py</code> واكتب الخطوات دي بإيدك واحدة واحدة، وشغّل بعد كل خطوة. الكود كله stdlib بس (<code>random</code> و<code>math</code>)، والـ scikit-learn اختيارية في الآخر.</p>
+
+  <h3>خطوة ١: الـ sigmoid وتوليد الداتا</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+import math
+
+def sigmoid(z):
+    z = max(-500, min(500, z))          <span class="c"># نحبس z عشان exp ما تعملش overflow</span>
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+random.seed(42)
+N = 200
+X = []
+y = []
+
+for _ in range(N // 2):                 <span class="c"># كلاس 0 حوالين (2, 2)</span>
+    X.append([random.gauss(2, 1), random.gauss(2, 1)])
+    y.append(0)
+
+for _ in range(N // 2):                 <span class="c"># كلاس 1 حوالين (5, 5)</span>
+    X.append([random.gauss(5, 1), random.gauss(5, 1)])
+    y.append(1)
+
+combined = list(zip(X, y))              <span class="c"># نخلط عشان الـ split يبقى عادل</span>
+random.shuffle(combined)
+X, y = zip(*combined)
+X = list(X)
+y = list(y)
+
+print(f"Generated {N} samples (2 classes, 2 features)")
+print(f"Class 0 center: (2, 2), Class 1 center: (5, 5)")
+print(f"First 5 samples:")
+for i in range(5):
+    print(f"  Features: [{X[i][0]:.2f}, {X[i][1]:.2f}], Label: {y[i]}")</pre></div>
+
+  <h3>خطوة ٢: الـ LogisticRegression من الصفر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class LogisticRegression:
+    def __init__(self, n_features, learning_rate=0.01):
+        self.weights = [0.0] * n_features   <span class="c"># نبدأ من صفر</span>
+        self.bias = 0.0
+        self.lr = learning_rate
+        self.loss_history = []
+
+    def predict_proba(self, x):            <span class="c"># z = w·x + b ← sigmoid</span>
+        z = sum(w * xi for w, xi in zip(self.weights, x)) + self.bias
+        return sigmoid(z)
+
+    def predict(self, x, threshold=0.5):
+        return 1 if self.predict_proba(x) &gt;= threshold else 0
+
+    def compute_loss(self, X, y):          <span class="c"># binary cross-entropy</span>
+        n = len(y)
+        total = 0.0
+        for i in range(n):
+            p = self.predict_proba(X[i])
+            p = max(1e-15, min(1 - 1e-15, p))   <span class="c"># نمنع log(0)</span>
+            total += y[i] * math.log(p) + (1 - y[i]) * math.log(1 - p)
+        return -total / n
+
+    def fit(self, X, y, epochs=1000, print_every=200):
+        n = len(y)
+        n_features = len(X[0])
+        for epoch in range(epochs):
+            dw = [0.0] * n_features
+            db = 0.0
+            for i in range(n):
+                p = self.predict_proba(X[i])
+                error = p - y[i]               <span class="c"># الغلطة (p − y)</span>
+                for j in range(n_features):
+                    dw[j] += error * X[i][j]
+                db += error
+            for j in range(n_features):        <span class="c"># خطوة عكس الـ gradient</span>
+                self.weights[j] -= self.lr * (dw[j] / n)
+            self.bias -= self.lr * (db / n)
+            loss = self.compute_loss(X, y)
+            self.loss_history.append(loss)
+            if epoch % print_every == 0:
+                print(f"  Epoch {epoch:4d} | Loss: {loss:.4f} | w: [{self.weights[0]:.3f}, {self.weights[1]:.3f}] | b: {self.bias:.3f}")
+        return self
+
+    def accuracy(self, X, y):
+        correct = sum(1 for i in range(len(y)) if self.predict(X[i]) == y[i])
+        return correct / len(y)
+
+
+split = int(0.8 * N)                       <span class="c"># 80% train و 20% test</span>
+X_train, X_test = X[:split], X[split:]
+y_train, y_test = y[:split], y[split:]
+
+print("\n=== Training Logistic Regression ===")
+model = LogisticRegression(n_features=2, learning_rate=0.1)
+model.fit(X_train, y_train, epochs=1000, print_every=200)
+
+print(f"\nTrain accuracy: {model.accuracy(X_train, y_train):.4f}")
+print(f"Test accuracy:  {model.accuracy(X_test, y_test):.4f}")
+print(f"Weights: [{model.weights[0]:.4f}, {model.weights[1]:.4f}]")
+print(f"Bias: {model.bias:.4f}")</pre></div>
+  <p>الأرقام هنا معتمدة على الـ random seed، فشغّل وبص بنفسك. اللي المفروض تلاحظه: الـ loss بتبدأ عند حوالي <span class="ltr">0.69</span> (ده <span class="ltr">log 2</span>، لأن الموديل بيقول 0.5 لكل حاجة في الأول) وبتنزل مع الـ epochs.</p>
+
+  <h3>خطوة ٣: الـ confusion matrix والـ metrics</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class ClassificationMetrics:
+    def __init__(self, y_true, y_pred):    <span class="c"># نعد الأربع خانات</span>
+        self.tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
+        self.tn = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 0)
+        self.fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
+        self.fn = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 0)
+
+    def accuracy(self):
+        total = self.tp + self.tn + self.fp + self.fn
+        return (self.tp + self.tn) / total if total &gt; 0 else 0
+
+    def precision(self):                   <span class="c"># من اللي قلت عليهم 1</span>
+        denom = self.tp + self.fp
+        return self.tp / denom if denom &gt; 0 else 0
+
+    def recall(self):                      <span class="c"># من الـ 1 الحقيقيين</span>
+        denom = self.tp + self.fn
+        return self.tp / denom if denom &gt; 0 else 0
+
+    def f1(self):
+        p = self.precision()
+        r = self.recall()
+        return 2 * p * r / (p + r) if (p + r) &gt; 0 else 0
+
+    def print_confusion_matrix(self):
+        print(f"\n  Confusion Matrix:")
+        print(f"                  Predicted")
+        print(f"                  Pos   Neg")
+        print(f"  Actual Pos     {self.tp:4d}  {self.fn:4d}")
+        print(f"  Actual Neg     {self.fp:4d}  {self.tn:4d}")
+
+    def print_report(self):
+        self.print_confusion_matrix()
+        print(f"\n  Accuracy:  {self.accuracy():.4f}")
+        print(f"  Precision: {self.precision():.4f}")
+        print(f"  Recall:    {self.recall():.4f}")
+        print(f"  F1 Score:  {self.f1():.4f}")
+
+
+y_pred_test = [model.predict(x) for x in X_test]
+print("\n=== Classification Report (Test Set) ===")
+metrics = ClassificationMetrics(y_test, y_pred_test)
+metrics.print_report()</pre></div>
+
+  <h3>خطوة ٤: تحليل الـ decision boundary</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>print("\n=== Decision Boundary ===")
+w1, w2 = model.weights
+b = model.bias
+print(f"Decision boundary: {w1:.4f}*x1 + {w2:.4f}*x2 + {b:.4f} = 0")
+if abs(w2) &gt; 1e-10:                         <span class="c"># نحل لـ x2 عشان نرسمه كخط</span>
+    print(f"Solved for x2:     x2 = {-w1/w2:.4f}*x1 + {-b/w2:.4f}")
+
+print("\nSample predictions near the boundary:")
+test_points = [
+    [3.0, 3.0],
+    [3.5, 3.5],                             <span class="c"># في النص بين المركزين</span>
+    [4.0, 4.0],
+    [2.5, 2.5],
+    [5.0, 5.0],
+]
+for point in test_points:
+    prob = model.predict_proba(point)
+    pred = model.predict(point)
+    print(f"  [{point[0]}, {point[1]}] -&gt; prob={prob:.4f}, class={pred}")</pre></div>
+  <p>توقع قبل ما تشغل: النقطة <span class="ltr">[3.5, 3.5]</span> في النص بالظبط بين المركزين، فاحتمالها المفروض يطلع قريب من 0.5. شوف قد إيه قريب.</p>
+
+  <h3>خطوة ٥: Softmax لـ ٣ كلاسات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class SoftmaxRegression:
+    def __init__(self, n_features, n_classes, learning_rate=0.01):
+        self.n_features = n_features
+        self.n_classes = n_classes
+        self.lr = learning_rate
+        self.weights = [[0.0] * n_features for _ in range(n_classes)]  <span class="c"># vector لكل كلاس</span>
+        self.biases = [0.0] * n_classes
+
+    def softmax(self, scores):
+        max_score = max(scores)                       <span class="c"># stable softmax</span>
+        exp_scores = [math.exp(s - max_score) for s in scores]
+        total = sum(exp_scores)
+        return [e / total for e in exp_scores]
+
+    def predict_proba(self, x):
+        scores = [
+            sum(self.weights[k][j] * x[j] for j in range(self.n_features)) + self.biases[k]
+            for k in range(self.n_classes)
+        ]
+        return self.softmax(scores)
+
+    def predict(self, x):
+        probs = self.predict_proba(x)
+        return probs.index(max(probs))                 <span class="c"># أعلى احتمال</span>
+
+    def fit(self, X, y, epochs=1000, print_every=200):
+        n = len(y)
+        for epoch in range(epochs):
+            grad_w = [[0.0] * self.n_features for _ in range(self.n_classes)]
+            grad_b = [0.0] * self.n_classes
+            total_loss = 0.0
+            for i in range(n):
+                probs = self.predict_proba(X[i])
+                for k in range(self.n_classes):
+                    target = 1.0 if y[i] == k else 0.0  <span class="c"># one-hot</span>
+                    error = probs[k] - target           <span class="c"># نفس (p − y)</span>
+                    for j in range(self.n_features):
+                        grad_w[k][j] += error * X[i][j]
+                    grad_b[k] += error
+                true_prob = max(probs[y[i]], 1e-15)
+                total_loss -= math.log(true_prob)      <span class="c"># categorical CE</span>
+            for k in range(self.n_classes):
+                for j in range(self.n_features):
+                    self.weights[k][j] -= self.lr * (grad_w[k][j] / n)
+                self.biases[k] -= self.lr * (grad_b[k] / n)
+            if epoch % print_every == 0:
+                print(f"  Epoch {epoch:4d} | Loss: {total_loss / n:.4f}")
+        return self
+
+    def accuracy(self, X, y):
+        correct = sum(1 for i in range(len(y)) if self.predict(X[i]) == y[i])
+        return correct / len(y)
+
+
+random.seed(42)
+X_3class = []
+y_3class = []
+
+centers = [(1, 1), (5, 1), (3, 5)]                     <span class="c"># 3 مجموعات × 50 نقطة</span>
+for label, (cx, cy) in enumerate(centers):
+    for _ in range(50):
+        X_3class.append([random.gauss(cx, 0.8), random.gauss(cy, 0.8)])
+        y_3class.append(label)
+
+combined = list(zip(X_3class, y_3class))
+random.shuffle(combined)
+X_3class, y_3class = zip(*combined)
+X_3class = list(X_3class)
+y_3class = list(y_3class)
+
+split_3 = int(0.8 * len(X_3class))
+X_train_3 = X_3class[:split_3]
+y_train_3 = y_3class[:split_3]
+X_test_3 = X_3class[split_3:]
+y_test_3 = y_3class[split_3:]
+
+print("\n=== Multi-class Softmax Regression (3 classes) ===")
+softmax_model = SoftmaxRegression(n_features=2, n_classes=3, learning_rate=0.1)
+softmax_model.fit(X_train_3, y_train_3, epochs=1000, print_every=200)
+print(f"\nTrain accuracy: {softmax_model.accuracy(X_train_3, y_train_3):.4f}")
+print(f"Test accuracy:  {softmax_model.accuracy(X_test_3, y_test_3):.4f}")
+
+print("\nSample predictions:")
+for i in range(5):
+    probs = softmax_model.predict_proba(X_test_3[i])
+    pred = softmax_model.predict(X_test_3[i])
+    print(f"  True: {y_test_3[i]}, Predicted: {pred}, Probs: [{', '.join(f'{p:.3f}' for p in probs)}]")</pre></div>
+  <p>أول epoch المفروض الـ loss يبقى حوالي <span class="ltr">1.0986</span> (ده <span class="ltr">log 3</span>، لأن كل الأوزان أصفار فكل كلاس احتماله 1/3). اتأكد بنفسك.</p>
+
+  <h3>خطوة ٦: ضبط الـ threshold</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>print("\n=== Threshold Tuning ===")
+print("Default threshold: 0.5. Adjusting trades precision for recall.\n")
+
+thresholds = [0.3, 0.4, 0.5, 0.6, 0.7]
+print(f"{'Threshold':&gt;10} {'Accuracy':&gt;10} {'Precision':&gt;10} {'Recall':&gt;10} {'F1':&gt;10}")
+print("-" * 52)
+
+for t in thresholds:
+    y_pred_t = [1 if model.predict_proba(x) &gt;= t else 0 for x in X_test]
+    m = ClassificationMetrics(y_test, y_pred_t)
+    print(f"{t:&gt;10.1f} {m.accuracy():&gt;10.4f} {m.precision():&gt;10.4f} {m.recall():&gt;10.4f} {m.f1():&gt;10.4f}")</pre></div>
+
+  <h3>خطوة ٧: ليه الـ linear regression بتفشل (بالأرقام)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>print("\n=== Why Linear Regression Fails for Classification ===")
+print("Fitting linear regression to binary labels:")
+x_hours = list(range(1, 11))
+y_pass = [0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+
+n = len(x_hours)
+x_mean = sum(x_hours) / n
+y_mean = sum(y_pass) / n
+numerator = sum((x_hours[i] - x_mean) * (y_pass[i] - y_mean) for i in range(n))
+denominator = sum((x_hours[i] - x_mean) ** 2 for i in range(n))
+w_lin = numerator / denominator             <span class="c"># نفس معادلة امبارح</span>
+b_lin = y_mean - w_lin * x_mean
+
+print(f"\nLinear fit: y = {w_lin:.4f}*x + {b_lin:.4f}")
+print(f"{'Hours':&gt;6} {'Actual':&gt;8} {'Linear':&gt;8} {'Sigmoid':&gt;8}")
+for h, actual in zip(x_hours, y_pass):
+    lin_pred = w_lin * h + b_lin
+    sig_pred = sigmoid(3 * (h - 4.5))       <span class="c"># sigmoid يدوي: w=3, حدود عند 4.5</span>
+    print(f"{h:&gt;6d} {actual:&gt;8d} {lin_pred:&gt;8.3f} {sig_pred:&gt;8.3f}")
+
+print("\nLinear regression gives values outside [0, 1].")
+print("Logistic regression keeps everything in [0, 1] as probabilities.")</pre></div>
+  <details><summary>الناتج المتوقع للخطوة دي (مفيهاش random، فالأرقام ثابتة)</summary><pre class="term">=== Why Linear Regression Fails for Classification ===
+Fitting linear regression to binary labels:
+
+Linear fit: y = 0.1455*x + -0.2000
+ Hours   Actual   Linear  Sigmoid
+     1        0   -0.055    0.000
+     2        0    0.091    0.001
+     3        0    0.236    0.011
+     4        0    0.382    0.182
+     5        1    0.527    0.818
+     6        1    0.673    0.989
+     7        1    0.818    0.999
+     8        1    0.964    1.000
+     9        1    1.109    1.000
+    10        1    1.255    1.000
+
+Linear regression gives values outside [0, 1].
+Logistic regression keeps everything in [0, 1] as probabilities.</pre><p>حسبت الأرقام دي بكود منفصل بنفس المعادلات. لاحظ عمود Linear: <span class="ltr">-0.055</span> و<span class="ltr">1.109</span> و<span class="ltr">1.255</span> بره [0, 1]. الإعدادات <span class="ltr">w=3, b=−13.5</span> في المعمل ٠١ هي نفس الـ sigmoid ده.</p></details>
+
+  <h3>خطوة ٨: نفس الكلام بـ scikit-learn (اختياري)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.linear_model import LogisticRegression as SklearnLR
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+
+np.random.seed(42)
+X_0 = np.random.randn(100, 2) + [2, 2]
+X_1 = np.random.randn(100, 2) + [5, 5]
+X_sk = np.vstack([X_0, X_1])
+y_sk = np.array([0] * 100 + [1] * 100)
+
+X_tr, X_te, y_tr, y_te = train_test_split(X_sk, y_sk, test_size=0.2, random_state=42)
+
+scaler = StandardScaler()                   <span class="c"># fit على الـ train بس</span>
+X_tr_sc = scaler.fit_transform(X_tr)
+X_te_sc = scaler.transform(X_te)
+
+lr = SklearnLR()
+lr.fit(X_tr_sc, y_tr)
+y_pred = lr.predict(X_te_sc)
+
+print(f"Accuracy:  {accuracy_score(y_te, y_pred):.4f}")
+print(f"Precision: {precision_score(y_te, y_pred):.4f}")
+print(f"Recall:    {recall_score(y_te, y_pred):.4f}")
+print(f"F1:        {f1_score(y_te, y_pred):.4f}")
+print(f"\nConfusion Matrix:\n{confusion_matrix(y_te, y_pred)}")
+print(f"\nClassification Report:\n{classification_report(y_te, y_pred)}")</pre></div>
+  <p>الملف الأصلي حاطط الجزء ده جوه <code>try/except ImportError</code>، فلو scikit-learn مش متسطبة هيطبعلك رسالة ويكمل عادي. الـ scikit-learn بتزود على اللي كتبته: اختيار الـ solver (<code>liblinear</code>، <code>lbfgs</code>، <code>saga</code>)، regularization أوتوماتيك، استراتيجيات multi-class (one-vs-rest و multinomial)، وتحسينات للثبات الرقمي.</p>
+  <div class="note"><strong>إصدار Julia:</strong> الدرس فيه كمان <code>code/main.jl</code> بنفس الفكرة (sigmoid + BCE + softmax + metrics) بالـ stdlib بتاعة Julia بس. لو عندك Julia: <code class="ltr">julia phases/02-ml-fundamentals/03-logistic-regression/code/main.jl</code>. مش لازم النهاردة.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d25-exercises">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>التلاتة الأولانيين من الدرس. اعمل واحد على الأقل النهاردة، والتاني والتالت ينفعوا warm-up بكرة.</p>
+  <ol class="ex">
+    <li><b>داتا مش منفصلة خطيًا:</b> اعمل dataset على شكل دايرتين جوه بعض (concentric circles). درّب logistic regression وشوفها بتفشل. بعدين زوّد features <span class="ltr">x₁², x₂², x₁x₂</span> ودرّب تاني، وبيّن إن الـ accuracy اتحسنت.
+      <details><summary>تلميح</summary>نقطة على دايرة نصف قطرها r: <code>a = random.uniform(0, 2*math.pi)</code>، <code>[r*math.cos(a), r*math.sin(a)]</code>. خلي الداخلية r حوالي 1 والخارجية حوالي 3 مع شوية noise. بعدها حوّل كل نقطة لـ <code>[x1, x2, x1*x1, x2*x2, x1*x2]</code> واعمل <code>LogisticRegression(n_features=5)</code>. الفكرة: <span class="ltr">x₁² + x₂² = r²</span>، فالحدود بقت خطية في الـ features الجديدة. جرب «داتا دواير» في المعمل ٠٣ الأول عشان تشوف الفشل بعينك.</details></li>
+    <li><b>Confusion matrix لـ ٣ كلاسات:</b> اعمل confusion matrix 3×3 للـ softmax model، واحسب precision وrecall لكل كلاس. أنهي كلاس أصعب؟
+      <details><summary>تلميح</summary><code>cm = [[0]*3 for _ in range(3)]</code> و<code>cm[true][pred] += 1</code>. الـ precision لكلاس k = <code>cm[k][k] / sum(cm[i][k] for i in range(3))</code> (العمود)، والـ recall = <code>cm[k][k] / sum(cm[k])</code> (الصف). فكّر قبل ما تشغل: المراكز (1,1) و(5,1) و(3,5)، أنهي اتنين أقرب لبعض؟ احسب المسافات واتأكد بالأرقام.</details></li>
+    <li><b>ROC curve من الصفر:</b> لـ 100 قيمة threshold من 0 لـ 1، احسب الـ true positive rate والـ false positive rate، واحسب الـ AUC بقاعدة شبه المنحرف (trapezoidal rule).
+      <details><summary>تلميح</summary><span class="ltr">TPR = TP/(TP+FN)</span> (هو نفسه الـ recall)، <span class="ltr">FPR = FP/(FP+TN)</span>. رتّب النقط حسب الـ FPR، وبعدين <code>auc += (fpr[i]-fpr[i-1]) * (tpr[i]+tpr[i-1]) / 2</code>. موديل عشوائي AUC بتاعه حوالي 0.5، والمثالي 1.0. لما الكلاسين بعاد عن بعض زي داتا الدرس، استنى رقم عالي.</details></li>
+    <li><b>إضافة مني · فلتر تذاكر دعم:</b> عندك تذاكر support، وعايز تعلّم «urgent» عشان تروح لإنسان فورًا. اعمل ٣ features بسيطة لكل رسالة (فيها كلمة زي "down" أو "refund"؟ عدد علامات التعجب، طول الرسالة)، وداتا صغيرة ٢٠ رسالة بإيدك، ودرّب موديلك. بعدين اختار threshold: لو تفويت تذكرة urgent أغلى من إن موظف يقرا تذكرة عادية، تركز على precision ولا recall؟ ونزّل الـ threshold ولا طلّعه؟
+      <details><summary>الإجابة</summary>تفويت urgent = false negative، فأنت عايز <b>recall</b> عالي، يعني <b>تنزّل</b> الـ threshold (مثلًا 0.3) وتقبل شوية false positives. وده نفس اللي بيحصل في أنظمة الـ routing والـ guardrails في الـ agents: classifier صغير بيقرر يعدّي الطلب لإنسان ولا لأ، والـ threshold بيتحدد حسب تكلفة كل نوع غلطة، مش 0.5 وخلاص.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d25-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ما قالهوش صريح</h2></div>
+  <h3>الـ logistic regression = neuron واحد</h3>
+  <p>linear + sigmoid، وتتدرب بـ gradient descent على cross-entropy. ده بالظبط neuron واحد في neural network. لما نوصل للـ Deep Learning، الـ neural net هتبقى ببساطة طبقات كتير من الحاجة دي فوق بعض. والـ softmax + categorical cross-entropy هي حرفيًا الطبقة الأخيرة في أي LLM: الموديل بيطلّع score (logit) لكل token في الـ vocabulary، والـ softmax بتحولها لاحتمالات، والـ loss وقت التدريب هي <span class="ltr">−log</span> احتمال الـ token الصح.</p>
+  <h3>الـ z اسمه log-odds</h3>
+  <p>لو <span class="ltr">p = σ(z)</span>، يبقى <span class="ltr">z = log(p / (1 − p))</span>. يعني الموديل الخطي فعليًا بيتوقع <b>log-odds</b> (اسمها كمان logit)، والـ sigmoid بترجعها احتمال. ده اللي بيخلي كل وزن ليه تفسير: زيادة x بوحدة بتزود الـ log-odds بمقدار w. وعشان كده الـ logits اسمها logits.</p>
+  <h3>غلطات شائعة</h3>
+  <ol class="ex">
+    <li><b>تحكم بالـ accuracy على داتا مش متوازنة.</b> بص على الـ precision والـ recall والـ confusion matrix، وقارن دايمًا بموديل غبي بيقول الكلاس الأكتر على طول.</li>
+    <li><b>تنسى تحبس p قبل الـ log.</b> <code>log(0)</code> = <code>-inf</code> وكل التدريب يبقى <code>nan</code>. الكود بيحبسها بين <code>1e-15</code> و<code>1 - 1e-15</code> لنفس السبب ده (افتكر يوم ١٣).</li>
+    <li><b>تعامل p على إنها احتمال مضبوط وخلاص.</b> الـ BCE بتشجع إن الاحتمالات تبقى معقولة، بس مع regularization قوية أو داتا متغيرة ممكن الـ 0.8 متبقاش فعلًا ٨٠٪. اتأكد بمقارنة التوقعات بالواقع على داتا test.</li>
+    <li><b>تختار الـ threshold على الـ test set.</b> ده تسريب: اختاره على validation set، وسيب الـ test للتقييم الأخير بس.</li>
+    <li><b>تعمل fit للـ scaler على الداتا كلها.</b> لاحظ إن كود الـ scikit-learn بيعمل <code>fit_transform</code> على الـ train و<code>transform</code> بس على الـ test.</li>
+  </ol>
+  <h3>بتظهر فين في شغل الـ LLMs والـ agents</h3>
+  <p>الـ classifiers الصغيرة دي لسه في كل حتة حوالين الـ LLMs: فلتر محتوى قبل ما الطلب يوصل للموديل، router بيقرر الطلب يروح لأنهي موديل أو agent، و«linear probe» بيتدرب على الـ embeddings عشان تعرف الموديل فاهم حاجة معينة ولا لأ. والـ precision/recall هما اللغة اللي بتقيّم بيها أي guardrail أو retriever.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d25-quizSec">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d25-quiz"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d25-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d25-checklist">
+    <li><label><input type="checkbox" data-ck="why"> أقدر أشرح ليه الـ linear regression بتفشل في الـ classification (قيم بره [0,1] و outliers)</label></li>
+    <li><label><input type="checkbox" data-ck="sig"> أعرف معادلة الـ sigmoid وخواصها والـ derivative بتاعها</label></li>
+    <li><label><input type="checkbox" data-ck="bce"> فهمت ليه BCE مش MSE، وإن الـ gradient هو <span class="ltr">(p − y)·x</span></label></li>
+    <li><label><input type="checkbox" data-ck="lab"> دربت الموديل في المعمل ٠٣ وحركت الـ threshold وشفت الـ precision والـ recall بيتبادلوا</label></li>
+    <li><label><input type="checkbox" data-ck="metrics"> أقدر أحسب precision و recall و F1 من confusion matrix من دماغي</label></li>
+    <li><label><input type="checkbox" data-ck="softmax"> فهمت الـ softmax والـ one-hot والـ categorical cross-entropy</label></li>
+    <li><label><input type="checkbox" data-ck="code"> كتبت الخطوات بإيدي وشغّلت <code>logistic_regression.py</code></label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت تمرين واحد على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="quiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Sigmoid</td><td>gates في الـ LSTM، الـ activations القديمة، أي output «آه/لأ»</td></tr>
+    <tr><td>Binary cross-entropy</td><td>أي binary classifier، الـ reward models، الـ discriminator في الـ GANs</td></tr>
+    <tr><td>Softmax + cross-entropy</td><td>الطبقة الأخيرة في أي LLM (توقع الـ token الجاي)، الـ attention weights</td></tr>
+    <tr><td>Decision boundary خطية</td><td>الـ linear probes على الـ embeddings، الـ SVMs (بعد بكرة)</td></tr>
+    <tr><td>Precision / Recall / F1</td><td>تقييم الـ RAG retrieval، الـ spam والـ content filters، الـ guardrails</td></tr>
+    <tr><td>Threshold tuning</td><td>تشخيص طبي، كشف الاحتيال، routing لإنسان في الـ agents</td></tr>
+    <tr><td>One-hot</td><td>الـ labels في التدريب، تمثيل الـ tokens قبل الـ embedding</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Decision Trees and Random Forests. بدل خط واحد، الموديل هيسأل أسئلة «آه/لأ» ورا بعض، وده بيخليه يرسم حدود منحنية من غير ما تضيف features بإيدك زي التمرين ١.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F03-logistic-regression" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/03-logistic-regression</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, fmt=A.fmt;
+const $=id=>document.getElementById(id);
+const root=$('d25-root');
+const sig=z=>1/(1+Math.exp(-Math.max(-500,Math.min(500,z))));
+const RM=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// roadmap
+const rm=$('d25-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===3)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: linear vs sigmoid ----------
+const sc=$('d25-sig'),sx=A.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+const baseH=[1,2,3,4,5,6,7,8,9,10],baseY=[0,0,0,0,1,1,1,1,1,1];
+let H=baseH.slice(),Y=baseY.slice(),outlier=false,fitAnim=null;
+function linFit(){const n=H.length,xm=H.reduce((a,b)=>a+b,0)/n,ym=Y.reduce((a,b)=>a+b,0)/n;let nu=0,de=0;for(let i=0;i<n;i++){nu+=(H[i]-xm)*(Y[i]-ym);de+=(H[i]-xm)**2}const w=nu/de;return[w,ym-w*xm]}
+function drawSig(){
+  const w=+$('d25-w').value,b=+$('d25-b').value;
+  $('d25-wv').textContent=fmt(w,1);$('d25-bv').textContent=fmt(b,1);
+  const L=36,R=SW-12,T=14,B=SH-30,xmax=outlier?14:11;
+  const px=h=>L+(h/xmax)*(R-L),py=v=>B-((v+0.4)/1.8)*(B-T);
+  sx.clearRect(0,0,SW,SH);
+  sx.strokeStyle=css('--grid');sx.lineWidth=1;
+  [0,0.5,1].forEach(v=>{sx.beginPath();sx.moveTo(L,py(v));sx.lineTo(R,py(v));sx.stroke()});
+  sx.fillStyle=css('--bad');sx.globalAlpha=.08;sx.fillRect(L,T,R-L,py(1)-T);sx.fillRect(L,py(0),R-L,B-py(0));sx.globalAlpha=1;
+  sx.fillStyle=css('--muted');sx.font='11px JetBrains Mono, monospace';sx.textAlign='right';
+  [0,0.5,1].forEach(v=>sx.fillText(v,L-6,py(v)+4));sx.textAlign='center';
+  for(let h=0;h<=xmax;h+=2)sx.fillText(h,px(h),B+16);
+  if(outlier)sx.fillText('50 →',R-14,B+16);
+  sx.textAlign='left';
+  const [lw,lb]=linFit();
+  sx.strokeStyle=css('--vec-a');sx.lineWidth=2.5;sx.beginPath();sx.moveTo(px(0),py(lb));sx.lineTo(px(xmax),py(lw*xmax+lb));sx.stroke();
+  sx.strokeStyle=css('--vec-b');sx.lineWidth=3;sx.beginPath();
+  for(let i=0;i<=200;i++){const h=i/200*xmax,v=sig(w*h+b);i?sx.lineTo(px(h),py(v)):sx.moveTo(px(h),py(v))}sx.stroke();
+  H.forEach((h,i)=>{const xx=h>xmax?R-4:px(h);sx.fillStyle=Y[i]?css('--ok'):css('--ink');sx.beginPath();sx.arc(xx,py(Y[i]),5.5,0,7);sx.fill()});
+  const bd=-b/w;if(bd>0&&bd<xmax){sx.setLineDash([4,4]);sx.strokeStyle=css('--muted');sx.lineWidth=1;sx.beginPath();sx.moveTo(px(bd),T);sx.lineTo(px(bd),B);sx.stroke();sx.setLineDash([])}
+  sx.font='12px JetBrains Mono, monospace';sx.fillStyle=css('--vec-a');sx.fillText('linear',L+6,T+12);sx.fillStyle=css('--vec-b');sx.fillText('sigmoid',L+66,T+12);
+  let loss=0;H.forEach((h,i)=>{const p=Math.max(1e-15,Math.min(1-1e-15,sig(w*h+b)));loss+=Y[i]*Math.log(p)+(1-Y[i])*Math.log(1-p)});loss=-loss/H.length;
+  $('d25-bd').textContent=fmt(bd,2)+' h';$('d25-bce').textContent=fmt(loss,4);
+  const preds=H.map(h=>lw*h+lb);$('d25-lin').textContent=fmt(Math.min(...preds),2)+' / '+fmt(Math.max(...preds),2);
+  const v=$('d25-sigv');
+  const wrong=baseH.filter((h,i)=>((lw*h+lb)>=0.5?1:0)!==baseY[i]).length;
+  v.textContent=outlier?('الخط اتشد: ميله بقى '+fmt(lw,3)+' وبيغلط في '+wrong+' من الطلبة العاديين عند 0.5'):('الخط: ميل '+fmt(lw,4)+' وإزاحة '+fmt(lb,4)+'. لاحظ إنه بيطلع بره [0, 1]');
+  v.style.color=outlier?css('--bad'):css('--muted');
+}
+['d25-w','d25-b'].forEach(id=>$(id).addEventListener('input',drawSig));
+$('d25-out').addEventListener('click',()=>{outlier=!outlier;H=baseH.slice();Y=baseY.slice();if(outlier){H.push(50);Y.push(1)}$('d25-out').textContent=outlier?'شيل الـ outlier':'ضيف outlier 50 ساعة';drawSig()});
+$('d25-rst').addEventListener('click',()=>{cancelAnimationFrame(fitAnim);$('d25-w').value=3;$('d25-b').value=-13.5;drawSig()});
+$('d25-fit').addEventListener('click',()=>{
+  cancelAnimationFrame(fitAnim);let w=0.2,b=0,it=0;const lr=0.5;
+  const step=()=>{for(let k=0;k<(RM?3000:40);k++){let dw=0,db=0;H.forEach((h,i)=>{const e=sig(w*h+b)-Y[i];dw+=e*h;db+=e});w-=lr*dw/H.length/ (outlier?20:6);b-=lr*db/H.length;w=Math.max(0.2,Math.min(6,w));b=Math.max(-30,Math.min(0,b));it++}
+    $('d25-w').value=w;$('d25-b').value=b;drawSig();if(it<3000&&document.body.contains(sc))fitAnim=requestAnimationFrame(step)};
+  step();
+});
+drawSig();
+
+// ---------- Lab 2: BCE vs MSE ----------
+const lc=$('d25-loss'),lx=A.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;let yT=1;
+function drawLoss(){
+  const p=+$('d25-p').value;$('d25-pv').textContent=p.toFixed(3);
+  const L=40,R=LW-12,T=12,B=LH-28,ymax=7;
+  const px=v=>L+v*(R-L),py=v=>B-Math.min(v,ymax)/ymax*(B-T);
+  lx.clearRect(0,0,LW,LH);
+  lx.strokeStyle=css('--grid');lx.lineWidth=1;for(let k=0;k<=ymax;k++){lx.beginPath();lx.moveTo(L,py(k));lx.lineTo(R,py(k));lx.stroke()}
+  lx.fillStyle=css('--muted');lx.font='11px JetBrains Mono, monospace';lx.textAlign='right';for(let k=0;k<=ymax;k+=1)lx.fillText(k,L-6,py(k)+4);
+  lx.textAlign='center';[0,0.25,0.5,0.75,1].forEach(v=>lx.fillText(v,px(v),B+16));lx.textAlign='left';
+  const bce=q=>-(yT*Math.log(q)+(1-yT)*Math.log(1-q)),mse=q=>(q-yT)**2;
+  [[bce,css('--vec-b'),3],[mse,css('--vec-a'),2.5]].forEach(([fn,c,wd])=>{lx.strokeStyle=c;lx.lineWidth=wd;lx.beginPath();for(let i=1;i<300;i++){const q=i/300;i>1?lx.lineTo(px(q),py(fn(q))):lx.moveTo(px(q),py(fn(q)))}lx.stroke()});
+  [[bce(p),css('--vec-b')],[mse(p),css('--vec-a')]].forEach(([v,c])=>{lx.fillStyle=c;lx.beginPath();lx.arc(px(p),py(v),6,0,7);lx.fill()});
+  lx.font='12px JetBrains Mono, monospace';lx.fillStyle=css('--vec-b');lx.fillText('BCE',yT?L+8:R-90,T+12);lx.fillStyle=css('--vec-a');lx.fillText('MSE',yT?L+48:R-50,T+12);
+  $('d25-lb').textContent=fmt(bce(p),3);$('d25-lm').textContent=fmt(mse(p),3);$('d25-le').textContent=fmt(p-yT,3);
+}
+$('d25-p').addEventListener('input',drawLoss);
+document.querySelectorAll('#d25-bce-sec [data-y]').forEach(bt=>bt.addEventListener('click',()=>{yT=+bt.dataset.y;$('d25-y1').classList.toggle('primary',yT===1);$('d25-y0').classList.toggle('primary',yT===0);drawLoss()}));
+drawLoss();
+
+// ---------- Lab 3: 2D boundary ----------
+const bc=$('d25-bnd'),bx=A.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+const XMIN=-1,XMAX=8,YMIN=-1,YMAX=8;
+const toPx=(x,y)=>[(x-XMIN)/(XMAX-XMIN)*BW,BH-(y-YMIN)/(YMAX-YMIN)*BH];
+const toW=(px,py)=>[XMIN+px/BW*(XMAX-XMIN),YMIN+(BH-py)/BH*(YMAX-YMIN)];
+let seed=7;const rnd=()=>{seed=(seed*16807)%2147483647;return(seed-1)/2147483646};
+const gauss=()=>{let u=0,v=0;while(!u)u=rnd();while(!v)v=rnd();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)};
+let P=[],W=[0,0,0],epoch=0,nextC=1,dragI=-1,moved=false,trainAnim=null;
+function blobs(){seed=7;P=[];for(let i=0;i<20;i++)P.push([2+gauss(),2+gauss(),0]);for(let i=0;i<20;i++)P.push([5+gauss(),5+gauss(),1]);resetW()}
+function circles(){seed=11;P=[];for(let i=0;i<40;i++){const a=rnd()*2*Math.PI,inner=i<20,r=(inner?1:2.8)+gauss()*0.25;P.push([3.5+r*Math.cos(a),3.5+r*Math.sin(a),inner?1:0])}resetW()}
+function resetW(){cancelAnimationFrame(trainAnim);W=[0,0,0];epoch=0;drawB()}
+const prob=p=>sig(W[0]*p[0]+W[1]*p[1]+W[2]);
+function lossB(){if(!P.length)return 0;let s=0;P.forEach(p=>{const q=Math.max(1e-15,Math.min(1-1e-15,prob(p)));s+=p[2]*Math.log(q)+(1-p[2])*Math.log(1-q)});return -s/P.length}
+function gdStep(lr){const n=P.length;if(!n)return;let d0=0,d1=0,db=0;P.forEach(p=>{const e=prob(p)-p[2];d0+=e*p[0];d1+=e*p[1];db+=e});W[0]-=lr*d0/n;W[1]-=lr*d1/n;W[2]-=lr*db/n;epoch++}
+function lineAt(level){// w1x+w2y+b = logit(level)
+  const t=Math.log(level/(1-level)),pts=[];
+  const [a,b2,c]=W;if(Math.abs(a)<1e-9&&Math.abs(b2)<1e-9)return null;
+  if(Math.abs(b2)>Math.abs(a)){[XMIN,XMAX].forEach(x=>pts.push([x,(t-c-a*x)/b2]))}else{[YMIN,YMAX].forEach(y=>pts.push([(t-c-b2*y)/a,y]))}
+  return pts;
+}
+function drawB(){
+  const th=+$('d25-t').value;$('d25-tv').textContent=th.toFixed(2);
+  bx.clearRect(0,0,BW,BH);
+  const S=20,c0=css('--vec-a'),c1=css('--vec-b');
+  if(epoch>0){for(let gx=0;gx<BW;gx+=S)for(let gy=0;gy<BH;gy+=S){const [wx,wy]=toW(gx+S/2,gy+S/2),q=sig(W[0]*wx+W[1]*wy+W[2]);bx.fillStyle=q>=0.5?c1:c0;bx.globalAlpha=0.05+0.22*Math.abs(q-0.5)*2;bx.fillRect(gx,gy,S,S)}bx.globalAlpha=1}
+  const [ox,oy]=toPx(0,0);A.grid(bx,BW,BH,BW/(XMAX-XMIN),ox,oy);
+  if(epoch>0){const l=lineAt(0.5);if(l){bx.strokeStyle=css('--ink');bx.lineWidth=2.5;bx.beginPath();bx.moveTo(...toPx(...l[0]));bx.lineTo(...toPx(...l[1]));bx.stroke()}
+    if(Math.abs(th-0.5)>0.01){const l2=lineAt(th);if(l2){bx.setLineDash([6,5]);bx.strokeStyle=css('--muted');bx.lineWidth=2;bx.beginPath();bx.moveTo(...toPx(...l2[0]));bx.lineTo(...toPx(...l2[1]));bx.stroke();bx.setLineDash([])}}}
+  let tp=0,tn=0,fp=0,fn=0;
+  P.forEach(p=>{const [x,y]=toPx(p[0],p[1]),pr=epoch>0?(prob(p)>=th?1:0):null;
+    if(pr!==null){if(p[2]&&pr)tp++;else if(!p[2]&&!pr)tn++;else if(!p[2]&&pr)fp++;else fn++}
+    bx.fillStyle=p[2]?c1:c0;bx.beginPath();bx.arc(x,y,7,0,7);bx.fill();
+    if(pr!==null&&pr!==p[2]){bx.strokeStyle=css('--bad');bx.lineWidth=2.5;bx.beginPath();bx.arc(x,y,11,0,7);bx.stroke()}});
+  bx.fillStyle=css('--ink');bx.font='12px "IBM Plex Sans Arabic", sans-serif';bx.textAlign='right';bx.fillText('النقطة الجاية: كلاس '+nextC,BW-8,16);bx.textAlign='left';
+  $('d25-ep').textContent=epoch;$('d25-bl').textContent=epoch?fmt(lossB(),4):'—';
+  $('d25-wb').textContent=fmt(W[0],2)+', '+fmt(W[1],2)+', '+fmt(W[2],2);
+  const show=epoch>0;$('d25-tp').textContent=show?'TP '+tp:'TP';$('d25-fn').textContent=show?'FN '+fn:'FN';$('d25-fp').textContent=show?'FP '+fp:'FP';$('d25-tn').textContent=show?'TN '+tn:'TN';
+  const acc=(tp+tn)/Math.max(1,tp+tn+fp+fn),pre=tp+fp?tp/(tp+fp):0,rec=tp+fn?tp/(tp+fn):0,f1=pre+rec?2*pre*rec/(pre+rec):0;
+  $('d25-ma').textContent=show?fmt(acc,3):'—';$('d25-mp').textContent=show?fmt(pre,3):'—';$('d25-mr').textContent=show?fmt(rec,3):'—';$('d25-mf').textContent=show?fmt(f1,3):'—';
+}
+$('d25-train').addEventListener('click',()=>{cancelAnimationFrame(trainAnim);const target=epoch+300;
+  const go=()=>{const k=RM?300:10;for(let i=0;i<k&&epoch<target;i++)gdStep(0.1);drawB();if(epoch<target&&document.body.contains(bc))trainAnim=requestAnimationFrame(go)};go()});
+$('d25-c0').addEventListener('click',()=>{nextC=0;drawB()});$('d25-c1').addEventListener('click',()=>{nextC=1;drawB()});
+$('d25-blobs').addEventListener('click',blobs);$('d25-circ').addEventListener('click',circles);
+$('d25-t').addEventListener('input',drawB);
+bc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(bc,e);dragI=-1;moved=false;let best=14;
+  P.forEach((p,i)=>{const [px,py]=toPx(p[0],p[1]),d=Math.hypot(px-x,py-y);if(d<best){best=d;dragI=i}});
+  if(dragI<0){const [wx,wy]=toW(x,y);P.push([wx,wy,nextC]);drawB();return}
+  bc.setPointerCapture(e.pointerId)});
+bc.addEventListener('pointermove',e=>{if(dragI<0)return;const [x,y]=A.evPos(bc,e),[wx,wy]=toW(x,y);P[dragI][0]=Math.max(XMIN,Math.min(XMAX,wx));P[dragI][1]=Math.max(YMIN,Math.min(YMAX,wy));moved=true;drawB()});
+bc.addEventListener('pointerup',()=>{dragI=-1});
+blobs();
+
+// ---------- Lab 4: softmax ----------
+const mc=$('d25-sm'),mx=A.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+function drawSm(){
+  const z=[0,1,2].map(i=>+$('d25-z'+i).value);z.forEach((v,i)=>$('d25-z'+i+'v').textContent=v.toFixed(1));
+  const m=Math.max(...z),e=z.map(v=>Math.exp(v-m)),s=e.reduce((a,b)=>a+b,0),p=e.map(v=>v/s);
+  const tr=+$('d25-true').value,pred=p.indexOf(Math.max(...p));
+  mx.clearRect(0,0,MW,MH);
+  const L=20,T=20,B=MH-34,bw=(MW-2*L)/3;
+  const cols=[css('--vec-a'),css('--vec-b'),css('--ok')];
+  p.forEach((v,i)=>{const x=L+i*bw+bw*0.2,w=bw*0.6,h=(B-T)*v;mx.fillStyle=css('--soft');mx.fillRect(x,T,w,B-T);mx.fillStyle=cols[i];mx.fillRect(x,B-h,w,h);
+    if(i===tr){mx.strokeStyle=css('--ink');mx.lineWidth=2.5;mx.strokeRect(x-3,T-3,w+6,B-T+6)}
+    mx.fillStyle=css('--ink');mx.font='bold 14px JetBrains Mono, monospace';mx.textAlign='center';mx.fillText(v.toFixed(3),x+w/2,Math.max(T+14,B-h-6));
+    mx.font='12px JetBrains Mono, monospace';mx.fillStyle=css('--muted');mx.fillText('class '+i+(i===tr?' ✓':''),x+w/2,B+18)});
+  mx.textAlign='left';
+  $('d25-ssum').textContent=fmt(p.reduce((a,b)=>a+b,0),3);$('d25-spred').textContent=pred;$('d25-sce').textContent=fmt(-Math.log(Math.max(p[tr],1e-15)),4);
+}
+[0,1,2].forEach(i=>$('d25-z'+i).addEventListener('input',drawSm));$('d25-true').addEventListener('change',drawSm);drawSm();
+
+// ---------- quiz ----------
+const Q=[
+ ['الـ output بتاع الـ sigmoid بيبقى في أنهي مدى؟',['من 0 لـ 1 (من غير الطرفين)','من -1 لـ 1','من سالب ما لا نهاية لموجب ما لا نهاية','من 0 لموجب ما لا نهاية'],0,'الـ sigmoid ‎1/(1+e^(-z))‎ بتطلّع قيم بين 0 و1 بس، ونقدر نفهمها كاحتمالات.'],
+ ['ليه اسمها logistic «regression» مع إنها بتستخدم في الـ classification؟',['عشان بتقلل الـ MSE زي الـ linear regression','عشان بتتوقع قيم متصلة وبعدين بنقرّبها','الاسم جاي من الـ logistic (sigmoid) function اللي بتستخدمها، مش من تحليل الـ regression','عشان كانت معمولة للـ regression في الأول وبعدين اتعدلت'],2,'الاسم جاي من الـ logistic function (الـ sigmoid). ورغم الاسم، هي خوارزمية classification بتطلّع احتمالات للكلاسات.'],
+ ['ليه بنستخدم binary cross-entropy بدل MSE في الـ logistic regression؟',['الـ MSE تنفع مع الموديلات الخطية بس','الـ cross-entropy تنفع بس لما الداتا متوازنة','الـ cross-entropy أسرع في الحساب','الـ MSE مع الـ sigmoid بتعمل سطح cost مش convex فيه local minima، والـ cross-entropy convex'],3,'الـ MSE مع الـ sigmoid بتعمل سطح فيه وديان محلية كتير. الـ BCE مع الـ sigmoid convex، فأي minimum محلي هو الـ global.'],
+ ['فلتر spam الـ precision بتاعه 0.95 والـ recall بتاعه 0.60. ده معناه إيه عمليًا؟',['60٪ من اللي اتعلّم عليهم spam فعلًا spam، وبيمسك 95٪ من الـ spam كله','لما يقول على إيميل spam بيبقى صح 95٪ من المرات، بس بيمسك 60٪ بس من الـ spam الحقيقي','95٪ من كل الإيميلات متصنفة صح، و60٪ من الـ spam بيتمسك','الموديل دقيق 95٪ على الـ test و60٪ على الـ train'],1,'Precision = 0.95: من كل اللي قال عليهم spam، 95٪ فعلًا spam (إنذارات غلط قليلة). Recall = 0.60: بيمسك 60٪ بس من الـ spam الحقيقي و40٪ بيعدّي.'],
+ ['في softmax regression لـ 4 كلاسات، إيه الصح عن الاحتمالات اللي بتطلع؟',['أعلى كلاسين بس بياخدوا احتمال مش صفر','اللي بيطلع scores خام مش احتمالات','الأربع احتمالات مجموعهم 1، والكلاس صاحب أعلى احتمال هو التوقع','كل كلاس بياخد احتمال مستقل بين 0 و1'],2,'الـ softmax بتحول الـ scores لاحتمالات مجموعها 1، والتوقع هو الكلاس صاحب أعلى احتمال.'],
+ ['(سؤال مني) نظام فحص طبي، وتفويت حالة مريضة أخطر بكتير من إنذار غلط. تعمل إيه في الـ threshold؟',['تطلّعه لـ 0.9 عشان الـ precision تعلى','تنزّله تحت 0.5 عشان الـ recall يعلى، وتقبل false positives أكتر','تسيبه 0.5 لأنه دايمًا الأمثل','تقيس بالـ accuracy بس وتختار أعلاها'],1,'تفويت حالة = false negative. تنزيل الـ threshold بيخلي الموديل يقول «موجب» أكتر، فالـ FN بتقل والـ recall يعلى، على حساب شوية false positives.'],
+ ['(سؤال مني) في الأول كل الأوزان أصفار. الـ BCE loss في أول epoch تبقى حوالي كام؟',['0','1','حوالي 0.693 (log 2)','ما لا نهاية'],2,'كل الأوزان صفر يعني z = 0 فـ p = 0.5 لكل نقطة، والـ loss = ‎−log(0.5) = log 2 ≈ 0.693‎. ولو 3 كلاسات بالـ softmax تبقى log 3 ≈ 1.0986.']
+];
+A.quiz($('d25-quiz'),Q,5,()=>{const c=root.querySelector('[data-ck="quiz"]');if(c){c.checked=true;A.store.set('aiefs-d25-quiz','1')}});
+
+// ---------- checklist ----------
+A.checklist(25,root);
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(sc))return false;drawSig();drawLoss();drawB();drawSm()});
+})();
+</script>

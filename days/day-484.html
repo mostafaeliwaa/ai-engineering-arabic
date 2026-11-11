@@ -1,0 +1,661 @@
+<div class="day" id="d484-root">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 56 · Iteration Scheduler</span>
+  <h1>اليوم ٤٨٤: الـ Scheduler اللي بيقرر تكمّل في أنهي فكرة وتسيب أنهي فكرة</h1>
+  <p class="lede">النهاردة هنبني <b>Iteration Scheduler</b> لـ auto-research loop: طابور hypotheses، كذا <b>slot</b> شغالين بالتوازي بـ <code>asyncio</code>، تقييم كل branch بـ <b>UCB</b>، <b>pruning</b> للأفكار الضعيفة، و<b>fan-out</b> للـ paper writer والـ follow-ups. الجملة اللي الدرس بيبدأ بيها: الـ loop من غير scheduler هو طابور عنده أوهام. القرار «أبطّل أستكشف إيه» هو اللعبة كلها.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>النوع: <b>Build</b></span>
+    <span>اللغة: <b>Python (stdlib + numpy)</b></span>
+    <span>قبله: <b>Critic Loop</b></span>
+    <span>بعده: <b>End-to-End Research Demo</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects</span>
+    <div class="roadmap" id="d484-roadmap" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d484-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر الـ Critic Loop</h2></div>
+  <p>امبارح بنينا critic بيقيّم الـ paper draft على ٥ أبعاد وreviser بيطبق تعديلات منظمة، والـ loop بيقف لما يتقارب. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. إيه التلات شروط اللي بتوقف الـ critic loop، وبأي ترتيب؟</summary><p><b>target</b> (كل الأبعاد الخمسة ≥ <code>target_score</code>، الافتراضي 8.0)، وبعده <b>plateau</b> (التحسن في الـ mean أقل من <code>plateau_epsilon</code> لجولتين ورا بعض)، وبعده <b>budget</b> (عدد الجولات وصل للحد، الافتراضي 5). الـ target بيكسب لو حصلوا في نفس الجولة.</p></details>
+  <details><summary>٢. ليه الـ plateau محتاج جولتين مش جولة واحدة؟</summary><p>لأن جولة واحدة ثابتة ممكن تبقى noise. جولتين ورا بعض معناها إن الـ draft فعلًا بطّل يتحسن.</p></details>
+  <details><summary>٣. الـ trace بتاع الـ critic loop بيروح لمين بعد كده؟</summary><p>الدرس قال إن الـ iteration scheduler (درس النهاردة) بيقرا الـ trace عشان يقرر الـ branch يستاهل نكمّل فيه ولا لأ. يعني النهاردة إحنا اللي بنستلم.</p></details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>15 min</b>ليه scheduler مش worklist + شكل النظام</div>
+    <div><b>20 min</b>UCB بالمعادلة وبالمعمل</div>
+    <div><b>15 min</b>الـ slots بالتوازي والـ budgets</div>
+    <div><b>25 min</b>اكتب الكود وشغّل الـ tests</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d484-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه scheduler مش worklist؟</h2></div>
+  <p>الـ <b>worklist</b> العادية بتشغّل الشغل بترتيب ما اتبعت. ده كويس لو كل job مستقلة عن التانية. بس البحث مش كده: نتيجة التجربة رقم ٣ بتغيّر أولوية التجارب ٤ و٥. الـ scheduler اللي بيقرا النتايج اللي راجعة (الـ <b>fan-in</b>) ويعيد ترتيب الطابور بيطلّع شغل مفيد أكتر لنفس كمية الـ compute.</p>
+  <p>تخيّل إنك بتدوّر على أحسن مطعم كشري في منطقة جديدة. لو كل يوم رحت لأحسن واحد جربته لحد دلوقتي (<b>greedy</b>) عمرك ما هتكتشف المحل اللي في الشارع اللي ورا. لو كل يوم اخترت عشوائي (<b>uniform</b>) هتاكل وحش كتير ومش هتستفيد من اللي عرفته. الحل الوسط هو <b>UCB</b>: روح للأحسن غالبًا، بس سيب فرصة للمحلات اللي لسه ماجربتهاش كفاية.</p>
+
+  <h3>شكل النظام</h3>
+  <div class="formula">Hypothesis queue → Scheduler → Slot 1 / Slot 2 / Slot 3 → Result bus → UCB scorer → Queue
+                                                         Result bus → Paper write fan-out</div>
+  <ul class="checklist">
+    <li>• <b>الطابور</b> فيه الـ hypotheses.</li>
+    <li>• <b>الـ scheduler</b> بيختار الـ hypothesis صاحبة أعلى UCB كل ما slot يفضى.</li>
+    <li>• كل <b>slot</b> بيشغّل تجربة async.</li>
+    <li>• التجربة لما تخلص بترمي نتيجتها على <b>الـ result bus</b>.</li>
+    <li>• الـ bus بيحدّث إحصائيات الـ UCB للـ branch صاحب التجربة، وبيعمل fan-out للـ paper-write لما الـ yield بتاع الـ branch يعدّي threshold.</li>
+  </ul>
+
+  <h3>شكل الـ Hypothesis</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الحقل</th><th>معناه</th></tr>
+    <tr><td class="ltr">id</td><td>اسم التجربة نفسها</td></tr>
+    <tr><td class="ltr">branch</td><td>اتجاه البحث. ده المفتاح اللي إحصائيات الـ UCB متسجلة عليه</td></tr>
+    <tr><td class="ltr">payload</td><td>dict فيه أي تفاصيل للتجربة</td></tr>
+    <tr><td class="ltr">runs / reward_sum</td><td>(في <code>BranchStats</code>) عدد التجارب اللي خلصت في الـ branch، ومجموع الـ reward</td></tr>
+  </table></div>
+  <div class="note"><strong>الفرق المهم:</strong> الـ <b>branch</b> هو الاتجاه («جرّب learning rate أقل»)، والـ <b>hypothesis</b> هي محاولة واحدة جوه الاتجاه ده. أكتر من hypothesis ممكن يشاركوا نفس الـ branch، والـ UCB بيتحسب للـ branch مش للـ hypothesis.</div>
+</section>
+
+<section id="d484-ucb">
+  <div class="station-head"><span class="tag">02</span><h2>UCB1: المعادلة اللي بتوازن بين الاستغلال والاستكشاف</h2></div>
+  <div class="formula">ucb(branch) = mean_reward(branch) + c · √( ln(total_runs) / runs(branch) )</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الجزء الأول <b>mean_reward</b> هو «الفكرة دي جابت كام في المتوسط» = <b>exploitation</b>.</p>
+      <p>الجزء التاني هو <b>مكافأة الاستكشاف (bonus)</b>: بيكبر لما <code>runs</code> بتاع الـ branch يبقى قليل، وبيكبر ببطء (log) مع إجمالي التجارب <code>total_runs</code>. يعني أي branch اتهمل هيرجع يطلع فوق مع الوقت.</p>
+      <ul class="checklist">
+        <li>• <code>c</code> = وزن الاستكشاف، الافتراضي في الدرس <code>sqrt(2)</code>.</li>
+        <li>• branch عمره ما اتجرّب (<code>runs = 0</code>) بياخد <code>+inf</code>، فكل branch بيتجرب مرة على الأقل قبل ما أي branch يتكرر.</li>
+        <li>• branch الـ mean بتاعه عالي بيفضل score عالي لحد ما الباقيين يلحقوه. branch اتشغّل كتير من غير reward بيتغطى عليه من بدايل أقل تجربة.</li>
+      </ul>
+      <div class="note"><strong>جرب بإيدك:</strong> ثبّت الـ mean وحرّك <b>runs</b>. شوف الـ bonus بيقع بسرعة في الأول وبعدين يهدى. وبعدين كبّر <b>c</b>: الـ scheduler بقى «فضولي» أكتر.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d484-bonusCv" width="520" height="260" aria-label="منحنى مكافأة الاستكشاف"></canvas>
+      <div class="mrow">
+        <label>mean <span id="d484-bMeanV">0.50</span><input type="range" id="d484-bMean" min="0" max="1" step="0.01" value="0.5"></label>
+        <label>runs(branch) <span id="d484-bRunsV">4</span><input type="range" id="d484-bRuns" min="1" max="40" step="1" value="4"></label>
+        <label>total_runs <span id="d484-bTotV">20</span><input type="range" id="d484-bTot" min="2" max="500" step="1" value="20"></label>
+        <label>c <span id="d484-bCV">1.41</span><input type="range" id="d484-bC" min="0" max="3" step="0.01" value="1.4142"></label>
+      </div>
+      <div class="readout">
+        <div><small>bonus</small><b id="d484-bBonus">–</b></div>
+        <div><small>ucb score</small><b id="d484-bScore">–</b></div>
+      </div>
+    </div>
+  </div>
+  <h3>الـ Pruning منفصل عن الـ Picker</h3>
+  <p>الـ UCB بيرتّب بس. الـ <b>pruning</b> بوابة تانية خالص: لو الـ mean بتاع branch نزل تحت حد ثابت (<code>prune_floor</code>، الافتراضي <code>0.2</code>) بعد ما اتجرّب على الأقل <code>prune_after_runs</code> مرات (الافتراضي <code>3</code>)، الـ branch بيتعلّم <code>pruned</code> وكل الـ hypotheses الباقية بتاعته بتتشال من الطابور. ده بيخلي الطابور محدود ميكبرش للأبد.</p>
+  <div class="note ai"><strong>في جملة:</strong> UCB بيرتّب، والـ pruning بيقصّ.</div>
+</section>
+
+<section id="d484-sim">
+  <div class="station-head"><span class="tag">03</span><h2>معمل: شغّل الـ scheduler بنفسك</h2></div>
+  <p>ده simulation صغير ماشي على نفس منطق <code>IterationScheduler.run</code>: ٤ branches (نفس أرقام الـ demo في الكود: a=0.85، b=0.55، c=0.15، d=0.40)، والـ reward = الـ base + noise صغير (0.05) ومحبوس بين 0 و1. الـ expander بيزوّد اتنين follow-ups لأي نتيجة reward بتاعها ≥ paper_threshold. الحد الأقصى ٢٠ تجربة.</p>
+  <div class="bench">
+    <div style="display:grid;gap:10px;min-width:0">
+      <div class="mrow">
+        <label>base a <span id="d484-s0v">0.85</span><input type="range" id="d484-s0" min="0" max="1" step="0.05" value="0.85"></label>
+        <label>base b <span id="d484-s1v">0.55</span><input type="range" id="d484-s1" min="0" max="1" step="0.05" value="0.55"></label>
+        <label>base c <span id="d484-s2v">0.15</span><input type="range" id="d484-s2" min="0" max="1" step="0.05" value="0.15"></label>
+        <label>base d <span id="d484-s3v">0.40</span><input type="range" id="d484-s3" min="0" max="1" step="0.05" value="0.4"></label>
+        <label>exploration c <span id="d484-sCv">1.41</span><input type="range" id="d484-sC" min="0" max="3" step="0.01" value="1.4142"></label>
+        <label>slots <span id="d484-sSlotsV">3</span><input type="range" id="d484-sSlots" min="1" max="4" step="1" value="3"></label>
+        <label>seeds / branch <span id="d484-sSeedV">1</span><input type="range" id="d484-sSeed" min="1" max="5" step="1" value="1"></label>
+        <label>prune_floor <span id="d484-sFloorV">0.25</span><input type="range" id="d484-sFloor" min="0" max="0.6" step="0.05" value="0.25"></label>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:15px"><input type="checkbox" id="d484-sExp" checked> شغّل الـ expander (follow-ups)</label>
+      <div class="btns">
+        <button type="button" id="d484-sStep" class="primary">خطوة (نتيجة واحدة)</button>
+        <button type="button" id="d484-sRun">شغّل للآخر</button>
+        <button type="button" id="d484-sReset">من الأول</button>
+      </div>
+      <div class="note"><strong>لاحظ:</strong> مع seed واحد لكل branch، branch c الضعيف بيتجرب مرة واحدة ومبيتعملوش prune أبدًا، لأنه مفيش hypotheses تانية ليه والـ pruning محتاج ٣ تجارب. زوّد الـ seeds لـ ٣ وشوف الـ prune بيشتغل.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d484-simCv" width="520" height="300" aria-label="إحصائيات الـ branches"></canvas>
+      <div class="readout">
+        <div><small>experiments_run</small><b id="d484-rExp">0</b></div>
+        <div><small>in flight</small><b id="d484-rFly">0</b></div>
+        <div><small>queue</small><b id="d484-rQ">0</b></div>
+        <div><small>stop_reason</small><b id="d484-rStop">–</b></div>
+      </div>
+      <pre class="term" id="d484-log" style="max-height:200px;overflow:auto"></pre>
+    </div>
+  </div>
+</section>
+
+<section id="d484-async">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Slots بالتوازي بـ asyncio والـ Budgets</h2></div>
+  <p>الـ scheduler بيشغّل كل تجربة كـ task بـ <code>asyncio.create_task</code>. كل task بتشغّل الـ runner (دالة <code>async def</code>) اللي بترجع <code>Result</code>. الـ loop الرئيسي بيستنى على مجموعة الـ tasks اللي شغالة بـ <code>asyncio.wait(..., return_when=asyncio.FIRST_COMPLETED)</code>، وأول ما واحدة تخلص بيحدّث الـ scores.</p>
+  <p>تشبيه: مطبخ فيه ٣ عيون بوتاجاز. الشيف مش بيقف يبص على حلة واحدة لحد ما تستوي. أول ما أي حلة تخلص بيشيلها ويحط اللي بعدها على طول. ده بالظبط <code>FIRST_COMPLETED</code>: الـ loop عمره ما بيقف على تجربة واحدة.</p>
+  <div class="formula">pop highest UCB → create_task(run(h)) → await wait(FIRST_COMPLETED) → update UCB stats → re-queue follow-ups</div>
+  <p>الـ scheduler بيفضل يبدأ tasks جديدة كل ما slot يفضى، لحد ما الطابور يفضى ومفيش tasks شغالة.</p>
+  <h3>ميزانيتين بيحموا من الـ loops اللي مبتخلصش</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الـ budget</th><th>بيحدد إيه</th><th>stop_reason</th></tr>
+    <tr><td class="ltr">max_experiments</td><td>إجمالي التجارب عبر كل الـ branches</td><td class="ltr">max_experiments</td></tr>
+    <tr><td class="ltr">max_seconds</td><td>سقف الوقت الفعلي (asyncio time)</td><td class="ltr">deadline</td></tr>
+    <tr><td>الطابور فضي</td><td>مفيش حاجة تانية تتشغل</td><td class="ltr">queue_empty</td></tr>
+  </table></div>
+  <p>لما أي budget يضرب، الـ scheduler بيبطّل يبدأ tasks جديدة، بيستنى اللي شغالين يخلصوا (الـ <b>drain</b>)، ويرجّع الـ trace النهائي ومعاه <code>stop_reason</code>.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:12px;min-width:0">
+      <h3>معمل: Gantt للـ slots</h3>
+      <p>٦ hypotheses بمدد مختلفة. غيّر عدد الـ slots وشوف الـ wall clock بيقل. حط deadline أو max_experiments وشوف مين بيتمنع يبدأ، ومين بيكمّل في الـ drain.</p>
+      <div class="mrow">
+        <label>slots <span id="d484-gSlotsV">1</span><input type="range" id="d484-gSlots" min="1" max="4" step="1" value="1"></label>
+        <label>max_experiments <span id="d484-gMaxV">6</span><input type="range" id="d484-gMax" min="1" max="6" step="1" value="6"></label>
+        <label>max_seconds <span id="d484-gDlV">∞</span><input type="range" id="d484-gDl" min="2" max="24" step="1" value="24"></label>
+      </div>
+      <div class="btns"><button type="button" id="d484-gPlay" class="primary">شغّل الأنيميشن</button></div>
+      <div class="note ai"><strong>نفس فكرة الـ test:</strong> <code>test_parallel_slots_advance_wall_clock_less_than_serial</code> بيتأكد إن ٣ slots بياخدوا أقل من ٠.٧ من وقت slot واحد.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d484-ganttCv" width="520" height="220" aria-label="Gantt chart للـ slots"></canvas>
+      <div class="readout">
+        <div><small>wall time</small><b id="d484-gWall">–</b></div>
+        <div><small>experiments_run</small><b id="d484-gRun">–</b></div>
+        <div><small>stop_reason</small><b id="d484-gStop">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="d484-fanout">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Fan-out: paper triggers والـ follow-ups</h2></div>
+  <h3>Paper trigger</h3>
+  <p>لما الـ mean بتاع branch يعدّي (أو يساوي) <code>paper_threshold</code> (الافتراضي <code>0.7</code>)، والـ branch ده لسه مطلّعش paper، الـ scheduler بيرمي event اسمه <code>paper.trigger</code>. بعد كده الـ paper writer بتاع درس ٥٤ هو اللي هيلقطه. في الدرس ده الـ trigger بيتسجل في list عشان الـ tests تقدر تتأكد منه. الـ flag <code>paper_triggered</code> في <code>BranchStats</code> بيمنع التكرار: مرة واحدة لكل branch.</p>
+  <h3>Follow-up hypotheses</h3>
+  <p>لما نتيجة قوية توصل، الـ scheduler ممكن ينادي <code>expander</code> اللي اليوزر بيديهوله عشان يطلّع hypothesis أو أكتر على نفس الـ branch. الـ expander دالة pure من <code>Result</code> لـ <code>list[Hypothesis]</code>. الدرس فيه expander deterministic بيطلّع اتنين follow-ups لأي نتيجة الـ reward بتاعها عدّى الـ paper threshold.</p>
+  <h3>الـ Trace والتقرير النهائي</h3>
+  <p>كل قرار (pick/dispatch، result، prune، fan-out) بيطلّع event واحد. التقرير النهائي بيلخّص إحصائيات كل branch، إجمالي التجارب، الوقت الكلي، والـ paper triggers اللي اتعملت. الدرس الجاي (الـ end-to-end demo) بيقرا التقرير ده عشان يشغّل الـ paper writer.</p>
+  <div class="tablewrap"><table>
+    <tr><th>kind</th><th>إمتى بيطلع</th></tr>
+    <tr><td class="ltr">dispatch</td><td>hypothesis خرجت من الطابور لـ slot</td></tr>
+    <tr><td class="ltr">result</td><td>تجربة خلصت والإحصائيات اتحدثت</td></tr>
+    <tr><td class="ltr">paper.trigger</td><td>mean الـ branch عدّى الـ threshold لأول مرة</td></tr>
+    <tr><td class="ltr">prune</td><td>الـ branch اتقصّ</td></tr>
+    <tr><td class="ltr">expand</td><td>الـ expander زوّد follow-ups</td></tr>
+    <tr><td class="ltr">error</td><td>الـ runner رمى exception (الإحصائيات مبتتحدثش)</td></tr>
+    <tr><td class="ltr">result.drain</td><td>نتيجة وصلت بعد ما الـ budget ضرب</td></tr>
+  </table></div>
+</section>
+
+<section id="d484-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الـ scheduler</h2></div>
+  <p>من الـ root بتاع الريبو شغّل الأصل الأول وشوف الناتج، وبعدين اقفله واكتب نسختك في <code>my_scheduler.py</code> خطوة خطوة. اكتب بإيدك، متعملش copy-paste.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/56-iteration-scheduler/code/main.py
+python3 phases/19-capstone-projects/56-iteration-scheduler/code/tests/test_scheduler.py</pre></div>
+  <details><summary>الناتج المتوقع (شكله)</summary>
+    <p>الـ demo بيطبع JSON فيه المفاتيح دي بس: <code>stop_reason</code>، <code>experiments_run</code>، <code>wall_seconds</code>، <code>paper_triggers</code>، <code>branches</code>. في الـ demo الـ branch-a الـ base بتاعه 0.85 والـ noise صغير، فكل نتيجة فيه بتعدّي 0.7 والـ expander بيفضل يزوّد follow-ups، فالمتوقع إن <code>"branch-a"</code> يبقى في <code>paper_triggers</code> وإن الـ run يقف بسبب الـ budget (٢٠ تجربة). الأرقام بالظبط شوفها عندك.</p>
+    <pre class="term">{
+  "stop_reason": ...,
+  "experiments_run": ...,
+  "wall_seconds": ...,
+  "paper_triggers": [...],
+  "branches": [ {"branch": "branch-a", "runs": ..., "reward_sum": ..., "mean": ..., "pruned": ..., "paper_triggered": ...}, ... ]
+}</pre>
+    <p>والـ tests لازم تخلص بـ <code>OK</code>.</p>
+  </details>
+
+  <h3>خطوة ١: الأشكال (dataclasses)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import asyncio, json, math, time
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable
+import numpy as np
+
+@dataclass
+class Hypothesis:
+    id: str
+    branch: str                      <span class="c"># اتجاه البحث = مفتاح الـ UCB</span>
+    payload: dict = field(default_factory=dict)
+
+@dataclass
+class Result:
+    hypothesis_id: str
+    branch: str
+    reward: float                    <span class="c"># بين 0 و 1</span>
+    payload: dict = field(default_factory=dict)
+
+@dataclass
+class BranchStats:
+    branch: str
+    runs: int = 0
+    reward_sum: float = 0.0
+    pruned: bool = False
+    paper_triggered: bool = False    <span class="c"># عشان الـ trigger ميتكررش</span>
+
+    @property
+    def mean(self) -&gt; float:
+        return (self.reward_sum / self.runs) if self.runs else 0.0
+
+@dataclass
+class TraceEvent:
+    kind: str                        <span class="c"># dispatch / result / prune / ...</span>
+    payload: dict
+
+Runner = Callable[[Hypothesis], Awaitable[Result]]
+Expander = Callable[[Result], list[Hypothesis]]</pre></div>
+
+  <h3>خطوة ٢: معادلة UCB1</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def ucb_score(branch_stats: BranchStats, total_runs: int, c: float) -&gt; float:
+    if branch_stats.runs == 0:
+        return float("inf")          <span class="c"># اللي ماتجربش ياخد الأولوية</span>
+    if total_runs == 0:
+        return branch_stats.mean
+    return branch_stats.mean + c * math.sqrt(
+        math.log(max(total_runs, 1)) / branch_stats.runs)   <span class="c"># مكافأة الاستكشاف</span></pre></div>
+
+  <h3>خطوة ٣: الـ picker</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class IterationScheduler:
+    def __init__(self, runner, slots=3, max_experiments=50, max_seconds=30.0,
+                 exploration_c=math.sqrt(2.0), paper_threshold=0.7,
+                 prune_floor=0.2, prune_after_runs=3, expander=None):
+        if slots &lt; 1:
+            raise ValueError("slots must be &gt;= 1")
+        if max_experiments &lt; 1:
+            raise ValueError("max_experiments must be &gt;= 1")
+        self.runner = runner; self.slots = slots
+        self.max_experiments = max_experiments; self.max_seconds = max_seconds
+        self.exploration_c = exploration_c; self.paper_threshold = paper_threshold
+        self.prune_floor = prune_floor; self.prune_after_runs = prune_after_runs
+        self.expander = expander
+
+    def _pick_next(self, queue, stats):
+        best_idx, best_score = None, -float("inf")
+        total_runs = sum(s.runs for s in stats.values())
+        for idx, hyp in enumerate(queue):
+            bs = stats.get(hyp.branch)
+            if bs is not None and bs.pruned:
+                continue                 <span class="c"># الـ branch اتقص، فوّته</span>
+            score = ucb_score(bs or BranchStats(branch=hyp.branch),
+                              total_runs, self.exploration_c)
+            if score &gt; best_score:       <span class="c"># &gt; مش &gt;= : التعادل يكسبه الأقدم في الطابور</span>
+                best_score, best_idx = score, idx
+        return best_idx</pre></div>
+
+  <h3>خطوة ٤: الـ dispatch والـ loop الرئيسي</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    async def run(self, seed):
+        queue = list(seed)
+        stats = {h.branch: BranchStats(branch=h.branch) for h in seed}
+        in_flight = {}                   <span class="c"># task -&gt; hypothesis</span>
+        trace, triggers = [], []
+        experiments_run = 0
+        stop_reason = "queue_empty"
+        t0 = time.monotonic()
+
+        def deadline_hit(): return (time.monotonic() - t0) &gt;= self.max_seconds
+        def budget_hit():   return experiments_run &gt;= self.max_experiments
+
+        def dispatch_until_full():
+            nonlocal experiments_run
+            while queue and len(in_flight) &lt; self.slots and not budget_hit() and not deadline_hit():
+                idx = self._pick_next(queue, stats)
+                if idx is None:
+                    return
+                hyp = queue.pop(idx)
+                stats.setdefault(hyp.branch, BranchStats(branch=hyp.branch))
+                task = asyncio.create_task(self.runner(hyp))   <span class="c"># slot اتملى</span>
+                in_flight[task] = hyp
+                experiments_run += 1     <span class="c"># بيتعد وقت الـ dispatch</span>
+                trace.append(TraceEvent("dispatch", {"hypothesis_id": hyp.id,
+                             "branch": hyp.branch, "slot_count": len(in_flight)}))
+
+        dispatch_until_full()
+        while in_flight:
+            done, _ = await asyncio.wait(in_flight.keys(),
+                                         return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                hyp = in_flight.pop(task)
+                ...                      <span class="c"># خطوة ٥</span>
+            if budget_hit():
+                stop_reason = "max_experiments"; break
+            if deadline_hit():
+                stop_reason = "deadline"; break
+            dispatch_until_full()        <span class="c"># املا الـ slots اللي فضيت</span></pre></div>
+
+  <h3>خطوة ٥: التعامل مع كل نتيجة (fan-in ثم fan-out)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>                try:
+                    result = task.result()
+                except Exception as exc:     <span class="c"># تجربة وقعت: سجّل وكمّل</span>
+                    trace.append(TraceEvent("error", {"hypothesis_id": hyp.id,
+                                 "branch": hyp.branch, "error": repr(exc)}))
+                    continue
+                bs = stats.setdefault(result.branch, BranchStats(branch=result.branch))
+                bs.runs += 1
+                bs.reward_sum += result.reward
+                trace.append(TraceEvent("result", {"hypothesis_id": result.hypothesis_id,
+                             "branch": result.branch, "reward": result.reward,
+                             "branch_mean": bs.mean, "branch_runs": bs.runs}))
+
+                <span class="c"># fan-out 1: paper trigger مرة واحدة لكل branch</span>
+                if (not bs.paper_triggered) and bs.mean &gt;= self.paper_threshold and bs.runs &gt;= 1:
+                    bs.paper_triggered = True
+                    triggers.append(result.branch)
+                    trace.append(TraceEvent("paper.trigger", {"branch": result.branch, "mean": bs.mean}))
+
+                <span class="c"># pruning: بعد عدد كافي من التجارب والـ mean واطي</span>
+                if (not bs.pruned) and bs.runs &gt;= self.prune_after_runs and bs.mean &lt; self.prune_floor:
+                    bs.pruned = True
+                    queue[:] = [h for h in queue if h.branch != bs.branch]
+                    trace.append(TraceEvent("prune", {"branch": bs.branch,
+                                 "mean": bs.mean, "runs": bs.runs}))
+
+                <span class="c"># fan-out 2: follow-ups للنتايج القوية</span>
+                if self.expander is not None and result.reward &gt;= self.paper_threshold:
+                    followups = self.expander(result)
+                    if followups:
+                        queue.extend(followups)
+                        trace.append(TraceEvent("expand", {"branch": result.branch,
+                                     "added": [h.id for h in followups]}))</pre></div>
+
+  <h3>خطوة ٦: الـ drain والتقرير</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>        <span class="c"># الـ budget ضرب: مفيش dispatch جديد، بس استنى اللي شغالين</span>
+        for task in list(in_flight.keys()):
+            try:
+                result = await task
+            except Exception:
+                in_flight.pop(task, None); continue
+            bs = stats.setdefault(result.branch, BranchStats(branch=result.branch))
+            bs.runs += 1; bs.reward_sum += result.reward
+            in_flight.pop(task, None)
+            if (not bs.paper_triggered) and bs.mean &gt;= self.paper_threshold:
+                bs.paper_triggered = True
+                triggers.append(result.branch)
+                trace.append(TraceEvent("paper.trigger", {"branch": result.branch, "mean": bs.mean}))
+            trace.append(TraceEvent("result.drain", {"branch": result.branch, "reward": result.reward}))
+
+        return SchedulerReport(stop_reason=stop_reason, experiments_run=experiments_run,
+                               wall_seconds=time.monotonic() - t0,
+                               branches=sorted(stats.values(), key=lambda b: b.branch),
+                               paper_triggers=triggers, trace=trace)</pre></div>
+  <p><code>SchedulerReport</code> هو dataclass فيه نفس الحقول دي ودالة <code>to_dict()</code> بتقرّب <code>wall_seconds</code> لـ ٤ أرقام عشرية.</p>
+
+  <h3>خطوة ٧: runner وexpander deterministic والـ demo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_deterministic_runner(base_rewards, noise=0.05, delay_ms=5.0, seed=0):
+    rng = np.random.default_rng(seed)
+    async def run(hyp):
+        base = base_rewards.get(hyp.branch, 0.5)
+        reward = max(0.0, min(1.0, base + float(rng.normal(0.0, noise))))  <span class="c"># احبس بين 0 و1</span>
+        await asyncio.sleep(delay_ms / 1000.0)    <span class="c"># عشان التوازي يبان</span>
+        return Result(hypothesis_id=hyp.id, branch=hyp.branch, reward=reward,
+                      payload={"base": base, "noise": noise})
+    return run
+
+def deterministic_expander(result):
+    return [Hypothesis(id=f"{result.hypothesis_id}-f{i}", branch=result.branch,
+                       payload={"parent": result.hypothesis_id}) for i in (1, 2)]
+
+async def demo_async():
+    seed = [Hypothesis(id="h-a-1", branch="branch-a"), Hypothesis(id="h-b-1", branch="branch-b"),
+            Hypothesis(id="h-c-1", branch="branch-c"), Hypothesis(id="h-d-1", branch="branch-d")]
+    runner = make_deterministic_runner(
+        base_rewards={"branch-a": 0.85, "branch-b": 0.55, "branch-c": 0.15, "branch-d": 0.40},
+        seed=7, delay_ms=2.0)
+    sched = IterationScheduler(runner=runner, slots=3, max_experiments=20,
+                               paper_threshold=0.7, prune_floor=0.25, prune_after_runs=3,
+                               expander=deterministic_expander)
+    return (await sched.run(seed)).to_dict()
+
+if __name__ == "__main__":
+    r = asyncio.run(demo_async())
+    print(json.dumps({k: r[k] for k in ["stop_reason", "experiments_run",
+                      "wall_seconds", "paper_triggers", "branches"]}, indent=2))</pre></div>
+
+  <h3>الـ tests بتغطي إيه</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Test</th><th>بيتأكد من</th></tr>
+    <tr><td class="ltr">TestUCB (3)</td><td>runs=0 ياخد inf، الـ mean الأعلى يكسب لو الـ runs متساوية، الـ bonus بيساعد الـ branch الأقل تجربة</td></tr>
+    <tr><td class="ltr">test_untried_branches_are_picked_before_repeating</td><td>أول ٣ تجارب بـ slot واحد هما A وB وC</td></tr>
+    <tr><td class="ltr">test_parallel_slots_...</td><td>٣ slots أسرع من slot واحد (أقل من 0.7×)</td></tr>
+    <tr><td class="ltr">TestFanout (3)</td><td>الـ paper trigger بيطلع، ومرة واحدة بس، والـ expander بيزوّد runs</td></tr>
+    <tr><td class="ltr">TestPruning</td><td>الـ branch السيئ (0.05) بيتقص بعد ٣ تجارب</td></tr>
+    <tr><td class="ltr">TestBudgets (2)</td><td>max_experiments=10 بيوقف عند 10 بالظبط، والـ deadline بيوقف بـ stop_reason="deadline"</td></tr>
+    <tr><td class="ltr">TestRunner</td><td>الـ reward دايمًا بين 0 و1</td></tr>
+  </table></div>
+</section>
+
+<section id="d484-exercises">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>الدرس ملوش قسم تمارين منفصل، فالتمارين دي مبنية على الـ tests والتلات امتدادات اللي في «Going further».</p>
+  <ol class="ex">
+    <li><b>حساب UCB بالورقة:</b> branch A: runs=5 وreward_sum=4.5. branch B: runs=5 وreward_sum=1.0. total_runs=10 وc=√2. مين أعلى؟ وبعدين: A runs=100 وsum=50، B runs=2 وsum=1، total=102.
+      <details><summary>الإجابة</summary>الحالة الأولى: نفس الـ runs فنفس الـ bonus، فالـ mean الأعلى (A: 0.9) يكسب. الحالة التانية: الاتنين mean=0.5، بس bonus بتاع B أكبر بكتير لأن runs=2، فـ B يكسب. دول بالظبط أول تلات tests في <code>TestUCB</code>.</details></li>
+    <li><b>شغّل الـ tests وكسّر واحد عن قصد:</b> غيّر <code>&gt;</code> لـ <code>&gt;=</code> في شرط الـ prune أو شيل <code>bs.paper_triggered = True</code> وشوف أنهي test بيقع.
+      <details><summary>تلميح</summary>لو شلت الـ flag، <code>test_paper_trigger_only_fires_once_per_branch</code> هيلاقي <code>["b1","b1",...]</code> بدل <code>["b1"]</code>.</details></li>
+    <li><b>امتداد ١ · UCB stats دايمة:</b> الإحصائيات دلوقتي في الـ memory. اعمل checkpoint لـ <code>stats</code> في ملف JSON بعد كل result، وحمّلها في بداية <code>run</code> عشان الـ restart ميضيّعش ميزانية الاستكشاف اللي اتصرفت.
+      <details><summary>تلميح</summary><code>BranchStats.to_dict()</code> موجودة. للتحميل: <code>BranchStats(**{k: d[k] for k in ["branch","runs","reward_sum","pruned","paper_triggered"]})</code>. اختبر: run بـ max_experiments=5، وبعدين run تاني لازم يبدأ بـ total_runs=5.</details></li>
+    <li><b>امتداد ٢ · Multi-objective:</b> خلّي الـ reward vector (مثلًا accuracy وcost) واعمل picker بيختار من الـ Pareto front.
+      <details><summary>تلميح</summary>branch «مغلوب» لو فيه branch تاني أحسن منه أو زيه في كل الأبعاد وأحسن في بُعد واحد على الأقل. احسب UCB لكل بُعد لوحده، شيل المغلوبين، واختار من الباقيين (مثلًا بالـ tie-break على أقل runs).</details></li>
+    <li><b>امتداد ٣ · Contextual bandits:</b> خلّي الـ picker يعتمد على features في الـ hypothesis (طول، تعقيد) عشان الـ hypotheses المتشابهة تشارك الاستكشاف.
+      <details><summary>تلميح</summary>أبسط بداية: اعمل bucket من الـ features (مثلًا <code>payload["complexity"]</code> low/high) واستخدم <code>(branch, bucket)</code> كمفتاح للإحصائيات بدل الـ branch لوحده.</details></li>
+    <li><b>إضافة مني · scheduler لـ eval jobs حقيقية:</b> عندك ٤ prompt variants لـ agent وكل eval run بياخد API calls. استخدم <code>IterationScheduler</code> مع runner بيرجّع pass-rate على ٥ أسئلة عشوائية من eval set، <code>slots=4</code>، <code>max_experiments=40</code>. الـ paper.trigger هنا معناه «الـ variant ده يستاهل eval كامل».
+      <details><summary>تلميح</summary>الـ runner لازم يبقى <code>async</code>؛ لو الـ client بتاعك sync لفّه بـ <code>await asyncio.to_thread(...)</code>. حط <code>max_seconds</code> كحماية من الفلوس، وخلّي الـ prune_floor أقل من pass-rate الـ baseline بتاعك.</details></li>
+  </ol>
+</section>
+
+<section id="d484-mine">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: حاجات الدرس مقالهاش صراحة</h2></div>
+  <h3>غلطات شائعة لما تقرا الكود</h3>
+  <ul class="checklist">
+    <li>• <b>الـ pruning محتاج hypotheses:</b> الـ prune بيحصل بس لما الـ branch يوصل <code>prune_after_runs</code>. لو الـ branch عنده hypothesis واحدة والـ expander مش بيزوّد حاجة للنتايج الضعيفة، عمره ما هيوصل ٣ runs، فمش هيتعمله prune. في الـ demo الـ branch-c (0.15) عنده seed واحد بس. جرّب ده في المعمل ٠٣.</li>
+    <li><b>• <code>experiments_run</code> بيتعد وقت الـ dispatch</b> مش وقت ما النتيجة توصل. فالتجارب اللي وقعت بـ exception محسوبة في الـ budget بس مش في <code>runs</code>.</li>
+    <li>• <b>الـ <code>+inf</code> بيعمل round-robin في الأول:</b> كل الـ branches الجديدة بتاخد inf، والـ <code>&gt;</code> الصارمة معناها إن الأقدم في الطابور يكسب التعادل. فالـ follow-ups على branch جديد (لو الـ expander عمل branch جديد) هتتقدم على طول.</li>
+    <li>• <b>الـ drain مبيعملش prune ولا expand:</b> بس بيحدّث الإحصائيات وممكن يطلّع paper.trigger. منطقي: الـ budget خلص، مفيش داعي تزوّد في الطابور.</li>
+    <li>• <b>الـ reward لازم يبقى في نفس الـ scale:</b> UCB1 مفترض إن الـ reward بين 0 و1 تقريبًا (عشان كده الـ runner بيعمل clamp). لو الـ reward بتاعك loss من 0 لـ 50، الـ bonus هيبقى مالوش وزن. اعمل normalize الأول.</li>
+  </ul>
+  <h3>فين ده بيظهر في الـ LLMs والـ Agents</h3>
+  <p>نفس معضلة explore/exploit موجودة في أي agent بيجرب كذا طريق: اختيار أنهي tool أو prompt variant تجربه، توزيع ميزانية eval على كذا config، أو search على شجرة أفكار. الـ asyncio pattern ده (create_task + wait FIRST_COMPLETED + حد أقصى للتوازي) هو نفسه اللي بتستخدمه لما تبعت requests كتير لـ LLM API في نفس الوقت من غير ما تقف على أبطأ واحدة. والـ budgets (عدد + وقت) هي أول خط دفاع ضد agent بيلف في loop ويصرف tokens.</p>
+</section>
+
+<section id="d484-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d484-quizBox"></div>
+</section>
+
+<section id="d484-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d484-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه scheduler أحسن من worklist في البحث</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم كل جزء في معادلة UCB1 وليه runs=0 بياخد inf</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الفرق بين الـ picker والـ pruning</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ scheduler بإيدي وشغّلت الـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="5"> لعبت في المعملين وشفت الـ prune والـ deadline بيشتغلوا</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="quiz" id="d484-ckQuiz"> عدّيت الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>UCB / multi-armed bandits</td><td>اختيار prompt variants، A/B testing تكيّفي، hyperparameter search، MCTS في الـ game AI</td></tr>
+    <tr><td>asyncio + FIRST_COMPLETED</td><td>إرسال requests كتير لـ LLM APIs بالتوازي، agents بتشغّل tools في نفس الوقت</td></tr>
+    <tr><td>Pruning</td><td>beam search، tree-of-thought، قص الأفكار الضعيفة في agent loops</td></tr>
+    <tr><td>Budgets (count + wall clock)</td><td>حماية الـ agents من الـ loops اللانهائية وصرف الـ tokens</td></tr>
+    <tr><td>Fan-out / event trace</td><td>الـ pipelines متعددة المراحل، الـ observability، الـ dashboards</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> End-to-End Research Demo. هنركّب كل مراحل الـ auto-research مع بعض، والتقرير اللي طلّعناه النهاردة هو اللي هيشغّل الـ paper writer.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F56-iteration-scheduler" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/56-iteration-scheduler</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,F=AI.fmt;
+
+/* roadmap */
+const lessons=[];for(let i=1;i<=87;i++){if(i===18||i===19)continue;lessons.push(i)}
+const rm=$('d484-roadmap');lessons.forEach(i=>{const s=document.createElement('span');s.textContent=i;if(i===56)s.className='now';rm.appendChild(s)});
+
+/* ---------- Lab A: UCB bonus curve ---------- */
+const bc=$('d484-bonusCv'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+function ucb(mean,runs,total,c){if(runs===0)return Infinity;if(total===0)return mean;return mean+c*Math.sqrt(Math.log(Math.max(total,1))/runs)}
+function drawBonus(){
+  const m=+$('d484-bMean').value,n=+$('d484-bRuns').value,N=+$('d484-bTot').value,c=+$('d484-bC').value;
+  $('d484-bMeanV').textContent=m.toFixed(2);$('d484-bRunsV').textContent=n;$('d484-bTotV').textContent=N;$('d484-bCV').textContent=c.toFixed(2);
+  const bonus=c*Math.sqrt(Math.log(Math.max(N,1))/n);
+  $('d484-bBonus').textContent=F(bonus,3);$('d484-bScore').textContent=F(m+bonus,3);
+  bx.clearRect(0,0,BW,BH);
+  const L=44,R=BW-12,T=14,B=BH-30,ymax=Math.max(2,m+c*Math.sqrt(Math.log(Math.max(N,1))/1))*1.05;
+  const X=k=>L+(k-1)/(40-1)*(R-L),Y=v=>B-v/ymax*(B-T);
+  bx.strokeStyle=css('--line');bx.lineWidth=1;
+  for(let v=0;v<=ymax;v+=0.5){bx.beginPath();bx.moveTo(L,Y(v));bx.lineTo(R,Y(v));bx.stroke();bx.fillStyle=css('--muted');bx.font='11px JetBrains Mono, monospace';bx.fillText(v.toFixed(1),6,Y(v)+4)}
+  bx.fillStyle=css('--muted');bx.fillText('runs(branch) →',R-110,BH-8);
+  // mean band
+  bx.fillStyle=css('--vec-a');bx.globalAlpha=.15;bx.fillRect(L,Y(m),R-L,B-Y(m));bx.globalAlpha=1;
+  // score curve
+  bx.strokeStyle=css('--vec-b');bx.lineWidth=2.5;bx.beginPath();
+  for(let k=1;k<=40;k++){const v=m+c*Math.sqrt(Math.log(Math.max(N,1))/k);k===1?bx.moveTo(X(k),Y(v)):bx.lineTo(X(k),Y(v))}bx.stroke();
+  bx.strokeStyle=css('--vec-a');bx.lineWidth=2;bx.beginPath();bx.moveTo(L,Y(m));bx.lineTo(R,Y(m));bx.stroke();
+  // marker
+  const px=X(n),py=Y(m+bonus);
+  bx.strokeStyle=css('--ink');bx.setLineDash([4,4]);bx.beginPath();bx.moveTo(px,py);bx.lineTo(px,Y(m));bx.stroke();bx.setLineDash([]);
+  bx.fillStyle=css('--vec-b');bx.beginPath();bx.arc(px,py,6,0,7);bx.fill();
+  bx.fillStyle=css('--ink');bx.font='12px JetBrains Mono, monospace';
+  bx.fillText('mean',R-40,Y(m)-6);bx.fillText('ucb',px+8,py-6);
+}
+['d484-bMean','d484-bRuns','d484-bTot','d484-bC'].forEach(id=>$(id).addEventListener('input',drawBonus));
+drawBonus();
+
+/* ---------- Lab B: scheduler simulation ---------- */
+const NAMES=['a','b','c','d'];
+let rngState=7;
+function rnd(){rngState|=0;rngState=rngState+0x6D2B79F5|0;let t=Math.imul(rngState^rngState>>>15,1|rngState);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}
+function gauss(){let u=0,v=0;while(u===0)u=rnd();while(v===0)v=rnd();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const P={threshold:0.7,after:3,maxExp:20,noise:0.05};
+let S=null;
+function par(){return{base:NAMES.map((_,i)=>+$('d484-s'+i).value),c:+$('d484-sC').value,slots:+$('d484-sSlots').value,seeds:+$('d484-sSeed').value,floor:+$('d484-sFloor').value,expand:$('d484-sExp').checked}}
+function log(s){S.log.push(s)}
+function resetSim(){
+  rngState=7;const p=par();
+  S={p,queue:[],stats:{},fly:[],t:0,exp:0,stop:null,log:[],triggers:[]};
+  for(let k=1;k<=p.seeds;k++)NAMES.forEach(n=>S.queue.push({id:'h-'+n+'-'+k,b:n}));
+  NAMES.forEach(n=>S.stats[n]={runs:0,sum:0,pruned:false,paper:false});
+  dispatch();if(!S.fly.length)S.stop='queue_empty';paintSim();
+}
+function mean(st){return st.runs?st.sum/st.runs:0}
+function pick(){
+  let best=null,bs=-Infinity;const total=NAMES.reduce((a,n)=>a+S.stats[n].runs,0);
+  S.queue.forEach((h,i)=>{const st=S.stats[h.b];if(st.pruned)return;const sc=ucb(mean(st),st.runs,total,S.p.c);if(sc>bs){bs=sc;best=i}});
+  return best;
+}
+function dispatch(){
+  while(S.queue.length&&S.fly.length<S.p.slots&&S.exp<P.maxExp){
+    const i=pick();if(i===null)return;const h=S.queue.splice(i,1)[0];
+    S.fly.push({h,fin:S.t+1+rnd()*2});S.exp++;log('dispatch  '+h.id+'  slots='+S.fly.length);
+  }
+}
+function finishOne(drain){
+  S.fly.sort((a,b)=>a.fin-b.fin);const j=S.fly.shift();S.t=j.fin;
+  const base=S.p.base[NAMES.indexOf(j.h.b)],r=Math.max(0,Math.min(1,base+gauss()*P.noise)),st=S.stats[j.h.b];
+  st.runs++;st.sum+=r;
+  if(drain){if(!st.paper&&mean(st)>=P.threshold){st.paper=true;S.triggers.push(j.h.b);log('paper.trigger  branch-'+j.h.b)}log('result.drain  '+j.h.id+'  r='+r.toFixed(2));return}
+  log('result    '+j.h.id+'  r='+r.toFixed(2)+'  mean='+mean(st).toFixed(2));
+  if(!st.paper&&mean(st)>=P.threshold){st.paper=true;S.triggers.push(j.h.b);log('paper.trigger  branch-'+j.h.b)}
+  if(!st.pruned&&st.runs>=P.after&&mean(st)<S.p.floor){st.pruned=true;S.queue=S.queue.filter(h=>h.b!==j.h.b);log('prune     branch-'+j.h.b+'  mean='+mean(st).toFixed(2))}
+  if(S.p.expand&&r>=P.threshold){const add=[1,2].map(i=>({id:j.h.id+'-f'+i,b:j.h.b}));S.queue.push(...add);log('expand    +'+add.map(a=>a.id).join(', '))}
+}
+function stepSim(){
+  if(S.stop)return;
+  if(!S.fly.length){S.stop='queue_empty';return}
+  finishOne(false);
+  if(S.exp>=P.maxExp){S.stop='max_experiments';while(S.fly.length)finishOne(true);return}
+  dispatch();
+  if(!S.fly.length)S.stop='queue_empty';
+}
+function paintSim(){
+  const c=$('d484-simCv');if(!c._x)c._x=AI.setupCanvas(c);const x=c._x,W=+c.dataset.w,H=+c.dataset.h;
+  x.clearRect(0,0,W,H);
+  const total=NAMES.reduce((a,n)=>a+S.stats[n].runs,0),L=90,R=W-14,top=20,rowH=(H-top-20)/4,scale=2.2;
+  const X=v=>L+Math.min(v,scale)/scale*(R-L);
+  x.font='11px JetBrains Mono, monospace';
+  [[P.threshold,'--ok','paper'],[S.p.floor,'--bad','floor']].forEach(([v,col,l])=>{x.strokeStyle=css(col);x.setLineDash([4,4]);x.beginPath();x.moveTo(X(v),top-6);x.lineTo(X(v),H-14);x.stroke();x.setLineDash([]);x.fillStyle=css(col);x.fillText(l,X(v)+3,top-8+ (l==='floor'?0:0))});
+  NAMES.forEach((n,i)=>{
+    const st=S.stats[n],y=top+i*rowH+8,h=rowH-22,m=mean(st),u=ucb(m,st.runs,total,S.p.c);
+    x.fillStyle=st.pruned?css('--bad'):css('--ink');x.font='bold 13px JetBrains Mono, monospace';x.fillText('branch-'+n,6,y+h/2+4);
+    x.fillStyle=css('--soft');x.fillRect(L,y,R-L,h);
+    x.fillStyle=css('--vec-a');x.globalAlpha=st.pruned?.35:1;x.fillRect(L,y,X(m)-L,h);
+    if(isFinite(u)){x.fillStyle=css('--vec-b');x.globalAlpha=st.pruned?.2:.55;x.fillRect(X(m),y,X(u)-X(m),h)}
+    x.globalAlpha=1;x.font='11px JetBrains Mono, monospace';x.fillStyle=css('--muted');
+    const lab='runs='+st.runs+'  mean='+m.toFixed(2)+'  ucb='+(isFinite(u)?u.toFixed(2):'∞')+(st.pruned?'  PRUNED':'')+(st.paper?'  PAPER':'');
+    x.fillText(lab,L+4,y+h+12);
+    if(st.pruned){x.strokeStyle=css('--bad');x.lineWidth=2;x.beginPath();x.moveTo(L,y+h/2);x.lineTo(R,y+h/2);x.stroke()}
+  });
+  $('d484-rExp').textContent=S.exp;$('d484-rFly').textContent=S.fly.length;$('d484-rQ').textContent=S.queue.length;$('d484-rStop').textContent=S.stop||'running';
+  const lg=$('d484-log');lg.textContent=S.log.slice(-40).join('\n');lg.scrollTop=lg.scrollHeight;
+}
+function syncLabels(){NAMES.forEach((_,i)=>$('d484-s'+i+'v').textContent=(+$('d484-s'+i).value).toFixed(2));$('d484-sCv').textContent=(+$('d484-sC').value).toFixed(2);$('d484-sSlotsV').textContent=$('d484-sSlots').value;$('d484-sSeedV').textContent=$('d484-sSeed').value;$('d484-sFloorV').textContent=(+$('d484-sFloor').value).toFixed(2)}
+['d484-s0','d484-s1','d484-s2','d484-s3','d484-sC','d484-sSlots','d484-sSeed','d484-sFloor','d484-sExp'].forEach(id=>$(id).addEventListener('input',()=>{syncLabels();resetSim()}));
+$('d484-sStep').addEventListener('click',()=>{stepSim();paintSim()});
+$('d484-sRun').addEventListener('click',()=>{let g=0;while(!S.stop&&g++<500)stepSim();paintSim()});
+$('d484-sReset').addEventListener('click',resetSim);
+syncLabels();resetSim();
+
+/* ---------- Lab C: Gantt ---------- */
+const DUR=[3,5,2,4,6,3];
+const gc=$('d484-ganttCv'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+let G=null,playT=null,raf=0;
+function schedule(){
+  const slots=+$('d484-gSlots').value,maxE=+$('d484-gMax').value,dlv=+$('d484-gDl').value,dl=dlv>=24?Infinity:dlv;
+  $('d484-gSlotsV').textContent=slots;$('d484-gMaxV').textContent=maxE;$('d484-gDlV').textContent=isFinite(dl)?dl:'∞';
+  const jobs=[],fly=[],free=[];for(let s=slots-1;s>=0;s--)free.push(s);
+  let t=0,exp=0,q=DUR.map((d,i)=>i),stop='queue_empty';
+  const disp=()=>{while(q.length&&fly.length<slots&&exp<maxE&&t<dl){const i=q.shift(),s=free.pop();const j={i,s,st:t,en:t+DUR[i],drain:false};jobs.push(j);fly.push(j);exp++}};
+  disp();
+  while(fly.length){fly.sort((a,b)=>a.en-b.en);const j=fly.shift();t=j.en;free.push(j.s);
+    if(exp>=maxE){stop='max_experiments';fly.forEach(f=>f.drain=true);break}
+    if(t>=dl){stop='deadline';fly.forEach(f=>f.drain=true);break}
+    disp()}
+  const wall=jobs.reduce((a,j)=>Math.max(a,j.en),0);
+  G={slots,dl,jobs,wall,exp,stop,skipped:q.length};
+  $('d484-gWall').textContent=wall+' units';$('d484-gRun').textContent=exp;$('d484-gStop').textContent=stop;
+}
+function drawGantt(pt){
+  gx.clearRect(0,0,GW,GH);const L=60,R=GW-12,T=12,maxT=22,rowH=Math.min(40,(GH-T-34)/G.slots);
+  const X=v=>L+v/maxT*(R-L);
+  gx.font='11px JetBrains Mono, monospace';
+  for(let v=0;v<=maxT;v+=2){gx.strokeStyle=css('--line');gx.beginPath();gx.moveTo(X(v),T);gx.lineTo(X(v),T+rowH*G.slots);gx.stroke();gx.fillStyle=css('--muted');gx.fillText(v,X(v)-4,T+rowH*G.slots+14)}
+  for(let s=0;s<G.slots;s++){gx.fillStyle=css('--ink');gx.fillText('slot '+(s+1),6,T+s*rowH+rowH/2+4)}
+  G.jobs.forEach(j=>{const y=T+j.s*rowH+4,h=rowH-8,end=pt==null?j.en:Math.min(j.en,Math.max(j.st,pt));if(pt!=null&&pt<j.st)return;
+    gx.fillStyle=j.drain?css('--vec-b'):css('--vec-a');gx.globalAlpha=.85;gx.fillRect(X(j.st)+1,y,X(end)-X(j.st)-2,h);gx.globalAlpha=1;
+    gx.fillStyle=css('--paper');gx.fillText('h'+(j.i+1),X(j.st)+5,y+h/2+4)});
+  if(isFinite(G.dl)){gx.strokeStyle=css('--bad');gx.lineWidth=2;gx.beginPath();gx.moveTo(X(G.dl),T-4);gx.lineTo(X(G.dl),T+rowH*G.slots+4);gx.stroke();gx.lineWidth=1;gx.fillStyle=css('--bad');gx.fillText('max_seconds',X(G.dl)+3,T+8)}
+  if(pt!=null){gx.strokeStyle=css('--ink');gx.beginPath();gx.moveTo(X(pt),T);gx.lineTo(X(pt),T+rowH*G.slots);gx.stroke()}
+  gx.fillStyle=css('--muted');gx.fillText('برتقاني = اتشغّل في الـ drain · مش متبدأ: '+G.skipped,L,GH-4);
+}
+function regantt(){cancelAnimationFrame(raf);playT=null;schedule();drawGantt(null)}
+['d484-gSlots','d484-gMax','d484-gDl'].forEach(id=>$(id).addEventListener('input',regantt));
+$('d484-gPlay').addEventListener('click',()=>{cancelAnimationFrame(raf);const t0=performance.now(),dur=matchMedia('(prefers-reduced-motion:reduce)').matches?0:2500;
+  const step=t=>{if(!document.body.contains(gc))return;const k=dur?Math.min(1,(t-t0)/dur):1;playT=k*G.wall;drawGantt(playT);if(k<1)raf=requestAnimationFrame(step);else{playT=null;drawGantt(null)}};raf=requestAnimationFrame(step)});
+regantt();
+
+/* ---------- quiz ---------- */
+const Q=[
+ ['ليه الـ scheduler بيستخدم UCB بدل ما يختار أحسن branch حالي على طول؟',['لأن الطابور مينفعش يترتب غير كده','لأن asyncio محتاج UCB','لأن UCB أسرع في الحساب','لأن الـ greedy عمره ما بيستكشف، والـ UCB بيوازن بين الاستغلال والاستكشاف'],3,'الـ greedy بيمسك في أول فكرة كويسة. الـ uniform عمره ما بيستغل. UCB بيختار الأحسن وبيسيب مساحة للـ branches الأقل تجربة عن طريق sqrt(ln N / n).'],
+ ['branch معملش ولا تجربة خلصت، بياخد score كام في UCB1؟',['+inf، فالـ branches اللي ماتجربتش بتتختار الأول دايمًا','متوسط الـ reward بتاع الباقيين','صفر','ثابت الاستكشاف c'],0,'الدرس بيدي +inf لما runs=0، وده بيضمن إن كل branch يتجرب مرة على الأقل قبل ما أي branch يتكرر.'],
+ ['الـ scheduler بيخلي كذا slot مشغولين إزاي؟',['بيعمل asyncio.create_task لكل hypothesis وبيستنى FIRST_COMPLETED على الـ tasks الشغالة','بيشغّل الـ runner في thread pool','بيقفل الـ event loop بـ sleep','بيستخدم multiprocessing'],0,'كل hypothesis بتبقى task. الـ loop بيستنى FIRST_COMPLETED فأول slot يفضى بيتملى بـ hypothesis تانية على طول.'],
+ ['إمتى الـ scheduler بيطلّع paper.trigger لـ branch؟',['كل ما نتيجة توصل للـ branch ده','لما يوصل للـ prune floor','في آخر الـ run بس','أول نتيجة يخلي فيها mean الـ branch ≥ الـ paper threshold، ومرة واحدة بس لكل branch'],3,'الـ trigger بيطلع مرة واحدة لكل branch، أول ما الـ mean يعدّي الـ threshold. الـ flag اللي اسمه paper_triggered في BranchStats بيمنع التكرار.'],
+ ['إيه اللي بيحصل لـ branch الـ mean بتاعه فضل تحت الـ prune floor بعد الحد الأدنى من التجارب؟',['ولا حاجة، الـ UCB هيختار غيره في الآخر','الـ floor بينزل لوحده','الـ branch بيتعلّم pruned والـ hypotheses الباقية بتاعته بتتشال من الطابور','الـ scheduler بيرمي exception'],2,'الـ pruning بيشيل الـ branch من الجدولة بعد كده. والـ pruning منفصل عن الـ picker: UCB بيرتّب، والـ pruning بيقص.'],
+ ['أنهي ميزانيتين الـ scheduler بيطبقهم كحدود صارمة؟',['الـ memory والـ CPU','paper triggers وعدد الـ prunes','الـ slots وعمق الطابور','max_experiments (إجمالي التجارب) وmax_seconds (الوقت الفعلي)'],3,'الاتنين بيبقوا stop reasons. max_experiments بيحدد كمية الشغل وmax_seconds بيحدد الوقت، والـ trace بيسجل مين فيهم وقّف الـ run.'],
+ ['(سؤال مني) A: runs=4 وmean=0.5. B: runs=1 وmean=0.4. total_runs=5 وc=√2. الـ scheduler هيختار مين؟',['A لأن الـ mean بتاعه أعلى','B لأن الـ bonus بتاعه أكبر بكتير (حوالي 1.79 مقابل 0.90)','الاتنين بنفس الـ score','مفيش، لازم الاتنين يتعملهم prune'],1,'bonus = √2·√(ln5/n). لـ A: ≈ 0.90 فالـ score ≈ 1.40. لـ B: ≈ 1.79 فالـ score ≈ 2.19. الاستكشاف كسب.'],
+ ['(سؤال مني) في الـ demo، branch-c (base 0.15) عنده seed واحد بس. هل هيتعمله prune بـ prune_after_runs=3؟',['أيوه، أول ما الـ mean يطلع تحت 0.25','أيوه، في الـ drain','لأ، لأنه هيتجرب مرة واحدة بس: مفيش hypotheses تانية ليه والـ expander مش بيزوّد للنتايج الضعيفة','لأ، لأن الـ pruning متقفل في الـ demo'],2,'الـ prune محتاج runs ≥ 3. الـ expander بيشتغل بس لما reward ≥ 0.7، فـ branch-c مش هيكون عنده hypotheses كفاية يوصل للحد.']
+];
+AI.quiz($('d484-quizBox'),Q,6,()=>{const c=$('d484-ckQuiz');c.checked=true;AI.store.set('aiefs-d484-quiz','1')});
+AI.checklist(484,$('d484-root'));
+
+/* theme */
+AI.onTheme(()=>{if(!document.body.contains(bc))return false;drawBonus();paintSim();drawGantt(playT)});
+})();
+</script>

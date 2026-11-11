@@ -1,0 +1,517 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 06 · K-Nearest Neighbors and Distances</span>
+  <h1>اليوم ٢٨: قولّي جيرانك مين، أقولك انت مين</h1>
+  <p class="lede">النهاردة أبسط خوارزمية بتشتغل فعلًا: <b>KNN</b>. مفيش تدريب، مفيش parameters، مفيش loss. بتخزن الداتا كلها، ولما نقطة جديدة تيجي بتدور على أقرب K جيران وتخليهم يصوّتوا. وهتشوف إن معنى «أقرب» نفسه قرار، وإن الأبعاد الكتير بتبوّظ الفكرة كلها. ودي نفس الفكرة اللي جوه كل vector database و RAG.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>محتاج: <b>Norms and Distances من Phase 1</b></span>
+    <span>بعده: <b>Unsupervised Learning</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d28-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d28-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: الـ SVM</h2></div>
+  <details><summary>١. عرض الـ margin بيساوي إيه؟ وإيه هي الـ support vectors؟</summary><span class="ltr">2/‖w‖</span>. الـ support vectors هي النقط اللي واقفة على الرصيف (<span class="ltr">y·f(x) = 1</span>)، وهي بس اللي بتحدد الخط.</details>
+  <details><summary>٢. كبّرت الـ C. إيه اللي هيحصل؟</summary>غرامة المخالفات بتغلى، فالشارع بيضيق والموديل بيحاول يرضي كل نقطة في الـ train، فممكن يعمل overfit.</details>
+  <details><summary>٣. الـ RBF kernel بيقيس إيه بالبلدي؟</summary><span class="ltr">exp(−γ‖x−z‖²)</span>: قد إيه النقطتين قريبين. قريبين = 1 تقريبًا، بعاد = 0. النهاردة هنستخدم «القرب» ده مباشرة كموديل.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>الخوارزمية والـ K</div>
+    <div><b>20 min</b>المسافات + معمل ١ و٢</div>
+    <div><b>15 min</b>لعنة الأبعاد + معمل ٣ + KD-trees</div>
+    <div><b>30 min</b>اكتب KNN و KDTree بإيدك</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d28-algo">
+  <div class="station-head"><span class="tag">01</span><h2>الخوارزمية كلها في ٥ سطور</h2></div>
+  <p>اتنقلت شقة جديدة وعايز تعرف المنطقة غالية ولا رخيصة؟ اسأل أقرب ٥ جيران دفعوا كام وخد المتوسط. ده KNN.</p>
+  <ol class="ex">
+    <li>احسب المسافة من النقطة الجديدة (query) لكل نقطة في الداتا.</li>
+    <li>رتّب حسب المسافة.</li>
+    <li>خد أقرب K.</li>
+    <li><b>Classification:</b> تصويت بالأغلبية (majority vote).</li>
+    <li><b>Regression:</b> متوسط قيمهم (أو متوسط موزون).</li>
+  </ol>
+  <p>بس كده. مفيش fitting ولا gradient descent ولا epochs. <code>fit</code> بتخزن الداتا وخلاص.</p>
+  <h3>اختيار K: الـ hyperparameter الوحيد</h3>
+  <div class="tablewrap"><table>
+    <tr><th>K</th><th>السلوك</th></tr>
+    <tr><td class="ltr">K = 1</td><td>الحدود بتمشي ورا كل نقطة. train error = 0. variance عالي → overfit. (الحدود هنا هي <b>Voronoi diagram</b>: كل نقطة ليها منطقة كل اللي فيها أقرب ليها من أي حد تاني)</td></tr>
+    <tr><td>K صغير (3 لـ 5)</td><td>حساس للتفاصيل المحلية، يقدر يمسك حدود معقدة</td></tr>
+    <tr><td>K كبير</td><td>حدود أنعم، أقوى قصاد الـ noise، ممكن underfit</td></tr>
+    <tr><td class="ltr">K = N</td><td>بيتوقع الـ class الأغلبية لكل نقطة. أقصى bias</td></tr>
+  </table></div>
+  <p>نقطة بداية شائعة: <span class="ltr">K = √N</span>. ولو binary classification خلّي K <b>فردي</b> عشان ما يحصلش تعادل.</p>
+</section>
+
+<!-- STATION 2: LAB 1 -->
+<section id="d28-lab1">
+  <div class="station-head"><span class="tag">02</span><h2>معمل ١: حرّك النقطة وشوف الجيران بيصوّتوا</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>داتا زي الريبو: 3 مراكز <span class="ltr">[1,1]</span> و <span class="ltr">[−1,−1]</span> و <span class="ltr">[1,−1]</span> وحوالين كل واحد noise. <b>اسحب</b> النجمة السودا. الخطوط بتوصل لأقرب K.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>شغّل «ورّيني المناطق» وحرّك K من 1 لـ 150. شوف الحدود بتتحول من متعرجة لناعمة لحد ما كله لون واحد.</li>
+        <li>غيّر المسافة لـ cosine: المناطق بقت «شرايح» من المركز، لأن cosine بيبص على الاتجاه بس ويتجاهل الطول.</li>
+        <li>كبّر «scale الـ feature التانية»: كإنها مرتب بالآلاف جنب سن بالسنين. المسافة بقت تقريبًا رأسية بس، والجيران اتغيروا. ده ليه الـ scaling إجباري.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d28-knnC" width="520" height="440" aria-label="معمل KNN"></canvas>
+      <div class="mrow">
+        <label>K = <span id="d28-kV">5</span><input type="range" id="d28-k" min="1" max="150" value="5"></label>
+        <label>scale x2 × <span id="d28-sV">1</span><input type="range" id="d28-s" min="0" max="1.5" step="0.05" value="0"></label>
+      </div>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">metric <select id="d28-met"><option value="l2">L2 Euclidean</option><option value="l1">L1 Manhattan</option><option value="cos">Cosine</option><option value="inf">Chebyshev (L∞)</option></select></label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d28-w"> weighted</label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d28-reg"> ورّيني المناطق</label>
+      </div>
+      <div class="readout">
+        <div><small>class 0</small><b id="d28-v0">–</b></div>
+        <div><small>class 1</small><b id="d28-v1">–</b></div>
+        <div><small>class 2</small><b id="d28-v2">–</b></div>
+        <div><small>prediction</small><b id="d28-pr">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d28-dist">
+  <div class="station-head"><span class="tag">03</span><h2>يعني إيه «قريب»؟ مقاييس المسافة</h2></div>
+  <p>دالة المسافة هي اللي بتعرّف مين جارك. مقياس مختلف = جيران مختلفين = توقعات مختلفة.</p>
+  <div class="formula">L2 (Euclidean):  d = √Σ(aᵢ − bᵢ)²
+L1 (Manhattan):  d = Σ|aᵢ − bᵢ|
+Cosine:          d = 1 − (a·b) / (‖a‖‖b‖)
+Minkowski:       d = (Σ|aᵢ − bᵢ|^p)^(1/p)    p=1 → L1 , p=2 → L2 , p→∞ → max|aᵢ − bᵢ| (Chebyshev)</div>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>L2</b>: الخط المستقيم، الافتراضي. حساس للـ scale، فاعمل standardize الأول.</li>
+    <li><b>L1</b>: زي تاكسي في شوارع مربعات. أقوى قصاد الـ outliers لأنه ما بيربّعش الفروق.</li>
+    <li><b>Cosine</b>: الزاوية بس، الطول متجاهل. أساسي للنص والـ embeddings.</li>
+    <li><b>Minkowski</b>: عيلة بتجمعهم بالـ p.</li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>نوع الداتا</th><th>أحسن مقياس</th><th>ليه</th></tr>
+    <tr><td>أرقام بنفس الـ scale تقريبًا</td><td>L2</td><td>الافتراضي، ممتاز للداتا المكانية</td></tr>
+    <tr><td>أرقام فيها outliers</td><td>L1</td><td>ما بيكبّرش الفروق الكبيرة</td></tr>
+    <tr><td>text embeddings</td><td>Cosine</td><td>الطول noise، الاتجاه هو المعنى</td></tr>
+    <tr><td>عالي الأبعاد sparse</td><td>Cosine أو L1</td><td>L2 بيعاني من لعنة الأبعاد</td></tr>
+    <tr><td>أنواع مختلطة</td><td>مسافة custom</td><td>تجمع مقاييس لكل نوع feature</td></tr>
+  </table></div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: «دايرة» كل مقياس</h3>
+      <p>الشكل الغامق = كل النقط اللي مسافتها <b>1</b> من المركز بالـ p المختار. L1 معيّن (diamond)، L2 دايرة، L∞ مربع. كل ما p يكبر الشكل يقرب من المربع، لأن المسافة بتتحكم فيها أكبر فرق بس.</p>
+      <p>اسحب النقطة وقارن المسافات. لاحظ دايمًا: <span class="ltr">L∞ ≤ L2 ≤ L1</span>.</p>
+      <p>مثال الريبو: <span class="ltr">a=[1,2,3]</span> و <span class="ltr">b=[4,0,6]</span> → p=1: 8.0000، p=1.5: 5.5912، p=2: 4.6904، p=3: 3.9579، p=5: 3.4903، p=10: 3.2181، p=∞: 3.0000.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d28-ballC" width="520" height="400" aria-label="كرة الوحدة لـ Minkowski"></canvas>
+      <label style="display:grid;gap:2px">p = <b class="mono" id="d28-pV">2</b><input type="range" id="d28-p" min="1" max="12" step="0.1" value="2"></label>
+      <div class="readout">
+        <div><small>L1</small><b id="d28-d1">–</b></div>
+        <div><small>L2</small><b id="d28-d2">–</b></div>
+        <div><small>Lp</small><b id="d28-dp">–</b></div>
+        <div><small>L∞</small><b id="d28-di">–</b></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Weighted KNN</h3>
+  <p>العادي بيدي كل جار صوت واحد. بس جار على بُعد 0.1 المفروض يتسمع أكتر من واحد على بُعد 5. فبنوزن بعكس المسافة:</p>
+  <div class="formula">weightᵢ = 1 / (distanceᵢ + ε)        regression: ŷ = Σ wᵢyᵢ / Σ wᵢ</div>
+  <p>الـ ε (في الكود <span class="ltr">1e-10</span>) بتمنع القسمة على صفر لو الـ query مطابقة لنقطة. الـ weighted أقل حساسية لاختيار K، لأن الجيران البعاد صوتهم واطي أصلًا. جربها في المعمل ١ مع K كبير.</p>
+
+  <h3>KNN للـ Regression</h3>
+  <p>بدل التصويت، خد متوسط قيم الجيران. النتيجة piecewise-constant (أو ناعمة شوية مع الـ weighting). وخد بالك: <b>مش بيعرف يعمل extrapolation</b>. لو كل الـ targets بين 0 و100، عمره ما هيتوقع 200.</p>
+</section>
+
+<!-- STATION 4 -->
+<section id="d28-curse">
+  <div class="station-head"><span class="tag">04</span><h2>لعنة الأبعاد (Curse of Dimensionality)</h2></div>
+  <p>ده مش كلام نظري. ده حقيقة رياضية بتبوّظ KNN في الأبعاد الكتير. تلات مشاكل:</p>
+  <ol class="ex">
+    <li><b>المسافات بتتساوى:</b> كل ما الأبعاد تزيد، نسبة أبعد مسافة لأقرب مسافة بتقرب من 1. لو كل النقط على نفس البُعد تقريبًا، كلمة «أقرب» ملهاش معنى.</li>
+    <li><b>الحجم بينفجر:</b> عشان تمسك K جيران، لازم توسّع نص القطر لحد ما تغطي جزء كبير من الفضاء. «الجيرة» بقت الدنيا كلها تقريبًا.</li>
+    <li><b>الأركان بتسيطر:</b> في مكعب d أبعاد، أغلب الحجم في الأركان مش في النص. الكرة اللي جوه المكعب حجمها بيبقى نسبة بتقرب من الصفر.</li>
+  </ol>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: زوّد الأبعاد وشوف المسافات بتتلم</h3>
+      <p>200 نقطة عشوائية في المكعب <span class="ltr">[0,1]^d</span>، و 600 زوج عشوائي. الرسمة = توزيع المسافات مقسومة على أكبر مسافة. في d=2 التوزيع واسع. في d=500 كله متكوّم في عمود واحد قريب من الآخر.</p>
+      <p>والرقم التاني: نسبة حجم الكرة اللي جوه المكعب. في d=10 هي حوالي ربع في المية، وبعدها بتقرب من الصفر بسرعة.</p>
+      <div class="note"><strong>عمليًا:</strong> KNN بيشتغل كويس لحد حوالي 20 لـ 50 feature. أكتر من كده: قلّل الأبعاد الأول (PCA, UMAP, t-SNE)، أو استخدم هياكل بحث بتستغل إن الداتا الحقيقية غالبًا عايشة على أبعاد أقل من الظاهر. في الريبو: label معتمد على أول بُعدين بس، والباقي noise، والدقة بتقع كل ما تزود noise dims.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d28-curseC" width="520" height="280" aria-label="توزيع المسافات حسب عدد الأبعاد"></canvas>
+      <label style="display:grid;gap:2px">d = <b class="mono" id="d28-dV">2</b><input type="range" id="d28-d" min="0" max="3" step="0.02" value="0.30103"></label>
+      <div class="readout">
+        <div><small>max / min</small><b id="d28-ratio">–</b></div>
+        <div><small>std / mean</small><b id="d28-cv">–</b></div>
+        <div><small>حجم الكرة / المكعب</small><b id="d28-ball">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d28-trees">
+  <div class="station-head"><span class="tag">05</span><h2>البحث السريع: KD-trees و Ball trees، و Lazy vs Eager</h2></div>
+  <p>الـ brute force بيحسب المسافة لكل نقطة: <span class="ltr">O(n·d)</span> لكل query. مع داتا كبيرة ده بطيء.</p>
+  <h3>KD-tree</h3>
+  <p>شجرة بتقسم الفضاء على المحاور بالدور: المستوى الأول يقسم على x₁ عند الـ median، اللي بعده على x₂، وهكذا.</p>
+  <div class="formula">split x1 at 5.0 ─≤→ split x2 at 3.0 → leaves (3 pts | 4 pts)
+                └─&gt;→ split x2 at 7.0 → leaves (2 pts | 5 pts)</div>
+  <p>عشان تلاقي أقرب جار: انزل للورقة اللي فيها الـ query، وبعدين ارجع (backtrack) وافتح الفرع التاني <b>بس</b> لو ممكن يكون فيه نقطة أقرب، يعني لو المسافة للخط الفاصل أقل من أحسن مسافة لقيتها. في الأبعاد القليلة المتوسط <span class="ltr">O(log n)</span>. بس فوق حوالي 20 بُعد الـ backtracking بيقطع فروع أقل وأقل لحد ما يرجع <span class="ltr">O(n)</span>.</p>
+  <h3>Ball tree</h3>
+  <p>بدل الصناديق على المحاور، بيقسم لكُرات متداخلة (مركز + نص قطر). أحسن في الأبعاد المتوسطة (لحد ~50)، بيتعامل مع البنية اللي مش ماشية مع المحاور، والكرات أضيق فبيقطع فروع أكتر. الاتنين <b>exact</b>. للحجم الضخم (ملايين النقط، مئات الأبعاد) بنستخدم <b>Approximate Nearest Neighbor</b> زي HNSW و IVF و product quantization (اتكلمنا عنهم في Phase 1 Lesson 14).</p>
+  <h3>Lazy قصاد Eager</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الجانب</th><th>Lazy (KNN)</th><th>Eager (SVM, NN)</th></tr>
+    <tr><td>وقت التدريب</td><td class="ltr">O(1) store data</td><td class="ltr">O(n · epochs)</td></tr>
+    <tr><td>وقت التوقع</td><td class="ltr">O(n · d) per query</td><td class="ltr">O(d) or O(params)</td></tr>
+    <tr><td>الميموري وقت التوقع</td><td>الداتا كلها</td><td>الـ parameters بس</td></tr>
+    <tr><td>داتا جديدة</td><td>ضيفها فورًا</td><td>أعد التدريب</td></tr>
+    <tr><td>الحدود</td><td>ضمنية، بتتحسب لحظتها</td><td>صريحة، ثابتة بعد التدريب</td></tr>
+  </table></div>
+  <p>الـ lazy مثالي لما الداتا بتتغير كتير (ضيف/امسح من غير retrain)، أو queries قليلة، أو عايز صفر وقت تدريب، أو الداتا صغيرة كفاية إن الـ brute force يبقى سريع.</p>
+</section>
+
+<!-- CODE -->
+<section id="d28-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/06-knn-and-distances/code/knn.py</pre></div>
+  <details><summary>إيه اللي هتشوفه</summary><p>الأقسام بالترتيب: K من 1 لـ 50 (K=1 دقته على الـ train = 1.0)، مقارنة L2/L1/Cosine، weighted قصاد unweighted، regression على <span class="ltr">sin(x)</span>، جدول Minkowski (الأرقام في المعمل ٢ بالظبط)، لعنة الأبعاد، الـ scaling (age و salary)، KD-tree قصاد brute force، lazy vs eager، واختيار K. أغلب الأرقام بتعتمد على الـ seed، ركز على الاتجاهات.</p></details>
+  <p>اكتب في <code>my_knn.py</code> بإيدك.</p>
+
+  <h3>خطوة ١: دوال المسافة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math, random
+
+def l2_distance(a, b):
+    return math.sqrt(sum((ai - bi) ** 2 for ai, bi in zip(a, b)))
+
+def l1_distance(a, b):
+    return sum(abs(ai - bi) for ai, bi in zip(a, b))
+
+def cosine_distance(a, b):
+    dot_val = sum(ai * bi for ai, bi in zip(a, b))
+    na = math.sqrt(sum(ai ** 2 for ai in a))
+    nb = math.sqrt(sum(bi ** 2 for bi in b))
+    if na == 0 or nb == 0:               <span class="c"># متجه صفر ملوش اتجاه</span>
+        return 1.0
+    return 1.0 - dot_val / (na * nb)
+
+def minkowski_distance(a, b, p=2):
+    if p == float("inf"):                <span class="c"># Chebyshev: أكبر فرق</span>
+        return max(abs(ai - bi) for ai, bi in zip(a, b))
+    return sum(abs(ai - bi) ** p for ai, bi in zip(a, b)) ** (1 / p)
+
+a, b = [1.0, 2.0, 3.0], [4.0, 0.0, 6.0]
+for p in [1, 2, float("inf")]:
+    print(p, round(minkowski_distance(a, b, p), 4))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">1 8.0
+2 4.6904
+inf 3.0</pre></details>
+
+  <h3>خطوة ٢: كلاس KNN</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class KNN:
+    def __init__(self, k=5, distance_fn=l2_distance, weighted=False,
+                 task="classification"):
+        self.k, self.distance_fn = k, distance_fn
+        self.weighted, self.task = weighted, task
+
+    def fit(self, X, y):                         <span class="c"># lazy: خزّن وخلاص</span>
+        self.X_train, self.y_train = list(X), list(y)
+
+    def predict(self, X):
+        return [self._predict_one(x) for x in X]
+
+    def _predict_one(self, x):
+        d = [(self.distance_fn(x, xi), yi) for xi, yi in zip(self.X_train, self.y_train)]
+        d.sort(key=lambda pair: pair[0])         <span class="c"># رتّب حسب المسافة</span>
+        neighbors = d[: self.k]
+        if self.task == "classification":
+            return self._classify(neighbors)
+        return self._regress(neighbors)
+
+    def _classify(self, neighbors):
+        votes = {}
+        for dist, label in neighbors:
+            w = 1.0 / (dist + 1e-10) if self.weighted else 1
+            votes[label] = votes.get(label, 0) + w
+        return max(votes, key=votes.get)
+
+    def _regress(self, neighbors):
+        if self.weighted:
+            ws = [1.0 / (dist + 1e-10) for dist, _ in neighbors]
+            return sum(w * v for w, (_, v) in zip(ws, neighbors)) / sum(ws)
+        return sum(v for _, v in neighbors) / len(neighbors)</pre></div>
+
+  <h3>خطوة ٣: Standardize (بالـ train بس)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def standardize(X):
+    n, d = len(X), len(X[0])
+    means = [sum(X[i][j] for i in range(n)) / n for j in range(d)]
+    stds = [max(1e-10, (sum((X[i][j] - means[j]) ** 2 for i in range(n)) / n) ** 0.5)
+            for j in range(d)]
+    return [[(X[i][j] - means[j]) / stds[j] for j in range(d)] for i in range(n)], means, stds
+
+def apply_standardize(X, means, stds):        <span class="c"># نفس means/stds على الـ test</span>
+    return [[(x[j] - means[j]) / stds[j] for j in range(len(x))] for x in X]</pre></div>
+
+  <h3>خطوة ٤: KD-tree</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class KDNode:
+    def __init__(self, point, index, axis, left=None, right=None):
+        self.point, self.index, self.axis = point, index, axis
+        self.left, self.right = left, right
+
+class KDTree:
+    def __init__(self, X):
+        self.dim = len(X[0])
+        self.root = self._build([(X[i], i) for i in range(len(X))], depth=0)
+
+    def _build(self, points, depth):
+        if not points:
+            return None
+        axis = depth % self.dim                  <span class="c"># المحاور بالدور</span>
+        points.sort(key=lambda p: p[0][axis])
+        mid = len(points) // 2                   <span class="c"># الـ median</span>
+        return KDNode(points[mid][0], points[mid][1], axis,
+                      self._build(points[:mid], depth + 1),
+                      self._build(points[mid + 1:], depth + 1))
+
+    def query(self, point, k=1):
+        best = []
+        self._search(self.root, point, k, best)
+        return sorted(best, key=lambda t: t[0])
+
+    def _search(self, node, point, k, best):
+        if node is None:
+            return
+        dist = l2_distance(point, node.point)
+        if len(best) &lt; k:
+            best.append((dist, node.index, node.point)); best.sort(key=lambda t: t[0])
+        elif dist &lt; best[-1][0]:
+            best[-1] = (dist, node.index, node.point); best.sort(key=lambda t: t[0])
+        diff = point[node.axis] - node.point[node.axis]
+        first, second = (node.left, node.right) if diff &lt;= 0 else (node.right, node.left)
+        self._search(first, point, k, best)      <span class="c"># الناحية بتاعتك الأول</span>
+        if len(best) &lt; k or abs(diff) &lt; best[-1][0]:
+            self._search(second, point, k, best) <span class="c"># backtrack لو ممكن يبقى فيه أقرب</span></pre></div>
+
+  <h3>خطوة ٥: اختبرهم</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>random.seed(42)
+centers = [[1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]]
+X, y = [], []
+for _ in range(200):
+    c = random.randint(0, 2)
+    X.append([centers[c][0] + random.gauss(0, 0.5), centers[c][1] + random.gauss(0, 0.5)])
+    y.append(c)
+
+knn = KNN(k=5); knn.fit(X[:160], y[:160])
+pred = knn.predict(X[160:])
+print("acc", sum(p == t for p, t in zip(pred, y[160:])) / 40)
+
+tree = KDTree(X[:160])
+q = X[170]
+brute = sorted((l2_distance(q, X[i]), i) for i in range(160))[:3]
+print([i for _, i in brute], [i for _, i, _ in tree.query(q, k=3)])   <span class="c"># لازم يتطابقوا</span></pre></div>
+
+  <h3>خطوة ٦: scikit-learn و FAISS</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+
+clf = Pipeline([
+    ("scaler", StandardScaler()),
+    ("knn", KNeighborsClassifier(n_neighbors=5, metric="euclidean")),
+])
+clf.fit(X_train, y_train)
+print(f"Accuracy: {clf.score(X_test, y_test):.4f}")
+
+<span class="c"># ملايين المتجهات؟</span>
+import faiss
+index = faiss.IndexFlatL2(dimension)
+index.add(embeddings)
+distances, indices = index.search(query_vectors, k=5)</pre></div>
+  <p>scikit-learn بيختار KD-tree أو ball tree لوحده لما الداتا كبيرة كفاية والأبعاد قليلة كفاية، ويرجع للـ brute force في الأبعاد العالية. تتحكم في ده بالـ <code>algorithm</code>. وللمقاييس الضخمة: FAISS أو Annoy أو vector database.</p>
+  <div class="note"><strong>Ship It:</strong> الدرس بيطلّع <code>outputs/prompt-distance-metric-advisor.md</code>: prompt بتوصفله الداتا بتاعتك فيقترح مقياس المسافة المناسب.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d28-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>الحدود حسب K:</b> KNN على داتا 2D بـ 3 classes. ارسم الحدود لـ <span class="ltr">K = 1, 5, 15, N</span>.
+      <details><summary>تلميح</summary>اعمل grid مثلًا 100×100 نقطة واتوقع لكل واحدة ولوّنها. نفس اللي في المعمل ١ بزرار «المناطق». K=1 = Voronoi متعرج، K=N = لون واحد.</details></li>
+    <li><b>قيس اللعنة:</b> 1000 نقطة عشوائية في 2, 5, 10, 50, 100, 500 بُعد. احسب max/min للمسافات بين الأزواج وارسمها قصاد d.
+      <details><summary>تلميح</summary>كل الأزواج = 500 ألف، كتير. خد عينة 2000 زوج عشوائي. النسبة هتنزل بسرعة ناحية 1 (شوف المعمل ٣).</details></li>
+    <li><b>نص بـ TF-IDF:</b> قارن L1 و L2 و cosine في KNN لتصنيف نصوص. مين بيكسب وليه؟
+      <details><summary>الإجابة</summary>غالبًا cosine. مستند طويل فيه نفس الكلمات بعدد أكبر هيبقى «بعيد» بالـ L2 مع إنه نفس الموضوع. الـ cosine بيتجاهل الطول ويبص على النسب (الاتجاه).</details></li>
+    <li><b>KD-tree قصاد brute force:</b> قيس وقت الـ query على 1k و10k و100k نقطة في 2D و10D و50D. عند أنهي بُعد الـ KD-tree بيبطّل يبقى أسرع؟
+      <details><summary>تلميح</summary>استخدم <code>time.perf_counter()</code> ومتوسط 100 query. عدّ كمان كام node اتزارت. هتلاقي الفرق كبير في 2D وبيختفي تقريبًا حوالين 20D وفوق.</details></li>
+    <li><b>Weighted regression:</b> <span class="ltr">y = sin(x) + noise</span>، قارن weighted و unweighted لـ <span class="ltr">K = 3, 10, 30</span>.
+      <details><summary>المتوقع</summary>مع K كبير الـ unweighted بيـ over-smooth ويسطّح القمم، والـ weighted بيحافظ على الشكل المحلي أكتر لأن الجيران القريبين صوتهم أعلى.</details></li>
+    <li><b>إضافة مني · ميني retriever لـ RAG:</b> خد 30 جملة من docs أي مكتبة بتحبها، واعمل لكل جملة متجه bag-of-words (أو TF-IDF بإيدك)، واكتب <code>retrieve(query, k=3)</code> بالـ KNN بتاعك ومقياس cosine. جرب نفس الأسئلة بـ L2 وقارن الجمل اللي رجعت. ده حرفيًا الـ retrieval step في RAG، بس الـ embeddings هناك جاية من موديل.
+      <details><summary>تلميح</summary>ابني الـ vocab من الجمل، والـ query بنفس الـ vocab. KNN بتاعك محتاج <code>task="classification"</code>؟ لأ، هنا انت عايز الجيران نفسهم: رتّب المسافات ورجّع أول k indices مباشرة.</details></li>
+  </ol>
+</section>
+
+<!-- MINE -->
+<section id="d28-mine">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: KNN مستخبي في كل حتة</h2></div>
+  <h3>الحدس</h3>
+  <p>KNN مش بيتعلم «قاعدة». هو بيقول: «الحاجات المتشابهة ليها نفس النتيجة». يعني كل الذكاء في <b>تعريف التشابه</b>. لو الـ features وحشة أو المسافة غلط، مفيش K هينقذك. وده بالظبط ليه الـ embeddings مهمة: موديل اتعلم يحط الحاجات المتشابهة جنب بعض، وبعدها KNN بسيط يشتغل.</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>تعمل standardize على الداتا كلها قبل الـ split. احسب الـ mean والـ std من الـ train بس، وطبّقهم على الـ test (<code>apply_standardize</code>).</li>
+    <li>K زوجي في binary فيحصل تعادل.</li>
+    <li>تقيم بالـ train accuracy مع K=1: هتطلع 1.0 دايمًا لأن كل نقطة أقرب جار ليها هي نفسها.</li>
+    <li>تستخدم L2 على embeddings مش normalized. لو المتجهات normalized، ترتيب L2 = ترتيب cosine، غير كده ممكن يختلفوا.</li>
+    <li>تنسى إن الـ prediction بتكلف <span class="ltr">O(n·d)</span>. موديل «بلا تدريب» ممكن يبقى أبطأ موديل في الـ production.</li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <p>أي <b>vector database</b> (pgvector، Pinecone، Qdrant...) هي KNN (غالبًا approximate بالـ HNSW). الـ <b>retrieval في RAG</b> = هات أقرب K chunks للسؤال. الـ <b>semantic cache</b> للـ LLM = لو فيه سؤال قديم قريب كفاية من الجديد، رجّع إجابته. و<b>few-shot selection</b> = اختار أقرب K أمثلة للسؤال وحطها في الـ prompt. و<b>memory</b> الـ agents = KNN على ذكريات متخزنة كـ embeddings.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d28-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d28-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d28-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d28-ck">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح KNN وتأثير K على الـ bias والـ variance</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أعرف أختار بين L1 و L2 و cosine حسب الداتا</label></li>
+    <li><label><input type="checkbox" data-ck="3"> شفت بعيني ليه الـ scaling إجباري ولعنة الأبعاد</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت KNN و KDTree بإيدي واتأكدت إنهم بيدوا نفس الجيران</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>KNN search</td><td>vector databases، retrieval في RAG، recommendations</td></tr>
+    <tr><td>Cosine distance</td><td>مقارنة الـ embeddings للنص والصور</td></tr>
+    <tr><td>Feature scaling</td><td>أي موديل معتمد على مسافات (KNN, SVM, k-means)</td></tr>
+    <tr><td>Curse of dimensionality</td><td>ليه بنعمل PCA/UMAP، وليه الـ ANN indexes مش exact</td></tr>
+    <tr><td>KD-tree / Ball tree</td><td>scikit-learn، البحث المكاني (خرايط، GPS)</td></tr>
+    <tr><td>HNSW / IVF</td><td>FAISS و pgvector وكل vector store كبير</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Unsupervised Learning. مفيش labels خالص، والموديل لازم يلاقي البنية لوحده. وهنبدأ بتسخين على KNN.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F06-knn-and-distances" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/06-knn-and-distances</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+const rm=$('d28-roadmap');for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===6)s.className='now';rm.appendChild(s)}
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(R){let u=0,v=0;while(!u)u=R();v=R();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+/* ---- Lab 1: KNN ---- */
+const kc=$('d28-knnC'),kx=AI.setupCanvas(kc),KW=+kc.dataset.w,KH=+kc.dataset.h,KS=95,kox=KW/2,koy=KH/2;
+const toP=(x,y)=>[kox+x*KS,koy-y*KS],toW=(px,py)=>[(px-kox)/KS,(koy-py)/KS];
+const data=(()=>{const R=rng(42),C=[[1,1],[-1,-1],[1,-1]],P=[];for(let i=0;i<150;i++){const c=Math.floor(R()*3);P.push([C[c][0]+gauss(R)*.5,C[c][1]+gauss(R)*.5,c])}return P})();
+let q=[0.2,0.1],dragQ=false;
+const cols=()=>[css('--vec-a'),css('--vec-b'),css('--ok')];
+function dist(a,b,met,s){const dx=a[0]-b[0],dy=(a[1]-b[1])*s;
+  if(met==='l1')return Math.abs(dx)+Math.abs(dy);if(met==='inf')return Math.max(Math.abs(dx),Math.abs(dy));
+  if(met==='cos'){const ax=a[0],ay=a[1]*s,bx=b[0],by=b[1]*s,na=Math.hypot(ax,ay),nb=Math.hypot(bx,by);return na&&nb?1-(ax*bx+ay*by)/(na*nb):1}
+  return Math.hypot(dx,dy)}
+function knn(x,k,met,s,wt){const D=data.map((p,i)=>[dist(x,p,met,s),i]);D.sort((a,b)=>a[0]-b[0]);const nb=D.slice(0,k),v=[0,0,0];nb.forEach(([d,i])=>v[data[i][2]]+=wt?1/(d+1e-10):1);let b=0;for(let i=1;i<3;i++)if(v[i]>v[b])b=i;return{nb,v,b}}
+function drawKNN(){
+  const k=+$('d28-k').value,s=Math.pow(10,+$('d28-s').value),met=$('d28-met').value,wt=$('d28-w').checked,C=cols();
+  $('d28-kV').textContent=k;$('d28-sV').textContent=f(s,1);
+  kx.clearRect(0,0,KW,KH);
+  if($('d28-reg').checked){const cell=10;for(let px=0;px<KW;px+=cell)for(let py=0;py<KH;py+=cell){const r=knn(toW(px+5,py+5),k,met,s,wt);kx.fillStyle=C[r.b];kx.globalAlpha=.2;kx.fillRect(px,py,cell,cell)}kx.globalAlpha=1}
+  AI.grid(kx,KW,KH,KS,kox,koy);
+  const r=knn(q,k,met,s,wt),[qx,qy]=toP(...q);
+  kx.lineWidth=1.2;r.nb.forEach(([d,i])=>{const[px,py]=toP(data[i][0],data[i][1]);kx.strokeStyle=C[data[i][2]];kx.globalAlpha=.7;kx.beginPath();kx.moveTo(qx,qy);kx.lineTo(px,py);kx.stroke()});kx.globalAlpha=1;
+  const inN=new Set(r.nb.map(n=>n[1]));
+  data.forEach((p,i)=>{const[px,py]=toP(p[0],p[1]);kx.fillStyle=C[p[2]];kx.beginPath();kx.arc(px,py,inN.has(i)?6:4,0,7);kx.fill();if(inN.has(i)){kx.strokeStyle=css('--ink');kx.lineWidth=1.5;kx.stroke()}});
+  kx.fillStyle=css('--ink');kx.beginPath();for(let j=0;j<10;j++){const a=-Math.PI/2+j*Math.PI/5,rr=j%2?5:12;kx.lineTo(qx+rr*Math.cos(a),qy+rr*Math.sin(a))}kx.closePath();kx.fill();
+  kx.strokeStyle=C[r.b];kx.lineWidth=3;kx.stroke();
+  ['d28-v0','d28-v1','d28-v2'].forEach((id,i)=>$(id).textContent=wt?f(r.v[i],1):r.v[i]);$('d28-pr').textContent='class '+r.b;$('d28-pr').style.color=C[r.b];
+}
+kc.addEventListener('pointerdown',e=>{dragQ=true;kc.setPointerCapture(e.pointerId);mvQ(e)});
+function mvQ(e){if(!dragQ)return;const[x,y]=AI.evPos(kc,e);q=toW(x,y);drawKNN()}
+kc.addEventListener('pointermove',mvQ);kc.addEventListener('pointerup',()=>dragQ=false);
+['d28-k','d28-s'].forEach(id=>$(id).addEventListener('input',drawKNN));['d28-met','d28-w','d28-reg'].forEach(id=>$(id).addEventListener('change',drawKNN));
+drawKNN();
+
+/* ---- Lab 2: Minkowski balls ---- */
+const bc=$('d28-ballC'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h,BS=130,box=BW/2,boy=BH/2;let pt=[0.8,0.6],dragB=false;
+function ball(p,col,w,dash){bx.strokeStyle=col;bx.lineWidth=w;bx.setLineDash(dash||[]);bx.beginPath();for(let i=0;i<=400;i++){const t=i/400*2*Math.PI,c=Math.cos(t),s=Math.sin(t);let n;if(p===Infinity)n=Math.max(Math.abs(c),Math.abs(s));else n=Math.pow(Math.pow(Math.abs(c),p)+Math.pow(Math.abs(s),p),1/p);const x=box+c/n*BS,y=boy-s/n*BS;i?bx.lineTo(x,y):bx.moveTo(x,y)}bx.closePath();bx.stroke();bx.setLineDash([])}
+function drawBall(){
+  const p=+$('d28-p').value;$('d28-pV').textContent=p>=12?'12 (≈∞)':f(p,1);
+  bx.clearRect(0,0,BW,BH);AI.grid(bx,BW,BH,BS/2,box,boy);
+  ball(1,css('--muted'),1.2,[4,4]);ball(2,css('--muted'),1.2,[4,4]);ball(Infinity,css('--muted'),1.2,[4,4]);
+  ball(p,css('--vec-a'),3);
+  bx.fillStyle=css('--muted');bx.font='12px JetBrains Mono, monospace';bx.fillText('L1',box+BS*.5+6,boy-BS*.5+4);bx.fillText('L∞',box+BS+4,boy-BS-4);
+  const[px,py]=[box+pt[0]*BS,boy-pt[1]*BS];AI.arrow(bx,box,boy,px,py,css('--vec-b'),3);
+  bx.fillStyle=css('--vec-b');bx.beginPath();bx.arc(px,py,8,0,7);bx.fill();
+  const a=Math.abs(pt[0]),b=Math.abs(pt[1]);
+  $('d28-d1').textContent=f(a+b,3);$('d28-d2').textContent=f(Math.hypot(a,b),3);$('d28-dp').textContent=f(Math.pow(Math.pow(a,p)+Math.pow(b,p),1/p),3);$('d28-di').textContent=f(Math.max(a,b),3);
+}
+bc.addEventListener('pointerdown',e=>{dragB=true;bc.setPointerCapture(e.pointerId);mvB(e)});
+function mvB(e){if(!dragB)return;const[x,y]=AI.evPos(bc,e);pt=[Math.max(-1.9,Math.min(1.9,(x-box)/BS)),Math.max(-1.45,Math.min(1.45,(boy-y)/BS))];drawBall()}
+bc.addEventListener('pointermove',mvB);bc.addEventListener('pointerup',()=>dragB=false);
+$('d28-p').addEventListener('input',drawBall);drawBall();
+
+/* ---- Lab 3: curse of dimensionality ---- */
+const cc=$('d28-curseC'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+function lgamma(z){const g=7,c=[0.99999999999980993,676.5203681218851,-1259.1392167224028,771.32342877765313,-176.61502916214059,12.507343278686905,-0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7];z-=1;let x=c[0];for(let i=1;i<g+2;i++)x+=c[i]/(z+i);const t=z+g+.5;return .5*Math.log(2*Math.PI)+(z+.5)*Math.log(t)-t+Math.log(x)}
+function drawCurse(){
+  const d=Math.max(1,Math.round(Math.pow(10,+$('d28-d').value)));$('d28-dV').textContent=d;
+  const R=rng(42),n=200,P=[];for(let i=0;i<n;i++){const v=new Float64Array(d);for(let j=0;j<d;j++)v[j]=R();P.push(v)}
+  const D=[];for(let t=0;t<600;t++){const i=Math.floor(R()*n),j=Math.floor(R()*n);if(i===j)continue;let s=0;for(let k=0;k<d;k++){const df=P[i][k]-P[j][k];s+=df*df}D.push(Math.sqrt(s))}
+  const mx=Math.max(...D),mn=Math.min(...D.filter(v=>v>0)),mean=D.reduce((a,b)=>a+b,0)/D.length,sd=Math.sqrt(D.reduce((a,b)=>a+(b-mean)**2,0)/D.length);
+  $('d28-ratio').textContent=f(mx/mn,3);$('d28-cv').textContent=f(sd/mean,3);
+  const lv=(d/2)*Math.log(Math.PI)-lgamma(d/2+1)+d*Math.log(.5),vol=Math.exp(lv);
+  $('d28-ball').textContent=vol>1e-3?f(vol*100,2)+'%':vol.toExponential(1);
+  const bins=40,H=new Array(bins).fill(0);D.forEach(v=>{H[Math.min(bins-1,Math.floor(v/mx*bins))]++});const hm=Math.max(...H);
+  const L=30,Rr=CW-10,T=14,B=CH-28,bw=(Rr-L)/bins;
+  cx.clearRect(0,0,CW,CH);cx.strokeStyle=css('--grid');cx.lineWidth=1;for(let k=0;k<=4;k++){cx.beginPath();cx.moveTo(L,B-k/4*(B-T));cx.lineTo(Rr,B-k/4*(B-T));cx.stroke()}
+  cx.fillStyle=css('--vec-a');H.forEach((h,i)=>{const hh=h/hm*(B-T);cx.fillRect(L+i*bw+1,B-hh,bw-2,hh)});
+  cx.fillStyle=css('--muted');cx.font='12px JetBrains Mono, monospace';cx.textAlign='center';[0,.25,.5,.75,1].forEach(v=>cx.fillText(v,L+v*(Rr-L),B+15));cx.fillText('distance / max distance',L+(Rr-L)/2,B+27);cx.textAlign='left';
+  cx.strokeStyle=css('--vec-b');cx.lineWidth=2;cx.setLineDash([4,4]);[mn,mx].forEach(v=>{const x=L+v/mx*(Rr-L);cx.beginPath();cx.moveTo(x,T);cx.lineTo(x,B);cx.stroke()});cx.setLineDash([]);
+}
+$('d28-d').addEventListener('input',drawCurse);drawCurse();
+
+/* ---- quiz ---- */
+const ck=document.querySelector('#d28-ck input[data-ck="6"]');
+AI.quiz($('d28-quizBox'),[
+ ['ليه KNN اسمه «lazy learner»؟',['بيتقارب ببطء في التدريب','بيستخدم نسخة مبسطة من الـ loss','مش بيعمل أي حسابات وقت التدريب، وكل الشغل وقت الـ prediction','بيشتغل على داتا صغيرة بس'],2,'fit بتخزن الداتا وخلاص. حساب المسافات والتصويت بيحصلوا لما تطلب prediction.'],
+ ['ليه الـ feature scaling مهم جدًا لـ KNN؟',['KNN مش بيعرف يتعامل مع أرقام سالبة','KNN بيستخدم gradient descent','الـ scaling بيقلل عدد الجيران المطلوب','حساب المسافة بتسيطر عليه الـ features اللي مداها أكبر، فلازم scaling عشان المقارنة تبقى عادلة'],3,'feature من 0 لـ 1000 هتغرق feature من 0 لـ 1. جربتها بسلايدر scale في المعمل ١.'],
+ ['في 100 بُعد بنقط عشوائية uniform، نسبة أبعد مسافة لأقرب مسافة بيحصلها إيه؟',['بتزيد جامد فالجيران بيبانوا أوضح','بتقرب من 1، فكل النقط تقريبًا على نفس البُعد','زي ما هي في 2D','بتبقى سالبة من الـ overflow'],1,'دي لعنة الأبعاد. لما كل المسافات تتساوى، «الأقرب» ملوش معنى. شوفتها في المعمل ٣.'],
+ ['أنهي مقياس مسافة الأنسب لمقارنة مستندات متمثلة بـ TF-IDF؟',['Chebyshev','Cosine','L2 (Euclidean)','L1 (Manhattan)'],1,'الـ cosine بيقيس الزاوية ويتجاهل الطول. في النص، طول المستند noise والاتجاه هو المعنى.'],
+ ['إيه اللي بيحصل لحدود KNN لما K يزيد من 1 لـ N؟',['الحدود بتبقى أعقد وأدق','الحدود ثابتة مهما كان K','الحدود بتبقى دايرية','الحدود بتنعم، ولحد ما توصل إنها تتوقع الـ class الأغلبية لكل نقطة'],3,'K=1 متعرج بيحفظ (overfit). K=N دايمًا الأغلبية (أقصى bias).'],
+ ['(سؤال إضافي) الـ KD-tree بيبطّل يفيد إمتى غالبًا؟',['لما الداتا صغيرة','في الأبعاد العالية (حوالي 20 وفوق) لأن الـ backtracking بيقطع فروع أقل','لما تستخدم L2','لما K = 1'],1,'في الأبعاد القليلة O(log n)، وفي العالية بيرجع تقريبًا O(n). عشان كده بنستخدم ANN زي HNSW للـ embeddings.'],
+ ['(سؤال إضافي) في RAG، الخطوة اللي بتجيب أقرب chunks للسؤال هي فعليًا إيه؟',['Gradient descent على الـ chunks','KNN search (غالبًا approximate) على embeddings بمقياس زي cosine','Decision tree على الكلمات','SVM بين السؤال والـ chunks'],1,'الـ vector database بتعمل KNN: هات أقرب K متجهات للـ query embedding. نفس خوارزمية النهاردة بهياكل بيانات أسرع.']
+],5,()=>{if(ck){ck.checked=true;AI.store.set('aiefs-d28-6','1')}});
+AI.checklist(28,$('d28-ck'));
+
+AI.onTheme(()=>{if(!document.body.contains(kc))return false;drawKNN();drawBall();drawCurse()});
+})();
+</script>

@@ -1,0 +1,785 @@
+<div class="day" id="d12-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 12 · Tensor Operations</span>
+  <h1>اليوم ١٢: الـ Tensors، اللغة اللي الداتا والـ Deep Learning بيتكلموا بيها</h1>
+  <p class="lede">كل صورة وكل جملة وكل gradient بيعدّي جوه <b>tensor</b>. النهاردة هتفهم الـ shape والـ strides والـ broadcasting والـ einsum، وهتتتبع الـ shapes خطوة بخطوة جوه الـ multi-head attention. بعد اليوم ده، رسالة زي <code>mat1 and mat2 shapes cannot be multiplied</code> هتبقى حاجة تحلها في دقيقة.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python + NumPy</b></span>
+    <span>النوع: <b>Build</b></span>
+    <span>بعده: <b>Numerical Stability</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d12-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d12-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ SVD؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ SVD بيكسر أي مصفوفة A لإيه؟</summary>
+    <p><span class="ltr">A = U Σ Vᵀ</span>: لفة (Vᵀ)، بعدين مط على المحاور (Σ، فيها الـ singular values مترتبة من الأكبر للأصغر)، بعدين لفة تانية (U). وده بيشتغل مع أي مصفوفة، حتى لو مش مربعة.</p></details>
+  <details><summary>٢. يعني إيه low-rank approximation أو truncated SVD؟</summary>
+    <p>بتحتفظ بأكبر k من الـ singular values بس (وأعمدتهم في U وV) وترمي الباقي. بتطلع أحسن تقريب للمصفوفة بـ rank = k، وبتوفر مساحة كبيرة. نفس فكرة الـ LoRA اللي شفناها في اليوم الأول.</p></details>
+  <details><summary>٣. لو مصفوفة شكلها (1000, 500) وعملت truncated SVD بـ k=20، الـ U والـ Σ والـ Vᵀ هيبقى شكلهم إيه؟</summary>
+    <p>U: <span class="ltr">(1000, 20)</span>، Σ: ٢٠ رقم (أو <span class="ltr">(20, 20)</span> قطرية)، Vᵀ: <span class="ltr">(20, 500)</span>. لاحظ إنك فكّرت في <b>shapes</b>، ودي بالظبط مهارة النهاردة.</p></details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>إيه هو الـ tensor: rank، axis، shape</div>
+    <div><b>15 min</b>الـ strides والذاكرة (معمل ٠١)</div>
+    <div><b>15 min</b>الـ broadcasting (معمل ٠٢)</div>
+    <div><b>15 min</b>الـ einsum وتتبع الـ attention (معمل ٠٣)</div>
+    <div><b>25 min</b>اكتب الكلاس وشغّل الكود</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d12-what">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: أكتر bug في الـ Deep Learning</h2></div>
+  <p>بتبني transformer، الكود شكله نضيف، تشغله يطلعلك:</p>
+  <div class="formula">RuntimeError: mat1 and mat2 shapes cannot be multiplied (32x768 and 512x768)</div>
+  <p>تعمل transpose، يطلعلك <code>Expected 4D input (got 3D input)</code>. تضيف unsqueeze، حاجة تانية تبوظ. أخطاء الـ shapes مش صعبة في الفكرة، كل عملية ليها «عقد» على الـ shape، بس بتتراكم بسرعة لأن الـ transformer فيه عشرات الـ reshapes والـ transposes ورا بعض.</p>
+  <div class="note"><strong>الأخطر:</strong> فيه أخطاء shapes <b>مش بتطلع error خالص</b>. الكود يشتغل ويطلّع زبالة لأنه عمل broadcast على البُعد الغلط أو جمع على الـ axis الغلط. دي اللي بتضيّع أيام.</div>
+
+  <h3>طب إيه هو الـ tensor؟</h3>
+  <p>الـ tensor هو array بأي عدد أبعاد، كل عناصره من نفس النوع (كلهم float32 مثلًا). فكّر فيه زي دولاب: الرقم الواحد علبة، الـ vector رف، الـ matrix دولاب كامل، الـ 3D tensor أوضة فيها دواليب، والـ 4D مبنى فيه أوض.</p>
+  <ul class="checklist" style="gap:4px">
+    <li><b>Rank (أو order):</b> عدد الأبعاد. خلي بالك: ده غير الـ matrix rank بتاع اليوم الأول. مصفوفة 2D ليها tensor rank = 2 دايمًا.</li>
+    <li><b>Axis:</b> كل بُعد لوحده (axis 0، axis 1، ...).</li>
+    <li><b>Shape:</b> tuple فيها الحجم على كل axis.</li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>الاسم</th><th>Rank</th><th>Shape مثال</th></tr>
+    <tr><td>Scalar</td><td>0</td><td class="ltr">()</td></tr>
+    <tr><td>Vector</td><td>1</td><td class="ltr">(3,)</td></tr>
+    <tr><td>Matrix</td><td>2</td><td class="ltr">(2, 3)</td></tr>
+    <tr><td>3D Tensor</td><td>3</td><td class="ltr">(2, 2, 2)</td></tr>
+    <tr><td>4D Tensor</td><td>4</td><td class="ltr">(B, C, H, W)</td></tr>
+  </table></div>
+  <p>عدد العناصر = حاصل ضرب كل الأحجام. <span class="ltr">(2, 3, 4)</span> فيها <span class="ltr">2·3·4 = 24</span> عنصر.</p>
+
+  <h3>الـ shapes المشهورة في الـ AI</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المجال</th><th>الشكل</th><th>مثال</th></tr>
+    <tr><td>Vision</td><td class="ltr">(B, C, H, W)</td><td class="ltr">32, 3, 224, 224</td></tr>
+    <tr><td>NLP</td><td class="ltr">(B, T, D)</td><td class="ltr">16, 128, 768</td></tr>
+    <tr><td>Attention</td><td class="ltr">(B, H, T, D)</td><td class="ltr">16, 12, 128, 64</td></tr>
+    <tr><td>Weights</td><td class="ltr">Linear (out, in) · Conv2D (out_c, in_c, kH, kW) · Embedding (vocab, dim)</td><td></td></tr>
+  </table></div>
+  <p>B = batch، C = channels، H/W = الطول والعرض، T = طول الجملة (tokens)، D = حجم الـ embedding. الـ PyTorch بيستخدم <b>NCHW</b> (الـ channels الأول)، والـ TensorFlow افتراضيًا <b>NHWC</b> (الـ channels في الآخر). لو لخبطت بينهم، يا إما error، يا إما بطء من غير ما تحس.</p>
+</section>
+
+<!-- STATION 2: strides lab -->
+<section id="d12-mem">
+  <div class="station-head"><span class="tag">02</span><h2>الذاكرة والـ Strides: الـ tensor في الحقيقة سطر واحد</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الذاكرة مفيهاش «صفوف وأعمدة». هي شريط طويل من الأرقام ورا بعض. الـ tensor = الشريط ده + <b>metadata</b>: الـ shape والـ <b>strides</b>.</p>
+      <p>الـ stride بيقولك: «عشان تتحرك خطوة واحدة على الـ axis ده، انط كام عنصر في الشريط؟». زي عمارة: عشان تطلع دور واحد، بتعدّي على كل شقق الدور (stride كبير)، وعشان تروح الشقة اللي جنبك خطوة واحدة (stride = 1).</p>
+      <div class="formula">flat_index = i·stride₀ + j·stride₁ + …</div>
+      <p>لشكل <span class="ltr">(3, 4)</span> الـ strides هي <span class="ltr">(4, 1)</span>: انط ٤ عشان تنزل صف، وانط ١ عشان تروح العمود اللي جنبه. ده اسمه <b>row-major</b> (C order). في <b>column-major</b> (F order) الترتيب بيبقى بالأعمدة: مصفوفة <span class="ltr">[[a,b,c],[d,e,f]]</span> بتتخزن <span class="ltr">a d b e c f</span> بـ strides <span class="ltr">(1, 2)</span>.</p>
+      <div class="note ai"><strong>السر:</strong> الـ <b>transpose مش بيحرك أي داتا</b>. هو بس بيبدّل الـ strides. النتيجة: tensor <b>non-contiguous</b>، يعني عناصر الصف الواحد مش جنب بعض في الذاكرة. جرّب زرار Transpose وشوف الأسهم بتنط في الشريط.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d12-memCanvas" width="520" height="380" aria-label="شبكة tensor وشريط الذاكرة"></canvas>
+      <div class="mrow">
+        <label>rows <span id="d12-rv">3</span><input type="range" id="d12-rows" min="1" max="5" step="1" value="3"></label>
+        <label>cols <span id="d12-cv">4</span><input type="range" id="d12-cols" min="1" max="6" step="1" value="4"></label>
+      </div>
+      <div class="readout">
+        <div><small>shape</small><b id="d12-mShape">(3, 4)</b></div>
+        <div><small>strides</small><b id="d12-mStr">(4, 1)</b></div>
+        <div><small>العنصر المختار</small><b id="d12-mSel">[1, 2]</b></div>
+        <div><small>flat index</small><b id="d12-mFlat">6</b></div>
+      </div>
+      <div class="verdict" id="d12-mVerdict">contiguous: الصف جنب بعض في الذاكرة</div>
+      <div class="btns">
+        <button type="button" id="d12-tBtn">Transpose (بدّل الـ strides)</button>
+        <button type="button" id="d12-cBtn">.contiguous() (انسخ وارتّب)</button>
+        <button type="button" id="d12-rowBtn">ورّيني مشي صف كامل</button>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">دوس على أي خانة في الشبكة عشان تشوف مكانها في الشريط.</p>
+    </div>
+  </div>
+  <div class="note"><strong>ليه ده يفرق؟</strong> في PyTorch، <code>.view()</code> بيفشل على tensor مش contiguous (لأنه عايز يغيّر الـ metadata بس من غير نسخ). الحل: <code>.reshape()</code> (بينسخ لو محتاج) أو <code>.contiguous()</code> الأول.</div>
+</section>
+
+<!-- STATION 3: reshape etc -->
+<section id="d12-reshape">
+  <div class="station-head"><span class="tag">03</span><h2>Reshape و Squeeze و Unsqueeze و Permute</h2></div>
+  <p><b>Reshape</b>: بيغيّر الشكل من غير ما يغيّر ترتيب العناصر. الشرط الوحيد: عدد العناصر يفضل زي ما هو. تقدر تحط <code>-1</code> في بُعد واحد بس والكود يحسبه لوحده. زي ما تعيد ترتيب ١٢ كرسي: ٢×٦ أو ٣×٤ أو ٢×٢×٣، بس مينفعش ٥×٣.</p>
+  <div class="formula">(2, 6) → reshape((3, 4)) ✓    reshape((-1, 3)) → (4, 3) ✓    reshape((5, 3)) ✗</div>
+  <p><b>Squeeze</b>: بيشيل أي axis حجمه ١. <b>Unsqueeze</b>: بيضيف axis حجمه ١ في المكان اللي تختاره. شكلها حركة تافهة، بس هي مفتاح الـ broadcasting: bias شكله <span class="ltr">(D,)</span> عايز تضيفه على batch شكلها <span class="ltr">(B, T, D)</span>؟ محتاج تفكر فيه كـ <span class="ltr">(1, 1, D)</span>.</p>
+  <div class="formula">(1, 3, 1, 2).squeeze() → (3, 2)      (3,).unsqueeze(0) → (1, 3)      (3,).unsqueeze(1) → (3, 1)</div>
+  <p><b>Transpose</b> بيبدّل axis-ين. <b>Permute</b> بيعيد ترتيب كل الـ axes مرة واحدة. ده اللي بتحوّل بيه من NCHW لـ NHWC:</p>
+  <div class="formula">(1, 2, 3, 4).permute((0, 2, 3, 1)) → (1, 3, 4, 2)</div>
+  <p><b>Flatten</b> من بُعد معين: <span class="ltr">(2, 4, 4, 2).flatten(start_dim=1) → (2, 32)</span>. ده اللي بيحصل قبل الـ Linear layer في آخر CNN.</p>
+
+  <h3>العمليات element-wise والـ reductions</h3>
+  <p>العمليات <b>element-wise</b> (جمع، ضرب، طرح) بتشتغل على كل عنصر لوحده ومش بتغيّر الـ shape. الـ <b>reductions</b> (sum، mean، max) بتكبس axis أو أكتر وتشيله من الـ shape.</p>
+  <div class="tablewrap"><table>
+    <tr><th>العملية</th><th>الدخل</th><th>الخرج</th><th>فين</th></tr>
+    <tr><td class="ltr">mean(axis=[2, 3])</td><td class="ltr">(B, C, H, W)</td><td class="ltr">(B, C)</td><td>Global Average Pooling في CNN</td></tr>
+    <tr><td class="ltr">mean(axis=1)</td><td class="ltr">(B, T, D)</td><td class="ltr">(B, D)</td><td>Sequence mean pooling في NLP</td></tr>
+    <tr><td class="ltr">sum(axis=0)</td><td class="ltr">(2, 3, 4)</td><td class="ltr">(3, 4)</td><td>اجمع على الـ batch</td></tr>
+    <tr><td class="ltr">argmax(axis=-1)</td><td class="ltr">(2, 3, 4)</td><td class="ltr">(2, 3)</td><td>اختيار الـ class/token الأعلى</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 4: broadcasting lab -->
+<section id="d12-bcast">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Broadcasting: قواعد صارمة، مش سحر</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ broadcasting بيخليك تعمل عملية على tensors أشكالهم مختلفة <b>من غير ما تنسخ داتا</b>. القواعد تلاتة بس:</p>
+      <ol class="ex">
+        <li>رصّ الـ shapes من <b>اليمين</b>.</li>
+        <li>اللي أبعاده أقل، كمّله بـ 1 من الشمال.</li>
+        <li>كل بُعدين لازم يبقوا <b>متساويين</b> أو <b>واحد فيهم = 1</b>. اللي بـ 1 بيتمط. غير كده: error.</li>
+      </ol>
+      <div class="formula">A: (8, 1, 6, 1)<br>B:    (7, 1, 5) → (1, 7, 1, 5)<br>= (8, 7, 6, 5)</div>
+      <p>تشبيه: عندك ورقة فيها عمود أسعار (3 منتجات) وصف خصومات (4 أيام). الـ broadcasting بيعمل جدول 3×4 كامل من غير ما تنسخ العمود ٤ مرات بإيدك.</p>
+      <div class="note"><strong>الفخ الصامت:</strong> <span class="ltr">(3,) + (3, 1)</span> مش هتطلع error. هتطلع <span class="ltr">(3, 3)</span>! لو كنت فاكر إنك بتجمع vector على vector، كدا الكود اشتغل وطلّع حاجة غلط. جرّبها في المعمل.</div>
+    </div>
+    <div class="instrument">
+      <div style="display:grid;gap:6px;direction:ltr">
+        <label style="display:flex;gap:8px;align-items:center;font-family:var(--f-mono);font-size:14px">A <input id="d12-shA" value="3, 1" style="font:inherit;flex:1;min-width:0;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)" aria-label="shape A"></label>
+        <label style="display:flex;gap:8px;align-items:center;font-family:var(--f-mono);font-size:14px">B <input id="d12-shB" value="1, 4" style="font:inherit;flex:1;min-width:0;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)" aria-label="shape B"></label>
+      </div>
+      <canvas id="d12-bcCanvas" width="520" height="300" aria-label="رسم توضيحي للـ broadcasting"></canvas>
+      <div class="readout">
+        <div><small>النتيجة</small><b id="d12-bcRes">(3, 4)</b></div>
+        <div><small>عدد العناصر</small><b id="d12-bcN">12</b></div>
+      </div>
+      <div class="verdict" id="d12-bcVerdict"></div>
+      <div class="btns">
+        <button type="button" data-bc="3, 1|1, 4">(3,1)+(1,4)</button>
+        <button type="button" data-bc="8, 1, 6, 1|7, 1, 5">من الدرس</button>
+        <button type="button" data-bc="4, 3|3">bias</button>
+        <button type="button" data-bc="2, 3, 4, 4|1, 3, 1, 1">channel scale</button>
+        <button type="button" data-bc="3|3, 1">الفخ الصامت</button>
+        <button type="button" data-bc="3, 4|3">Error</button>
+      </div>
+    </div>
+  </div>
+  <h3>أمثلة الدرس بالـ NumPy</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>Shapes</th><th>النتيجة</th></tr>
+    <tr><td>إضافة bias على batch</td><td class="ltr">(4, 3) + (3,)</td><td class="ltr">(4, 3)</td></tr>
+    <tr><td>scale لكل channel في صور</td><td class="ltr">(2, 3, 4, 4) * (1, 3, 1, 1)</td><td class="ltr">(2, 3, 4, 4)</td></tr>
+    <tr><td>outer product</td><td class="ltr">(3, 1) * (1, 4)</td><td class="ltr">(3, 4)</td></tr>
+    <tr><td>مسافات بين كل نقطتين</td><td class="ltr">(5, 1, 2) − (1, 3, 2) → sum(-1)</td><td class="ltr">(5, 3)</td></tr>
+  </table></div>
+  <p><b>المسافات pairwise:</b> عندك M نقطة <span class="ltr">(M, 2)</span> وN نقطة <span class="ltr">(N, 2)</span>. حوّلهم لـ <span class="ltr">(M, 1, 2)</span> و<span class="ltr">(1, N, 2)</span>، اطرح (broadcast لـ <span class="ltr">(M, N, 2)</span>)، ربّع، اجمع على آخر axis، خد الجذر: <span class="ltr">(M, N)</span>. من غير ولا loop.</p>
+</section>
+
+<!-- STATION 5: einsum -->
+<section id="d12-einsum">
+  <div class="station-head"><span class="tag">05</span><h2>Einsum: العملية اللي بتعمل كل حاجة</h2></div>
+  <p>الـ Einstein summation بيدّي كل axis حرف. القاعدة الوحيدة: <b>الحرف اللي موجود في الدخل ومش موجود في الخرج بيتجمع (summed)</b>. اللي موجود في الاتنين بيتساب. تخيله وصفة: بتكتب المكونات (الحروف) على الشمال، والطبق النهائي على اليمين، وأي مكون مش ظاهر في الطبق «اتطبخ» واختفى بالجمع.</p>
+  <div class="formula">matmul:  ik,kj -> ij     (k مش في الخرج → C[i,j] = Σₖ A[i,k]·B[k,j])</div>
+  <div class="bench">
+    <div style="display:grid;gap:10px;min-width:0">
+      <h3>معمل صغير: اختار pattern</h3>
+      <label style="display:flex;gap:8px;align-items:center">الـ pattern: <select id="d12-esSel"></select></label>
+      <div class="formula" id="d12-esFormula"></div>
+      <p id="d12-esExplain"></p>
+    </div>
+    <div class="instrument">
+      <div id="d12-esIdx" style="display:flex;flex-wrap:wrap;gap:6px;direction:ltr"></div>
+      <div class="readout">
+        <div><small>دخل</small><b id="d12-esIn"></b></div>
+        <div><small>خرج</small><b id="d12-esOut"></b></div>
+        <div><small>multiply-adds</small><b id="d12-esCost"></b></div>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">الأحرف الزرقا اتسابت في الخرج، والبرتقاني اتجمعت (contracted).</p>
+    </div>
+  </div>
+  <p><b>التكلفة:</b> حاصل ضرب أحجام <b>كل</b> الحروف (اللي اتسابت واللي اتجمعت). مثال الدرس: <span class="ltr">bij,bjk-&gt;bik</span> بـ B=32، I=128، J=64، K=128 = <span class="ltr">32·128·64·128 = 33,554,432</span> multiply-add.</p>
+</section>
+
+<!-- STATION 6: attention lab -->
+<section id="d12-attn">
+  <div class="station-head"><span class="tag">06</span><h2>تتبع الـ shapes جوه Multi-Head Attention</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>كل خطوة في الـ attention هي عملية tensor عرفناها النهاردة:</p>
+      <ol class="ex">
+        <li><b>Projection</b> (matmul بالـ einsum): <span class="ltr">bte,ek-&gt;btk</span> يطلّع Q وK وV.</li>
+        <li><b>Split heads</b> (reshape + transpose): <span class="ltr">(B,T,E) → (B,T,H,D) → (B,H,T,D)</span>.</li>
+        <li><b>Scores</b> (batch matmul): <span class="ltr">bhtd,bhsd-&gt;bhts</span> وتقسم على <span class="ltr">√D</span>.</li>
+        <li><b>Softmax</b> على آخر axis: كل صف مجموعه = 1.</li>
+        <li><b>Weighted sum</b>: <span class="ltr">bhts,bhsd-&gt;bhtd</span>.</li>
+        <li><b>Merge heads</b> (transpose + reshape): <span class="ltr">(B,H,T,D) → (B,T,E)</span>.</li>
+        <li><b>Output projection</b>: <span class="ltr">bte,ek-&gt;btk</span>.</li>
+      </ol>
+      <p>حرّك الـ sliders. لاحظ إن الـ scores حجمها بيكبر مع <b>T²</b>، وده سبب إن الـ context الطويل غالي.</p>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>B (batch) <span id="d12-aBv">2</span><input type="range" id="d12-aB" min="1" max="32" value="2"></label>
+        <label>T (seq_len) <span id="d12-aTv">8</span><input type="range" id="d12-aT" min="1" max="512" value="8"></label>
+        <label>E (embed) <span id="d12-aEv">64</span><input type="range" id="d12-aE" min="0" max="5" value="1"></label>
+        <label>H (heads) <span id="d12-aHv">4</span><input type="range" id="d12-aH" min="1" max="16" value="4"></label>
+      </div>
+      <canvas id="d12-attnCanvas" width="520" height="420" aria-label="مسار الـ shapes في الـ attention"></canvas>
+      <div class="readout">
+        <div><small>head dim D</small><b id="d12-aD">16</b></div>
+        <div><small>scores (float32)</small><b id="d12-aMem">2 KB</b></div>
+      </div>
+      <div class="verdict" id="d12-aVerdict"></div>
+      <div class="btns">
+        <button type="button" data-at="2,8,1,4">مثال الكود</button>
+        <button type="button" data-at="16,512,4,12">GPT-2 small تقريبًا</button>
+        <button type="button" data-at="4,128,4,12">تمرين الـ reshape</button>
+        <button type="button" data-at="2,8,1,5">H مش بتقسم E</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d12-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: كلاس Tensor من الصفر</h2></div>
+  <p>من جوه فولدر الريبو (عملته clone في اليوم الأول) شغّل الملف كامل:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/01-math-foundations/12-tensor-operations/code/tensors.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> متعملش copy-paste. افتح ملف جديد <code>my_tensor.py</code> واكتب الخطوات دي بإيدك، وارجع للأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: التخزين والـ strides</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+from functools import reduce
+from itertools import product as iterproduct
+
+class Tensor:
+    def __init__(self, data, shape=None):
+        if isinstance(data, (list, tuple)):
+            self._data, self._shape = self._flatten_nested(data)   <span class="c"># شريط + shape</span>
+        elif isinstance(data, np.ndarray):
+            self._data = data.flatten().tolist()
+            self._shape = tuple(data.shape)
+        else:
+            self._data = [data]                                   <span class="c"># scalar</span>
+            self._shape = ()
+        if shape is not None:
+            total = reduce(lambda a, b: a * b, shape, 1)
+            if total != len(self._data):
+                raise ValueError(f"Cannot reshape {len(self._data)} elements into shape {shape}")
+            self._shape = tuple(shape)
+        self._strides = self._compute_strides(self._shape)
+
+    def _flatten_nested(self, data):
+        if not isinstance(data, (list, tuple)):
+            return [data], ()
+        if len(data) == 0:
+            return [], (0,)
+        sub = [self._flatten_nested(item) for item in data]
+        sub_shape = sub[0][1]
+        for i, (_, s) in enumerate(sub):
+            if s != sub_shape:                                    <span class="c"># لازم كل الصفوف نفس الشكل</span>
+                raise ValueError(f"Inconsistent shapes at index {i}: {s} vs {sub_shape}")
+        flat = []
+        for d, _ in sub:
+            flat.extend(d)
+        return flat, (len(data),) + sub_shape
+
+    @staticmethod
+    def _compute_strides(shape):
+        if len(shape) == 0:
+            return ()
+        strides = [1] * len(shape)                                <span class="c"># آخر axis: stride = 1</span>
+        for i in range(len(shape) - 2, -1, -1):
+            strides[i] = strides[i + 1] * shape[i + 1]            <span class="c"># ضرب الأحجام اللي على يمينه</span>
+        return tuple(strides)
+
+    shape   = property(lambda self: self._shape)
+    rank    = property(lambda self: len(self._shape))
+    size    = property(lambda self: len(self._data))
+    strides = property(lambda self: self._strides)
+
+    def _flat_index(self, idx):                                   <span class="c"># i·s0 + j·s1 + ...</span>
+        return sum(i * s for i, s in zip(idx, self._strides))
+
+    def __getitem__(self, idx):
+        if not isinstance(idx, tuple):
+            idx = (idx,)
+        return self._data[self._flat_index(idx)]</pre></div>
+  <p style="font-size:15px;color:var(--muted)">(الأصل فيه كمان فحص للـ index خارج الحدود و<code>__setitem__</code>، وبيعرّف الـ properties بـ <code>@property</code>. أنا اختصرتهم هنا، انت اكتبهم كاملين.)</p>
+
+  <h3>خطوة ٢: reshape و squeeze و unsqueeze</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def reshape(self, new_shape):
+        new_shape = list(new_shape)
+        neg_idx, known = -1, 1
+        for i, s in enumerate(new_shape):
+            if s == -1:
+                if neg_idx != -1:
+                    raise ValueError("Only one dimension can be -1")
+                neg_idx = i
+            else:
+                known *= s
+        if neg_idx != -1:
+            new_shape[neg_idx] = self.size // known               <span class="c"># احسب الـ -1</span>
+        if reduce(lambda a, b: a * b, new_shape, 1) != self.size:
+            raise ValueError(f"Cannot reshape {self.size} elements into shape {tuple(new_shape)}")
+        r = Tensor.__new__(Tensor)
+        r._data = self._data[:]                                   <span class="c"># نفس الترتيب</span>
+        r._shape = tuple(new_shape)
+        r._strides = self._compute_strides(r._shape)
+        return r
+
+    def squeeze(self, dim=None):
+        if dim is not None:
+            if self._shape[dim] != 1:
+                return self.reshape(self._shape)
+            s = list(self._shape); s.pop(dim)
+            return self.reshape(tuple(s))
+        return self.reshape(tuple(s for s in self._shape if s != 1))   <span class="c"># شيل كل الـ 1</span>
+
+    def unsqueeze(self, dim):
+        if dim &lt; 0:
+            dim = len(self._shape) + 1 + dim
+        s = list(self._shape); s.insert(dim, 1)                  <span class="c"># حط 1 في المكان ده</span>
+        return self.reshape(tuple(s))
+
+    def flatten(self, start_dim=0, end_dim=-1):
+        if end_dim &lt; 0:
+            end_dim = self.rank + end_dim
+        mid = reduce(lambda a, b: a * b, self._shape[start_dim:end_dim + 1], 1)
+        return self.reshape(tuple(self._shape[:start_dim]) + (mid,) + tuple(self._shape[end_dim + 1:]))</pre></div>
+
+  <h3>خطوة ٣: transpose و permute</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def transpose(self, d0, d1):
+        perm = list(range(self.rank))
+        perm[d0], perm[d1] = perm[d1], perm[d0]                   <span class="c"># transpose = permute لاتنين</span>
+        return self.permute(perm)
+
+    def permute(self, dims):
+        if sorted(dims) != list(range(self.rank)):
+            raise ValueError(f"Invalid permutation {dims} for rank {self.rank}")
+        new_shape = tuple(self._shape[d] for d in dims)
+        r = Tensor.__new__(Tensor)
+        r._shape = new_shape
+        r._strides = self._compute_strides(new_shape)
+        r._data = [0] * self.size
+        for old in iterproduct(*(range(s) for s in self._shape)):   <span class="c"># لف على كل index</span>
+            new = tuple(old[d] for d in dims)
+            old_flat = sum(i * s for i, s in zip(old, self._strides))
+            new_flat = sum(i * s for i, s in zip(new, r._strides))
+            r._data[new_flat] = self._data[old_flat]             <span class="c"># هنا بننسخ فعلًا (contiguous)</span>
+        return r</pre></div>
+  <div class="note"><strong>لاحظ:</strong> الكلاس ده بينسخ الداتا في الـ permute عشان يفضل بسيط. الـ NumPy والـ PyTorch مش بينسخوا، بيبدّلوا الـ strides بس (زي معمل ٠٢).</div>
+
+  <h3>خطوة ٤: element-wise و sum على axis</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def _elementwise_op(self, other, op):
+        if isinstance(other, (int, float)):
+            return Tensor([op(x, other) for x in self._data], shape=self._shape)
+        if self._shape != other._shape:                           <span class="c"># مفيش broadcasting هنا (تمرين ٢)</span>
+            raise ValueError(f"Shape mismatch: {self._shape} vs {other._shape}. Use broadcast() first.")
+        return Tensor([op(a, b) for a, b in zip(self._data, other._data)], shape=self._shape)
+
+    def __add__(self, o): return self._elementwise_op(o, lambda a, b: a + b)
+    def __mul__(self, o): return self._elementwise_op(o, lambda a, b: a * b)
+    def __sub__(self, o): return self._elementwise_op(o, lambda a, b: a - b)
+
+    def sum(self, axis=None):
+        if axis is None:
+            return sum(self._data)
+        if axis &lt; 0:
+            axis = self.rank + axis
+        new_shape = list(self._shape); new_shape.pop(axis)        <span class="c"># الـ axis ده هيختفي</span>
+        out = [0.0] * reduce(lambda a, b: a * b, new_shape, 1)
+        out_str = self._compute_strides(tuple(new_shape))
+        for idx in iterproduct(*(range(s) for s in self._shape)):
+            old_flat = sum(i * s for i, s in zip(idx, self._strides))
+            rest = idx[:axis] + idx[axis + 1:]
+            new_flat = sum(i * s for i, s in zip(rest, out_str)) if rest else 0
+            out[new_flat] += self._data[old_flat]                 <span class="c"># اجمع في الخانة بتاعته</span>
+        return out[0] if not new_shape else Tensor(out, shape=tuple(new_shape))</pre></div>
+  <p>وكمّل <code>to_list</code> و<code>__repr__</code> و<code>to_numpy</code> من الأصل. بعدين جرّب:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>t = Tensor([[1, 2, 3], [4, 5, 6]])
+print(t.shape, t.rank, t.size, t.strides, t[1, 2])
+print(t.reshape((3, 2)).to_list())
+print(t.transpose(0, 1).to_list())
+a = Tensor([[1, 2], [3, 4]]); b = Tensor([[10, 20], [30, 40]])
+print((a + b).to_list(), (a * 2).to_list())
+print(a.sum(), a.sum(axis=0).to_list(), a.sum(axis=1).to_list())</pre></div>
+  <details><summary>الناتج المتوقع (محسوب من الكود نفسه، الأرقام دي ثابتة)</summary><pre class="term">(2, 3) 2 6 (3, 1) 6
+[[1, 2], [3, 4], [5, 6]]
+[[1, 4], [2, 5], [3, 6]]
+[[11, 22], [33, 44]] [[2, 4], [6, 8]]
+10 [4.0, 6.0] [3.0, 7.0]</pre>
+  <p>لاحظ إن <code>sum(axis=...)</code> بيرجع floats (<code>4.0</code>) لأن الكود بيبدأ الجمع من <code>0.0</code>.</p></details>
+
+  <h3>خطوة ٥: broadcasting و einsum بالـ NumPy</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+for sa, sb in [((8,1,6,1), (7,1,5)), ((3,4), (4,)), ((2,1,3), (1,4,3)), ((3,1), (1,4))]:
+    print(sa, "+", sb, "->", (np.zeros(sa) + np.zeros(sb)).shape)   <span class="c"># قواعد الـ broadcasting</span>
+
+a = np.array([1., 2., 3.]); b = np.array([4., 5., 6.])
+print(np.einsum("i,i->", a, b))                    <span class="c"># dot product</span>
+A = np.array([[1, 2], [3, 4], [5, 6]], dtype=float)
+B = np.array([[7, 8, 9], [10, 11, 12]], dtype=float)
+print(np.einsum("ik,kj->ij", A, B))                <span class="c"># matmul</span>
+M = np.arange(1, 10, dtype=float).reshape(3, 3)
+print(np.einsum("ii->", M), np.einsum("ii->i", M))   <span class="c"># trace و diagonal</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">(8, 1, 6, 1) + (7, 1, 5) -> (8, 7, 6, 5)
+(3, 4) + (4,) -> (3, 4)
+(2, 1, 3) + (1, 4, 3) -> (2, 4, 3)
+(3, 1) + (1, 4) -> (3, 4)
+32.0
+[[ 27.  30.  33.]
+ [ 61.  68.  75.]
+ [ 95. 106. 117.]]
+15.0 [1. 5. 9.]</pre></details>
+
+  <h3>خطوة ٦: الـ attention كله بالـ einsum</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>B, H, T, D = 2, 4, 8, 16
+E = H * D                                          <span class="c"># 64</span>
+np.random.seed(42)
+X = np.random.randn(B, T, E)
+W_q, W_k, W_v, W_o = (np.random.randn(E, E) * 0.02 for _ in range(4))
+
+def softmax(x, axis=-1):
+    e = np.exp(x - np.max(x, axis=axis, keepdims=True))   <span class="c"># اطرح الـ max عشان الثبات (بكرة!)</span>
+    return e / np.sum(e, axis=axis, keepdims=True)
+
+Q = np.einsum("bte,ek->btk", X, W_q)                <span class="c"># (B,T,E)</span>
+K = np.einsum("bte,ek->btk", X, W_k)
+V = np.einsum("bte,ek->btk", X, W_v)
+Q, K, V = (m.reshape(B, T, H, D).transpose(0, 2, 1, 3) for m in (Q, K, V))   <span class="c"># (B,H,T,D)</span>
+scores = np.einsum("bhtd,bhsd->bhts", Q, K) / np.sqrt(D)   <span class="c"># (B,H,T,T)</span>
+weights = softmax(scores, axis=-1)
+out = np.einsum("bhts,bhsd->bhtd", weights, V)      <span class="c"># (B,H,T,D)</span>
+concat = out.transpose(0, 2, 1, 3).reshape(B, T, E) <span class="c"># دمج الـ heads</span>
+final = np.einsum("bte,ek->btk", concat, W_o)
+for name, x in [("Q", Q), ("scores", scores), ("out", out), ("concat", concat), ("final", final)]:
+    print(name, x.shape)
+print(round(weights[0, 0, 0].sum(), 6))</pre></div>
+  <details><summary>الناتج المتوقع (الـ shapes ثابتة مهما كانت الأرقام العشوائية)</summary><pre class="term">Q (2, 4, 8, 16)
+scores (2, 4, 8, 8)
+out (2, 4, 8, 16)
+concat (2, 8, 64)
+final (2, 8, 64)
+1.0</pre></details>
+  <p>لما تشغّل الملف الأصلي كامل، هتلاقي أقسام زي <code>MEMORY LAYOUT</code> و<code>EINSUM GALLERY</code> و<code>COMMON AI TENSOR SHAPES</code>. الـ shapes والقيم الثابتة (زي <code>Round-trip match: True</code>) لازم تطابق اللي فوق. القيم اللي جاية من <code>np.random</code> من غير seed هتختلف عندك كل مرة وده طبيعي. قارن الـ strides بالبايتس عندك: هتلاقيها مضروبة في حجم العنصر (8 لـ int64/float64 على أغلب الأجهزة).</p>
+
+  <h3>خطوة ٧: نفس الكلام في PyTorch (لو متسطب عندك)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+t = torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.float32)
+print(t.shape, t.stride(), t.is_contiguous())       <span class="c"># torch.Size([2, 3]) (3, 1) True</span>
+tt = t.transpose(0, 1)
+print(tt.stride(), tt.is_contiguous())              <span class="c"># (1, 3) False</span>
+try:
+    tt.view(6)                                      <span class="c"># هيفشل: مش contiguous</span>
+except RuntimeError as e:
+    print("view failed")
+print(tt.contiguous().view(6))                      <span class="c"># كده تمام</span></pre></div>
+  <div class="tablewrap"><table>
+    <tr><th>العملية</th><th>كلاسنا</th><th>NumPy</th></tr>
+    <tr><td>إنشاء</td><td class="ltr">Tensor([[1,2],[3,4]])</td><td class="ltr">np.array([[1,2],[3,4]])</td></tr>
+    <tr><td>Reshape</td><td class="ltr">t.reshape((3,4))</td><td class="ltr">a.reshape(3,4)</td></tr>
+    <tr><td>Transpose</td><td class="ltr">t.transpose(0,1)</td><td class="ltr">a.T / a.transpose(0,1)</td></tr>
+    <tr><td>Squeeze</td><td class="ltr">t.squeeze(0)</td><td class="ltr">np.squeeze(a, 0)</td></tr>
+    <tr><td>Sum</td><td class="ltr">t.sum(axis=0)</td><td class="ltr">a.sum(axis=0)</td></tr>
+    <tr><td>Einsum</td><td>مش موجود (تمرين ٣)</td><td class="ltr">np.einsum("ij,jk->ik", a, b)</td></tr>
+  </table></div>
+  <p>الـ PyTorch بيضيف autograd وGPU وkernels سريعة، بس <b>قواعد الـ shapes نفسها بالظبط</b>. لو فهمت النسخة اللي من الصفر، رسايل الـ errors هتبقى مقروءة.</p>
+
+  <h3>كل layer = عملية tensor</h3>
+  <div class="tablewrap"><table>
+    <tr><th>العملية</th><th>الشكل</th><th>Einsum</th></tr>
+    <tr><td>Linear layer</td><td class="ltr">Y = X @ W.T + b</td><td class="ltr">"bd,od->bo" + bias</td></tr>
+    <tr><td>Attention QKV</td><td class="ltr">Q = X @ W_q</td><td class="ltr">"btd,dh->bth"</td></tr>
+    <tr><td>Attention scores</td><td class="ltr">Q @ K.T / sqrt(d)</td><td class="ltr">"bhtd,bhsd->bhts"</td></tr>
+    <tr><td>Attention output</td><td class="ltr">softmax(scores) @ V</td><td class="ltr">"bhts,bhsd->bhtd"</td></tr>
+    <tr><td>Batch norm</td><td class="ltr">(X - mu) / sigma * gamma</td><td>element-wise + broadcast</td></tr>
+    <tr><td>Softmax</td><td class="ltr">exp(x) / sum(exp(x))</td><td>element-wise + reduction</td></tr>
+  </table></div>
+  <p>والدرس بيطلّع كمان prompt-ين تقدر تستخدمهم: <code>outputs/prompt-tensor-shapes.md</code> (جداول قرار لكل عملية شائعة وجدول حلول) و<code>outputs/prompt-tensor-debugger.md</code> (تلزقه لأي AI assistant مع رسالة الـ error والـ shapes ويرجعلك الحل).</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d12-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ١ و٢ النهاردة على الأقل. ٣ و٤ صعبين، خدهم على مهلك.</p>
+  <ol class="ex">
+    <li><b>سهل · Reshape رايح جاي:</b> tensor شكله <span class="ltr">(2, 3, 4)</span>. حوّله لـ <span class="ltr">(6, 4)</span> بعدين <span class="ltr">(24,)</span> بعدين ارجع <span class="ltr">(2, 3, 4)</span>، واطبع الداتا المفرودة كل مرة.
+      <details><summary>تلميح</summary>ابنيه من <code>list(range(24))</code> عشان كل عنصر يبيّن مكانه. بعد كل reshape اطبع <code>flatten().to_list()</code> واتأكد إنها لسه 0 لحد 23 بالترتيب. الـ reshape عمره ما بيغيّر الترتيب.</details></li>
+    <li><b>متوسط · اعمل broadcasting:</b> ضيف <code>broadcast_to(shape)</code> للكلاس بتمط الأبعاد اللي حجمها 1، وعدّل <code>_elementwise_op</code> يعمل broadcast تلقائي. اختبر <span class="ltr">(3, 1)</span> و<span class="ltr">(1, 4)</span> → <span class="ltr">(3, 4)</span>.
+      <details><summary>تلميح</summary>البُعد ينفع يتمط بس لو الحجمين متساويين أو واحد فيهم 1، فاتأكد من القاعدة دي الأول وارمي error لو فشلت. للنتيجة: الخانة <span class="ltr">[i][j]</span> لازم تساوي <span class="ltr">a[i][0] + b[0][j]</span>، وقارن النتيجة كلها بالـ NumPy. فكرة مفيدة: لما تمط بُعد، خلّي الـ index بتاعه دايمًا 0 (يعني stride = 0).</details></li>
+    <li><b>صعب · einsum من الصفر:</b> اعمل <code>einsum(subscripts, *tensors)</code> تدعم على الأقل <span class="ltr">i,i-&gt;</span> و<span class="ltr">ij,jk-&gt;ik</span> و<span class="ltr">i,j-&gt;ij</span> و<span class="ltr">ij-&gt;ji</span>.
+      <details><summary>تلميح</summary>اقسم الـ string على <code>-&gt;</code>. أي حرف في الدخل ومش في الخرج يبقى summed. لف على كل قيم كل الحروف، واجمع في مكان الخرج. اختبر كل حالة على arrays صغيرة عشوائية بـ <code>np.allclose(mine, np.einsum(...))</code>.</details></li>
+    <li><b>صعب · متتبع shapes الـ attention:</b> دالة بتاخد <code>batch_size, seq_len, embed_dim, num_heads</code> وتطبع الـ shape في كل خطوة: input، Q/K/V، split، scores، softmax، weighted sum، merge، output.
+      <details><summary>تلميح</summary>ابدأ بـ <code>head_dim = embed_dim // num_heads</code> مع <code>assert embed_dim % num_heads == 0</code>. الـ scores شكلها <span class="ltr">(batch_size, num_heads, seq_len, seq_len)</span>. قارن بمعمل ٠٦ وبالـ shapes اللي <code>demo_attention_einsum()</code> بتطبعها.</details></li>
+    <li><b>إضافة مني · Mean pooling بالـ mask (شغل حقيقي في RAG):</b> عندك hidden states من encoder شكلها <span class="ltr">(4, 128, 768)</span>، وكل جملة طولها الحقيقي مختلف والباقي padding. عايز embedding واحد لكل جملة <span class="ltr">(4, 768)</span> من غير ما الـ padding يأثر. ده بالظبط اللي بيحصل في موديلات الـ sentence embeddings اللي بتستخدمها في الـ RAG.
+      <details><summary>تلميح وإجابة</summary>اعمل mask شكلها <span class="ltr">(4, 128, 1)</span> فيها 1 للتوكنز الحقيقية و0 للـ padding (الـ 1 في الآخر عشان يعمل broadcast على الـ 768). بعدين: <code>(hidden * mask).sum(axis=1) / mask.sum(axis=1)</code> → <span class="ltr">(4, 768)</span>. الكود الأصلي فيه نفس الفكرة في <code>demo_reduction_operations</code>. الغلطة الشائعة: تعمل <code>hidden.mean(axis=1)</code> عادي، فالـ padding يسحب المتوسط ناحية الصفر والجمل القصيرة تبوظ.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d12-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>١. الحدس: الـ shape هو «عقد» الدالة</h3>
+  <p>عوّد نفسك تكتب الـ shape كـ comment جنب كل سطر (زي ما عملت في خطوة ٦). المهندسين الشاطرين بيعملوا كده في كل كود attention. ولما تلاقي error، اطبع <code>x.shape</code> قبل وبعد السطر اللي بايظ، ٩٠٪ من الحالات المشكلة هتبان على طول.</p>
+  <h3>٢. غلطات شائعة</h3>
+  <ul class="checklist" style="gap:6px">
+    <li>• <b>reshape بدل transpose:</b> عايز تحوّل <span class="ltr">(B,T,H,D)</span> لـ <span class="ltr">(B,H,T,D)</span> فتعمل <code>reshape(B,H,T,D)</code>. الشكل صح بس الداتا متلخبطة تمامًا ومفيش error. لازم <code>transpose</code>.</li>
+    <li>• <b>نسيان keepdims:</b> <code>x.sum(axis=-1)</code> بيشيل الـ axis، فلو قسمت عليه هيعمل broadcast غلط. عشان كده الـ softmax في الكود فيها <code>keepdims=True</code>.</li>
+    <li>• <b>الـ softmax على الـ axis الغلط:</b> في الـ scores <span class="ltr">(B,H,T,S)</span> لازم على <span class="ltr">axis=-1</span> (الـ keys). لو عملتها على axis تاني، الأرقام هتطلع وكل حاجة هتشتغل، بس الموديل مش هيتعلم.</li>
+    <li>• <b>الفخ الصامت <span class="ltr">(N,) vs (N,1)</span>:</b> labels شكلها <span class="ltr">(N,1)</span> وpredictions <span class="ltr">(N,)</span>؛ لو طرحتهم هيطلعلك <span class="ltr">(N,N)</span> والـ loss يبقى رقم غلط.</li>
+  </ul>
+  <h3>٣. فين ده في الـ LLMs والـ Agents</h3>
+  <p>من أرقام الكود نفسه (<code>demo_ai_tensor_shapes</code>): batch من 16 جملة × 512 token × 768 بُعد float32 = حوالي <b>24 MB</b>. لكن مصفوفة الـ attention scores لنفس الـ batch بـ 12 head = <span class="ltr">16·12·512·512</span> × 4 bytes = <b>192 MB</b> لطبقة واحدة. ده الـ T² اللي شفته في معمل ٠٦، وهو سبب إن الـ context الطويل مكلف وإن فيه تقنيات بتتجنب إنها تخزن مصفوفة الـ scores دي كاملة. ولما تشتغل على agents بتستخدم embeddings، الـ batch اللي بتبعته لموديل الـ embeddings هو tensor <span class="ltr">(B, T)</span> من الـ token ids، وبيرجعلك <span class="ltr">(B, D)</span> بعد الـ pooling اللي في التمرين ٥.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d12-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d12-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d12-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d12-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أفرّق بين tensor rank وmatrix rank، وأقرأ أي shape زي <span class="ltr">(B, H, T, D)</span></label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فهمت إن الـ transpose بيبدّل الـ strides بس، وليه <code>.view()</code> بيفشل بعده</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> أقدر أطبّق قواعد الـ broadcasting التلاتة في دماغي</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> أقدر أقرأ أي einsum وأعرف أنهي axis بيتجمع</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> كتبت كلاس Tensor بإيدي وشغّلت <code>tensors.py</code></label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Shape conventions</td><td>كل input لأي موديل: صور <span class="ltr">(B,C,H,W)</span>، نصوص <span class="ltr">(B,T,D)</span></td></tr>
+    <tr><td>Strides / contiguous</td><td><code>.view()</code> vs <code>.reshape()</code> في PyTorch، سرعة الـ kernels</td></tr>
+    <tr><td>Broadcasting</td><td>الـ bias، الـ LayerNorm/BatchNorm، الـ attention masks</td></tr>
+    <tr><td>Reductions</td><td>الـ pooling، الـ softmax، الـ loss</td></tr>
+    <tr><td>Einsum</td><td>الـ attention، الـ batch matmul، أي contraction</td></tr>
+    <tr><td>Reshape + transpose</td><td>تقسيم ودمج الـ heads في كل transformer</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Numerical Stability. هتعرف ليه الـ softmax بنطرح منها الـ max (شفته في خطوة ٦)، وإيه اللي بيحصل لما الأرقام تكبر أو تصغر زيادة. وهنبدأ بمراجعة ٥ دقايق على الـ shapes.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F12-tensor-operations" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/12-tensor-operations</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, f=A.fmt;
+const $=id=>document.getElementById(id);
+const root=$('d12-root');
+
+// roadmap
+const rm=$('d12-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===12)s.className='now';rm.appendChild(s)}
+
+const mono='12px JetBrains Mono, monospace';
+const tup=a=>'('+a.join(', ')+(a.length===1?',':'')+')';
+
+// ---------- Lab 1: strides ----------
+const mc=$('d12-memCanvas'),mx=A.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+let R=3,C=4,transposed=false,contig=true,sel=[1,2],walk=-1,walkT=null;
+// logical shape and strides
+function logical(){
+  // base storage is row-major of R x C. transposed view: shape (C,R), strides (1,C)
+  if(!transposed)return{shape:[R,C],str:[C,1]};
+  if(contig)return{shape:[C,R],str:[R,1]};
+  return{shape:[C,R],str:[1,C]};
+}
+function storageVal(k){ // what value sits at flat position k
+  if(transposed&&contig){const i=Math.floor(k/R),j=k%R;return j*C+i}
+  return k;
+}
+function cellVal(i,j){const L=logical();const k=i*L.str[0]+j*L.str[1];return storageVal(k)}
+function drawMem(){
+  mx.clearRect(0,0,MW,MH);
+  const L=logical(),rows=L.shape[0],cols=L.shape[1];
+  const cs=Math.min(48,Math.floor(300/Math.max(rows,cols)));
+  const gx=(MW-cols*cs)/2,gy=26;
+  mx.font=mono;mx.fillStyle=css('--muted');mx.textAlign='left';
+  mx.fillText('logical view  shape '+tup(L.shape),10,16);
+  const rowSel=walk>=0?sel[0]:-1;
+  for(let i=0;i<rows;i++)for(let j=0;j<cols;j++){
+    const x=gx+j*cs,y=gy+i*cs,isSel=(i===sel[0]&&j===sel[1]);
+    const inWalk=(i===rowSel&&j<=walk);
+    mx.fillStyle=isSel?css('--vec-a'):inWalk?css('--vec-b'):css('--panel');
+    mx.fillRect(x+1,y+1,cs-2,cs-2);mx.strokeStyle=css('--line');mx.strokeRect(x+1,y+1,cs-2,cs-2);
+    mx.fillStyle=(isSel||inWalk)?css('--paper'):css('--ink');mx.textAlign='center';mx.font='bold 13px JetBrains Mono, monospace';
+    mx.fillText(String(cellVal(i,j)),x+cs/2,y+cs/2+5);
+  }
+  // memory strip
+  const n=R*C,sw=Math.min(40,(MW-20)/n),sx=(MW-n*sw)/2,sy=MH-70;
+  mx.textAlign='left';mx.font=mono;mx.fillStyle=css('--muted');mx.fillText('memory (flat)',10,sy-26);
+  const fk=sel[0]*L.str[0]+sel[1]*L.str[1];
+  const walkIdx=[];if(walk>=0)for(let j=0;j<=walk;j++)walkIdx.push(sel[0]*L.str[0]+j*L.str[1]);
+  for(let k=0;k<n;k++){
+    const x=sx+k*sw,on=k===fk,w=walkIdx.includes(k);
+    mx.fillStyle=on?css('--vec-a'):w?css('--vec-b'):css('--soft');mx.fillRect(x+1,sy,sw-2,30);
+    mx.fillStyle=(on||w)?css('--paper'):css('--ink');mx.textAlign='center';mx.font='12px JetBrains Mono, monospace';
+    mx.fillText(String(storageVal(k)),x+sw/2,sy+20);
+    mx.fillStyle=css('--muted');mx.font='10px JetBrains Mono, monospace';mx.fillText(String(k),x+sw/2,sy+44);
+  }
+  // jump arrows for walk
+  if(walkIdx.length>1){for(let t=1;t<walkIdx.length;t++){
+    const a=sx+walkIdx[t-1]*sw+sw/2,b=sx+walkIdx[t]*sw+sw/2,mid=(a+b)/2,h=Math.min(40,10+Math.abs(b-a)/4);
+    mx.strokeStyle=css('--vec-b');mx.lineWidth=2;mx.beginPath();mx.moveTo(a,sy-2);mx.quadraticCurveTo(mid,sy-2-h,b,sy-2);mx.stroke();
+  }}
+  mx.textAlign='left';
+  $('d12-mShape').textContent=tup(L.shape);$('d12-mStr').textContent=tup(L.str);
+  $('d12-mSel').textContent='['+sel.join(', ')+']';$('d12-mFlat').textContent=sel[0]+'·'+L.str[0]+' + '+sel[1]+'·'+L.str[1]+' = '+fk;
+  const v=$('d12-mVerdict');
+  if(transposed&&!contig){v.textContent='non-contiguous: عناصر الصف بتنط في الذاكرة (stride '+L.str[1]+'). .view() هيفشل هنا';v.style.color=css('--bad')}
+  else{v.textContent=transposed?'contiguous بعد النسخ: الداتا اترتبت من جديد في الذاكرة':'contiguous: عناصر الصف جنب بعض في الذاكرة';v.style.color=css('--ok')}
+}
+function clampSel(){const L=logical();sel=[Math.min(sel[0],L.shape[0]-1),Math.min(sel[1],L.shape[1]-1)]}
+function resetDims(){R=+$('d12-rows').value;C=+$('d12-cols').value;$('d12-rv').textContent=R;$('d12-cv').textContent=C;stopWalk();clampSel();drawMem()}
+function stopWalk(){clearInterval(walkT);walk=-1}
+$('d12-rows').addEventListener('input',resetDims);$('d12-cols').addEventListener('input',resetDims);
+$('d12-tBtn').addEventListener('click',()=>{stopWalk();transposed=!transposed;contig=false;sel=[sel[1],sel[0]];clampSel();drawMem()});
+$('d12-cBtn').addEventListener('click',()=>{stopWalk();contig=true;drawMem()});
+$('d12-rowBtn').addEventListener('click',()=>{stopWalk();const cols=logical().shape[1];walk=0;drawMem();
+  if(matchMedia('(prefers-reduced-motion:reduce)').matches){walk=cols-1;drawMem();return}
+  walkT=setInterval(()=>{if(!document.body.contains(mc)){stopWalk();return}walk++;if(walk>=cols){clearInterval(walkT);walk=cols-1}drawMem()},450)});
+mc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(mc,e);const L=logical(),rows=L.shape[0],cols=L.shape[1];
+  const cs=Math.min(48,Math.floor(300/Math.max(rows,cols))),gx=(MW-cols*cs)/2,gy=26;
+  const j=Math.floor((x-gx)/cs),i=Math.floor((y-gy)/cs);
+  if(i>=0&&i<rows&&j>=0&&j<cols){stopWalk();sel=[i,j];drawMem()}});
+drawMem();
+
+// ---------- Lab 2: broadcasting ----------
+const bc=$('d12-bcCanvas'),bx=A.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+const parse=s=>{const t=s.split(/[\s,()]+/).filter(Boolean).map(Number);return t.every(n=>Number.isInteger(n)&&n>=1&&n<=999)?t:null};
+function bcast(a,b){const n=Math.max(a.length,b.length),pa=Array(n-a.length).fill(1).concat(a),pb=Array(n-b.length).fill(1).concat(b);
+  const out=[],ok=[];for(let i=0;i<n;i++){const x=pa[i],y=pb[i];if(x===y||x===1||y===1){out.push(Math.max(x,y));ok.push(true)}else{out.push(null);ok.push(false)}}
+  return{pa,pb,out,ok,good:ok.every(Boolean)}}
+function drawBc(){
+  const a=parse($('d12-shA').value),b=parse($('d12-shB').value);
+  bx.clearRect(0,0,BW,BH);
+  const v=$('d12-bcVerdict');
+  if(!a||!b||a.length>6||b.length>6){v.textContent='اكتب shape صحيحة زي 3, 1';v.style.color=css('--bad');return}
+  const r=bcast(a,b),n=r.out.length,cw=Math.min(70,(BW-90)/n),x0=BW-20-n*cw;
+  bx.font='13px JetBrains Mono, monospace';
+  const rowsDef=[['A',a.length,r.pa],['B',b.length,r.pb]];
+  rowsDef.forEach(([lab,len,p],ri)=>{const y=20+ri*44;bx.fillStyle=css('--ink');bx.textAlign='left';bx.fillText(lab,14,y+22);
+    for(let i=0;i<n;i++){const padded=i<n-len,x=x0+i*cw;
+      bx.fillStyle=padded?css('--soft'):css('--panel');bx.fillRect(x+2,y,cw-4,32);
+      bx.strokeStyle=r.ok[i]?css('--line'):css('--bad');bx.lineWidth=r.ok[i]?1:2;bx.strokeRect(x+2,y,cw-4,32);
+      bx.fillStyle=padded?css('--muted'):(p[i]===1&&r.out[i]!==1&&r.ok[i]?css('--vec-b'):css('--ink'));bx.textAlign='center';bx.fillText(String(p[i]),x+cw/2,y+21)}});
+  const y=120;bx.strokeStyle=css('--muted');bx.beginPath();bx.moveTo(x0,y-8);bx.lineTo(x0+n*cw,y-8);bx.stroke();
+  bx.fillStyle=css('--ink');bx.textAlign='left';bx.fillText('=',14,y+22);
+  for(let i=0;i<n;i++){const x=x0+i*cw;bx.fillStyle=r.ok[i]?css('--vec-a'):css('--bad');bx.globalAlpha=r.ok[i]?.18:.2;bx.fillRect(x+2,y,cw-4,32);bx.globalAlpha=1;
+    bx.fillStyle=r.ok[i]?css('--vec-a'):css('--bad');bx.textAlign='center';bx.fillText(r.ok[i]?String(r.out[i]):'✗',x+cw/2,y+21)}
+  bx.textAlign='left';bx.fillStyle=css('--muted');bx.font='11px JetBrains Mono, monospace';
+  bx.fillText('align right →  gray = padded 1   orange = stretched',14,172);
+  // 2D picture of last two dims
+  if(r.good){const rr=n>=2?r.out[n-2]:1,cc=r.out[n-1],ar=n>=2?r.pa[n-2]:1,ac=r.pa[n-1],br=n>=2?r.pb[n-2]:1,bcc=r.pb[n-1];
+    const g=Math.min(14,100/Math.max(rr,cc,1)),drawG=(gx,rows,cols,R2,C2,col)=>{for(let i=0;i<Math.min(R2,8);i++)for(let j=0;j<Math.min(C2,8);j++){const real=i<rows&&j<cols;bx.fillStyle=col;bx.globalAlpha=real?.85:.25;bx.fillRect(gx+j*g,186+i*g,g-2,g-2)}bx.globalAlpha=1};
+    drawG(20,Math.min(ar,8),Math.min(ac,8),Math.min(ar,8),Math.min(ac,8),css('--vec-a'));
+    drawG(190,Math.min(br,8),Math.min(bcc,8),Math.min(br,8),Math.min(bcc,8),css('--vec-b'));
+    drawG(360,Math.min(rr,8),Math.min(cc,8),Math.min(rr,8),Math.min(cc,8),css('--ok'));
+    bx.fillStyle=css('--muted');bx.fillText('A last 2 dims',20,BH-6);bx.fillText('B last 2 dims',190,BH-6);bx.fillText('result (≤8 shown)',360,BH-6)}
+  if(r.good){const N=r.out.reduce((p,q)=>p*q,1);$('d12-bcRes').textContent=tup(r.out);$('d12-bcN').textContent=N.toLocaleString('en');
+    const silent=(a.length!==b.length)&&(N>Math.max(a.reduce((p,q)=>p*q,1),b.reduce((p,q)=>p*q,1)));
+    v.textContent=silent?'اشتغل، بس النتيجة أكبر من الاتنين: اتأكد إن ده اللي انت عايزه':'متوافقين ✓';v.style.color=silent?css('--vec-b'):css('--ok')}
+  else{$('d12-bcRes').textContent='Error';$('d12-bcN').textContent='—';const bad=r.ok.indexOf(false);
+    v.textContent='مش متوافقين: '+r.pa[bad]+' و '+r.pb[bad]+' مش متساويين ومفيش واحد فيهم 1';v.style.color=css('--bad')}
+}
+['d12-shA','d12-shB'].forEach(id=>$(id).addEventListener('input',drawBc));
+root.querySelectorAll('[data-bc]').forEach(b=>b.addEventListener('click',()=>{const [p,q]=b.dataset.bc.split('|');$('d12-shA').value=p;$('d12-shB').value=q;drawBc()}));
+drawBc();
+
+// ---------- einsum mini ----------
+const ES=[
+  ['i,i->','dot product',{i:3}],
+  ['i,j->ij','outer product',{i:3,j:4}],
+  ['ii->','trace',{i:4}],
+  ['ii->i','diagonal',{i:4}],
+  ['ij->ji','transpose',{i:3,j:4}],
+  ['ij->i','row sum',{i:3,j:4}],
+  ['ij,j->i','matrix-vector',{i:3,j:4}],
+  ['ik,kj->ij','matmul',{i:3,k:2,j:3}],
+  ['ij,ij->ij','Hadamard (element-wise)',{i:2,j:2}],
+  ['ij,ij->','Frobenius norm squared',{i:3,j:4}],
+  ['bij,bjk->bik','batch matmul (أرقام الدرس)',{b:32,i:128,j:64,k:128}],
+  ['ijk,jkl->il','tensor contraction',{i:2,j:3,k:4,l:5}],
+  ['bhtd,bhsd->bhts','attention scores',{b:2,h:4,t:8,s:8,d:16}],
+  ['bhts,bhsd->bhtd','attention output',{b:2,h:4,t:8,s:8,d:16}],
+  ['i,ij,j->','bilinear form xᵀWy',{i:3,j:3}]
+];
+const es=$('d12-esSel');ES.forEach((e,k)=>{const o=document.createElement('option');o.value=k;o.textContent=e[0]+'  ('+e[1]+')';es.appendChild(o)});es.value=7;
+function drawEs(){const [p,name,sz]=ES[+es.value],[ins,out]=p.split('->'),letters=[...new Set(ins.replace(/,/g,''))];
+  const kept=letters.filter(l=>out.includes(l)),summed=letters.filter(l=>!out.includes(l));
+  $('d12-esFormula').textContent=p;
+  const box=$('d12-esIdx');box.innerHTML='';letters.forEach(l=>{const s=document.createElement('span');const k=out.includes(l);
+    s.textContent=l+' = '+sz[l];s.style.cssText='font-family:var(--f-mono);padding:2px 10px;border-radius:4px;border:2px solid '+(k?'var(--vec-a)':'var(--vec-b)')+';color:'+(k?'var(--vec-a)':'var(--vec-b)');box.appendChild(s)});
+  $('d12-esIn').textContent=ins.split(',').map(t=>tup(t.split('').map(l=>sz[l]))).join(' × ');
+  $('d12-esOut').textContent=out?tup(out.split('').map(l=>sz[l])):'scalar';
+  $('d12-esCost').textContent=letters.reduce((a,l)=>a*sz[l],1).toLocaleString('en');
+  $('d12-esExplain').textContent=name+': '+(summed.length?'الحروف '+summed.join('، ')+' مش في الخرج، فبتتضرب وتتجمع. ':'مفيش حرف بيتجمع، يعني مجرد إعادة ترتيب أو ضرب خانة بخانة. ')+(kept.length?'والحروف '+kept.join('، ')+' بتفضل axes في النتيجة.':'والنتيجة رقم واحد (scalar).')}
+es.addEventListener('change',drawEs);drawEs();
+
+// ---------- Lab 3: attention shapes ----------
+const Es=[32,64,128,256,768,1024];
+const ac=$('d12-attnCanvas'),ax=A.setupCanvas(ac),AW=+ac.dataset.w,AH=+ac.dataset.h;
+function attn(){
+  const B=+$('d12-aB').value,T=+$('d12-aT').value,E=Es[+$('d12-aE').value],H=+$('d12-aH').value;
+  $('d12-aBv').textContent=B;$('d12-aTv').textContent=T;$('d12-aEv').textContent=E;$('d12-aHv').textContent=H;
+  const okH=E%H===0,D=okH?E/H:E/H;
+  ax.clearRect(0,0,AW,AH);
+  const v=$('d12-aVerdict');
+  if(!okH){$('d12-aD').textContent=f(D,2);$('d12-aMem').textContent='—';v.textContent='E % H ≠ 0: مينفعش تقسم '+E+' على '+H+' heads. الـ reshape هيفشل';v.style.color=css('--bad');
+    ax.fillStyle=css('--bad');ax.font='14px JetBrains Mono, monospace';ax.textAlign='center';ax.fillText('reshape (B,T,E) -> (B,T,H,D) fails',AW/2,AH/2);ax.textAlign='left';return}
+  const steps=[
+    ['X input','(B,T,E)',[B,T,E],'ink'],
+    ['Q,K,V = X·W','bte,ek->btk',[B,T,E],'vec-a'],
+    ['split heads','reshape+transpose',[B,H,T,D],'vec-a'],
+    ['scores / √D','bhtd,bhsd->bhts',[B,H,T,T],'vec-b'],
+    ['softmax(-1)','rows sum to 1',[B,H,T,T],'vec-b'],
+    ['weights·V','bhts,bhsd->bhtd',[B,H,T,D],'vec-a'],
+    ['merge heads','transpose+reshape',[B,T,E],'vec-a'],
+    ['output ·W_o','bte,ek->btk',[B,T,E],'ok']
+  ];
+  const sizes=steps.map(s=>s[2].reduce((a,b)=>a*b,1)),mxs=Math.max(...sizes),rowH=(AH-10)/steps.length;
+  steps.forEach((s,i)=>{const y=6+i*rowH,w=Math.max(4,(AW-250)*Math.sqrt(sizes[i]/mxs));
+    ax.fillStyle=css('--'+s[3]);ax.globalAlpha=.8;ax.fillRect(240,y+6,w,rowH-16);ax.globalAlpha=1;
+    ax.fillStyle=css('--ink');ax.font='bold 12px JetBrains Mono, monospace';ax.fillText(s[0],8,y+18);
+    ax.fillStyle=css('--muted');ax.font='11px JetBrains Mono, monospace';ax.fillText(s[1],8,y+34);
+    ax.fillStyle=css('--ink');ax.font='12px JetBrains Mono, monospace';ax.fillText(tup(s[2]),130,y+26);
+    if(i<steps.length-1){ax.strokeStyle=css('--line');ax.beginPath();ax.moveTo(4,y+rowH-2);ax.lineTo(AW-4,y+rowH-2);ax.stroke()}});
+  const bytes=B*H*T*T*4;$('d12-aD').textContent=D;
+  $('d12-aMem').textContent=bytes>=1048576?f(bytes/1048576,1)+' MB':f(bytes/1024,1)+' KB';
+  v.textContent='عرض الشريط ∝ √(عدد العناصر). الـ scores بتكبر مع T² = '+(T*T).toLocaleString('en');v.style.color=css('--muted');
+}
+['d12-aB','d12-aT','d12-aE','d12-aH'].forEach(id=>$(id).addEventListener('input',attn));
+root.querySelectorAll('[data-at]').forEach(b=>b.addEventListener('click',()=>{const [B,T,Ei,H]=b.dataset.at.split(',');$('d12-aB').value=B;$('d12-aT').value=T;$('d12-aE').value=Ei;$('d12-aH').value=H;attn()}));
+attn();
+
+// ---------- quiz ----------
+A.quiz($('d12-quizBox'),[
+ ['الـ shape بتاع tensor بيوصف إيه؟',['tuple فيها الحجم على كل axis','عنوان الـ tensor في الذاكرة','العدد الكلي للعناصر','نوع الداتا اللي جواه'],0,'الـ shape هي tuple بالحجم على كل axis. مثلًا (2, 3, 4) يعني 2 على axis 0، و3 على axis 1، و4 على axis 2.'],
+ ['في PyTorch، batch صور بيستخدم أنهي layout افتراضيًا؟',['CHWN (channels, height, width, batch)','NHWC (batch, height, width, channels)','WHCN (width, height, channels, batch)','NCHW (batch, channels, height, width)'],3,'PyTorch افتراضيًا NCHW (channels الأول)، وTensorFlow افتراضيًا NHWC (channels في الآخر). اللخبطة بينهم بتعمل أخطاء صامتة أو بطء.'],
+ ['شكل النتيجة لما تعمل broadcast بين (8, 1, 6, 1) و(7, 1, 5)؟',['(8, 7, 6, 5)','(8, 1, 6, 5)','(8, 7, 6, 1)','الـ broadcasting هيفشل، الأشكال مش متوافقة'],0,'رصّهم من اليمين: (8,1,6,1) و(1,7,1,5). كل بُعدين متساويين أو واحد فيهم 1، والنتيجة بتاخد الأكبر في كل مكان: (8, 7, 6, 5).'],
+ ["في 'bhtd,bhsd->bhts'، إيه اللي بيحصل للـ index d؟",['بيتعمله transpose بين الـ tensors الاتنين','بيتجمع (contracted) لأنه موجود في الدخلين ومش موجود في الخرج','بيتعمله broadcast على الاتنين','بيفضل في الخرج كـ axis جديد'],1,'في الـ einsum، أي index في الدخل ومش في الخرج بيتجمع. d موجود في bhtd وbhsd ومش في bhts، فبيتضرب ويتجمع.'],
+ ['ليه .view() بيفشل على tensor اتعمله transpose في PyTorch؟',['لأنه بقى non-contiguous في الذاكرة، والـ view محتاج داتا contiguous','لأن الـ transpose بيغيّر نوع الداتا','لأن الـ transpose بيغيّر عدد العناصر','لأن الـ view بيشتغل على 2D بس'],0,'الـ transpose بيبدّل الـ strides من غير ما يحرك الداتا، فالـ tensor بيبقى non-contiguous. استخدم .reshape() أو .contiguous() الأول.'],
+ ['(سؤال مني) x شكله (4, 128, 768). عايز تعمل split لـ 12 head وتوصل لـ (4, 12, 128, 64). الصح؟',['x.reshape(4, 12, 128, 64)','x.reshape(4, 128, 12, 64).transpose(0, 2, 1, 3)','x.transpose(1, 2).reshape(4, 12, 128, 64)','x.reshape(4, 12, 64, 128)'],1,'لازم الأول تقسم آخر axis (768 = 12×64) وانت لسه في (B,T,...)، وبعدين تبدّل T وH. الـ reshape المباشر بيدّي الشكل الصح بس بيخلط عناصر الـ tokens والـ heads من غير أي error.'],
+ ['(سؤال مني) predictions شكلها (N,) وlabels شكلها (N, 1). predictions - labels هيطلع إيه؟',['(N,) عادي','Error','(N, N) من غير أي error','(N, 1)'],2,'(N,) بتتحول لـ (1, N)، ومع (N, 1) الـ broadcasting بيطلّع (N, N). ده الفخ الصامت اللي بيبوّظ الـ loss من غير ما تاخد بالك.']
+],5,()=>{const c=root.querySelector('[data-ck="c7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(12,$('d12-checklist'));
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(mc))return false;drawMem();drawBc();attn()});
+})();
+</script>

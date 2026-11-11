@@ -1,0 +1,665 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 01 · The Perceptron</span>
+  <h1>اليوم ٤٤: الـ Perceptron، أصغر حتة في أي neural network</h1>
+  <p class="lede">النهاردة بنبدأ Phase 3، قلب الـ Deep Learning. هتبني <b>neuron واحد</b> من الصفر: أوزان و<b>bias</b> وقرار صفر أو واحد. هتشوفه بيتعلم AND وOR لوحده، وهتشوفه بيفشل في <b>XOR</b> مهما طوّلت التدريب. وبعدين هتحل المشكلة لما تحط neurons فوق بعض في طبقات، ودي أول neural network حقيقية تبنيها.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٦٠–٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia للي عايز)</span>
+    <span>أول درس في Phase 3 · بعده: <b>Multi-Layer Networks and Forward Pass</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d44-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d44-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 43) قفلنا Phase 2 بالـ feature stores والـ training-serving skew. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. يعني إيه point-in-time join، وليه الـ join على <code>user_id</code> بس غلط؟</summary>لكل label عند وقت معين بناخد آخر قيمة للـ feature كانت معروفة <b>قبل</b> الوقت ده أو عنده، مش أحدث قيمة موجودة النهاردة. الـ join على <code>user_id</code> بس بيجيب قيم من المستقبل، فالموديل بيشوف الإجابة وهو بيتدرب، والـ accuracy بتبان عالية بالكدب.</details>
+  <details><summary>٢. إيه الفرق بين الـ offline store والـ online store؟</summary>الـ offline store فيه التاريخ كله بالـ timestamps، وبنستخدمه عشان نبني الـ training set. الـ online store فيه أحدث قيمة لكل entity بس، في key-value store سريع للـ serving، وكل قيمة ليها TTL. الاتنين بيتملوا من نفس التعريفات اللي في الـ registry.</details>
+  <details><summary>٣. تكتشف الـ training-serving skew إزاي؟</summary>بتسجّل الـ features اللي اتحسبت وقت الـ serving، وبتقارنها بالقيم اللي الـ offline pipeline بيحسبها لنفس الـ entity في نفس الوقت. أي فرق معناه إن فيه تعريفين مختلفين لنفس الـ feature.</details>
+  <p>النهاردة بنسيب الـ pipelines ونرجع لجوه الموديل نفسه: إيه اللي بيحصل جوه «الصندوق» اللي بيطلع prediction؟</p>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>neuron واحد: أوزان + bias + step</div>
+    <div><b>15 min</b>معمل ٠١: حرّك الخط ودرّبه بإيدك</div>
+    <div><b>10 min</b>مشكلة XOR + معمل ٠٢: الطبقات</div>
+    <div><b>10 min</b>معمل ٠٣: شبكة sigmoid بتتعلم XOR</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>التمارين والكويز</div>
+  </div>
+</section>
+
+<!-- CONCEPT 1 -->
+<section id="d44-neuron">
+  <div class="station-head"><span class="tag">01</span><h2>neuron واحد، قرار واحد</h2></div>
+  <p>انت عارف المتجهات والـ dot product، وعارف إن المصفوفة بتحوّل المدخلات لمخرجات. بس السؤال اللي فاضل: <b>الماكينة بتتعلم أنهي تحويل تستخدم إزاي؟</b> الـ perceptron هو أبسط إجابة: ماكينة بتاخد مدخلات، تضرب كل واحد في وزن، تجمعهم، تزوّد bias، وتاخد قرار. لو غلطت تعدّل الأرقام. هي دي الحكاية كلها، وأي neural network اتعملت لحد النهاردة هي طبقات من الفكرة دي فوق بعض.</p>
+  <p>يعني «التعلم» في الكود هو إنك <b>تعدّل أرقام لحد ما المخرج يطابق الحقيقة</b>.</p>
+  <div class="formula">z = w₁x₁ + w₂x₂ + … + wₙxₙ + b = w · x + b        output = step(z)</div>
+  <div class="formula">step(z) = 1  if z ≥ 0        step(z) = 0  if z &lt; 0</div>
+  <p><b>تشبيه:</b> تخيل مدير بيقرر «أوافق على المشروع ولا لأ». قدامه شوية تقارير (المدخلات x). كل تقرير ليه وزن عنده (w): تقرير المالية بيفرق معاه جامد، وتقرير الديكور ولا بيبص عليه. بيجمع الآراء بالأوزان دي، والـ <b>bias</b> هو مزاجه الأساسي: لو الـ bias سالب كبير يبقى صعب يقتنع، ولو موجب يبقى بيوافق بسهولة، حتى لو كل المدخلات أصفار. والـ <b>step</b> قرار قاطع: يا أيوه يا لأ، مفيش «تقريبًا».</p>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>بيعمل إيه</th></tr>
+    <tr><td>المدخلات <span class="ltr">x</span></td><td>الأرقام اللي داخلة (features)</td></tr>
+    <tr><td>الأوزان <span class="ltr">w</span></td><td>بتكبّر أو تصغّر مساهمة كل مدخل في القرار، والإشارة السالبة معناها إن المدخل ده ضد القرار</td></tr>
+    <tr><td>الـ bias <span class="ltr">b</span></td><td>رقم ثابت بيزحزح حد القرار، وبيخلي الـ neuron يقدر «يشتغل» حتى لو كل المدخلات صفر</td></tr>
+    <tr><td>الـ activation (هنا step)</td><td>الدالة اللي بتتطبق بعد الجمع. في الـ perceptron هي step، وفي الشبكات الحديثة sigmoid أو ReLU</td></tr>
+  </table></div>
+
+  <h3>حد القرار (Decision Boundary)</h3>
+  <p>المعادلة <span class="ltr">w₁x₁ + w₂x₂ + b = 0</span> في بُعدين هي <b>خط مستقيم</b>، وفي أبعاد أكتر بتبقى hyperplane. كل النقط اللي في ناحية من الخط بتطلع 1، واللي في الناحية التانية بتطلع 0. يعني الـ perceptron هو <b>linear classifier</b>: كل اللي يقدر يعمله إنه يرسم خط واحد. والتدريب معناه إننا بنحرّك الخط ده لحد ما يفصل الـ classes صح.</p>
+  <ul class="checklist">
+    <li>• الأوزان <span class="ltr">(w₁, w₂)</span> بتحدد <b>ميل الخط</b>. المتجه w نفسه عمودي على الخط وبيشاور ناحية الـ 1.</li>
+    <li>• الـ bias بيحدد <b>بُعد الخط عن نقطة الصفر</b>. لو غيرته من غير ما تلمس الأوزان، الخط بيتزحلق بالتوازي مع نفسه.</li>
+  </ul>
+</section>
+
+<!-- LAB 1 -->
+<section id="d44-lab1">
+  <div class="station-head"><span class="tag">02</span><h2>معمل ٠١: حرّك الخط، وبعدين خلّي الـ perceptron يحرّكه لوحده</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>قاعدة التعلم (Learning Rule)</h3>
+      <div class="formula">error = y_true − y_pred
+w_i ← w_i + lr · error · x_i
+b ← b + lr · error</div>
+      <ul class="checklist">
+        <li>• <b>صح؟</b> الـ error بصفر، فمفيش أي حاجة بتتغير. الـ perceptron بيتعلم من غلطاته بس.</li>
+        <li>• <b>طلّع 0 والمفروض 1؟</b> الـ error = +1، فالأوزان بتزيد في اتجاه المدخل ده، والخط بيتحرك عشان يضمه لناحية الـ 1.</li>
+        <li>• <b>طلّع 1 والمفروض 0؟</b> الـ error = −1، فالأوزان بتقل.</li>
+        <li>• الـ <b>learning rate</b> بيتحكم في حجم كل تعديل.</li>
+      </ul>
+      <div class="note"><strong>جرب بإيدك:</strong> اختار AND وحرّك الـ sliders لحد ما الخط يفصل صح، وشوف العداد يوصل ٤ من ٤. بعدين دوس «صفّر» وسيب الـ perceptron يتدرب لوحده بزرار «درّب لوحده». جرب نفس الكلام مع XOR وشوف إنه بيلف في دواير ومبيوصلش أبدًا.</div>
+      <p id="d44-log" class="mono" style="font-size:14px;color:var(--muted);direction:ltr;text-align:left">—</p>
+    </div>
+    <div class="instrument">
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center">البوابة: <select id="d44-gate"><option>AND</option><option>OR</option><option>NAND</option><option>XOR</option></select></label>
+      </div>
+      <canvas id="d44-bCanvas" width="520" height="440" aria-label="حد القرار للـ perceptron مع ٤ نقط"></canvas>
+      <div class="mrow">
+        <label>w1 <span id="d44-w1v">0</span><input type="range" id="d44-w1" min="-3" max="3" step="0.1" value="0"></label>
+        <label>w2 <span id="d44-w2v">0</span><input type="range" id="d44-w2" min="-3" max="3" step="0.1" value="0"></label>
+        <label>b <span id="d44-bv">0</span><input type="range" id="d44-b" min="-3" max="3" step="0.1" value="0"></label>
+        <label>lr <span id="d44-lrv">0.1</span><input type="range" id="d44-lr" min="0.05" max="1" step="0.05" value="0.1"></label>
+      </div>
+      <div class="readout">
+        <div><small>صح من ٤</small><b id="d44-ok">2 / 4</b></div>
+        <div><small>epoch</small><b id="d44-ep">0</b></div>
+        <div><small>غلطات آخر epoch</small><b id="d44-err">—</b></div>
+      </div>
+      <div class="verdict" id="d44-verdict">—</div>
+      <div class="btns">
+        <button type="button" id="d44-step">خطوة: مثال واحد</button>
+        <button type="button" id="d44-epoch">epoch كامل</button>
+        <button type="button" id="d44-auto" class="primary">درّب لوحده</button>
+        <button type="button" id="d44-reset">صفّر الأوزان</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- XOR -->
+<section id="d44-xor">
+  <div class="station-head"><span class="tag">03</span><h2>مشكلة XOR: لما خط واحد مبيكفيش</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th class="ltr">x1</th><th class="ltr">x2</th><th>AND</th><th>OR</th><th>XOR</th></tr>
+    <tr><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td></tr>
+    <tr><td>0</td><td>1</td><td>0</td><td>1</td><td>1</td></tr>
+    <tr><td>1</td><td>0</td><td>0</td><td>1</td><td>1</td></tr>
+    <tr><td>1</td><td>1</td><td>1</td><td>1</td><td>0</td></tr>
+  </table></div>
+  <p>الـ AND والـ OR <b>linearly separable</b>، يعني تقدر ترسم خط واحد يفصل الأصفار عن الوحايد. الـ XOR لأ: النقطتين <span class="ltr">[0,1]</span> و<span class="ltr">[1,0]</span> لازم يبقوا في ناحية، و<span class="ltr">[0,0]</span> و<span class="ltr">[1,1]</span> في الناحية التانية، وهما متعدّيين على بعض بشكل X. مفيش خط مستقيم يعمل كده.</p>
+  <p><b>تشبيه:</b> عندك رقعة شطرنج ٢×٢ وعايز تفصل المربعات البيضا عن السودا بقطعة مقص واحدة مستقيمة. مستحيل. محتاج قطعتين.</p>
+  <div class="note"><strong>تاريخ:</strong> الـ perceptron اقترحه Frank Rosenblatt سنة 1958. وسنة 1969 Minsky وPapert أثبتوا في كتابهم «Perceptrons» إن الـ perceptron اللي من طبقة واحدة مبيقدرش يحل غير المشاكل الـ linearly separable، والكلام ده كان سبب كبير إن أبحاث الـ neural networks تقريبًا وقفت لمدة عشر سنين.</div>
+  <p><b>الحل:</b> نحط perceptrons فوق بعض في طبقات. الـ <b>multi-layer perceptron</b> بيجمع قرارين خطيين ويطلع منهم قرار مش خطي:</p>
+  <div class="formula">XOR(x1, x2) = (x1 OR x2) AND NOT (x1 AND x2) = AND( OR(x1,x2), NAND(x1,x2) )</div>
+  <div class="tablewrap"><table>
+    <tr><th>neuron</th><th>الأوزان</th><th>الـ bias</th><th>بيطلع 1 إمتى</th></tr>
+    <tr><td>OR (hidden)</td><td class="ltr">[1, 1]</td><td class="ltr">−0.5</td><td>لو واحد على الأقل = 1</td></tr>
+    <tr><td>NAND (hidden)</td><td class="ltr">[−1, −1]</td><td class="ltr">1.5</td><td>إلا لو الاتنين = 1</td></tr>
+    <tr><td>AND (output)</td><td class="ltr">[1, 1]</td><td class="ltr">−1.5</td><td>لو الاتنين hidden = 1</td></tr>
+  </table></div>
+</section>
+
+<!-- LAB 2 -->
+<section id="d44-lab2">
+  <div class="station-head"><span class="tag">04</span><h2>معمل ٠٢: الـ hidden layer بتعمل إيه بالظبط؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الطبقة المخفية مش «سحر». هي بتعمل <b>تحويل للفضاء</b>: بتاخد كل نقطة <span class="ltr">(x1, x2)</span> وتحطها في مكان جديد <span class="ltr">(h1, h2) = (OR, NAND)</span>.</p>
+      <p>حرّك الـ slider من «فضاء المدخلات» لـ «الفضاء المخفي». هتلاقي النقطتين <span class="ltr">[0,1]</span> و<span class="ltr">[1,0]</span> اتلمّوا على نفس النقطة <span class="ltr">(1,1)</span>، والنقطتين التانيين راحوا في أركان تانية. في الفضاء الجديد ده <b>خط واحد</b> (الـ AND neuron) بقى كفاية يفصلهم.</p>
+      <div class="note ai"><strong>دي الفكرة الأهم في الـ Deep Learning كله:</strong> كل طبقة بتعمل features جديدة من مخرجات الطبقة اللي قبلها، لحد ما المشكلة الصعبة تبقى سهلة وخط واحد في الآخر يحلها.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d44-hCanvas" width="520" height="400" aria-label="النقط بتتنقل من فضاء المدخلات للفضاء المخفي"></canvas>
+      <label style="display:grid;gap:2px">فضاء المدخلات ← → الفضاء المخفي <input type="range" id="d44-ht" min="0" max="1" step="0.01" value="0"></label>
+      <div class="btns"><button type="button" id="d44-hplay" class="primary">شغّل الحركة</button></div>
+      <div class="tablewrap"><table id="d44-htab"></table></div>
+    </div>
+  </div>
+</section>
+
+<!-- LAB 3 -->
+<section id="d44-lab3">
+  <div class="station-head"><span class="tag">05</span><h2>معمل ٠٣: شبكة sigmoid بتتعلم XOR لوحدها</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>في معمل ٠٢ احنا اللي اخترنا الأوزان بإيدينا. ده نفع مع XOR، بس في المشاكل الحقيقية مبنبقاش عارفين الأوزان الصح. الحل فيه تغييرين:</p>
+      <ol class="ex">
+        <li><b>sigmoid بدل step:</b> <span class="ltr">σ(z) = 1/(1+e^(−z))</span> دالة ناعمة بتطلع أي رقم بين 0 و1. الـ step بتقفز فجأة، فالـ gradient بتاعها صفر في كل حتة، ومفيش إشارة تقولك تعدّل في أنهي اتجاه. الـ sigmoid ليها ميل في كل حتة.</li>
+        <li><b>backpropagation:</b> الغلطة بترجع من الـ output للـ hidden layer، وكل وزن بيتعدّل على قد مساهمته في الغلطة. الرياضة اللي ورا <code>d_output</code> و<code>hidden_deltas</code> هي الـ chain rule، وهنشتقها صح في Lesson 03.</li>
+      </ol>
+      <p>الشبكة هنا 2 → 2 hidden → 1، وبتستخدم نفس قاعدة التحديث اللي في كود الدرس. اللون بيوري الـ output في كل نقطة من المربع، وتحت ليه منحنى الـ error.</p>
+      <div class="note"><strong>لاحظ:</strong> غيّر الـ seed. مع بدايات عشوائية معينة الشبكة ممكن تتزنق ويفضل الـ error عالي، وده اسمه local minimum. ده طبيعي جدًا، وعشان كده الـ initialization ليها درس لوحدها في Phase 3.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d44-nCanvas" width="520" height="260" aria-label="خريطة مخرجات الشبكة ومنحنى الـ error"></canvas>
+      <div class="mrow">
+        <label>lr <span id="d44-nlrv">2</span><input type="range" id="d44-nlr" min="0.1" max="5" step="0.1" value="2"></label>
+        <label>seed <span id="d44-nseedv">1</span><input type="range" id="d44-nseed" min="1" max="20" step="1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>epoch</small><b id="d44-nep">0</b></div>
+        <div><small>total error</small><b id="d44-nerr">—</b></div>
+        <div><small>[0,0] [0,1] [1,0] [1,1]</small><b id="d44-nout">—</b></div>
+      </div>
+      <div class="verdict" id="d44-nverdict">—</div>
+      <div class="btns">
+        <button type="button" id="d44-ntrain" class="primary">درّب</button>
+        <button type="button" id="d44-nreset">ابدأ من الأول</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d44-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو (لو لسه معملتش clone، شوف Day 1) شغّل الملف الأصلي الأول عشان تشوف النتيجة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/03-deep-learning-core/01-the-perceptron/code/perceptron.py</pre></div>
+  <p>وللي عنده Julia، فيه نفس الدرس بالظبط في <code>main.jl</code>:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>julia phases/03-deep-learning-core/01-the-perceptron/code/main.jl</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_perceptron.py</code> واكتب الخطوات دي بإيدك، وبص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: كلاس Perceptron</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Perceptron:
+    def __init__(self, n_inputs, learning_rate=0.1):
+        self.weights = [0.0] * n_inputs   <span class="c"># بنبدأ من أصفار</span>
+        self.bias = 0.0
+        self.lr = learning_rate
+
+    def predict(self, inputs):
+        total = sum(w * x for w, x in zip(self.weights, inputs))   <span class="c"># w · x</span>
+        total += self.bias                                          <span class="c"># + b</span>
+        return 1 if total >= 0 else 0                               <span class="c"># step</span>
+
+    def train(self, training_data, epochs=100):
+        for epoch in range(epochs):
+            errors = 0
+            for inputs, target in training_data:
+                prediction = self.predict(inputs)
+                error = target - prediction        <span class="c"># +1 أو -1 أو 0</span>
+                if error != 0:                     <span class="c"># بنتعلم من الغلط بس</span>
+                    errors += 1
+                    for i in range(len(self.weights)):
+                        self.weights[i] += self.lr * error * inputs[i]
+                    self.bias += self.lr * error
+            if errors == 0:                        <span class="c"># epoch كامل من غير غلط = خلصنا</span>
+                print(f"Converged at epoch {epoch + 1}")
+                return
+        print(f"Did not converge after {epochs} epochs")</pre></div>
+
+  <h3>خطوة ٢: درّبه على البوابات المنطقية</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def test_gate(name, n_inputs, data):
+    print(f"=== {name} ===")
+    p = Perceptron(n_inputs)
+    p.train(data)
+    print(f"  Weights: {p.weights}, Bias: {p.bias}")
+    for inputs, expected in data:
+        result = p.predict(inputs)
+        status = "OK" if result == expected else "WRONG"
+        print(f"  {inputs} -> {result} (expected {expected}) {status}")
+    print()
+
+and_data = [([0, 0], 0), ([0, 1], 0), ([1, 0], 0), ([1, 1], 1)]
+or_data  = [([0, 0], 0), ([0, 1], 1), ([1, 0], 1), ([1, 1], 1)]
+not_data = [([0], 1), ([1], 0)]                <span class="c"># NOT: مدخل واحد بس</span>
+
+test_gate("AND Gate", 2, and_data)
+test_gate("OR Gate", 2, or_data)
+test_gate("NOT Gate", 1, not_data)</pre></div>
+  <details><summary>الناتج المتوقع (حسبته بنفس القاعدة خطوة بخطوة)</summary><pre class="term">=== AND Gate ===
+Converged at epoch 4
+  Weights: [0.2, 0.1], Bias: -0.20000000000000004
+  [0, 0] -> 0 (expected 0) OK
+  [0, 1] -> 0 (expected 0) OK
+  [1, 0] -> 0 (expected 0) OK
+  [1, 1] -> 1 (expected 1) OK
+
+=== OR Gate ===
+Converged at epoch 4
+  Weights: [0.1, 0.1], Bias: -0.1
+  ...
+
+=== NOT Gate ===
+Converged at epoch 3
+  Weights: [-0.1], Bias: 0.0
+  ...</pre>
+  <p>الرقم الغريب <span class="ltr">-0.20000000000000004</span> ده مش bug. ده خطأ تقريب طبيعي في الـ floating point لما بتجمع 0.1 كذا مرة. وتقدر تتأكد إن حد AND صح: <span class="ltr">0.2·1 + 0.1·1 − 0.2 = 0.1 ≥ 0</span> بس للنقطة <span class="ltr">[1,1]</span>.</p></details>
+
+  <h3>خطوة ٣: شوف XOR بيفشل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>xor_data = [([0, 0], 0), ([0, 1], 1), ([1, 0], 1), ([1, 1], 0)]
+
+print("=== XOR Gate (single perceptron - will fail) ===")
+p_xor = Perceptron(2)
+p_xor.train(xor_data, epochs=1000)            <span class="c"># حتى ١٠٠٠ epoch مش هتفرق</span>
+for inputs, expected in xor_data:
+    result = p_xor.predict(inputs)
+    status = "OK" if result == expected else "WRONG"
+    print(f"  {inputs} -> {result} (expected {expected}) {status}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Did not converge after 1000 epochs
+  [0, 0] -> 1 (expected 0) WRONG
+  [0, 1] -> 1 (expected 1) OK
+  [1, 0] -> 0 (expected 1) WRONG
+  [1, 1] -> 0 (expected 0) OK</pre><p>أحسن حاجة خط واحد يقدر يعملها هي إنه يجيب جزء صح، وكل ما يصلّح نقطة يبوّظ واحدة تانية. ده بالظبط اللي شفته في معمل ٠١.</p></details>
+
+  <h3>خطوة ٤: حل XOR بطبقتين (أوزان بالإيد)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def xor_network(x1, x2):
+    or_neuron = Perceptron(2)
+    or_neuron.weights = [1.0, 1.0]
+    or_neuron.bias = -0.5                      <span class="c"># 1 لو واحد على الأقل = 1</span>
+
+    nand_neuron = Perceptron(2)
+    nand_neuron.weights = [-1.0, -1.0]
+    nand_neuron.bias = 1.5                     <span class="c"># 0 بس لو الاتنين = 1</span>
+
+    and_neuron = Perceptron(2)
+    and_neuron.weights = [1.0, 1.0]
+    and_neuron.bias = -1.5                     <span class="c"># 1 بس لو الاتنين = 1</span>
+
+    hidden1 = or_neuron.predict([x1, x2])      <span class="c"># الطبقة المخفية</span>
+    hidden2 = nand_neuron.predict([x1, x2])
+    return and_neuron.predict([hidden1, hidden2])   <span class="c"># طبقة الـ output</span>
+
+print("=== XOR Gate (multi-layer network - works) ===")
+for inputs, expected in xor_data:
+    result = xor_network(inputs[0], inputs[1])
+    status = "OK" if result == expected else "WRONG"
+    print(f"  {inputs} -> {result} (expected {expected}) {status}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">  [0, 0] -> 0 (expected 0) OK
+  [0, 1] -> 1 (expected 1) OK
+  [1, 0] -> 1 (expected 1) OK
+  [1, 1] -> 0 (expected 0) OK</pre></details>
+
+  <h3>خطوة ٥: شبكة بطبقتين بتتعلم لوحدها (sigmoid + backprop)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math, random
+
+class TwoLayerNetwork:
+    def __init__(self, learning_rate=0.5):
+        random.seed(0)                           <span class="c"># نفس البداية كل مرة</span>
+        self.w_hidden = [[random.uniform(-1, 1), random.uniform(-1, 1)] for _ in range(2)]
+        self.b_hidden = [random.uniform(-1, 1), random.uniform(-1, 1)]
+        self.w_output = [random.uniform(-1, 1), random.uniform(-1, 1)]
+        self.b_output = random.uniform(-1, 1)
+        self.lr = learning_rate
+
+    def sigmoid(self, x):
+        x = max(-500, min(500, x))               <span class="c"># نمنع overflow في exp</span>
+        return 1.0 / (1.0 + math.exp(-x))
+
+    def forward(self, inputs):
+        self.inputs = inputs
+        self.hidden_outputs = []
+        for i in range(2):                       <span class="c"># كل hidden neuron: w·x + b ثم sigmoid</span>
+            z = sum(w * x for w, x in zip(self.w_hidden[i], inputs)) + self.b_hidden[i]
+            self.hidden_outputs.append(self.sigmoid(z))
+        z_out = sum(w * h for w, h in zip(self.w_output, self.hidden_outputs)) + self.b_output
+        self.output = self.sigmoid(z_out)
+        return self.output
+
+    def train(self, training_data, epochs=10000):
+        for epoch in range(epochs):
+            total_error = 0
+            for inputs, target in training_data:
+                output = self.forward(inputs)
+                error = target - output
+                total_error += error ** 2
+
+                d_output = error * output * (1 - output)       <span class="c"># σ'(z) = σ(1-σ)</span>
+
+                saved_w_output = self.w_output[:]               <span class="c"># نحفظ الأوزان قبل ما نعدّلها</span>
+                hidden_deltas = []
+                for i in range(2):                              <span class="c"># الغلطة بترجع للـ hidden</span>
+                    h = self.hidden_outputs[i]
+                    hd = d_output * saved_w_output[i] * h * (1 - h)
+                    hidden_deltas.append(hd)
+
+                for i in range(2):
+                    self.w_output[i] += self.lr * d_output * self.hidden_outputs[i]
+                self.b_output += self.lr * d_output
+
+                for i in range(2):
+                    for j in range(len(inputs)):
+                        self.w_hidden[i][j] += self.lr * hidden_deltas[i] * inputs[j]
+                    self.b_hidden[i] += self.lr * hidden_deltas[i]
+
+            if epoch % 2000 == 0:
+                print(f"  Epoch {epoch}, error: {total_error:.4f}")
+
+print("=== XOR Gate (trained 2-layer network with backpropagation) ===")
+net = TwoLayerNetwork(learning_rate=2.0)
+net.train(xor_data, epochs=10000)
+for inputs, expected in xor_data:
+    result = net.forward(inputs)
+    predicted = 1 if result >= 0.5 else 0
+    print(f"  {inputs} -> {result:.4f} (rounded: {predicted}, expected {expected})")</pre></div>
+  <p>المفروض الـ error يقل كل ما الـ epochs تزيد، والمخرجات تقرّب من 0 و1. الأرقام بالظبط بتعتمد على الـ seed، فمتقارنش رقم برقم. لو لقيت المخرجات واقفة كلها حوالين 0.5، يبقى الشبكة اتزنقت زي ما شفت في معمل ٠٣، وجرب seed تاني.</p>
+  <p><b>إيه الفرق عن خطوة ٤؟</b> حاجتين: sigmoid بدل step، فبقى فيه gradient نمشي عليه. و<code>train</code> بترجّع الغلطة من الـ output للطبقة المخفية وبتعدّل كل وزن على قد مساهمته. ده backpropagation في حوالي ٢٠ سطر.</p>
+
+  <h3>خطوة ٦: نفس الكلام في سطر import (Use It)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.linear_model import Perceptron as SkPerceptron
+import numpy as np
+
+X = np.array([[0,0],[0,1],[1,0],[1,1]])
+y = np.array([0, 0, 0, 1])                       <span class="c"># AND</span>
+
+clf = SkPerceptron(max_iter=100, tol=1e-3)
+clf.fit(X, y)
+print([clf.predict([x])[0] for x in X])</pre></div>
+  <p>خمس سطور بتعمل نفس اللي الكلاس بتاعك بيعمله. نسخة sklearn بتزوّد convergence checks وأكتر من loss function ودعم للـ sparse input، بس الـ loop الأساسي واحد: weighted sum، وstep، وتعديل للأوزان لما يغلط.</p>
+  <p>الفرق الحقيقي بيبان في الشبكات الكبيرة اللي في الـ production:</p>
+  <ul class="checklist">
+    <li>• الـ step بتتغير لـ sigmoid أو ReLU أو activations ناعمة تانية.</li>
+    <li>• الأوزان بتتعلم أوتوماتيك بالـ backpropagation (Lesson 03).</li>
+    <li>• الطبقات بتبقى أعمق: ٣ و١٠ و١٠٠ طبقة وأكتر.</li>
+    <li>• والمبدأ زي ما هو: كل طبقة بتعمل features جديدة من مخرجات اللي قبلها. perceptron واحد بيرسم خطوط مستقيمة بس، لكن لما ترصّهم فوق بعض تقدر ترسم أي شكل.</li>
+  </ul>
+  <p>والدرس بيطلّع ملف <code>outputs/skill-perceptron.md</code>: skill بتساعدك تقرر إمتى طبقة واحدة كفاية وإمتى محتاج كذا طبقة.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d44-exercises">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>NAND:</b> درّب perceptron على بوابة NAND (دي البوابة «العالمية»: أي دايرة منطقية ممكن تتبني من NAND بس). اتأكد إن الأوزان والـ bias بيعملوا حد قرار صحيح.
+      <details><summary>تلميح وإجابة</summary>الـ data: <span class="ltr">[([0,0],1), ([0,1],1), ([1,0],1), ([1,1],0)]</span>. بنفس الإعدادات (أوزان بتبدأ صفر و<span class="ltr">lr=0.1</span>) المفروض يوصل لحاجة زي <span class="ltr">w=[-0.2,-0.1], b=0.2</span>. اتأكد بإيدك: <span class="ltr">[1,1] → −0.2−0.1+0.2 = −0.1 &lt; 0 → 0</span>، و<span class="ltr">[0,0] → 0.2 ≥ 0 → 1</span>. وتقدر تتأكد بصريًا لو اخترت NAND في معمل ٠١ ودوست «درّب لوحده».</details></li>
+    <li><b>تتبّع الخط:</b> عدّل كلاس Perceptron بحيث يطبع معادلة حد القرار <span class="ltr">w₁x₁ + w₂x₂ + b = 0</span> بعد كل epoch، وشوف الخط بيتحرك إزاي وهو بيتدرب على AND.
+      <details><summary>تلميح</summary>في آخر loop الـ epoch اطبع <code>f"epoch {epoch+1}: {w1:.2f}*x1 + {w2:.2f}*x2 + {b:.2f} = 0"</code>. ولو عايز تشوفه كخط عادي، حوّله لـ <span class="ltr">x2 = −(w1·x1 + b)/w2</span> بس خلي بالك لما <span class="ltr">w2 = 0</span> (القسمة على صفر). الزرار «epoch كامل» في معمل ٠١ بيعمل نفس الكلام بصريًا.</details></li>
+    <li><b>Majority vote:</b> perceptron بـ ٣ مدخلات يطلّع 1 بس لو ٢ على الأقل من الـ ٣ = 1. هل ده linearly separable؟ ليه؟
+      <details><summary>الإجابة</summary>أيوه، separable. الـ output بيعتمد بس على <b>مجموع</b> المدخلات (≥ 2 ولا لأ)، وده شرط خطي: <span class="ltr">w=[1,1,1], b=−1.5</span> بيفصل بالظبط، يعني <span class="ltr">x1+x2+x3 ≥ 1.5</span>. هندسيًا ده مستوى (plane) بيقطع المكعب وبيفصل الأركان اللي فيها اتنين وحايد أو أكتر عن الباقي. ابني الـ ٨ صفوف ودرّب، والمفروض يوصل.</details></li>
+    <li><b>إضافة مني · router صغير لـ agent:</b> عندك agent بيستقبل رسايل، وعايز تقرر قبل ما تبعت للـ LLM: الرسالة دي محتاجة tool call (بحث مثلًا) ولا لأ؟ اعمل ٣ features لكل رسالة: <code>has_question_word</code> (فيها «كام/إمتى/فين») و<code>has_date_or_number</code> و<code>is_greeting</code>. اكتب ١٠ أمثلة بإيدك بـ labels، ودرّب الـ Perceptron بتاعك عليهم، واطبع الأوزان.
+      <details><summary>تلميح</summary>المتوقع إن وزن <code>is_greeting</code> يطلع سالب، والاتنين التانيين موجبين. لو مش بيوصل لـ «Converged» يبقى الأمثلة بتاعتك مش linearly separable بالـ features دي، يعني محتاج features أحسن أو موديل أعمق، ودي نفس فكرة XOR بالظبط. في الحقيقة الـ routing ده بيتعمل بـ classifiers أكبر أو بالـ LLM نفسه، بس الفكرة واحدة: خط (أو hyperplane) بيقرر.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d44-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس مقالوش</h2></div>
+  <h3>١. الـ perceptron قريب جدًا من الـ logistic regression</h3>
+  <p>فاكر Day 25؟ الـ logistic regression هي <span class="ltr">σ(w·x + b)</span>. شيل الـ sigmoid وحط step، يطلعلك perceptron. الفرق إن الـ logistic regression بتديك احتمال وبتتدرب بـ gradient على loss ناعمة، والـ perceptron بيديك قرار بس وبيتعلم من الغلطات بس. وعشان كده الـ neuron الحديث هو تقريبًا «logistic regression صغيرة»، والشبكة طبقات منها.</p>
+  <h3>٢. ضمان الوصول (Perceptron Convergence Theorem)</h3>
+  <p>فيه نظرية مشهورة (Novikoff، سنة 1962) بتقول: <b>لو</b> الداتا linearly separable، قاعدة التعلم دي هتوصل لخط يفصلها في عدد محدود من الخطوات. ولو مش separable زي XOR، مفيش أي ضمان، والأوزان هتفضل تلف في دواير للأبد. وعشان كده الكود فيه حد أقصى للـ epochs.</p>
+  <h3>٣. غلطات شائعة</h3>
+  <ul class="checklist">
+    <li>• <b>تنسى الـ bias:</b> من غير b، الخط لازم يعدّي بنقطة الصفر. جرب في معمل ٠١ تخلي <span class="ltr">b = 0</span> مع AND، وهتلاقي إن مفيش أوزان تخلي النقطة <span class="ltr">[0,0]</span> تطلع 0، لأن <span class="ltr">z = 0 ≥ 0</span> فبتطلع 1 دايمًا.</li>
+    <li>• <b>فاكر إن الـ learning rate فارقة هنا:</b> لما الأوزان تبدأ من صفر والـ activation هي step، تغيير الـ lr بيضرب كل الأوزان والـ bias في نفس الرقم بالظبط، فالخط نفسه مبيتغيرش ولا عدد الـ epochs. يعني مع <span class="ltr">lr = 1</span> بتطلع <span class="ltr">[2, 1], b=−2</span> لـ AND بدل <span class="ltr">[0.2, 0.1], b=−0.2</span>، وهي نفس القرارات. جربها في معمل ٠١. الـ lr بيبقى مهم فعلًا مع sigmoid والـ gradients (معمل ٠٣).</li>
+    <li>• <b>تقول XOR فشل «عشان محتاج تدريب أكتر»:</b> لأ. المشكلة في الـ architecture نفسها، مش في التدريب.</li>
+  </ul>
+  <h3>٤. بيظهر فين في الـ LLMs والـ agents؟</h3>
+  <ul class="checklist">
+    <li>• كل neuron في الـ MLP block جوه أي transformer بيعمل <span class="ltr">w·x + b</span> وبعدين activation ناعمة (GELU أو SwiGLU مثلًا). يعني ملايين perceptrons «ناعمة» جنب بعض.</li>
+    <li>• <b>Linear probes:</b> لما الباحثين يحبوا يعرفوا هل الموديل «عارف» معلومة معينة جوه الـ activations بتاعته، بيدرّبوا classifier خطي صغير على الـ hidden states. ده نفس فكرة الخط اللي بيفصل.</li>
+    <li>• الـ classification heads (sentiment، toxicity، routing) غالبًا آخرها طبقة خطية واحدة فوق embeddings.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d44-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d44-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d44-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d44-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الـ perceptron: weighted sum + bias + step، والـ bias بيعمل إيه</label></li>
+    <li><label><input type="checkbox" data-ck="2"> حرّكت الخط في معمل ٠١ وشفت قاعدة التعلم بتشتغل، وشفت XOR بيلف من غير ما يوصل</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فهمت من معمل ٠٢ إزاي الـ hidden layer بتحوّل XOR لمشكلة خطية</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ Perceptron والـ xor_network والـ TwoLayerNetwork بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرين NAND وتمرين الـ majority vote</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Weighted sum + bias</td><td>كل neuron في أي شبكة، والـ attention projections، والـ MLP blocks في الـ transformers</td></tr>
+    <tr><td>Activation function</td><td>step هنا، وsigmoid وReLU وGELU في الشبكات الحديثة (فيه درس ليها لوحدها)</td></tr>
+    <tr><td>Decision boundary</td><td>أي classifier، والـ linear probes على hidden states الـ LLM</td></tr>
+    <tr><td>Linear separability</td><td>إمتى موديل خطي يكفي وإمتى محتاج طبقات أكتر</td></tr>
+    <tr><td>Hidden layers</td><td>الـ deep learning كله: كل طبقة بتعمل features جديدة</td></tr>
+    <tr><td>Sigmoid + backprop</td><td>تدريب أي شبكة (Lesson 03 والـ optimizers)</td></tr>
+  </table></div>
+  <h3>المصطلحات</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المصطلح</th><th>الناس بتقول</th><th>معناه بالظبط</th></tr>
+    <tr><td>Perceptron</td><td>«neuron مزيف»</td><td>linear classifier: الـ dot product بين المدخلات والأوزان + bias، وبعدين step function</td></tr>
+    <tr><td>Weight</td><td>«أهمية المدخل»</td><td>رقم بيتضرب في كل مدخل وبيحدد قد إيه بيأثر في القرار</td></tr>
+    <tr><td>Bias</td><td>«الـ threshold»</td><td>ثابت بيزحزح حد القرار وبيخلي الـ neuron يشتغل حتى لو كل المدخلات صفر</td></tr>
+    <tr><td>Activation function</td><td>«اللي بتعصر القيم»</td><td>الدالة اللي بتتطبق بعد الجمع: step في الـ perceptron، وsigmoid أو ReLU في الشبكات الحديثة</td></tr>
+    <tr><td>Linearly separable</td><td>«تقدر ترسم خط بينهم»</td><td>داتا يقدر hyperplane واحد يفصل الـ classes فيها بالكامل</td></tr>
+    <tr><td>XOR problem</td><td>«اللي الـ perceptron مبيعرفش يعمله»</td><td>الدليل إن الشبكة اللي من طبقة واحدة مبتقدرش تتعلم دوال مش linearly separable</td></tr>
+    <tr><td>Decision boundary</td><td>«المكان اللي القرار بيتقلب عنده»</td><td>الـ hyperplane <span class="ltr">w·x + b = 0</span> اللي بيقسم الفضاء لـ ٢ classes</td></tr>
+    <tr><td>Multi-layer perceptron</td><td>«neural network بجد»</td><td>perceptrons في طبقات، ومخرجات كل طبقة بتدخل على اللي بعدها</td></tr>
+  </table></div>
+  <p><b>للقراءة:</b> ورقة Rosenblatt الأصلية (1958)، وكتاب Minsky وPapert «Perceptrons» (1969)، والفصل الأول من كتاب Michael Nielsen المجاني «Neural Networks and Deep Learning» (neuralnetworksanddeeplearning.com)، وده أحسن شرح بصري لإزاي الـ perceptrons بتتركب في شبكات.</p>
+  <p><b>بكرة:</b> Multi-Layer Networks and Forward Pass. هنعمم اللي عملناه النهاردة لطبقات بأي حجم ونكتب الـ forward pass بالمصفوفات، ونبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F01-the-perceptron" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/01-the-perceptron</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// roadmap
+const rm=$('d44-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===1)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: decision boundary + learning rule ----------
+const GATES={AND:[0,0,0,1],OR:[0,1,1,1],NAND:[1,1,1,0],XOR:[0,1,1,0]};
+const PTS=[[0,0],[0,1],[1,0],[1,1]];
+const bc=$('d44-bCanvas'),bctx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+const S=200,ox=60+0.5*S,oy=BH-20-0.5*S;
+const toPx=(x,y)=>[ox+x*S,oy-y*S];
+let w=[0,0],b=0,ep=0,idx=0,epErr=0,lastErr=null,timer=null,lastIdx=-1;
+const gate=()=>$('d44-gate').value,Y=()=>GATES[gate()];
+const pred=x=>(w[0]*x[0]+w[1]*x[1]+b)>=0?1:0;
+function syncSliders(){[['d44-w1',w[0],'d44-w1v'],['d44-w2',w[1],'d44-w2v'],['d44-b',b,'d44-bv']].forEach(([id,v,l])=>{$(id).value=Math.max(-3,Math.min(3,v));$(l).textContent=f(v,2)})}
+function drawB(){
+  bctx.clearRect(0,0,BW,BH);
+  // shaded regions
+  const cell=8;
+  for(let px=0;px<BW;px+=cell)for(let py=0;py<BH;py+=cell){
+    const x=(px+cell/2-ox)/S,y=(oy-(py+cell/2))/S,z=w[0]*x+w[1]*y+b;
+    bctx.fillStyle=z>=0?css('--vec-a'):css('--vec-b');bctx.globalAlpha=z>=0?.13:.08;bctx.fillRect(px,py,cell,cell)}
+  bctx.globalAlpha=1;
+  AI.grid(bctx,BW,BH,S/2,ox,oy);
+  // boundary line
+  bctx.strokeStyle=css('--ink');bctx.lineWidth=2.5;bctx.beginPath();
+  if(Math.abs(w[1])>1e-9){const xa=-1,xb=2;bctx.moveTo(...toPx(xa,-(w[0]*xa+b)/w[1]));bctx.lineTo(...toPx(xb,-(w[0]*xb+b)/w[1]));bctx.stroke()}
+  else if(Math.abs(w[0])>1e-9){const xv=-b/w[0];bctx.moveTo(...toPx(xv,-1));bctx.lineTo(...toPx(xv,2));bctx.stroke()}
+  // weight vector (normal)
+  const n=Math.hypot(w[0],w[1]);
+  if(n>1e-9){const c=[.5,.5];const p0=toPx(...c),p1=toPx(c[0]+w[0]/n*.35,c[1]+w[1]/n*.35);AI.arrow(bctx,p0[0],p0[1],p1[0],p1[1],css('--muted'),2);
+    bctx.fillStyle=css('--muted');bctx.font='12px JetBrains Mono, monospace';bctx.fillText('w',p1[0]+5,p1[1]-4)}
+  // points
+  const y=Y();let ok=0;
+  PTS.forEach((p,i)=>{const [x0,y0]=toPx(...p),good=pred(p)===y[i];if(good)ok++;
+    if(i===lastIdx){bctx.strokeStyle=css('--ink');bctx.lineWidth=2;bctx.setLineDash([4,4]);bctx.beginPath();bctx.arc(x0,y0,24,0,7);bctx.stroke();bctx.setLineDash([])}
+    bctx.fillStyle=y[i]?css('--vec-a'):css('--vec-b');bctx.beginPath();bctx.arc(x0,y0,14,0,7);bctx.fill();
+    if(!good){bctx.strokeStyle=css('--bad');bctx.lineWidth=4;bctx.beginPath();bctx.arc(x0,y0,18,0,7);bctx.stroke()}
+    bctx.fillStyle=css('--paper');bctx.font='bold 13px JetBrains Mono, monospace';bctx.textAlign='center';bctx.fillText(y[i],x0,y0+5);
+    bctx.fillStyle=css('--ink');bctx.font='12px JetBrains Mono, monospace';bctx.fillText('['+p+']',x0,y0+34);bctx.textAlign='left'});
+  bctx.fillStyle=css('--muted');bctx.font='12px JetBrains Mono, monospace';
+  bctx.fillText('x1',BW-24,oy-6);bctx.fillText('x2',ox+6,14);
+  $('d44-ok').textContent=ok+' / 4';$('d44-ok').style.color=ok===4?css('--ok'):'';
+  $('d44-ep').textContent=ep;$('d44-err').textContent=lastErr===null?'—':lastErr;
+  const v=$('d44-verdict');
+  if(ok===4){v.textContent='الخط فاصل كل النقط صح';v.style.color=css('--ok')}
+  else if(gate()==='XOR'&&ep>=20){v.textContent='XOR: '+ep+' epoch ولسه بيلف. مفيش خط واحد يحلها';v.style.color=css('--bad')}
+  else{v.textContent='فيه '+(4-ok)+' نقطة غلط (عليها دايرة حمرا)';v.style.color=css('--muted')}
+}
+function stepOne(){
+  const y=Y(),i=idx,x=PTS[i],p=pred(x),e=y[i]-p,lr=+$('d44-lr').value;
+  if(e!==0){epErr++;w[0]+=lr*e*x[0];w[1]+=lr*e*x[1];b+=lr*e}
+  lastIdx=i;
+  $('d44-log').textContent='x=['+x+'] y='+y[i]+' pred='+p+' error='+(e>0?'+':'')+e+(e?'  →  w=['+f(w[0])+', '+f(w[1])+'], b='+f(b):'  →  no change');
+  idx++;if(idx===4){idx=0;ep++;lastErr=epErr;epErr=0}
+  syncSliders();drawB();
+  return idx===0&&lastErr===0;
+}
+function stopAuto(){if(timer){clearInterval(timer);timer=null;$('d44-auto').textContent='درّب لوحده'}}
+function resetB(){stopAuto();w=[0,0];b=0;ep=0;idx=0;epErr=0;lastErr=null;lastIdx=-1;$('d44-log').textContent='—';syncSliders();drawB()}
+$('d44-step').addEventListener('click',()=>{stopAuto();stepOne()});
+$('d44-epoch').addEventListener('click',()=>{stopAuto();do{stepOne()}while(idx!==0)});
+$('d44-auto').addEventListener('click',()=>{
+  if(timer){stopAuto();return}
+  $('d44-auto').textContent='وقّف';
+  timer=setInterval(()=>{if(!document.body.contains(bc)){stopAuto();return}
+    const done=stepOne();if(done||ep>=200)stopAuto()},reduce?20:140)});
+$('d44-reset').addEventListener('click',resetB);
+$('d44-gate').addEventListener('change',resetB);
+[['d44-w1',0],['d44-w2',1]].forEach(([id,k])=>$(id).addEventListener('input',e=>{stopAuto();w[k]=+e.target.value;syncSliders();drawB()}));
+$('d44-b').addEventListener('input',e=>{stopAuto();b=+e.target.value;syncSliders();drawB()});
+$('d44-lr').addEventListener('input',e=>{$('d44-lrv').textContent=e.target.value});
+syncSliders();drawB();
+
+// ---------- Lab 2: input space -> hidden space ----------
+const hc=$('d44-hCanvas'),hctx=AI.setupCanvas(hc),HW=+hc.dataset.w,HH=+hc.dataset.h;
+const HS=170,hox=150,hoy=HH-70;
+const hp=(x,y)=>[hox+x*HS,hoy-y*HS];
+const step=z=>z>=0?1:0;
+const OR=p=>step(p[0]+p[1]-0.5),NAND=p=>step(-p[0]-p[1]+1.5),ANDh=h=>step(h[0]+h[1]-1.5);
+const XL=[0,1,1,0];
+let ht=0,hanim=null;
+function lineAcross(ctx,a,bb,c,color,label){ // a*x+bb*y+c=0
+  ctx.strokeStyle=color;ctx.lineWidth=2.2;ctx.beginPath();
+  const xa=-0.6,xb=1.6;ctx.moveTo(...hp(xa,-(a*xa+c)/bb));ctx.lineTo(...hp(xb,-(a*xb+c)/bb));ctx.stroke();
+  const lp=hp(1.45,-(a*1.45+c)/bb);ctx.fillStyle=color;ctx.font='bold 12px JetBrains Mono, monospace';ctx.fillText(label,Math.min(HW-60,lp[0]-30),Math.max(14,Math.min(HH-6,lp[1]-8)));
+}
+function drawH(){
+  hctx.clearRect(0,0,HW,HH);AI.grid(hctx,HW,HH,HS/2,hox,hoy);
+  const e=ht<.5?2*ht*ht:1-Math.pow(-2*ht+2,2)/2;
+  if(ht<0.35){hctx.globalAlpha=1-ht/0.35;
+    lineAcross(hctx,1,1,-0.5,css('--vec-a'),'OR');lineAcross(hctx,-1,-1,1.5,css('--vec-b'),'NAND');hctx.globalAlpha=1}
+  if(ht>0.65){hctx.globalAlpha=(ht-0.65)/0.35;lineAcross(hctx,1,1,-1.5,css('--ink'),'AND');hctx.globalAlpha=1}
+  const tgt=PTS.map(p=>[OR(p),NAND(p)]);
+  // offset duplicates slightly so both visible
+  PTS.forEach((p,i)=>{
+    let T=tgt[i].slice();if(T[0]===1&&T[1]===1){T=[T[0]+(i===1?-0.06:0.06),T[1]+(i===1?0.06:-0.06)]}
+    const x=p[0]+(T[0]-p[0])*e,y=p[1]+(T[1]-p[1])*e,[X,Yy]=hp(x,y);
+    hctx.fillStyle=XL[i]?css('--vec-a'):css('--vec-b');hctx.beginPath();hctx.arc(X,Yy,13,0,7);hctx.fill();
+    hctx.fillStyle=css('--paper');hctx.font='bold 12px JetBrains Mono, monospace';hctx.textAlign='center';hctx.fillText(XL[i],X,Yy+4);
+    hctx.fillStyle=css('--ink');hctx.font='11px JetBrains Mono, monospace';hctx.fillText('['+p+']',X,Yy+(i===1?-20:28));hctx.textAlign='left'});
+  hctx.fillStyle=css('--muted');hctx.font='12px JetBrains Mono, monospace';
+  const ax=ht<.5?['x1','x2']:['h1 = OR','h2 = NAND'];
+  hctx.fillText(ax[0],HW-90,hoy-8);hctx.fillText(ax[1],hox+8,16);
+  hctx.fillText(ht<.5?'input space':'hidden space',10,HH-10);
+}
+function tableH(){
+  const t=$('d44-htab');let h='<tr><th class="ltr">x1 x2</th><th class="ltr">h1=OR</th><th class="ltr">h2=NAND</th><th class="ltr">AND(h1,h2)</th><th>XOR</th></tr>';
+  PTS.forEach((p,i)=>{const hh=[OR(p),NAND(p)];h+='<tr><td class="ltr">'+p.join(' ')+'</td><td>'+hh[0]+'</td><td>'+hh[1]+'</td><td><b>'+ANDh(hh)+'</b></td><td>'+XL[i]+'</td></tr>'});
+  t.innerHTML=h;
+}
+$('d44-ht').addEventListener('input',e=>{cancelAnimationFrame(hanim);ht=+e.target.value;drawH()});
+$('d44-hplay').addEventListener('click',()=>{
+  cancelAnimationFrame(hanim);const from=ht>.5?1:0,to=1-from,t0=performance.now(),dur=reduce?0:1600;
+  const go=t=>{if(!document.body.contains(hc))return;const k=dur?Math.min(1,(t-t0)/dur):1;ht=from+(to-from)*k;$('d44-ht').value=ht;drawH();if(k<1)hanim=requestAnimationFrame(go)};
+  hanim=requestAnimationFrame(go)});
+tableH();drawH();
+
+// ---------- Lab 3: 2-2-1 sigmoid net on XOR ----------
+const nc=$('d44-nCanvas'),nctx=AI.setupCanvas(nc),NW=+nc.dataset.w,NH=+nc.dataset.h;
+const XOR=[[[0,0],0],[[0,1],1],[[1,0],1],[[1,1],0]];
+function rng(seed){let a=seed*2654435761>>>0;return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const sig=x=>1/(1+Math.exp(-Math.max(-500,Math.min(500,x))));
+let net,nep=0,hist=[],nraf=null,running=false;
+function initNet(){const r=rng(+$('d44-nseed').value),u=()=>r()*2-1;
+  net={wh:[[u(),u()],[u(),u()]],bh:[u(),u()],wo:[u(),u()],bo:u()};nep=0;hist=[]}
+function fwd(x){const h=[0,1].map(i=>sig(net.wh[i][0]*x[0]+net.wh[i][1]*x[1]+net.bh[i]));const o=sig(net.wo[0]*h[0]+net.wo[1]*h[1]+net.bo);return [o,h]}
+function epoch(){const lr=+$('d44-nlr').value;let tot=0;
+  XOR.forEach(([x,t])=>{const [o,h]=fwd(x),e=t-o;tot+=e*e;const d=e*o*(1-o),wo=net.wo.slice();
+    const hd=[0,1].map(i=>d*wo[i]*h[i]*(1-h[i]));
+    for(let i=0;i<2;i++)net.wo[i]+=lr*d*h[i];net.bo+=lr*d;
+    for(let i=0;i<2;i++){for(let j=0;j<2;j++)net.wh[i][j]+=lr*hd[i]*x[j];net.bh[i]+=lr*hd[i]}});
+  nep++;return tot}
+function drawN(){
+  nctx.clearRect(0,0,NW,NH);
+  const M=20,SZ=NH-2*M,cell=6;
+  const ca=css('--vec-a'),cb=css('--vec-b');
+  for(let px=0;px<SZ;px+=cell)for(let py=0;py<SZ;py+=cell){
+    const x=(px+cell/2)/SZ,y=1-(py+cell/2)/SZ,o=fwd([x,y])[0];
+    nctx.fillStyle=o>=.5?ca:cb;nctx.globalAlpha=.08+Math.abs(o-.5)*.7;nctx.fillRect(M+px,M+py,cell,cell)}
+  nctx.globalAlpha=1;nctx.strokeStyle=css('--line');nctx.strokeRect(M,M,SZ,SZ);
+  XOR.forEach(([x,t])=>{const X=M+x[0]*SZ,Yy=M+(1-x[1])*SZ;const cx=Math.min(M+SZ-12,Math.max(M+12,X)),cy=Math.min(M+SZ-12,Math.max(M+12,Yy));
+    nctx.fillStyle=t?ca:cb;nctx.beginPath();nctx.arc(cx,cy,10,0,7);nctx.fill();nctx.strokeStyle=css('--ink');nctx.lineWidth=1.5;nctx.stroke();
+    nctx.fillStyle=css('--paper');nctx.font='bold 11px JetBrains Mono, monospace';nctx.textAlign='center';nctx.fillText(t,cx,cy+4);nctx.textAlign='left'});
+  // loss curve
+  const L0=M+SZ+30,LW=NW-L0-10,LH=SZ;
+  nctx.strokeStyle=css('--muted');nctx.lineWidth=1;nctx.beginPath();nctx.moveTo(L0,M);nctx.lineTo(L0,M+LH);nctx.lineTo(L0+LW,M+LH);nctx.stroke();
+  nctx.fillStyle=css('--muted');nctx.font='11px JetBrains Mono, monospace';nctx.fillText('error',L0+4,M+10);nctx.fillText('epochs →',L0+LW-62,M+LH+14);
+  if(hist.length>1){const mx=Math.max(1.2,...hist);nctx.strokeStyle=css('--vec-a');nctx.lineWidth=2;nctx.beginPath();
+    hist.forEach((v,i)=>{const X=L0+i/(hist.length-1)*LW,Yy=M+LH-v/mx*LH;i?nctx.lineTo(X,Yy):nctx.moveTo(X,Yy)});nctx.stroke()}
+  const outs=XOR.map(([x])=>fwd(x)[0]);
+  $('d44-nep').textContent=nep;$('d44-nerr').textContent=hist.length?f(hist[hist.length-1],4):'—';
+  $('d44-nout').textContent=outs.map(o=>o.toFixed(2)).join(' ');
+  const ok=outs.every((o,i)=>(o>=.5?1:0)===XOR[i][1]);const v=$('d44-nverdict');
+  if(!nep){v.textContent='أوزان عشوائية. دوس «درّب»';v.style.color=css('--muted')}
+  else if(ok&&hist[hist.length-1]<0.05){v.textContent='اتعلمت XOR: كل المخرجات قريبة من الإجابة';v.style.color=css('--ok')}
+  else if(nep>=6000&&!ok){v.textContent='اتزنقت (local minimum). غيّر الـ seed أو الـ lr';v.style.color=css('--bad')}
+  else{v.textContent=ok?'التقريب صح، والـ error لسه بيقل…':'لسه بتتعلم…';v.style.color=css('--muted')}
+}
+function loop(){if(!document.body.contains(nc)){running=false;return}
+  for(let k=0;k<40;k++){const e=epoch();if(nep%20===0)hist.push(e)}
+  drawN();if(nep>=10000){running=false;$('d44-ntrain').textContent='درّب';return}
+  if(running)nraf=requestAnimationFrame(loop)}
+$('d44-ntrain').addEventListener('click',()=>{
+  if(running){running=false;cancelAnimationFrame(nraf);$('d44-ntrain').textContent='درّب';return}
+  if(nep>=10000)initNet();
+  running=true;$('d44-ntrain').textContent='وقّف';
+  if(reduce){while(nep<10000){const e=epoch();if(nep%20===0)hist.push(e)}running=false;$('d44-ntrain').textContent='درّب';drawN()}
+  else nraf=requestAnimationFrame(loop)});
+const nreset=()=>{running=false;cancelAnimationFrame(nraf);$('d44-ntrain').textContent='درّب';initNet();drawN()};
+$('d44-nreset').addEventListener('click',nreset);
+$('d44-nseed').addEventListener('input',e=>{$('d44-nseedv').textContent=e.target.value;nreset()});
+$('d44-nlr').addEventListener('input',e=>{$('d44-nlrv').textContent=e.target.value});
+initNet();drawN();
+
+// ---------- quiz ----------
+const ck6=document.querySelector('#d44-checklist input[data-ck="6"]');
+AI.quiz($('d44-quizBox'),[
+ ['الـ perceptron بيعمل إيه في المدخلات قبل ما يطبّق الـ activation function؟',['weighted sum + bias','eigenvalue decomposition','matrix inversion','Fourier transform'],0,'بيعمل dot product بين المدخلات والأوزان، ويزوّد الـ bias، وبعدين يعدّي النتيجة على الـ step function. الـ weighted sum + bias هو قلب الحسبة.'],
+ ['يعني إيه مشكلة classification تبقى «linearly separable»؟',['خط مستقيم واحد (أو hyperplane) يقدر يفصل الـ classes بالكامل','الداتا ممكن تترتب بالترتيب','الـ features ليها علاقة خطية بالـ label','الداتا في بُعدين بس'],0,'الداتا linearly separable لما يبقى فيه hyperplane واحد يقسم الفضاء صح. AND وOR كده، وXOR لأ.'],
+ ['ليه perceptron واحد مبيقدرش يتعلم XOR؟',['الـ step function بتمنع الـ gradient','XOR فيها مدخلات كتير','الـ learning rate صغير','XOR مش linearly separable، ومفيش خط واحد يفصل الـ classes'],3,'XOR بتحط [0,1] و[1,0] في ناحية، و[0,0] و[1,1] في الناحية التانية. مفيش خط مستقيم يفصلهم، والـ perceptron مبيعرفش يرسم غير خط واحد.'],
+ ['في قاعدة تعلم الـ perceptron، إيه اللي بيحصل لما الـ prediction تطابق الـ target؟',['ولا حاجة بتتغير: الـ error بصفر فالتحديث بصفر','الـ learning rate بيتقسم على ٢','الأوزان بتبقى صفر','الأوزان بتتضاعف'],0,'القاعدة w_i = w_i + lr · error · x_i. لما الـ error = 0 كل التحديثات بصفر. الـ perceptron بيتعدّل بس لما يغلط.'],
+ ['XOR بيتحل بكذا perceptron إزاي؟',['بنزوّد مدخلات لـ perceptron واحد','بنشيل الـ bias','بنكبّر الـ learning rate لـ perceptron واحد','بنركّب OR وNAND وAND في طبقتين'],3,'XOR = (x1 OR x2) AND NOT(x1 AND x2). الطبقة المخفية فيها OR وNAND، وبيدخلوا على AND في الـ output، فبيطلع حد قرار مش خطي من حتت خطية.'],
+ ['(سؤال مني) perceptron أوزانه بتبدأ من صفر واتدرب على AND بـ lr = 0.1 وبعدين تاني بـ lr = 1. إيه اللي هيحصل؟',['مع lr = 1 هيوصل في epochs أقل بكتير','نفس الخط ونفس عدد الـ epochs، والأوزان بس متضروبة في 10','مع lr = 1 مش هيوصل خالص','هيطلع خط مختلف تمامًا'],1,'مع بداية صفر والـ step، كل تحديث بيتضرب في lr، فالأوزان والـ bias كلهم بيتضربوا في نفس الرقم، وإشارة w·x+b متتغيرش. يعني نفس القرارات بالظبط: [0.2,0.1],-0.2 بتبقى [2,1],-2.'],
+ ['(سؤال مني) ليه استبدلنا الـ step بـ sigmoid عشان الشبكة تتعلم بالـ backpropagation؟',['عشان الـ sigmoid أسرع في الحساب','عشان الـ sigmoid بتطلع 0 أو 1 بالظبط','عشان الـ sigmoid ناعمة وليها ميل (gradient) في كل حتة، والـ step ميلها صفر','عشان الـ sigmoid بتلغي الحاجة للـ bias'],2,'الـ backprop محتاج يعرف لو غيّرت الوزن شوية، الـ error هيتغير قد إيه. الـ step ثابتة في كل حتة ما عدا القفزة، فمفيش إشارة. الـ sigmoid بتدي σ(1−σ)، ودي اللي في d_output.']
+],5,()=>{if(ck6&&!ck6.checked){ck6.checked=true;ck6.dispatchEvent(new Event('change'))}});
+
+AI.checklist(44,$('d44-checklist'));
+
+AI.onTheme(()=>{if(!document.body.contains(bc))return false;drawB();drawH();drawN()});
+})();
+</script>

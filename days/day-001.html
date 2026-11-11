@@ -1,0 +1,509 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 01 · Linear Algebra Intuition</span>
+  <h1>اليوم ١: أي موديل AI هو شوية ضرب مصفوفات</h1>
+  <p class="lede">النهاردة هتشوف بعينك يعني إيه <b>متجه</b> و<b>مصفوفة</b>، وهتحرك أسهم بإيدك وتشوف الـ dot product بيتغير، وبعدين تكتب الكود بنفسك. ده الأساس اللي الـ embeddings والـ attention والـ LoRA مبنيين عليه.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٦٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>بعده: <b>المتجهات والمصفوفات والعمليات</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section>
+  <h2>خطة الساعة</h2>
+  <div class="plan">
+    <div><b>10 min</b>الفكرة: متجه = نقطة واتجاه</div>
+    <div><b>15 min</b>العب في المعامل التفاعلية تحت</div>
+    <div><b>25 min</b>اكتب الكود وشغّله عندك</div>
+    <div><b>10 min</b>الكويز + تمرين واحد</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="vectors">
+  <div class="station-head"><span class="tag">01</span><h2>المتجه: قايمة أرقام ليها معنى</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>المتجه ببساطة قايمة أرقام زي <code>[3, 2]</code>. الأرقام دي إحداثيات: امشي ٣ يمين و٢ فوق. السهم من نقطة الصفر لحد هناك هو المتجه.</p>
+      <p>طوله (magnitude) بنحسبه بفيثاغورس:</p>
+      <div class="formula">|a| = √(3² + 2²) = √13 ≈ 3.61</div>
+      <p>في الـ AI كل حاجة بتتحول لمتجه: الكلمة بتبقى متجه من 768 رقم بيمثل معناها، والصورة متجه من ملايين البيكسلز، واليوزر متجه من تفضيلاته.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> اسحب راس السهم الأزرق <b>a</b> والبرتقالي <b>b</b>. لاحظ الـ dot product بيبقى موجب لما يقربوا، صفر لما يبقوا متعامدين، وسالب لما يبقوا عكس بعض.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="vecCanvas" width="520" height="440" aria-label="مساحة لسحب متجهين"></canvas>
+      <div class="readout">
+        <div><small>a</small><b id="rA">[3, 2]</b></div>
+        <div><small>b</small><b id="rB">[1, 3]</b></div>
+        <div><small>a · b</small><b id="rDot">9</b></div>
+        <div><small>cos θ</small><b id="rCos">0.79</b></div>
+        <div><small>الزاوية θ</small><b id="rAng">37.9°</b></div>
+        <div><small>proj_b(a)</small><b id="rProj">[0.9, 2.7]</b></div>
+      </div>
+      <div class="verdict" id="verdict">متشابهين (نفس الاتجاه تقريبًا)</div>
+      <div class="btns">
+        <button type="button" data-preset="same">نفس الاتجاه</button>
+        <button type="button" data-preset="perp">متعامدين</button>
+        <button type="button" data-preset="opp">عكس بعض</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="showProj" checked> ورّيني الإسقاط</label>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="dot">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Dot Product: مقياس التشابه</h2></div>
+  <p>اضرب كل رقمين في نفس المكان واجمعهم. بس كده.</p>
+  <div class="formula">a · b = a₁b₁ + a₂b₂ + … + aₙbₙ</div>
+  <div class="tablewrap"><table>
+    <tr><th>النتيجة</th><th>المعنى</th><th>في الـ AI</th></tr>
+    <tr><td class="ltr">a·b &gt; 0</td><td>نفس الاتجاه → متشابهين</td><td>كلمتين معناهم قريب</td></tr>
+    <tr><td class="ltr">a·b = 0</td><td>متعامدين → ملهمش علاقة</td><td>موضوعين مختلفين تمامًا</td></tr>
+    <tr><td class="ltr">a·b &lt; 0</td><td>عكس بعض</td><td>معنى مضاد</td></tr>
+  </table></div>
+  <p>المشكلة إن الـ dot product بيكبر لو المتجهات طويلة. عشان كده بنقسم على الأطوال ونطلع الـ <b>cosine similarity</b> اللي دايمًا بين -1 و1:</p>
+  <div class="formula">cos θ = (a · b) / (|a| · |b|)</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: محرك بحث صغير بالـ embeddings</h3>
+      <p>دي كلمات حطيتها كمتجهات في بُعدين (الحقيقي بيبقى مئات الأبعاد، بس الفكرة واحدة). اختار كلمة، وشوف الكلمات مترتبة حسب الـ cosine similarity.</p>
+      <p>ده بالظبط اللي بيحصل في الـ <b>RAG</b> لما بيدور على أقرب documents لسؤالك.</p>
+      <label style="display:flex;gap:8px;align-items:center">الكلمة: <select id="wordSel"></select></label>
+    </div>
+    <div class="instrument">
+      <canvas id="embCanvas" width="520" height="360" aria-label="خريطة كلمات كمتجهات"></canvas>
+      <ul class="rank-list" id="rankList"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="matrix">
+  <div class="station-head"><span class="tag">03</span><h2>المصفوفة: آلة بتحرك الفضاء</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>المصفوفة مش جدول أرقام وخلاص. هي <b>تحويل</b>: بتاخد أي متجه وتطلّع متجه تاني. ممكن تلف، تمط، تميّل، أو تكبس الفضاء كله على خط.</p>
+      <p>السر: العمود الأول في المصفوفة هو المكان اللي بيروحله السهم <span class="ltr">î = [1,0]</span>، والعمود التاني مكان <span class="ltr">ĵ = [0,1]</span>. أي حاجة تانية بتتبعهم.</p>
+      <div class="formula">[[0, −1], [1, 0]] · [3, 1] = [−1, 3]   ← لفة 90°</div>
+      <div class="note ai"><strong>ليه ده مهم؟</strong> كل layer في الـ neural network هي حرفيًا <span class="ltr">y = W·x</span>. الـ weights دي مصفوفة، والتدريب كله عبارة عن تعديل الأرقام دي لحد ما التحويل يبقى مفيد.</div>
+      <p><b>الـ Rank</b>: عدد الاتجاهات المستقلة اللي المصفوفة بتحافظ عليها. جرب زرار «Rank 1» وشوف الشبكة كلها بتتكبس على خط: معلومات ضاعت ومستحيل ترجعها، يعني المصفوفة ملهاش inverse.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="matCanvas" width="520" height="440" aria-label="شبكة بتتحول بالمصفوفة"></canvas>
+      <div class="mrow">
+        <label>a (î.x) <span id="vA">1</span><input type="range" id="ma" min="-3" max="3" step="0.1" value="1"></label>
+        <label>b (ĵ.x) <span id="vB">0</span><input type="range" id="mb" min="-3" max="3" step="0.1" value="0"></label>
+        <label>c (î.y) <span id="vC">0</span><input type="range" id="mc" min="-3" max="3" step="0.1" value="0"></label>
+        <label>d (ĵ.y) <span id="vD">1</span><input type="range" id="md" min="-3" max="3" step="0.1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>المصفوفة</small><b id="mStr">[[1,0],[0,1]]</b></div>
+        <div><small>det</small><b id="mDet">1</b></div>
+        <div><small>rank</small><b id="mRank">2</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" data-m="0,-1,1,0">لفة 90°</button>
+        <button type="button" data-m="2,0,0,3">تكبير ×2 ×3</button>
+        <button type="button" data-m="1,1,0,1">ميل (shear)</button>
+        <button type="button" data-m="1,2,0.5,1">Rank 1</button>
+        <button type="button" data-m="-1,0,0,1">مراية</button>
+        <button type="button" data-m="1,0,0,1">رجّع</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="indep">
+  <div class="station-head"><span class="tag">04</span><h2>الاستقلال الخطي والإسقاط و Gram-Schmidt</h2></div>
+  <h3>الاستقلال الخطي (Linear Independence)</h3>
+  <p>مجموعة متجهات مستقلة لو مفيش واحد فيهم تقدر تعمله من الباقيين. مثال:</p>
+  <div class="formula">v1=[1,0,0]   v2=[0,1,0]   v3=[2,1,0] = 2·v1 + v2</div>
+  <p>عندك ٣ متجهات في فضاء ٣ أبعاد، بس كلهم نايمين في مستوى xy. مستحيل توصل لـ <span class="ltr">[0,0,1]</span>. يعني فعليًا عندك بُعدين بس.</p>
+  <div class="note"><strong>في الداتا:</strong> لو عندك feature_3 = 2×feature_1 + feature_2، الفيتشر التالت مش بيضيف أي معلومة، وكمان بيبوّظ الـ regression (اسمها multicollinearity): الأوزان بتبقى مش مستقرة وأي تغيير صغير بيقلب النتيجة.</div>
+
+  <h3>الإسقاط (Projection): ضل المتجه</h3>
+  <p>إسقاط a على b هو «الجزء من a اللي ماشي في اتجاه b». تخيل شمس فوق b بالظبط، والضل اللي a بيعمله على b هو الإسقاط. رجع للمعمل ٠١ وفعّل «ورّيني الإسقاط» وانت بتحرك.</p>
+  <div class="formula">proj_b(a) = ((a·b) / (b·b)) · b</div>
+  <p>والباقي <span class="ltr">a − proj</span> بيبقى عمودي على b دايمًا. الـ Linear Regression نفسها عبارة عن إسقاط، والـ PCA إسقاط على أهم الاتجاهات.</p>
+
+  <h3>Gram-Schmidt: نضّف الاتجاهات</h3>
+  <p>عندك متجهات مستقلة بس مايلة على بعض. عايز تحولهم لمحاور نضيفة: كل واحد طوله ١ وعمودي على الباقي (orthonormal). الطريقة:</p>
+  <ol class="ex">
+    <li>خد أول متجه وخلّي طوله ١.</li>
+    <li>خد التاني، اطرح منه ضله على الأول، وخلّي طوله ١.</li>
+    <li>خد التالت، اطرح ضله على كل اللي قبله، وخلّي طوله ١. وهكذا.</li>
+  </ol>
+  <p>ده اللي جوه QR decomposition اللي NumPy بيستخدمها في حل المعادلات والـ least squares.</p>
+</section>
+
+<!-- STATION 5: LoRA -->
+<section id="lora">
+  <div class="station-head"><span class="tag">05</span><h2>إضافة مني: ليه الـ Rank هو سر الـ LoRA</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>لما تعمل fine-tuning لموديل كبير، كل layer فيها مصفوفة زي 4096×4096. تعديلها كلها = ١٦ مليون رقم في layer واحدة.</p>
+      <p>الـ LoRA بتقول: التعديل غالبًا rank بتاعه صغير. فبدل ما نتعلم <span class="ltr">ΔW</span> كاملة، نتعلم مصفوفتين صغيرين ونضربهم:</p>
+      <div class="formula">ΔW = B · A    B: d×r    A: r×d</div>
+      <p>حرّك الـ sliders وشوف التوفير.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">حجم الطبقة d = <b class="mono" id="loraDv">4096</b><input type="range" id="loraD" min="0" max="4" step="1" value="3"></label>
+      <label style="display:grid;gap:2px">الـ rank r = <b class="mono" id="loraRv">16</b><input type="range" id="loraR" min="1" max="128" step="1" value="16"></label>
+      <div class="readout">
+        <div><small>Full fine-tune</small><b id="loraFull">16,777,216</b></div>
+        <div><small>LoRA</small><b id="loraLow">131,072</b></div>
+        <div><small>نسبة</small><b id="loraPct">0.78%</b></div>
+      </div>
+      <canvas id="loraCanvas" width="520" height="90" aria-label="مقارنة عدد البارامترز"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>افتح الترمينال واعمل clone للريبو مرة واحدة بس (هتستخدمه كل يوم):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>git clone https://github.com/rohitg00/ai-engineering-from-scratch.git
+cd ai-engineering-from-scratch
+python3 phases/01-math-foundations/01-linear-algebra-intuition/code/vectors.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. اقفل الملف واكتب الكلاس ده بنفسك في ملف جديد <code>my_vectors.py</code>، وبص على الأصل بس لو اتزنقت.</p>
+  <h3>خطوة ١: كلاس Vector</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Vector:
+    def __init__(self, components):
+        self.components = list(components)
+        self.dim = len(self.components)
+
+    def __add__(self, other):          <span class="c"># جمع خانة بخانة</span>
+        return Vector([a + b for a, b in zip(self.components, other.components)])
+
+    def __sub__(self, other):
+        return Vector([a - b for a, b in zip(self.components, other.components)])
+
+    def dot(self, other):              <span class="c"># اضرب واجمع</span>
+        return sum(a * b for a, b in zip(self.components, other.components))
+
+    def magnitude(self):               <span class="c"># فيثاغورس</span>
+        return sum(x**2 for x in self.components) ** 0.5
+
+    def normalize(self):               <span class="c"># نفس الاتجاه، طول = 1</span>
+        mag = self.magnitude()
+        return Vector([x / mag for x in self.components])
+
+    def cosine_similarity(self, other):
+        return self.dot(other) / (self.magnitude() * other.magnitude())
+
+    def __repr__(self):
+        return f"Vector({self.components})"
+
+a = Vector([1, 2, 3]); b = Vector([4, 5, 6])
+print(a + b, a.dot(b), round(a.cosine_similarity(b), 4))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Vector([5, 7, 9]) 32 0.9746</pre></details>
+
+  <h3>خطوة ٢: Matrix × Vector = Neural Network Layer</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Matrix:
+    def __init__(self, rows):
+        self.rows = [list(r) for r in rows]
+        self.shape = (len(self.rows), len(self.rows[0]))
+
+    def __matmul__(self, v):           <span class="c"># كل صف dot مع المتجه</span>
+        return Vector([
+            sum(self.rows[i][j] * v.components[j] for j in range(self.shape[1]))
+            for i in range(self.shape[0])
+        ])
+
+rotation_90 = Matrix([[0, -1], [1, 0]])
+print(rotation_90 @ Vector([3, 1]))     <span class="c"># Vector([-1, 3])</span>
+
+import random
+random.seed(42)
+W = Matrix([[random.gauss(0, 0.1) for _ in range(3)] for _ in range(2)])
+x = Vector([1.0, 0.5, -0.3])
+print(W @ x)   <span class="c"># 3D دخل → 2D طلع: ده layer كامل</span></pre></div>
+
+  <h3>خطوة ٣: الإسقاط و Gram-Schmidt</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def project(a, b):
+    s = a.dot(b) / b.dot(b)
+    return Vector([s * x for x in b.components])
+
+def gram_schmidt(vectors):
+    basis = []
+    for v in vectors:
+        w = v
+        for u in basis:
+            w = w - project(w, u)      <span class="c"># شيل الضل</span>
+        if w.magnitude() &lt; 1e-10:      <span class="c"># متجه مش مستقل، اتجاهله</span>
+            continue
+        basis.append(w.normalize())
+    return basis
+
+for u in gram_schmidt([Vector([1,1,0]), Vector([1,0,1]), Vector([0,1,1])]):
+    print(u, round(u.magnitude(), 6))</pre></div>
+
+  <h3>خطوة ٤: نفس الكلام بـ NumPy (اللي هتستخدمه فعلًا)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+a = np.array([1, 2, 3.]); b = np.array([4, 5, 6.])
+print(a @ b, np.linalg.norm(a))
+print(np.linalg.matrix_rank(np.array([[1, 2], [2, 4]])))   <span class="c"># 1</span>
+Q, R = np.linalg.qr(np.random.randn(3, 3))
+print(np.allclose(Q @ Q.T, np.eye(3)))                     <span class="c"># True</span></pre></div>
+</section>
+
+<!-- EXERCISES -->
+<section id="exercises">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>اعمل على الأقل ٢ النهاردة. الباقي سيبه لو الوقت خلص وكمّله بكرة في الـ warm-up.</p>
+  <ol class="ex">
+    <li><b>زاوية بين متجهين:</b> اعمل <code>angle_between(other)</code> ترجع الزاوية بالدرجات.
+      <details><summary>تلميح</summary>ابدأ من <code>cosine_similarity</code>، احبس القيمة بين -1 و1 بـ <code>max(-1, min(1, c))</code>، وبعدين <code>math.degrees(math.acos(c))</code>. اختبر: <span class="ltr">[1,0]</span> و<span class="ltr">[0,1]</span> لازم يطلعوا 90.</details></li>
+    <li><b>مصفوفة تكبير:</b> مصفوفة 2×2 تضاعف x مرتين وy تلات مرات. طبقها على <span class="ltr">[1,1]</span>.
+      <details><summary>تلميح</summary>الأرقام على القطر، والباقي أصفار. الناتج لازم <span class="ltr">[2,3]</span>. جربها في المعمل ٠٣ الأول.</details></li>
+    <li><b>أقرب كلمتين:</b> اعمل ٥ متجهات عشوائية بطول 50 ولاقي أقرب اتنين بالـ cosine.
+      <details><summary>تلميح</summary>١٠ أزواج بس. اعمل loop على <code>i &lt; j</code>. اختبر الأول إن المتجه مع نفسه = 1.</details></li>
+    <li><b>اتأكد من Gram-Schmidt:</b> كل زوج dot = 0، وكل متجه طوله 1 (بتسامح <code>1e-9</code>).</li>
+    <li><b>Rank 2:</b> اعمل مصفوفة 3×3 الصف التالت فيها = مجموع الأولين. الـ rank لازم يطلع 2. الأعمدة بتغطي إيه هندسيًا؟
+      <details><summary>الإجابة</summary>مستوى (plane) معدي بنقطة الصفر.</details></li>
+    <li><b>إسقاط:</b> اسقط <span class="ltr">[1,2,3]</span> على <span class="ltr">[1,1,1]</span>. النتيجة بتمثل إيه؟
+      <details><summary>الإجابة</summary>النتيجة <span class="ltr">[2,2,2]</span>، يعني المتوسط مكرر في كل خانة. الباقي <span class="ltr">[-1,0,1]</span> عمودي على <span class="ltr">[1,1,1]</span>. ده نفس فكرة الـ centering في الداتا.</details></li>
+    <li><b>إضافة مني · ميني RAG:</b> اعمل dictionary فيه ٥ جمل وكل جملة ليها متجه بسيط (عدّ كلمات من vocabulary صغير). اكتب <code>search(query)</code> ترجع أقرب جملة بالـ cosine. مبروك، ده أبسط retriever ممكن.
+      <details><summary>تلميح</summary>vocab = ["ai","model","food","cook","data"]. متجه الجملة = عدد مرات كل كلمة. حوّل السؤال لمتجه بنفس الطريقة وقارن.</details></li>
+  </ol>
+</section>
+
+<!-- QUIZ -->
+<section id="quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="quizBox"></div>
+  <div class="score" id="score"></div>
+</section>
+
+<!-- WRAP -->
+<section id="done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="checklist">
+    <li><label><input type="checkbox" id="ck1"> فهمت إن المتجه نقطة واتجاه، وأقدر أشرح الـ dot product لحد تاني</label></li>
+    <li><label><input type="checkbox" id="ck2"> لعبت في المعامل وشفت الـ rank 1 بيكبس الشبكة</label></li>
+    <li><label><input type="checkbox" id="ck3"> كتبت Vector و Matrix بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" id="ck4"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" id="ck5"> جبت ٤ من ٦ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Dot product</td><td>attention scores، cosine similarity في الـ RAG</td></tr>
+    <tr><td>Matrix multiply</td><td>كل layer في أي neural network</td></tr>
+    <tr><td>Linear independence</td><td>اختيار الـ features، الـ multicollinearity</td></tr>
+    <tr><td>Rank</td><td>هل المعادلات ليها حل؟ الـ LoRA</td></tr>
+    <tr><td>Projection</td><td>Linear regression، PCA</td></tr>
+    <tr><td>Gram-Schmidt / QR</td><td>الـ solvers والـ eigenvalues</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Vectors, Matrices &amp; Operations. هنبني عمليات المصفوفات كاملة (transpose، inverse، determinant) ونبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F01-linear-algebra-intuition" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/01-linear-algebra-intuition</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const store = {get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
+
+// roadmap
+const rm=document.getElementById('roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===1)s.className='now';rm.appendChild(s)}
+
+// ---------- canvas helper ----------
+function setupCanvas(c){
+  const r=window.devicePixelRatio||1, w=c.width, h=c.height;
+  c.dataset.w=w;c.dataset.h=h;c.width=w*r;c.height=h*r;
+  const ctx=c.getContext('2d');ctx.scale(r,r);return ctx;
+}
+function arrow(ctx,x1,y1,x2,y2,color,width){
+  ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=width||3;
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  const a=Math.atan2(y2-y1,x2-x1),L=11;
+  ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-L*Math.cos(a-0.4),y2-L*Math.sin(a-0.4));
+  ctx.lineTo(x2-L*Math.cos(a+0.4),y2-L*Math.sin(a+0.4));ctx.closePath();ctx.fill();
+}
+function grid(ctx,W,H,S,ox,oy){
+  ctx.strokeStyle=css('--grid');ctx.lineWidth=1;
+  for(let x=ox%S;x<W;x+=S){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+  for(let y=oy%S;y<H;y+=S){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+  ctx.strokeStyle=css('--muted');ctx.lineWidth=1.2;
+  ctx.beginPath();ctx.moveTo(0,oy);ctx.lineTo(W,oy);ctx.moveTo(ox,0);ctx.lineTo(ox,H);ctx.stroke();
+}
+const f=(n,d=2)=>{const v=+n.toFixed(d);return Object.is(v,-0)?0:v};
+
+// ---------- Station 1: vectors ----------
+const vc=document.getElementById('vecCanvas'),vctx=setupCanvas(vc);
+const VW=+vc.dataset.w,VH=+vc.dataset.h,VS=40,vox=VW/2,voy=VH/2;
+let A=[3,2],B=[1,3],drag=null;
+const toPx=p=>[vox+p[0]*VS,voy-p[1]*VS],toW=(x,y)=>[(x-vox)/VS,(voy-y)/VS];
+function drawVec(){
+  vctx.clearRect(0,0,VW,VH);grid(vctx,VW,VH,VS,vox,voy);
+  const dot=A[0]*B[0]+A[1]*B[1],ma=Math.hypot(...A),mb=Math.hypot(...B);
+  const cos=(ma&&mb)?dot/(ma*mb):0,ang=Math.acos(Math.max(-1,Math.min(1,cos)))*180/Math.PI;
+  const s=mb?dot/(mb*mb):0,P=[s*B[0],s*B[1]];
+  if(document.getElementById('showProj').checked&&mb){
+    const [px,py]=toPx(P),[ax,ay]=toPx(A);
+    vctx.setLineDash([5,5]);vctx.strokeStyle=css('--muted');vctx.lineWidth=1.5;
+    vctx.beginPath();vctx.moveTo(ax,ay);vctx.lineTo(px,py);vctx.stroke();vctx.setLineDash([]);
+    arrow(vctx,vox,voy,px,py,css('--ink'),2);
+    vctx.fillStyle=css('--ink');vctx.font='13px JetBrains Mono, monospace';vctx.fillText('proj',px+6,py+16);
+  }
+  const [ax,ay]=toPx(A),[bx,by]=toPx(B);
+  arrow(vctx,vox,voy,bx,by,css('--vec-b'),3.5);arrow(vctx,vox,voy,ax,ay,css('--vec-a'),3.5);
+  [[ax,ay,'a',css('--vec-a')],[bx,by,'b',css('--vec-b')]].forEach(([x,y,l,c])=>{
+    vctx.fillStyle=c;vctx.beginPath();vctx.arc(x,y,9,0,7);vctx.fill();
+    vctx.fillStyle=css('--paper');vctx.font='bold 12px JetBrains Mono, monospace';vctx.textAlign='center';vctx.fillText(l,x,y+4);vctx.textAlign='left';
+  });
+  document.getElementById('rA').textContent=`[${f(A[0],1)}, ${f(A[1],1)}]`;
+  document.getElementById('rB').textContent=`[${f(B[0],1)}, ${f(B[1],1)}]`;
+  document.getElementById('rDot').textContent=f(dot);
+  document.getElementById('rCos').textContent=f(cos);
+  document.getElementById('rAng').textContent=f(ang,1)+'°';
+  document.getElementById('rProj').textContent=`[${f(P[0],1)}, ${f(P[1],1)}]`;
+  const v=document.getElementById('verdict');
+  if(Math.abs(cos)<0.08){v.textContent='متعامدين: dot ≈ 0، ملهمش علاقة ببعض';v.style.color=css('--muted')}
+  else if(cos>0){v.textContent=cos>0.9?'متشابهين جدًا':'متشابهين (dot موجب)';v.style.color=css('--ok')}
+  else{v.textContent='عكس بعض (dot سالب)';v.style.color=css('--bad')}
+}
+function evPos(c,e){const r=c.getBoundingClientRect();return[(e.clientX-r.left)*(+c.dataset.w/r.width),(e.clientY-r.top)*(+c.dataset.h/r.height)]}
+vc.addEventListener('pointerdown',e=>{const [x,y]=evPos(vc,e);
+  const da=Math.hypot(x-toPx(A)[0],y-toPx(A)[1]),db=Math.hypot(x-toPx(B)[0],y-toPx(B)[1]);
+  drag=da<db?'A':'B';vc.setPointerCapture(e.pointerId);move(e)});
+function move(e){if(!drag)return;let [x,y]=evPos(vc,e);let p=toW(x,y);p=[Math.round(p[0]*2)/2,Math.round(p[1]*2)/2];
+  p[0]=Math.max(-6,Math.min(6,p[0]));p[1]=Math.max(-5,Math.min(5,p[1]));
+  if(drag==='A')A=p;else B=p;drawVec()}
+vc.addEventListener('pointermove',move);
+vc.addEventListener('pointerup',()=>drag=null);
+document.getElementById('showProj').addEventListener('change',drawVec);
+document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{
+  const p=b.dataset.preset;if(p==='same'){A=[3,2];B=[4,3]}if(p==='perp'){A=[3,2];B=[-2,3]}if(p==='opp'){A=[3,2];B=[-3,-1.5]}drawVec()}));
+drawVec();
+
+// ---------- Station 2: embeddings ----------
+const words={'ملك':[4,3],'ملكة':[3.4,3.8],'رجل':[3.6,0.8],'ست':[3,1.8],'تفاحة':[-3.5,2],'موز':[-3.8,1.2],'برتقان':[-3,2.8],'عربية':[0.6,-3.8],'موتوسيكل':[1.4,-3.3]};
+const sel=document.getElementById('wordSel');Object.keys(words).forEach(w=>{const o=document.createElement('option');o.textContent=w;sel.appendChild(o)});
+const ec=document.getElementById('embCanvas'),ectx=setupCanvas(ec),EW=+ec.dataset.w,EH=+ec.dataset.h,ES=44,eox=EW/2,eoy=EH/2;
+function drawEmb(){
+  const q=sel.value,qv=words[q],cos=(a,b)=>(a[0]*b[0]+a[1]*b[1])/(Math.hypot(...a)*Math.hypot(...b));
+  const ranked=Object.entries(words).filter(([w])=>w!==q).map(([w,v])=>[w,cos(qv,v)]).sort((a,b)=>b[1]-a[1]);
+  ectx.clearRect(0,0,EW,EH);grid(ectx,EW,EH,ES,eox,eoy);
+  const top=ranked[0][0];
+  Object.entries(words).forEach(([w,v])=>{
+    const x=eox+v[0]*ES,y=eoy-v[1]*ES;
+    const c=w===q?css('--vec-a'):w===top?css('--vec-b'):css('--muted');
+    arrow(ectx,eox,eoy,x,y,c,w===q||w===top?3:1.5);
+    ectx.fillStyle=css('--ink');ectx.font='15px "IBM Plex Sans Arabic", sans-serif';ectx.textAlign='center';ectx.fillText(w,x,y-12);
+  });ectx.textAlign='left';
+  const ul=document.getElementById('rankList');ul.innerHTML='';
+  ranked.forEach(([w,c])=>{const li=document.createElement('li');
+    li.innerHTML=`<span>${w}</span><span class="bar"><i style="width:${Math.max(0,c)*100}%;${c<0?'background:'+css('--bad'):''}"></i></span><span class="num">${f(c)}</span>`;ul.appendChild(li)});
+}
+sel.addEventListener('change',drawEmb);drawEmb();
+
+// ---------- Station 3: matrix ----------
+const mc=document.getElementById('matCanvas'),mctx=setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h,MS=40,mox=MW/2,moy=MH/2;
+const ids=['ma','mb','mc','md'],lbl=['vA','vB','vC','vD'];let M=[1,0,0,1],cur=[1,0,0,1],anim=null;
+function drawMat(m){
+  mctx.clearRect(0,0,MW,MH);grid(mctx,MW,MH,MS,mox,moy);
+  const T=(x,y)=>[mox+(m[0]*x+m[1]*y)*MS,moy-(m[2]*x+m[3]*y)*MS];
+  mctx.strokeStyle=css('--vec-a');mctx.globalAlpha=.35;mctx.lineWidth=1;
+  for(let k=-8;k<=8;k++){
+    let p=T(k,-8),q=T(k,8);mctx.beginPath();mctx.moveTo(...p);mctx.lineTo(...q);mctx.stroke();
+    p=T(-8,k);q=T(8,k);mctx.beginPath();mctx.moveTo(...p);mctx.lineTo(...q);mctx.stroke();
+  }
+  mctx.globalAlpha=1;
+  // unit square
+  mctx.fillStyle=css('--vec-b');mctx.globalAlpha=.25;mctx.beginPath();
+  [[0,0],[1,0],[1,1],[0,1]].forEach((p,i)=>{const t=T(...p);i?mctx.lineTo(...t):mctx.moveTo(...t)});mctx.closePath();mctx.fill();mctx.globalAlpha=1;
+  // letter F to show orientation
+  mctx.strokeStyle=css('--ink');mctx.lineWidth=3;mctx.beginPath();
+  [[[1.5,0.5],[1.5,2.5]],[[1.5,2.5],[2.7,2.5]],[[1.5,1.5],[2.3,1.5]]].forEach(([a,b])=>{mctx.moveTo(...T(...a));mctx.lineTo(...T(...b))});mctx.stroke();
+  arrow(mctx,mox,moy,...T(1,0),css('--vec-a'),3.5);arrow(mctx,mox,moy,...T(0,1),css('--vec-b'),3.5);
+  mctx.font='bold 14px JetBrains Mono, monospace';mctx.fillStyle=css('--vec-a');mctx.fillText('î',T(1,0)[0]+6,T(1,0)[1]-6);
+  mctx.fillStyle=css('--vec-b');mctx.fillText('ĵ',T(0,1)[0]+6,T(0,1)[1]-6);
+}
+function updMat(){
+  const det=M[0]*M[3]-M[1]*M[2];
+  const rank=Math.abs(det)>1e-9?2:(M.every(v=>Math.abs(v)<1e-9)?0:1);
+  document.getElementById('mStr').textContent=`[[${f(M[0],1)},${f(M[1],1)}],[${f(M[2],1)},${f(M[3],1)}]]`;
+  document.getElementById('mDet').textContent=f(det);
+  const r=document.getElementById('mRank');r.textContent=rank;r.style.color=rank<2?css('--bad'):'';
+  ids.forEach((id,i)=>{document.getElementById(id).value=M[i];document.getElementById(lbl[i]).textContent=f(M[i],1)});
+}
+function animateTo(target){
+  const from=cur.slice(),t0=performance.now(),dur=matchMedia('(prefers-reduced-motion:reduce)').matches?0:700;
+  M=target.slice();updMat();cancelAnimationFrame(anim);
+  const step=t=>{const k=dur?Math.min(1,(t-t0)/dur):1,e=k<.5?2*k*k:1-Math.pow(-2*k+2,2)/2;
+    cur=from.map((v,i)=>v+(target[i]-v)*e);drawMat(cur);if(k<1)anim=requestAnimationFrame(step)};anim=requestAnimationFrame(step);
+}
+ids.forEach((id,i)=>document.getElementById(id).addEventListener('input',e=>{M[i]=+e.target.value;cur=M.slice();updMat();drawMat(cur)}));
+document.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>animateTo(b.dataset.m.split(',').map(Number))));
+updMat();drawMat(cur);
+
+// ---------- Station 5: LoRA ----------
+const ds=[512,1024,2048,4096,8192],lc=document.getElementById('loraCanvas'),lctx=setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+function lora(){
+  const d=ds[+document.getElementById('loraD').value],r=+document.getElementById('loraR').value;
+  const full=d*d,low=2*d*r,pct=low/full*100;
+  document.getElementById('loraDv').textContent=d;document.getElementById('loraRv').textContent=r;
+  document.getElementById('loraFull').textContent=full.toLocaleString('en');
+  document.getElementById('loraLow').textContent=low.toLocaleString('en');
+  document.getElementById('loraPct').textContent=f(pct)+'%';
+  lctx.clearRect(0,0,LW,LH);
+  lctx.fillStyle=css('--muted');lctx.globalAlpha=.3;lctx.fillRect(0,14,LW,24);lctx.globalAlpha=1;
+  lctx.fillStyle=css('--vec-a');lctx.fillRect(LW-Math.max(2,LW*Math.min(1,low/full)),52,Math.max(2,LW*Math.min(1,low/full)),24);
+  lctx.fillStyle=css('--ink');lctx.font='12px JetBrains Mono, monospace';lctx.textAlign='right';
+  lctx.fillText('full ΔW',LW-6,10);lctx.fillText('LoRA B·A',LW-6,88);lctx.textAlign='left';
+}
+['loraD','loraR'].forEach(id=>document.getElementById(id).addEventListener('input',lora));lora();
+
+// ---------- copy ----------
+document.querySelectorAll('.codebox .copy').forEach(btn=>btn.addEventListener('click',()=>{
+  const pre=btn.nextElementSibling,t=pre.innerText;
+  const ok=()=>{btn.textContent='Copied';setTimeout(()=>btn.textContent='Copy',1400)};
+  try{navigator.clipboard.writeText(t).then(ok,()=>sel2(pre))}catch(e){sel2(pre)}
+}));
+function sel2(el){const r=document.createRange();r.selectNodeContents(el);const s=getSelection();s.removeAllRanges();s.addRange(r)}
+
+// ---------- quiz ----------
+const Q=[
+ ['الـ dot product بين متجهين بيقيس إيه؟',['عدد الأبعاد المشتركة','قد إيه هما متشابهين/في نفس الاتجاه','المسافة بينهم','الزاوية بالدرجات'],1,'موجب = نفس الاتجاه، صفر = متعامدين، سالب = عكس بعض. ده أساس البحث بالتشابه.'],
+ ['يعني إيه embedding؟',['تحويل الكود لـ machine code','ضغط أوزان الموديل','حط موديل جوه موديل','متجه بيمثل معنى حاجة (كلمة، صورة، يوزر)'],3,'الحاجات المتشابهة في المعنى بتبقى قريبة من بعض في الفضاء.'],
+ ['v1=[1,0,0], v2=[0,1,0], v3=[2,1,0]. مستقلين خطيًا؟',['أيوه، ٣ متجهات في ٣ أبعاد','لأ، لأن v3 = 2·v1 + v2','أيوه، مفيش اتنين زي بعض','لأ، عشان فيهم أصفار'],1,'كلهم في مستوى xy، فعليًا بيغطوا بُعدين بس.'],
+ ['الـ rank بتاع مصفوفة بيقولك إيه في الـ ML؟',['عدد الأعمدة المستقلة = كام بُعد مفيد فيها','أكبر رقم فيها','سرعة الضرب','عدد الخانات اللي مش صفر'],0,'rank أقل من الأقصى = features مكررة وحلول كتير للأوزان.'],
+ ['الـ LoRA بتوفر إزاي؟',['بتقسم تعديل الأوزان لمصفوفتين صغيرين rank بتاعهم قليل','بتشيل صفوف مش مستخدمة','بتجمد الـ embeddings','بتحول الأوزان لـ int8'],0,'4096×4096 = 16M، بدلها 4096×16 + 16×4096 = 131K.'],
+ ['اسقطت a=[3,4] على b=[1,0]. الناتج؟',['[3,4]','[0,4]','[3,0]','[1,0]'],2,'(a·b)/(b·b) = 3، يعني 3·[1,0]. الإسقاط شال مركبة y، ودي أبسط صورة للـ dimensionality reduction.']
+];
+const qb=document.getElementById('quizBox');let right=0,answered=0;
+Q.forEach((q,qi)=>{const d=document.createElement('div');d.className='q';
+  d.innerHTML=`<h3>${qi+1}. ${q[0]}</h3><div class="opts"></div><p class="exp" hidden></p>`;
+  const opts=d.querySelector('.opts');
+  q[1].forEach((o,oi)=>{const b=document.createElement('button');b.type='button';b.textContent=o;
+    b.addEventListener('click',()=>{if(d.dataset.done)return;d.dataset.done=1;answered++;
+      if(oi===q[2]){b.classList.add('right');right++}else{b.classList.add('wrong');opts.children[q[2]].classList.add('right')}
+      const e=d.querySelector('.exp');e.textContent=q[3];e.hidden=false;
+      if(answered===Q.length){document.getElementById('score').textContent=`نتيجتك: ${right} من ${Q.length}`+(right>=4?' · ممتاز، جاهز لبكرة':' · راجع المعمل ٠١ و٠٣ تاني');
+        if(right>=4){const c=document.getElementById('ck5');c.checked=true;store.set('aiefs-d1-ck5','1')}}
+    });opts.appendChild(b)});
+  qb.appendChild(d)});
+
+// ---------- checklist ----------
+['ck1','ck2','ck3','ck4','ck5'].forEach(id=>{const c=document.getElementById(id);c.checked=store.get('aiefs-d1-'+id)==='1';
+  c.addEventListener('change',()=>store.set('aiefs-d1-'+id,c.checked?'1':'0'))});
+
+// redraw on theme change
+window.AI&&AI.onTheme(()=>{if(!document.body.contains(vc))return false;drawVec();drawEmb();drawMat(cur);lora()});
+})();
+</script>

@@ -1,0 +1,763 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 04 · Calculus for Machine Learning</span>
+  <h1>اليوم ٤: الـ derivative بيقولك فين النزلة</h1>
+  <p class="lede">موديل فيه ملايين الـ weights، وكل weight «مفتاح». محتاج تعرف تلف كل مفتاح في أنهي اتجاه عشان الموديل يغلط أقل. الـ calculus بيديك الاتجاه ده بالظبط. النهاردة: الـ derivative، الـ gradient، الـ gradient descent، الـ chain rule، الـ Hessian، الـ Taylor series، والـ integrals، وفي الآخر هتدرّب linear regression بإيدك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٦٠ دقيقة</b> (خليها ٩٠ لو هتلعب في كل المعامل)</span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia)</span>
+    <span>قبله: <b>Matrix Transformations</b></span>
+    <span>بعده: <b>Chain Rule &amp; Automatic Differentiation</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d4-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d4-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <ol class="ex">
+    <li>عايز تطبّق Rotation الأول وبعدين Scale. تضرب المصفوفات بأنهي ترتيب؟
+      <details><summary>الإجابة</summary><span class="ltr">S @ R</span>. اللي بيتطبق الأول بيتكتب جنب النقطة على اليمين: <span class="ltr">S @ R @ p</span>.</details></li>
+    <li>مصفوفة متكررة في RNN أكبر eigenvalue فيها 1.1. إيه اللي هيحصل بعد 40 خطوة؟
+      <details><summary>الإجابة</summary>هتنفجر: <span class="ltr">1.1⁴⁰ ≈ 45</span>. ولو 0.9 هتتلاشى: <span class="ltr">0.9⁴⁰ ≈ 0.015</span>. النهاردة هنستخدم الـ eigenvalues تاني بس على الـ Hessian.</details></li>
+    <li>المصفوفة المتماثلة (symmetric) ليها ميزة إيه في الـ eigenvalues؟
+      <details><summary>الإجابة</summary>الـ eigenvalues بتاعتها دايمًا حقيقية، والـ eigenvectors متعامدين. والـ Hessian اللي هنشوفه النهاردة متماثل.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>derivative وgradient وgradient descent + المعامل ١–٣</div>
+    <div><b>10 min</b>chain rule وHessian وTaylor وintegrals</div>
+    <div><b>20 min</b>اكتب الكود ودرّب linear regression</div>
+    <div><b>10 min</b>الكويز + تمرين</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d4-deriv">
+  <div class="station-head"><span class="tag">01</span><h2>الـ Derivative: الميل عند نقطة</h2></div>
+  <p>الـ derivative بيقيس <b>معدل التغيير</b>. لو <span class="ltr">y = f(x)</span>، يبقى <span class="ltr">f′(x)</span> بيجاوب على سؤال واحد: لو زقيت x حتة صغيرة، y هتتغير قد إيه؟ هندسيًا هو ميل الـ <b>tangent line</b> (الخط المماس) عند النقطة.</p>
+  <div class="tablewrap"><table>
+    <tr><th class="ltr">x</th><th class="ltr">f(x) = x²</th><th class="ltr">f′(x) = 2x</th><th>المعنى</th></tr>
+    <tr><td class="ltr">−2</td><td class="ltr">4</td><td class="ltr">−4</td><td>الميل نازل (الدالة بتقل)</td></tr>
+    <tr><td class="ltr">−1</td><td class="ltr">1</td><td class="ltr">−2</td><td>نازل</td></tr>
+    <tr><td class="ltr">0</td><td class="ltr">0</td><td class="ltr">0</td><td>مسطح: ده القاع!</td></tr>
+    <tr><td class="ltr">1</td><td class="ltr">1</td><td class="ltr">2</td><td>طالع</td></tr>
+    <tr><td class="ltr">2</td><td class="ltr">4</td><td class="ltr">4</td><td>طالع: لو زودت x شوية، y بتزيد حوالي 4 أضعافها</td></tr>
+  </table></div>
+  <div class="formula">f′(x) = lim (h→0)  [ f(x + h) − f(x) ] / h</div>
+  <p>في الكود بنسيب الـ limit وبنستخدم h صغيرة جدًا. ده اسمه <b>numerical derivative</b>. والأدق منه الـ <b>central difference</b>: بنبص على الجنبين ونقسم على 2h، فالأخطاء بتلغي بعضها.</p>
+  <div class="formula">f′(x) ≈ [ f(x + h) − f(x − h) ] / (2h)        h = 0.0001 كويسة عمليًا</div>
+  <h3>طريقتين لحساب الـ derivative (وفيه تالتة)</h3>
+  <ul class="checklist">
+    <li><b>Analytical:</b> تطبق قواعد الـ calculus بإيدك. <span class="ltr">x² → 2x</span>. مظبوط وسريع، بس لازم تشتق المعادلة.</li>
+    <li><b>Numerical:</b> تقرّب بالتعريف. أبطأ، بس شغال مع أي دالة. ممتاز إنك تتأكد بيه من شغلك (gradient checking).</li>
+    <li><b>Automatic differentiation:</b> اللي الـ frameworks زي PyTorch بتستخدمه: بيحسب derivatives مظبوطة بشكل ميكانيكي. هتبنيه بإيدك بكرة وفي Phase 3.</li>
+  </ul>
+  <h3>الـ derivatives اللي هتشوفها كل يوم في الـ ML</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الدالة</th><th>الـ derivative</th><th>بتظهر فين</th></tr>
+    <tr><td class="ltr">x²</td><td class="ltr">2x</td><td>الـ loss functions (MSE)</td></tr>
+    <tr><td class="ltr">wx + b</td><td class="ltr">∂/∂w = x · ∂/∂b = 1 · ∂/∂x = w</td><td>الـ linear layer (gradient للـ weight والـ bias والدخل)</td></tr>
+    <tr><td class="ltr">eˣ</td><td class="ltr">eˣ</td><td>الـ softmax، الـ attention</td></tr>
+    <tr><td class="ltr">ln(x)</td><td class="ltr">1/x</td><td>الـ cross-entropy loss</td></tr>
+    <tr><td class="ltr">σ(x) = 1/(1+e⁻ˣ)</td><td class="ltr">σ(x)·(1 − σ(x))</td><td>الـ sigmoid activation</td></tr>
+  </table></div>
+  <p>مثال: <span class="ltr">f(w) = wx + b</span> مع x = 3 وb = 1 يبقى <span class="ltr">f(w) = 3w + 1</span> و<span class="ltr">f′(w) = 3</span>. الـ derivative بالنسبة لـ w هو x نفسه: لو الدخل كبير، تغيير صغير في الـ weight بيعمل فرق كبير في الخرج.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: من الـ secant للـ tangent</h3>
+      <p>اسحب النقطة على المنحنى. الخط الأخضر هو الـ tangent (الـ derivative المظبوط)، والبرتقالي هو الـ secant بين <span class="ltr">x−h</span> و<span class="ltr">x+h</span>. صغّر h وشوف البرتقالي بيلزق في الأخضر.</p>
+      <div class="note"><strong>مفاجأة:</strong> صغّر h لحد <span class="ltr">1e-12</span> أو أقل وبص على الخطأ: بيـ<b>كبر</b> تاني! ده خطأ التقريب في الـ floating point (بتطرح رقمين قريبين جدًا من بعض). عشان كده الكود بيستخدم <span class="ltr">1e-7</span> مش أصغر.</div>
+      <label style="display:flex;gap:8px;align-items:center">الدالة: <select id="d4-fSel"></select></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d4-tanCv" width="520" height="340" aria-label="الخط المماس والـ secant"></canvas>
+      <label style="display:grid;gap:2px;direction:ltr">h = <b class="mono" id="d4-hv"></b><input type="range" id="d4-h" min="-14" max="0" step="0.5" value="-1"></label>
+      <div class="readout">
+        <div><small>x</small><b id="d4-x0"></b></div>
+        <div><small>analytical f′(x)</small><b id="d4-an"></b></div>
+        <div><small>central diff</small><b id="d4-cd"></b></div>
+        <div><small>error (central)</small><b id="d4-ce"></b></div>
+        <div><small>forward diff</small><b id="d4-fd"></b></div>
+        <div><small>error (forward)</small><b id="d4-fe"></b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d4-grad">
+  <div class="station-head"><span class="tag">02</span><h2>Partial derivatives والـ Gradient</h2></div>
+  <p>الدوال الحقيقية ليها مدخلات كتير. الـ loss بتاع شبكة بيعتمد على آلاف الـ weights. الـ <b>partial derivative</b> بيثبّت كل المتغيرات ما عدا واحد، وياخد الـ derivative بالنسبة له بس.</p>
+  <div class="formula" style="white-space:pre-line">f(x, y) = x² + 3xy + y²
+∂f/∂x = 2x + 3y    (y ثابت)
+∂f/∂y = 3x + 2y    (x ثابت)</div>
+  <p>كل partial بيجاوب: «لو زقيت الـ weight ده لوحده، الـ loss هيتغير قد إيه؟». ولما تجمعهم كلهم في متجه واحد يبقى اسمه <b>الـ gradient</b>:</p>
+  <div class="formula">∇f = [ ∂f/∂x, ∂f/∂y, ∂f/∂z, … ]</div>
+  <p>الـ gradient بيشاور في اتجاه <b>أسرع طلوع</b>. عايز تنزل؟ امشي عكسه. مثال على <span class="ltr">f(x,y) = x² + y²</span> (طاسة، قاعها عند (0,0)): عند (1,1) الـ gradient = <span class="ltr">[2, 2]</span> بيشاور لفوق بعيد عن القاع، و<span class="ltr">−∇f = [−2, −2]</span> بيشاور للقاع. وعند (0,0) الـ gradient = <span class="ltr">[0, 0]</span>: مسطح.</p>
+  <div class="note"><strong>تشبيه:</strong> انت واقف على جبل في ضباب ومش شايف حاجة. بتحس الأرض تحت رجلك: أنهي ناحية الأرض مايلة لتحت أكتر؟ تاخد خطوة صغيرة هناك. تكرر. ده الـ gradient descent بالظبط.</div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d4-gd">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Gradient Descent: التدريب كله في سطر</h2></div>
+  <p>تدريب الشبكة = optimization. عندك loss <span class="ltr">L(w₁, w₂, …, wₙ)</span> بيقيس الموديل غلطان قد إيه، وعايز تصغّره:</p>
+  <div class="formula">w_new = w_old − learning_rate · ∂L/∂w</div>
+  <ol class="ex">
+    <li>احسب الـ partial derivative بتاع الـ loss بالنسبة لكل weight.</li>
+    <li>اطرح منه مضاعف صغير (الـ learning rate).</li>
+    <li>كرر.</li>
+  </ol>
+  <p>الـ <b>learning rate</b> بيتحكم في حجم الخطوة: كبير زيادة وهتـ<b>overshoot</b> (تنط فوق القاع)، صغير زيادة وهتـ<b>زحف</b>. والـ loss landscape فيه <b>global minimum</b> (أوطى نقطة خالص) و<b>local minima</b> (وديان أوطى من اللي جنبها بس مش الأوطى). الـ gradient descent ممكن يقف في local minimum، بس الدرس بيقول إن ده نادرًا ما بيبقى مشكلة عملية في الفضاءات اللي فيها ملايين الأبعاد.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: كرة بتنزل على منحنى</h3>
+      <p>اختار الـ landscape والـ learning rate ودوس «انزل». جرّب:</p>
+      <ul class="checklist">
+        <li>على <span class="ltr">x²</span>: lr = 0.1 (زي الكود)، وبعدين 0.9 (بتتأرجح)، وبعدين 1.05 (بتنفجر).</li>
+        <li>على <span class="ltr">x⁴ − 3x²</span>: ليها قاعين عند <span class="ltr">±√1.5 ≈ ±1.225</span>. ابدأ من الناحيتين.</li>
+        <li>على المنحنى المتموج: ابدأ من 2.5 من غير momentum (هتقف في وادي صغير)، وبعدين زوّد الـ momentum لـ 0.9.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d4-gd1Cv" width="520" height="300" aria-label="gradient descent في بعد واحد"></canvas>
+      <div class="btns">
+        <button type="button" data-d4l="sq" class="primary">x²</button>
+        <button type="button" data-d4l="dw">x⁴ − 3x²</button>
+        <button type="button" data-d4l="wavy">متموج</button>
+      </div>
+      <div class="mrow">
+        <label>lr = <span id="d4-vlr1">0.1</span><input type="range" id="d4-lr1" min="0.005" max="1.1" step="0.005" value="0.1"></label>
+        <label>momentum = <span id="d4-vmo1">0</span><input type="range" id="d4-mo1" min="0" max="0.95" step="0.05" value="0"></label>
+        <label>start x = <span id="d4-vx01">2.5</span><input type="range" id="d4-x01" min="-2.8" max="2.8" step="0.1" value="2.5"></label>
+        <label>الخطوة: <b id="d4-step1" class="mono">0</b></label>
+      </div>
+      <div class="readout">
+        <div><small>x</small><b id="d4-gx"></b></div>
+        <div><small>f(x)</small><b id="d4-gf"></b></div>
+        <div><small>f′(x)</small><b id="d4-gg"></b></div>
+      </div>
+      <div class="btns"><button type="button" id="d4-run1" class="primary">انزل ▶</button><button type="button" id="d4-one1">خطوة واحدة</button><button type="button" id="d4-reset1">ابدأ من الأول</button></div>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: الـ gradient descent في 2D على خريطة كنتور</h3>
+      <p>الخطوط زي خطوط الارتفاع في الخرايط: كل خط عليه نفس قيمة f. <b>دوس في أي مكان</b> تحط نقطة البداية. السهم الأحمر هو <span class="ltr">−∇f</span>، ودايمًا عمودي على خط الكنتور.</p>
+      <p>جرّب «طاسة مطوّلة» <span class="ltr">x² + 10y²</span> بـ lr = 0.09: الكرة بتتزجزج في الاتجاه الضيق. وجرّب <span class="ltr">(x−3)² + (y+1)²</span> من (0,0): ده تمرين ٢ وهتوصل لـ <span class="ltr">(3, −1)</span>.</p>
+      <div class="note ai"><strong>الـ Hessian (المحطة ٥):</strong> الخانة تحت بتوريك eigenvalues الـ Hessian عند النقطة. الطاسة المطوّلة ليها 2 و20: انحناء مختلف جدًا في الاتجاهين، وده سبب الزجزجة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d4-gd2Cv" width="520" height="400" aria-label="خريطة كنتور ومسار الـ gradient descent"></canvas>
+      <div class="btns">
+        <button type="button" data-d4c="bowl" class="primary">x² + y²</button>
+        <button type="button" data-d4c="long">x² + 10y²</button>
+        <button type="button" data-d4c="shift">(x−3)² + (y+1)²</button>
+        <button type="button" data-d4c="saddle">x² − y² (saddle)</button>
+      </div>
+      <div class="mrow">
+        <label>lr = <span id="d4-vlr2">0.1</span><input type="range" id="d4-lr2" min="0.01" max="1.05" step="0.01" value="0.1"></label>
+        <label>momentum = <span id="d4-vmo2">0</span><input type="range" id="d4-mo2" min="0" max="0.95" step="0.05" value="0"></label>
+      </div>
+      <div class="readout">
+        <div><small>النقطة</small><b id="d4-pt"></b></div>
+        <div><small>f</small><b id="d4-pf"></b></div>
+        <div><small>∇f</small><b id="d4-pg"></b></div>
+        <div><small>Hessian eigenvalues</small><b id="d4-ph"></b></div>
+      </div>
+      <div class="btns"><button type="button" id="d4-run2" class="primary">انزل ▶</button><button type="button" id="d4-reset2">ابدأ من (4, 3)</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d4-chain">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Chain Rule والـ Backpropagation والـ Jacobian</h2></div>
+  <p>لما الدوال متركبة جوه بعض، الـ chain rule بيقولك تشتق إزاي: اضرب الـ derivatives على طول السلسلة.</p>
+  <div class="formula">y = f(g(x))   ⇒   dy/dx = f′(g(x)) · g′(x)</div>
+  <div class="formula">y = (3x + 1)²:   برا f(u) = u² → 2u  ·  جوه g(x) = 3x + 1 → 3   ⇒   dy/dx = 2(3x + 1) · 3 = 6(3x + 1)</div>
+  <p>الشبكة العصبية سلسلة دوال: <span class="ltr">input → linear → activation → linear → activation → loss</span>. الـ <b>Backpropagation</b> هو الـ chain rule متطبق مرة ورا مرة من الخرج للدخل. ده الـ algorithm كله.</p>
+  <h3>في computation graph</h3>
+  <p>المتغيرات بتتفرع وتتجمع. خد neuron واحد بـ sigmoid و cross-entropy loss:</p>
+  <div class="formula">Forward:   z1 = w·x  →  z2 = z1 + b  →  a = σ(z2)  →  L = −( y·log(a) + (1−y)·log(1−a) )</div>
+  <div class="formula">Backward:  dL/da = −y/a + (1−y)/(1−a)  →  dL/dz2 = dL/da · a(1−a)  →  dL/dw = dL/dz2 · x ,  dL/db = dL/dz2 · 1</div>
+  <p>كل سهم بيضرب في الـ derivative المحلي بتاعه. الـ gradient لأي parameter = حاصل ضرب كل الـ derivatives المحلية على الطريق من الـ loss ليه. ولو الطرق اتفرعت واتجمعت تاني، <b>بتجمع</b> مساهمات كل طريق (multivariate chain rule).</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: اعمل backprop بإيدك</h3>
+      <p>غيّر x وw وb والـ label y. الأسهم الزرقا هي الـ forward (من x لحد L في الرسم)، والبرتقالي هو الـ backward راجع من L. تحت: <span class="ltr">dL/dw</span> المحسوب بالـ chain rule جنب الـ numerical (central diff). لازم يتطابقوا.</p>
+      <div class="note"><strong>لاحظ:</strong> <span class="ltr">dL/dz2</span> بتطلع بالظبط <span class="ltr">a − y</span>. الـ sigmoid والـ cross-entropy بيختصروا بعض بشكل جميل، وده واحد من أسباب إنهم بيستخدموا مع بعض.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d4-bpCv" width="520" height="210" aria-label="computation graph"></canvas>
+      <div class="mrow">
+        <label>x = <span id="d4-vbx">2</span><input type="range" id="d4-bx" min="-3" max="3" step="0.1" value="2"></label>
+        <label>w = <span id="d4-vbw">0.5</span><input type="range" id="d4-bw" min="-3" max="3" step="0.1" value="0.5"></label>
+        <label>b = <span id="d4-vbb">-0.5</span><input type="range" id="d4-bb" min="-3" max="3" step="0.1" value="-0.5"></label>
+        <label>y (label) = <span id="d4-vby">1</span><input type="range" id="d4-by" min="0" max="1" step="1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>dL/dw (chain rule)</small><b id="d4-dwA"></b></div>
+        <div><small>dL/dw (numerical)</small><b id="d4-dwN"></b></div>
+        <div><small>dL/dz2 = a − y</small><b id="d4-dz"></b></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>الـ Jacobian: الـ derivative لما الخرج متجه</h3>
+  <p>لو دالة بتاخد متجه وتطلّع متجه (زي layer)، الـ derivative بتاعها بيبقى مصفوفة اسمها <b>Jacobian</b>: كل partial derivative لكل خرج بالنسبة لكل دخل. لـ <span class="ltr">f: ℝⁿ → ℝᵐ</span> الـ Jacobian شكله <span class="ltr">m × n</span>، والصف i فيه <span class="ltr">∂fᵢ/∂x₁ … ∂fᵢ/∂xₙ</span>.</p>
+  <p>مش هتحسبه بإيدك لشبكات حقيقية، PyTorch بيعمل ده. بس فايدته إنه بيفهمك الأشكال: layer من n لـ m ليها Jacobian <span class="ltr">m × n</span>، والـ gradient بيرجع لورا عبر الـ <b>transpose</b> بتاعه (فاكر الـ transpose يوم ٢؟).</p>
+  <div class="formula" style="white-space:pre-line">Forward:  input → W1 → relu → W2 → softmax → loss
+Backward: dL/dloss → dL/dW2 → … → dL/dW1
+Update:   W1 = W1 − lr · dL/dW1 ,  W2 = W2 − lr · dL/dW2</div>
+  <p>الـ forward بيحسب التوقع والـ loss. الـ backward بيحسب gradient الـ loss لكل weight. وبعدين كل weight ياخد خطوة صغيرة لتحت. كرر ملايين المرات. ده الـ deep learning.</p>
+</section>
+
+<!-- STATION 5 -->
+<section id="d4-hess">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Hessian: الانحناء</h2></div>
+  <p>الـ gradient بيقولك الميل. الـ <b>Hessian</b> بيقولك الانحناء: مصفوفة كل الـ derivatives من الدرجة التانية، والخانة <span class="ltr">(i, j)</span> فيها <span class="ltr">∂²f / ∂xᵢ∂xⱼ</span>. لدالة في متغيرين:</p>
+  <div class="formula">H = [[ ∂²f/∂x² , ∂²f/∂x∂y ], [ ∂²f/∂y∂x , ∂²f/∂y² ]]</div>
+  <div class="tablewrap"><table>
+    <tr><th>الـ Hessian عند نقطة الـ gradient فيها صفر</th><th>المعنى</th><th>الشكل</th></tr>
+    <tr><td>Positive definite (كل الـ eigenvalues &gt; 0)</td><td>Local minimum</td><td>طاسة مفتوحة لفوق</td></tr>
+    <tr><td>Negative definite (كلهم &lt; 0)</td><td>Local maximum</td><td>طاسة مقلوبة</td></tr>
+    <tr><td>Indefinite (مختلطين)</td><td>Saddle point</td><td>سرج الحصان</td></tr>
+  </table></div>
+  <p><span class="ltr">f = x² − y²</span>: <span class="ltr">∂²f/∂x² = 2</span>، <span class="ltr">∂²f/∂y² = −2</span>، <span class="ltr">∂²f/∂x∂y = 0</span>، يعني <span class="ltr">H = [[2, 0], [0, −2]]</span> وeigenvalues 2 و−2 → saddle عند (0,0). أما <span class="ltr">x² + y²</span> فـ <span class="ltr">H = [[2, 0], [0, 2]]</span> → minimum. جرّب الاتنين في المعمل ٣.</p>
+  <h3>ليه الـ Hessian مهم؟ Newton's method</h3>
+  <div class="formula" style="white-space:pre-line">Newton:            w_new = w_old − H⁻¹ · gradient
+Gradient descent:  w_new = w_old − lr · gradient</div>
+  <p>Newton بيوصل أسرع لأن الـ Hessian بيعيد تحجيم الـ gradient: الاتجاهات الحادة تاخد خطوات أصغر، والمسطحة تاخد خطوات أكبر. المشكلة: لشبكة فيها N parameter الـ Hessian <span class="ltr">N × N</span>. موديل بمليون parameter محتاج مصفوفة فيها تريليون خانة. عشان كده بنستخدم تقريبات:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>بتستخدم إيه</th><th>التكلفة لكل خطوة</th><th>سرعة التقارب</th></tr>
+    <tr><td>Gradient descent</td><td>derivatives أولى بس</td><td class="ltr">O(N)</td><td>بطيء (linear)</td></tr>
+    <tr><td>Newton's method</td><td>الـ Hessian كامل</td><td class="ltr">O(N³)</td><td>سريع (quadratic)</td></tr>
+    <tr><td>L-BFGS</td><td>تقريب للـ Hessian من تاريخ الـ gradients</td><td class="ltr">O(N)</td><td>متوسط (superlinear)</td></tr>
+    <tr><td>Adam</td><td>learning rate متكيف لكل parameter (تقريب لقطر الـ Hessian)</td><td class="ltr">O(N)</td><td>متوسط</td></tr>
+    <tr><td>Natural gradient</td><td>الـ Fisher information matrix</td><td class="ltr">O(N²)</td><td>سريع</td></tr>
+  </table></div>
+  <p>عمليًا Adam هو الـ default في الـ deep learning: بيقرّب معلومة الدرجة التانية برخص عن طريق متابعة المتوسط المتحرك والـ variance بتاع الـ gradients لكل parameter.</p>
+</section>
+
+<!-- STATION 6 -->
+<section id="d4-taylor">
+  <div class="station-head"><span class="tag">06</span><h2>الـ Taylor Series: ليه الـ gradient descent بيشتغل أصلًا</h2></div>
+  <p>أي دالة ناعمة تقدر تقرّبها حوالين نقطة بكثيرة حدود (polynomial):</p>
+  <div class="formula">f(x + h) = f(x) + f′(x)·h + ½·f″(x)·h² + ⅙·f‴(x)·h³ + …</div>
+  <p>كل ما تزود حدود التقريب يبقى أحسن، بس <b>قريب من النقطة بس</b>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>درجة التقريب</th><th>بيمسك إيه</th><th>طريقة الـ optimization</th></tr>
+    <tr><td>0 (ثابت)</td><td>القيمة بس</td><td>Random search</td></tr>
+    <tr><td>1 (خطي)</td><td>الميل</td><td>Gradient descent</td></tr>
+    <tr><td>2 (تربيعي)</td><td>الانحناء</td><td>Newton's method</td></tr>
+    <tr><td>أعلى</td><td>تفاصيل أدق</td><td>نادرًا في الـ ML</td></tr>
+  </table></div>
+  <ul class="checklist">
+    <li><b>Taylor درجة أولى = gradient descent:</b> لما تفترض <span class="ltr">f(x+h) ≈ f(x) + f′(x)·h</span> انت بتعمل تقريب خطي، والـ gradient descent بيختار <span class="ltr">h = −lr · f′(x)</span>.</li>
+    <li><b>Taylor درجة تانية = Newton:</b> <span class="ltr">f(x) + f′h + ½f″h²</span> نموذج تربيعي، وأقل قيمة ليه عند <span class="ltr">h = −f′(x)/f″(x)</span>، وده خطوة Newton.</li>
+    <li><b>تصميم الـ loss:</b> الـ MSE والـ cross-entropy ناعمين، فتقريبات Taylor بتاعتهم مظبوطة. مش صدفة: الـ loss الناعم بيخلي الـ optimization متوقع.</li>
+  </ul>
+  <p>الفكرة الأساسية: كل optimization بالـ gradients هو إنك تقرّب الـ loss محليًا، وتاخد خطوة لأقل نقطة في التقريب ده. وعشان التقريب الخطي صح بس قريب من النقطة، الـ learning rate لازم يبقى صغير.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٥: التقريب بيصمد لحد فين؟</h3>
+      <p>حرّك نقطة التمدد x₀ وفعّل درجات التقريب. شوف التقريب الخطي (الدرجة ١) بيبقى ممتاز جنب x₀ وبيبوظ بعيد. ده بالظبط ليه الخطوة الكبيرة في الـ gradient descent ممكن تبوظ الدنيا.</p>
+      <p>مثال الكود: حوالين 0، <span class="ltr">sin(x) ≈ x</span>. عند <span class="ltr">h = 0.1</span>: <span class="ltr">sin = 0.0998</span> والتقريب 0.1. عند <span class="ltr">h = 2</span>: <span class="ltr">sin = 0.9093</span> والتقريب 2. باظ خالص.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d4-tyCv" width="520" height="320" aria-label="تقريب Taylor"></canvas>
+      <div class="btns">
+        <button type="button" data-d4t="sin" class="primary">sin(x)</button>
+        <button type="button" data-d4t="exp">eˣ</button>
+        <label><input type="checkbox" id="d4-o0"> درجة 0</label>
+        <label><input type="checkbox" id="d4-o1" checked> درجة 1</label>
+        <label><input type="checkbox" id="d4-o2" checked> درجة 2</label>
+        <label><input type="checkbox" id="d4-o3"> درجة 3</label>
+      </div>
+      <label style="display:grid;gap:2px;direction:ltr">x₀ = <b class="mono" id="d4-vx0t">0</b><input type="range" id="d4-x0t" min="-2" max="2" step="0.1" value="0"></label>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 7 -->
+<section id="d4-int">
+  <div class="station-head"><span class="tag">07</span><h2>الـ Integrals في الـ ML: التجميع</h2></div>
+  <p>الـ derivative معدل تغيير. الـ <b>integral</b> تجميع: المساحة تحت المنحنى. نادرًا ما هتحسبه بإيدك في الـ ML، بس الفكرة في كل حتة:</p>
+  <ul class="checklist">
+    <li><b>Probability:</b> لمتغير عشوائي متصل بكثافة <span class="ltr">p(x)</span>: <span class="ltr">P(a &lt; X &lt; b) = ∫ₐᵇ p(x) dx</span>. المساحة تحت منحنى الكثافة بين a وb = احتمال إن القيمة تقع هناك.</li>
+    <li><b>Expected value:</b> <span class="ltr">E[f(X)] = ∫ f(x) p(x) dx</span>. الـ loss المتوقع على توزيع الداتا integral، والتدريب بيصغّر تقريب تجريبي ليه (متوسط على العينات).</li>
+    <li><b>KL divergence:</b> <span class="ltr">KL(p‖q) = ∫ p(x) log(p(x)/q(x)) dx</span> بيقيس قد إيه توزيعين مختلفين. في الـ VAEs والـ knowledge distillation والـ Bayesian inference.</li>
+    <li><b>Normalization constants:</b> في Bayes: <span class="ltr">p(w | data) = p(data | w)·p(w) / ∫ p(data | w)·p(w) dw</span>. المقام integral على كل قيم الـ parameters الممكنة، وغالبًا مستحيل يتحسب، عشان كده فيه تقريبات زي MCMC والـ variational inference.</li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>مفهوم الـ integral</th><th>بيظهر فين في الـ ML</th></tr>
+    <tr><td>المساحة تحت المنحنى</td><td>الاحتمال من دوال الكثافة</td></tr>
+    <tr><td>Expected value</td><td>الـ loss functions، الـ risk minimization</td></tr>
+    <tr><td>KL divergence</td><td>الـ VAEs، الـ policy optimization، الـ distillation</td></tr>
+    <tr><td>Normalization</td><td>الـ Bayesian posteriors، مقام الـ softmax</td></tr>
+    <tr><td>Marginal likelihood</td><td>مقارنة الموديلات، الـ ELBO</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٦: الـ integral = مجموع مستطيلات رفيعة</h3>
+      <p>ده توزيع normal قياسي. حرّك a وb، والمساحة المضللة هي <span class="ltr">P(a &lt; X &lt; b)</span>. زوّد عدد المستطيلات وشوف المجموع بيقرب من القيمة المظبوطة. ده نفس اللي الكمبيوتر بيعمله لما يحسب integral رقميًا.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d4-inCv" width="520" height="260" aria-label="المساحة تحت منحنى الـ normal"></canvas>
+      <div class="mrow">
+        <label>a = <span id="d4-via">-1</span><input type="range" id="d4-ia" min="-3.5" max="3.5" step="0.1" value="-1"></label>
+        <label>b = <span id="d4-vib">1</span><input type="range" id="d4-ib" min="-3.5" max="3.5" step="0.1" value="1"></label>
+        <label>مستطيلات = <span id="d4-vin">8</span><input type="range" id="d4-in" min="2" max="200" step="1" value="8"></label>
+      </div>
+      <div class="readout">
+        <div><small>مجموع المستطيلات</small><b id="d4-iSum"></b></div>
+        <div><small>القيمة الدقيقة</small><b id="d4-iTrue"></b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 8 -->
+<section id="d4-lr">
+  <div class="station-head"><span class="tag">08</span><h2>كله مع بعض: درّب linear regression</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الداتا: <span class="ltr">x = [1,2,3,4,5]</span> و<span class="ltr">y = [3,5,7,9,11]</span>، يعني الحقيقة <span class="ltr">y = 2x + 1</span>. الموديل <span class="ltr">pred = w·x + b</span> والـ loss هو الـ MSE.</p>
+      <div class="formula">dL/dw = mean( 2·(pred − y)·x )     dL/db = mean( 2·(pred − y) )</div>
+      <p>كل حلقة تدريب بالـ gradients ماشية بنفس النمط: <b>توقّع → احسب الـ loss → احسب الـ gradients → حدّث الـ weights</b>.</p>
+      <p>دوس «درّب» وشوف الخط بيلف لحد ما يركب على النقط. جرّب lr = 0.08 وشوف الانفجار.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d4-regCv" width="520" height="300" aria-label="تدريب linear regression"></canvas>
+      <label style="display:grid;gap:2px">lr = <b class="mono" id="d4-vrlr">0.01</b><input type="range" id="d4-rlr" min="0.001" max="0.08" step="0.001" value="0.01"></label>
+      <div class="readout">
+        <div><small>epoch</small><b id="d4-rep">0</b></div>
+        <div><small>w</small><b id="d4-rw"></b></div>
+        <div><small>b</small><b id="d4-rb"></b></div>
+        <div><small>loss</small><b id="d4-rl"></b></div>
+      </div>
+      <div class="btns"><button type="button" id="d4-rRun" class="primary">درّب 200 epoch ▶</button><button type="button" id="d4-rReset">weights جديدة</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d4-code">
+  <div class="station-head"><span class="tag">09</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/01-math-foundations/04-calculus-for-ml/code/derivatives.py
+<span class="c"># نسخة Julia:</span>
+julia phases/01-math-foundations/04-calculus-for-ml/code/main.jl</pre></div>
+  <p>افتح <code>my_calculus.py</code> واكتب الخطوات بإيدك. كل خطوة شغّلها لوحدها.</p>
+
+  <h3>خطوة ١: numerical derivative</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def numerical_derivative(f, x, h=1e-7):
+    return (f(x + h) - f(x - h)) / (2 * h)       <span class="c"># central difference</span>
+
+def f(x):
+    return x ** 2
+
+for x in [-2, -1, 0, 1, 2]:
+    numerical = numerical_derivative(f, x)
+    analytical = 2 * x                            <span class="c"># اشتقاق بالإيد</span>
+    print(f"x={x:2d}  f'(x) numerical={numerical:.6f}  analytical={analytical:.1f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">x=-2  f'(x) numerical=-4.000000  analytical=-4.0
+x=-1  f'(x) numerical=-2.000000  analytical=-2.0
+x= 0  f'(x) numerical=0.000000  analytical=0.0
+x= 1  f'(x) numerical=2.000000  analytical=2.0
+x= 2  f'(x) numerical=4.000000  analytical=4.0</pre></details>
+
+  <h3>خطوة ٢: partial derivatives والـ gradient</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def numerical_gradient(f, point, h=1e-7):
+    gradient = []
+    for i in range(len(point)):                   <span class="c"># زق متغير واحد بس كل مرة</span>
+        point_plus = list(point)
+        point_minus = list(point)
+        point_plus[i] += h
+        point_minus[i] -= h
+        gradient.append((f(point_plus) - f(point_minus)) / (2 * h))
+    return gradient
+
+def f_multi(point):
+    x, y = point
+    return x**2 + 3*x*y + y**2
+
+grad = numerical_gradient(f_multi, [1.0, 2.0])
+print(f"Numerical gradient at (1,2): {[f'{g:.4f}' for g in grad]}")
+print(f"Analytical: [2*1+3*2, 3*1+2*2] = [{2*1+3*2}, {3*1+2*2}]")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Numerical gradient at (1,2): ['8.0000', '7.0000']
+Analytical: [2*1+3*2, 3*1+2*2] = [8, 7]</pre></details>
+
+  <h3>خطوة ٣: gradient descent على x² (1D)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>x = 5.0
+lr = 0.1
+for step in range(20):
+    grad = 2 * x                  <span class="c"># f'(x)</span>
+    x = x - lr * grad             <span class="c"># خطوة عكس الميل</span>
+    if step % 4 == 0 or step == 19:
+        print(f"step {step:2d}  x={x:8.4f}  f(x)={x**2:10.6f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">step  0  x=  4.0000  f(x)= 16.000000
+step  4  x=  1.6384  f(x)=  2.684355
+step  8  x=  0.6711  f(x)=  0.450360
+step 12  x=  0.2749  f(x)=  0.075558
+step 16  x=  0.1126  f(x)=  0.012677
+step 19  x=  0.0576  f(x)=  0.003323</pre><p>كل خطوة x بتتضرب في <span class="ltr">(1 − 0.1·2) = 0.8</span>. عشان كده بتقرب من الصفر بشكل أُسي.</p></details>
+
+  <h3>خطوة ٤: gradient descent في 2D</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def f_2d(point):
+    x, y = point
+    return x**2 + y**2
+
+point = [4.0, 3.0]
+lr = 0.1
+for step in range(30):
+    grad = numerical_gradient(f_2d, point)
+    point = [p - lr * g for p, g in zip(point, grad)]   <span class="c"># كل إحداثي لوحده</span>
+    if step % 5 == 0 or step == 29:
+        print(f"step {step:2d}  ({point[0]:7.4f}, {point[1]:7.4f})  f={f_2d(point):.6f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">step  0  ( 3.2000,  2.4000)  f=16.000000
+step  5  ( 1.0486,  0.7864)  f=1.717987
+step 10  ( 0.3436,  0.2577)  f=0.184467
+step 15  ( 0.1126,  0.0844)  f=0.019807
+step 20  ( 0.0369,  0.0277)  f=0.002127
+step 25  ( 0.0121,  0.0091)  f=0.000228
+step 29  ( 0.0050,  0.0037)  f=0.000038</pre></details>
+
+  <h3>خطوة ٥: قارن numerical بـ analytical</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+tests = [
+    ("x^2",    lambda x: x**2,        lambda x: 2*x),
+    ("x^3",    lambda x: x**3,        lambda x: 3*x**2),
+    ("sin(x)", lambda x: math.sin(x), lambda x: math.cos(x)),
+    ("e^x",    lambda x: math.exp(x), lambda x: math.exp(x)),
+    ("1/x",    lambda x: 1/x,         lambda x: -1/x**2),
+]
+x = 2.0
+for name, f, df in tests:
+    num, ana = numerical_derivative(f, x), df(x)
+    print(f"{name:&lt;8} {num:12.6f} {ana:12.6f} {abs(num - ana):12.2e}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">x^2          4.000000     4.000000     4.33e-09
+x^3         12.000000    12.000000     6.32e-09
+sin(x)      -0.416147    -0.416147     1.12e-10
+e^x          7.389056     7.389056     7.50e-09
+1/x         -0.250000    -0.250000     1.32e-10</pre><p>الخطأ في حدود <span class="ltr">1e-9</span>: الـ numerical كويس جدًا كأداة تتأكد بيها.</p></details>
+
+  <h3>خطوة ٦: الـ Hessian رقميًا</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def hessian_2d(f, x, y, h=1e-5):
+    fxx = (f(x + h, y) - 2 * f(x, y) + f(x - h, y)) / (h ** 2)      <span class="c"># انحناء في x</span>
+    fyy = (f(x, y + h) - 2 * f(x, y) + f(x, y - h)) / (h ** 2)      <span class="c"># انحناء في y</span>
+    fxy = (f(x + h, y + h) - f(x + h, y - h)
+           - f(x - h, y + h) + f(x - h, y - h)) / (4 * h ** 2)      <span class="c"># المختلط</span>
+    return [[fxx, fxy], [fxy, fyy]]
+
+print(hessian_2d(lambda x, y: x**2 - y**2, 0.0, 0.0))   <span class="c"># saddle</span>
+print(hessian_2d(lambda x, y: x**2 + y**2, 0.0, 0.0))   <span class="c"># bowl</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">[[2.0, 0.0], [0.0, -2.0]]
+[[2.0, 0.0], [0.0, 2.0]]</pre><p>الملف الأصلي كمان بيحسب Hessian دالة Rosenbrock <span class="ltr">(1−x)² + 100(y−x²)²</span> عند قاعها (1,1): حوالي <span class="ltr">[[802, −400], [−400, 200]]</span> وeigenvalues تقريبًا 1001.6 و0.4. الاتنين موجبين → minimum، بس الفرق الضخم بينهم هو اللي بيخلي الدالة دي صعبة على الـ gradient descent.</p></details>
+
+  <h3>خطوة ٧: Taylor</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def taylor_approx(f, f_prime, f_double_prime, x0, h, order=2):
+    result = f(x0)                                 <span class="c"># درجة 0</span>
+    if order &gt;= 1:
+        result += f_prime(x0) * h                  <span class="c"># + الميل</span>
+    if order &gt;= 2:
+        result += 0.5 * f_double_prime(x0) * h**2  <span class="c"># + الانحناء</span>
+    return result
+
+for h in [0.1, 0.5, 1.0, 2.0]:
+    t1 = taylor_approx(math.sin, math.cos, lambda x: -math.sin(x), 0.0, h, order=1)
+    t2 = taylor_approx(math.sin, math.cos, lambda x: -math.sin(x), 0.0, h, order=2)
+    print(f"h={h:.1f}  sin(h)={math.sin(h):.4f}  order1={t1:.4f}  order2={t2:.4f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">h=0.1  sin(h)=0.0998  order1=0.1000  order2=0.1000
+h=0.5  sin(h)=0.4794  order1=0.5000  order2=0.5000
+h=1.0  sin(h)=0.8415  order1=1.0000  order2=1.0000
+h=2.0  sin(h)=0.9093  order1=2.0000  order2=2.0000</pre><p>الدرجة 2 ما ضافتش حاجة لأن <span class="ltr">sin″(0) = −sin(0) = 0</span>. الملف الأصلي بيعمل نفس الجدول لـ <span class="ltr">eˣ</span> حوالين <span class="ltr">x₀ = 1</span> وهناك هتشوف الدرجة 2 بتفرق.</p></details>
+
+  <h3>خطوة ٨: linear regression بالـ gradient descent</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+random.seed(42)
+w = random.gauss(0, 1)
+b = random.gauss(0, 1)
+lr = 0.01
+xs = [1.0, 2.0, 3.0, 4.0, 5.0]
+ys = [3.0, 5.0, 7.0, 9.0, 11.0]
+
+for epoch in range(200):
+    total_loss = dw = db = 0
+    for x, y in zip(xs, ys):
+        pred = w * x + b                   <span class="c"># ١. توقّع</span>
+        error = pred - y
+        total_loss += error ** 2           <span class="c"># ٢. loss</span>
+        dw += 2 * error * x                <span class="c"># ٣. gradients</span>
+        db += 2 * error
+    dw /= len(xs); db /= len(xs); total_loss /= len(xs)
+    w -= lr * dw                           <span class="c"># ٤. حدّث</span>
+    b -= lr * db
+    if epoch % 40 == 0 or epoch == 199:
+        print(f"epoch {epoch:3d}  w={w:.4f}  b={b:.4f}  loss={total_loss:.6f}")
+
+print(f"Learned: y = {w:.2f}x + {b:.2f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">epoch   0  w=0.3980  b=-0.0208  loss=67.032927
+epoch  40  w=2.1296  b=0.5319  loss=0.040145
+epoch  80  w=2.1132  b=0.5912  loss=0.030618
+epoch 120  w=2.0989  b=0.6430  loss=0.023351
+epoch 160  w=2.0863  b=0.6883  loss=0.017809
+epoch 199  w=2.0757  b=0.7268  loss=0.013675
+Learned: y = 2.08x + 0.73</pre><p>لسه ما وصلش لـ <span class="ltr">2x + 1</span> بالظبط: الـ b بيتعلم أبطأ. زوّد الـ epochs لـ 2000 وشوف.</p></details>
+
+  <h3>خطوة ٩: نفس الكلام بـ NumPy</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+x = np.array([1, 2, 3, 4, 5], dtype=float)
+y = np.array([3, 5, 7, 9, 11], dtype=float)
+w, b = np.random.randn(), np.random.randn()
+lr = 0.01
+for epoch in range(200):
+    error = (w * x + b) - y               <span class="c"># كل العينات مرة واحدة</span>
+    w -= lr * np.mean(2 * error * x)
+    b -= lr * np.mean(2 * error)
+print(f"Learned: y = {w:.2f}x + {b:.2f}")</pre></div>
+  <p>PyTorch بيحسب الـ gradients أوتوماتيك، بس حلقة التحديث نفسها هي هي.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d4-ex">
+  <div class="station-head"><span class="tag">10</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Second derivative:</b> اعمل <code>numerical_second_derivative(f, x)</code> عن طريق إنك تنادي <code>numerical_derivative</code> مرتين. اتأكد إن التانية لـ <span class="ltr">x³</span> عند x = 2 تساوي 12.
+      <details><summary>تلميح</summary>اعمل دالة صغيرة <code>df = lambda t: numerical_derivative(f, t)</code> وادّيها لـ <code>numerical_derivative</code> تاني. لو الرقم طالع مشوش، استخدم h أكبر زي <code>1e-4</code> في الندهتين (فاكر المعمل ١؟ h الصغيرة أوي بتبوّظ). الإجابة: <span class="ltr">f″ = 6x = 12</span>.</details></li>
+    <li><b>انزل لـ (3, −1):</b> استخدم الـ gradient descent عشان تلاقي minimum <span class="ltr">f(x, y) = (x − 3)² + (y + 1)²</span> وابدأ من (0, 0).
+      <details><summary>تلميح</summary>الـ gradient <span class="ltr">(2(x − 3), 2(y + 1))</span> أو استخدم <code>numerical_gradient</code>، ونادي <code>gradient_descent_nd</code> اللي في الملف من (0,0). اطبع كل 10 خطوات: لازم النقطة تقرب من <span class="ltr">(3, −1)</span> والـ loss يقرب من صفر. جرّبها الأول في المعمل ٣.</details></li>
+    <li><b>Momentum:</b> ضيف momentum للـ gradient descent: velocity بتجمع الـ gradients اللي فاتت. قارن سرعة التقارب مع وبدون على <span class="ltr">f(x) = x⁴ − 3x²</span>.
+      <details><summary>تلميح</summary><code>v = momentum * v - lr * grad</code> وبعدين <code>x += v</code>. عدّ الخطوات لحد ما الـ gradient يقرب من صفر. القاع عند <span class="ltr">x = ±√1.5 ≈ ±1.225</span>. (<span class="ltr">f′ = 4x³ − 6x</span>.) المعمل ٢ فيه نفس الدالة ومعاها slider للـ momentum.</details></li>
+    <li><b>إضافة مني · Gradient check زي الشغل الحقيقي:</b> لما تكتب backward بإيدك (هتعمل كده كتير في Phase 3)، أول اختبار تعمله إنك تقارن الـ gradient بتاعك بالـ numerical. اكتب <code>grad_check(f, analytic_grad, point)</code> يرجع الـ relative error <span class="ltr">|a − n| / max(|a|, |n|, 1e-12)</span> لكل parameter، وجرّبه على neuron الـ sigmoid والـ cross-entropy من المعمل ٤.
+      <details><summary>تلميح</summary>لو الـ relative error حوالي <span class="ltr">1e-7</span> أو أقل يبقى الـ backward بتاعك سليم غالبًا. لو حوالي <span class="ltr">1e-2</span> يبقى فيه غلط (غالبًا نسيت تضرب في derivative محلي في الـ chain). ده نفس اللي <code>torch.autograd.gradcheck</code> بيعمله.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d4-extra">
+  <div class="station-head"><span class="tag">11</span><h2>إضافة مني: حدس وأخطاء وفين في الـ LLMs</h2></div>
+  <ul class="checklist">
+    <li><b>الـ gradient محلي جدًا:</b> هو بيقولك الاتجاه «هنا دلوقتي» بس. عشان كده بناخد خطوات صغيرة ونرجع نحسب تاني، زي ما الـ Taylor قال.</li>
+    <li><b>الـ learning rate أهم hyperparameter:</b> لو الـ loss بقى <code>nan</code> أو بيطلع فوق، أول حاجة تجربها تقسم الـ lr على 10. في المعمل ٢ شفت إن على <span class="ltr">x²</span> أي <span class="ltr">lr &gt; 1</span> بيفجّر (لأن x بتتضرب في <span class="ltr">1 − 2·lr</span> وحجمها بقى أكبر من 1، نفس فكرة الـ eigenvalues امبارح).</li>
+    <li><b>Saddle points أخطر من local minima:</b> في الأبعاد العالية أغلب النقط اللي الـ gradient فيها صفر بتبقى saddles مش minima. الـ momentum والـ noise بتاع الـ mini-batches بيساعدوا يهربوا منها. جرّب الـ saddle في المعمل ٣ وابدأ من نقطة y فيها صغيرة جدًا.</li>
+    <li><b>غلطة شائعة:</b> تنسى إشارة السالب وتعمل <span class="ltr">w += lr * grad</span>. كده انت بتطلع الجبل مش بتنزله، والـ loss هيزيد.</li>
+    <li><b>في الـ LLMs:</b> تدريب أي LLM هو نفس حلقة خطوة ٨ بالظبط، بس الـ loss هو cross-entropy على الكلمة الجاية، والـ weights بالمليارات، والـ optimizer غالبًا AdamW، والـ gradients محسوبة بالـ autodiff. ومع الـ fine-tuning بالـ LoRA (يوم ١) الـ gradients بتتحسب للمصفوفتين الصغيرين بس.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d4-quiz">
+  <div class="station-head"><span class="tag">12</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d4-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d4-done">
+  <div class="station-head"><span class="tag">13</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d4-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الـ derivative كميل والـ gradient كاتجاه أسرع طلوع</label></li>
+    <li><label><input type="checkbox" data-ck="2"> شفت الـ lr الكبير بيفجّر والصغير بيزحف في المعمل ٢</label></li>
+    <li><label><input type="checkbox" data-ck="3"> عملت backprop بإيدي في المعمل ٤ وفهمت إن <span class="ltr">dL/dz2 = a − y</span></label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم الـ Hessian بيقول minimum ولا saddle، وليه Adam بدل Newton</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود ودرّبت linear regression بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Derivative / Gradient</td><td>كل خطوة تدريب لأي موديل</td></tr>
+    <tr><td>Gradient descent + learning rate</td><td>SGD وAdam وAdamW، الـ lr schedules</td></tr>
+    <tr><td>Chain rule</td><td>الـ backpropagation والـ autograd في PyTorch</td></tr>
+    <tr><td>Jacobian</td><td>أشكال الـ gradients وهي راجعة في الطبقات</td></tr>
+    <tr><td>Hessian</td><td>تحليل الـ loss landscape، Newton، L-BFGS، تقريب Adam</td></tr>
+    <tr><td>Taylor series</td><td>ليه الـ lr لازم يبقى صغير، تبرير طرق الـ optimization</td></tr>
+    <tr><td>Integrals</td><td>الاحتمالات، الـ expected loss، الـ KL في الـ VAEs والـ distillation</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Chain Rule &amp; Automatic Differentiation. هتبني محرك autograd صغير بإيدك يحسب الـ gradients لوحده، زي قلب PyTorch.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F04-calculus-for-ml" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/04-calculus-for-ml</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=4,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d4-roadmap').closest('.day');
+const rm=$('d4-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===N)s.className='now';rm.appendChild(s)}
+const alive=c=>document.body.contains(c);
+const sig=x=>1/(1+Math.exp(-x));
+const RM=()=>matchMedia('(prefers-reduced-motion:reduce)').matches;
+// generic 1D plot helper
+function plot1(ctx,W,H,xr,yr,fn,col,lw){const X=x=>(x-xr[0])/(xr[1]-xr[0])*W,Y=y=>H-(y-yr[0])/(yr[1]-yr[0])*H;ctx.strokeStyle=col;ctx.lineWidth=lw||2.5;ctx.beginPath();let pen=false;
+  for(let i=0;i<=400;i++){const x=xr[0]+(xr[1]-xr[0])*i/400,y=fn(x);if(!isFinite(y)||Math.abs(y)>1e6){pen=false;continue}const p=[X(x),Y(y)];pen?ctx.lineTo(...p):ctx.moveTo(...p);pen=true}ctx.stroke();return[X,Y]}
+function axes(ctx,W,H,xr,yr){const X=x=>(x-xr[0])/(xr[1]-xr[0])*W,Y=y=>H-(y-yr[0])/(yr[1]-yr[0])*H;AI.grid(ctx,W,H,(W/(xr[1]-xr[0])),X(0),Y(0))}
+
+// ---------- Lab 1: tangent ----------
+const FN={'x²':[x=>x*x,x=>2*x,[-3,3],[-2,9]],'x³':[x=>x**3,x=>3*x*x,[-2.2,2.2],[-9,9]],'sin(x)':[Math.sin,Math.cos,[-4,4],[-1.6,1.6]],'eˣ':[Math.exp,Math.exp,[-3,2.5],[-1,10]],'sigmoid':[sig,x=>sig(x)*(1-sig(x)),[-6,6],[-0.3,1.3]]};
+const fs=$('d4-fSel');Object.keys(FN).forEach(k=>{const o=document.createElement('option');o.textContent=k;fs.appendChild(o)});
+const tc=$('d4-tanCv'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;let tX=1,tDrag=false;
+function tan(){const [F,dF,xr,yr]=FN[fs.value];tX=Math.max(xr[0]+.2,Math.min(xr[1]-.2,tX));const h=Math.pow(10,+$('d4-h').value);
+  $('d4-hv').textContent=h.toExponential(1);
+  tx.clearRect(0,0,TW,TH);axes(tx,TW,TH,xr,yr);const [X,Y]=plot1(tx,TW,TH,xr,yr,F,css('--vec-a'));
+  const an=dF(tX),cd=(F(tX+h)-F(tX-h))/(2*h),fd=(F(tX+h)-F(tX))/h,y0=F(tX);
+  plot1(tx,TW,TH,xr,yr,x=>y0+an*(x-tX),css('--ok'),2);
+  const xa=tX-h;tx.globalAlpha=.9;plot1(tx,TW,TH,xr,yr,x=>F(xa)+cd*(x-xa),css('--vec-b'),1.5);tx.globalAlpha=1;
+  [[tX-h,F(tX-h)],[tX+h,F(tX+h)]].forEach(p=>{tx.fillStyle=css('--vec-b');tx.beginPath();tx.arc(X(p[0]),Y(p[1]),4,0,7);tx.fill()});
+  tx.fillStyle=css('--ink');tx.beginPath();tx.arc(X(tX),Y(y0),8,0,7);tx.fill();
+  $('d4-x0').textContent=f(tX);$('d4-an').textContent=f(an,6);$('d4-cd').textContent=f(cd,6);$('d4-fd').textContent=f(fd,6);
+  $('d4-ce').textContent=Math.abs(cd-an).toExponential(1);$('d4-fe').textContent=Math.abs(fd-an).toExponential(1);
+  tan.X=X;tan.xr=xr}
+function tMove(e){if(!tDrag)return;const[x]=AI.evPos(tc,e);const xr=tan.xr;tX=xr[0]+x/TW*(xr[1]-xr[0]);tan()}
+tc.addEventListener('pointerdown',e=>{tDrag=true;tc.setPointerCapture(e.pointerId);tMove(e)});tc.addEventListener('pointermove',tMove);tc.addEventListener('pointerup',()=>tDrag=false);
+fs.addEventListener('change',()=>{tX=1;tan()});$('d4-h').addEventListener('input',tan);tan();
+
+// ---------- Lab 2: 1D GD ----------
+const L1={sq:[x=>x*x,x=>2*x,[-3,3],[-1,9]],dw:[x=>x**4-3*x*x,x=>4*x**3-6*x,[-2.6,2.6],[-3,8]],wavy:[x=>0.5*x*x+Math.sin(4*x),x=>x+4*Math.cos(4*x),[-3,3],[-1.5,5]]};
+let l1='sq',gx=2.5,gv=0,gstep=0,gTrail=[],gTimer=null;
+const g1=$('d4-gd1Cv'),g1x=AI.setupCanvas(g1),G1W=+g1.dataset.w,G1H=+g1.dataset.h;
+function gd1Draw(){const [F,dF,xr,yr]=L1[l1];g1x.clearRect(0,0,G1W,G1H);axes(g1x,G1W,G1H,xr,yr);const [X,Y]=plot1(g1x,G1W,G1H,xr,yr,F,css('--vec-a'));
+  g1x.strokeStyle=css('--vec-b');g1x.lineWidth=1.2;g1x.globalAlpha=.7;g1x.beginPath();gTrail.forEach((x,i)=>{const p=[X(x),Y(F(x))];i?g1x.lineTo(...p):g1x.moveTo(...p)});g1x.stroke();g1x.globalAlpha=1;
+  gTrail.forEach(x=>{g1x.fillStyle=css('--vec-b');g1x.beginPath();g1x.arc(X(x),Y(F(x)),2.5,0,7);g1x.fill()});
+  const inR=gx>=xr[0]&&gx<=xr[1]&&isFinite(F(gx));
+  if(inR){g1x.fillStyle=css('--ink');g1x.beginPath();g1x.arc(X(gx),Y(F(gx)),8,0,7);g1x.fill()}
+  else{g1x.fillStyle=css('--bad');g1x.font='bold 16px "IBM Plex Sans Arabic", sans-serif';g1x.textAlign='center';g1x.fillText('الكرة طارت برا الرسم: انفجار!',G1W/2,30);g1x.textAlign='left'}
+  $('d4-gx').textContent=Math.abs(gx)>1e5?gx.toExponential(2):f(gx,4);$('d4-gf').textContent=Math.abs(F(gx))>1e5?F(gx).toExponential(2):f(F(gx),4);$('d4-gg').textContent=Math.abs(dF(gx))>1e5?dF(gx).toExponential(2):f(dF(gx),4);$('d4-step1').textContent=gstep}
+function gd1Reset(){clearInterval(gTimer);gx=+$('d4-x01').value;gv=0;gstep=0;gTrail=[gx];gd1Draw()}
+function gd1Step(){const dF=L1[l1][1],lr=+$('d4-lr1').value,mo=+$('d4-mo1').value;gv=mo*gv-lr*dF(gx);gx+=gv;gstep++;if(isFinite(gx))gTrail.push(gx);gd1Draw();return isFinite(gx)&&Math.abs(gx)<1e6}
+['lr1','mo1','x01'].forEach(k=>$('d4-'+k).addEventListener('input',()=>{$('d4-v'+k).textContent=$('d4-'+k).value;if(k==='x01')gd1Reset()}));
+document.querySelectorAll('[data-d4l]').forEach(b=>b.addEventListener('click',()=>{l1=b.dataset.d4l;document.querySelectorAll('[data-d4l]').forEach(c=>c.classList.toggle('primary',c===b));gd1Reset()}));
+$('d4-run1').addEventListener('click',()=>{gd1Reset();let k=0;gTimer=setInterval(()=>{if(!alive(g1)||k++>=60||!gd1Step())clearInterval(gTimer)},RM()?0:110)});
+$('d4-one1').addEventListener('click',()=>{clearInterval(gTimer);gd1Step()});$('d4-reset1').addEventListener('click',gd1Reset);
+gd1Reset();
+
+// ---------- Lab 3: 2D contour GD ----------
+const C2={bowl:[(x,y)=>x*x+y*y,(x,y)=>[2*x,2*y],[[2,0],[0,2]]],long:[(x,y)=>x*x+10*y*y,(x,y)=>[2*x,20*y],[[2,0],[0,20]]],shift:[(x,y)=>(x-3)**2+(y+1)**2,(x,y)=>[2*(x-3),2*(y+1)],[[2,0],[0,2]]],saddle:[(x,y)=>x*x-y*y,(x,y)=>[2*x,-2*y],[[2,0],[0,-2]]]};
+let c2='bowl',P2=[4,3],V2=[0,0],path2=[[4,3]],t2=null;
+const g2=$('d4-gd2Cv'),g2x=AI.setupCanvas(g2),G2W=+g2.dataset.w,G2H=+g2.dataset.h,GS=40,gox=G2W/2,goy=G2H/2;
+const toP=(x,y)=>[gox+x*GS,goy-y*GS];
+let bgKey=null;const off=document.createElement('canvas');off.width=G2W;off.height=G2H;const offx=AI.setupCanvas(off);
+function contours(){g2x.clearRect(0,0,G2W,G2H);AI.grid(g2x,G2W,G2H,GS,gox,goy);if(bgKey!==c2){bgKey=c2;drawContours(offx)}g2x.drawImage(off,0,0,G2W,G2H)}
+function drawContours(g2x){const F=C2[c2][0];g2x.clearRect(0,0,G2W,G2H);
+  const levels=c2==='saddle'?[-16,-9,-4,-1,-.25,.25,1,4,9,16]:[0.25,1,2,4,8,16,25,36,50,70];
+  const cols=[css('--vec-a'),css('--vec-b')];
+  // marching squares-lite: sample grid and draw points where sign change occurs
+  const step=4;for(const L of levels){g2x.fillStyle=L<0?cols[1]:cols[0];g2x.globalAlpha=.55;
+    for(let px=0;px<G2W;px+=step)for(let py=0;py<G2H;py+=step){const x=(px-gox)/GS,y=(goy-py)/GS,a=F(x,y)-L,b=F(x+step/GS,y)-L,c=F(x,y-step/GS)-L;if(a*b<=0||a*c<=0)g2x.fillRect(px,py,1.6,1.6)}}
+  g2x.globalAlpha=1}
+function gd2Draw(){contours();const [F,G,H]=C2[c2];
+  g2x.strokeStyle=css('--ink');g2x.lineWidth=2;g2x.beginPath();path2.forEach((p,i)=>{const q=toP(...p);i?g2x.lineTo(...q):g2x.moveTo(...q)});g2x.stroke();
+  path2.forEach(p=>{g2x.fillStyle=css('--ink');g2x.beginPath();g2x.arc(...toP(...p),2.5,0,7);g2x.fill()});
+  const g=G(...P2),gn=Math.hypot(...g);if(gn>1e-6&&isFinite(gn)){const s=Math.min(1.5,gn*0.3)/gn;const a=toP(...P2),b=toP(P2[0]-g[0]*s,P2[1]-g[1]*s);AI.arrow(g2x,...a,...b,css('--bad'),2.5)}
+  const q=toP(...P2);g2x.fillStyle=css('--ok');g2x.beginPath();g2x.arc(...q,7,0,7);g2x.fill();
+  const big=v=>Math.abs(v)>1e4?v.toExponential(1):f(v,3);
+  $('d4-pt').textContent=`(${big(P2[0])}, ${big(P2[1])})`;$('d4-pf').textContent=big(F(...P2));$('d4-pg').textContent=`[${big(g[0])}, ${big(g[1])}]`;
+  $('d4-ph').textContent=`${H[0][0]}, ${H[1][1]}`+(H[1][1]<0?' → saddle':' → min')}
+function gd2Reset(p){clearInterval(t2);P2=p||[4,3];V2=[0,0];path2=[P2.slice()];gd2Draw()}
+function gd2Step(){const G=C2[c2][1],lr=+$('d4-lr2').value,mo=+$('d4-mo2').value,g=G(...P2);V2=[mo*V2[0]-lr*g[0],mo*V2[1]-lr*g[1]];P2=[P2[0]+V2[0],P2[1]+V2[1]];path2.push(P2.slice());gd2Draw();return isFinite(P2[0])&&Math.hypot(...P2)<1e4}
+g2.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(g2,e);gd2Reset([f((x-gox)/GS,2),f((goy-y)/GS,2)])});
+['lr2','mo2'].forEach(k=>$('d4-'+k).addEventListener('input',()=>$('d4-v'+k).textContent=$('d4-'+k).value));
+document.querySelectorAll('[data-d4c]').forEach(b=>b.addEventListener('click',()=>{c2=b.dataset.d4c;document.querySelectorAll('[data-d4c]').forEach(c=>c.classList.toggle('primary',c===b));gd2Reset(c2==='shift'?[0,0]:c2==='saddle'?[4,0.05]:[4,3])}));
+$('d4-run2').addEventListener('click',()=>{clearInterval(t2);let k=0;t2=setInterval(()=>{if(!alive(g2)||k++>=60||!gd2Step())clearInterval(t2)},RM()?0:90)});
+$('d4-reset2').addEventListener('click',()=>gd2Reset([4,3]));
+gd2Reset();
+
+// ---------- Lab 4: backprop ----------
+const bc=$('d4-bpCv'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+function loss(x,w,b,y){const a=sig(w*x+b),e=1e-12;return -(y*Math.log(a+e)+(1-y)*Math.log(1-a+e))}
+function bp(){const x=+$('d4-bx').value,w=+$('d4-bw').value,b=+$('d4-bb').value,y=+$('d4-by').value;
+  ['bx','bw','bb','by'].forEach(k=>$('d4-v'+k).textContent=$('d4-'+k).value);
+  const z1=w*x,z2=z1+b,a=sig(z2),L=loss(x,w,b,y);
+  const dLda=-y/a+(1-y)/(1-a),dadz=a*(1-a),dLdz=dLda*dadz,dLdw=dLdz*x,dLdb=dLdz;
+  const h=1e-5,num=(loss(x,w+h,b,y)-loss(x,w-h,b,y))/(2*h);
+  bx.clearRect(0,0,BW,BH);
+  const nodes=[['x',x,null],['z1=w·x',z1,dLdz],['z2=z1+b',z2,dLdz],['a=σ(z2)',a,dLda],['L',L,1]];
+  const gx=i=>40+i*(BW-80)/4;
+  nodes.forEach(([n,v,g],i)=>{const X=gx(i);
+    if(i<4){AI.arrow(bx,X+26,70,gx(i+1)-30,70,css('--vec-a'),2);if(i>0)AI.arrow(bx,gx(i+1)-30,140,X+26,140,css('--vec-b'),2)}
+    bx.fillStyle=css('--panel');bx.strokeStyle=css('--ink');bx.lineWidth=1.5;bx.beginPath();bx.arc(X,105,24,0,7);bx.fill();bx.stroke();
+    bx.fillStyle=css('--ink');bx.font='12px JetBrains Mono, monospace';bx.textAlign='center';bx.fillText(n,X,30);
+    bx.fillStyle=css('--vec-a');bx.fillText(f(v,3),X,60);bx.fillStyle=css('--ink');bx.fillText(i===0?'x':i===4?'L':['','z1','z2','a'][i],X,109);
+    if(g!==null){bx.fillStyle=css('--vec-b');bx.fillText('dL/d· '+f(g,3),X,165)}});
+  bx.fillStyle=css('--muted');bx.font='11px JetBrains Mono, monospace';bx.fillText('local: ×x',(gx(0)+gx(1))/2,195);bx.fillText('×1',(gx(1)+gx(2))/2,195);bx.fillText('×a(1−a)',(gx(2)+gx(3))/2,195);bx.fillText('dL/da',(gx(3)+gx(4))/2,195);bx.textAlign='left';
+  $('d4-dwA').textContent=f(dLdw,6);$('d4-dwN').textContent=f(num,6);$('d4-dz').textContent=f(dLdz,4)+' = '+f(a-y,4)}
+['bx','bw','bb','by'].forEach(k=>$('d4-'+k).addEventListener('input',bp));bp();
+
+// ---------- Lab 5: Taylor ----------
+const TF={sin:[[Math.sin,Math.cos,x=>-Math.sin(x),x=>-Math.cos(x)],[-4.5,4.5],[-2.5,2.5]],exp:[[Math.exp,Math.exp,Math.exp,Math.exp],[-3,3],[-2,14]]};
+let tf='sin';const yc=$('d4-tyCv'),yx=AI.setupCanvas(yc),YW=+yc.dataset.w,YH=+yc.dataset.h;
+function taylor(){const [D,xr,yr]=TF[tf],x0=+$('d4-x0t').value;$('d4-vx0t').textContent=x0;yx.clearRect(0,0,YW,YH);axes(yx,YW,YH,xr,yr);
+  const [X,Y]=plot1(yx,YW,YH,xr,yr,D[0],css('--ink'),3);
+  const cols=[css('--muted'),css('--ok'),css('--vec-b'),css('--vec-a')];
+  [0,1,2,3].forEach(o=>{if(!$('d4-o'+o).checked)return;plot1(yx,YW,YH,xr,yr,x=>{const h=x-x0;let s=D[0](x0);if(o>=1)s+=D[1](x0)*h;if(o>=2)s+=0.5*D[2](x0)*h*h;if(o>=3)s+=D[3](x0)*h*h*h/6;return s},cols[o],2)});
+  yx.fillStyle=css('--ink');yx.beginPath();yx.arc(X(x0),Y(D[0](x0)),6,0,7);yx.fill();
+  yx.font='12px JetBrains Mono, monospace';[['f',css('--ink')],['0',cols[0]],['1',cols[1]],['2',cols[2]],['3',cols[3]]].forEach(([t,c],i)=>{yx.fillStyle=c;yx.fillRect(10+i*46,10,14,4);yx.fillText(i?'ord '+t:'true',10+i*46,28)})}
+document.querySelectorAll('[data-d4t]').forEach(b=>b.addEventListener('click',()=>{tf=b.dataset.d4t;document.querySelectorAll('[data-d4t]').forEach(c=>c.classList.toggle('primary',c===b));taylor()}));
+['d4-x0t','d4-o0','d4-o1','d4-o2','d4-o3'].forEach(id=>$(id).addEventListener('input',taylor));taylor();
+
+// ---------- Lab 6: integral ----------
+const ic=$('d4-inCv'),ix=AI.setupCanvas(ic),IW=+ic.dataset.w,IH=+ic.dataset.h;
+const pdf=x=>Math.exp(-x*x/2)/Math.sqrt(2*Math.PI);
+function erf(x){const t=1/(1+0.3275911*Math.abs(x)),y=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-x*x);return x>=0?y:-y}
+const cdf=x=>0.5*(1+erf(x/Math.SQRT2));
+function integ(){let a=+$('d4-ia').value,b=+$('d4-ib').value;const n=+$('d4-in').value;$('d4-via').textContent=a;$('d4-vib').textContent=b;$('d4-vin').textContent=n;if(a>b)[a,b]=[b,a];
+  const xr=[-4,4],yr=[-0.03,0.45];ix.clearRect(0,0,IW,IH);const X=x=>(x-xr[0])/(xr[1]-xr[0])*IW,Y=y=>IH-(y-yr[0])/(yr[1]-yr[0])*IH;
+  const dx=(b-a)/n;let s=0;ix.fillStyle=css('--vec-b');
+  for(let i=0;i<n;i++){const m=a+(i+.5)*dx,hgt=pdf(m);s+=hgt*dx;ix.globalAlpha=.35;ix.fillRect(X(a+i*dx),Y(hgt),Math.max(1,X(a+(i+1)*dx)-X(a+i*dx)-(n<60?1:0)),Y(0)-Y(hgt))}ix.globalAlpha=1;
+  ix.strokeStyle=css('--muted');ix.lineWidth=1;ix.beginPath();ix.moveTo(0,Y(0));ix.lineTo(IW,Y(0));ix.stroke();
+  plot1(ix,IW,IH,xr,yr,pdf,css('--vec-a'),2.5);
+  ix.fillStyle=css('--muted');ix.font='11px JetBrains Mono, monospace';for(let k=-3;k<=3;k++)ix.fillText(k,X(k)-3,IH-4);
+  $('d4-iSum').textContent=f(s,4);$('d4-iTrue').textContent=f(cdf(b)-cdf(a),4)}
+['d4-ia','d4-ib','d4-in'].forEach(id=>$(id).addEventListener('input',integ));integ();
+
+// ---------- Lab 7: linear regression ----------
+const xs=[1,2,3,4,5],ys=[3,5,7,9,11];let rw=0.5,rb=-0.3,rep=0,rhist=[],rT=null;
+const rc=$('d4-regCv'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+function rLoss(w,b){return xs.reduce((s,x,i)=>s+(w*x+b-ys[i])**2,0)/xs.length}
+function regDraw(){rx.clearRect(0,0,RW,RH);const pw=RW*0.58,X=x=>20+x/6*(pw-30),Y=y=>RH-20-y/13*(RH-40);
+  rx.strokeStyle=css('--grid');rx.lineWidth=1;for(let i=0;i<=6;i++){rx.beginPath();rx.moveTo(X(i),Y(0));rx.lineTo(X(i),Y(13));rx.stroke()}
+  rx.strokeStyle=css('--muted');rx.setLineDash([4,4]);rx.beginPath();rx.moveTo(X(0),Y(1));rx.lineTo(X(6),Y(13));rx.stroke();rx.setLineDash([]);
+  rx.save();rx.beginPath();rx.rect(0,0,pw,RH);rx.clip();rx.strokeStyle=css('--vec-b');rx.lineWidth=3;rx.beginPath();rx.moveTo(X(0),Y(rb));rx.lineTo(X(6),Y(rw*6+rb));rx.stroke();rx.restore();
+  xs.forEach((x,i)=>{rx.fillStyle=css('--vec-a');rx.beginPath();rx.arc(X(x),Y(ys[i]),6,0,7);rx.fill()});
+  // loss curve
+  const lx0=pw+16,lw=RW-lx0-10;rx.fillStyle=css('--ink');rx.font='12px JetBrains Mono, monospace';rx.fillText('log loss',lx0,16);
+  rx.strokeStyle=css('--line');rx.strokeRect(lx0,24,lw,RH-48);
+  if(rhist.length>1){const lo=-3,hi=3;rx.strokeStyle=css('--ok');rx.lineWidth=2;rx.beginPath();rhist.forEach((l,i)=>{const L=Math.max(lo,Math.min(hi,Math.log10(Math.max(l,1e-9))));const p=[lx0+i/200*lw,24+(hi-L)/(hi-lo)*(RH-48)];i?rx.lineTo(...p):rx.moveTo(...p)});rx.stroke()}
+  const big=v=>Math.abs(v)>1e4?v.toExponential(1):f(v,4);
+  $('d4-rep').textContent=rep;$('d4-rw').textContent=big(rw);$('d4-rb').textContent=big(rb);$('d4-rl').textContent=big(rLoss(rw,rb))}
+function rStep(){const lr=+$('d4-rlr').value;let dw=0,db=0;xs.forEach((x,i)=>{const e=rw*x+rb-ys[i];dw+=2*e*x;db+=2*e});rhist.push(rLoss(rw,rb));rw-=lr*dw/5;rb-=lr*db/5;rep++}
+$('d4-rlr').addEventListener('input',()=>$('d4-vrlr').textContent=$('d4-rlr').value);
+$('d4-rRun').addEventListener('click',()=>{clearInterval(rT);if(rep>=200){rep=0;rhist=[]}rT=setInterval(()=>{if(!alive(rc)){clearInterval(rT);return}for(let k=0;k<4&&rep<200;k++)rStep();regDraw();if(rep>=200||!isFinite(rw))clearInterval(rT)},RM()?0:40)});
+$('d4-rReset').addEventListener('click',()=>{clearInterval(rT);rw=+(Math.random()*2-1).toFixed(2);rb=+(Math.random()*2-1).toFixed(2);rep=0;rhist=[];regDraw()});
+regDraw();
+
+// ---------- quiz ----------
+AI.quiz($('d4-quizBox'),[
+ ['الـ derivative بتاع دالة عند نقطة بيقولك إيه؟',['أكبر قيمة ممكن الدالة توصلها','المساحة تحت الدالة لحد النقطة دي','معدل التغيير (الميل) عند النقطة دي','قيمة الدالة عند النقطة دي'],2,'f′(x) بيقيس الخرج بيتغير قد إيه لكل وحدة تغيير في الدخل. هندسيًا هو ميل الخط المماس عند النقطة.'],
+ ['يعني إيه gradient في سياق الـ ML؟',['الفرق بين التوقع والقيمة الحقيقية','مقياس لدقة الموديل','متجه فيه كل الـ partial derivatives وبيشاور على اتجاه أسرع طلوع','الـ learning rate المستخدم في التدريب'],2,'الـ gradient بيجمع كل partial derivative في متجه واحد بيشاور على الاتجاه اللي الدالة بتزيد فيه أسرع. عشان تصغّر الـ loss امشي عكسه.'],
+ ['في الـ gradient descent، القاعدة ‎w = w − lr · dL/dw‎ بتعمل إيه؟',['بتخلي طول الـ weight = 1','بتزود الـ loss عشان تختبر قوة الموديل','بترجّع الـ weight لقيمته الأولى ناقص الـ gradient','بتعدّل كل weight في الاتجاه اللي بيقلل الـ loss، مضروب في الـ learning rate'],3,'dL/dw بيقولك أنهي اتجاه بيزود الـ loss. لما تطرحه (مضروب في الـ lr) بتحرك الـ weight في الاتجاه اللي بيقلله. وده بيتكرر لكل weight.'],
+ ['ليه مينفعش نطبق Newton\'s method (اللي بيستخدم الـ Hessian) مباشرة على شبكات فيها ملايين الـ parameters؟',['Newton بطيء جدًا في التقارب للشبكات العميقة','الـ Hessian مصفوفة N × N، محتاجة O(N²) ميموري وO(N³) حسابات لكل خطوة، ومستحيلة لملايين الـ parameters','Newton محتاج derivatives تحليلية والشبكات مينفعش','Newton شغال مع الدوال الـ convex بس'],1,'لـ N = مليون، الـ Hessian فيه تريليون خانة. حسابه وعكسه مستحيل. عشان كده بنستخدم طرق درجة أولى (SGD وAdam) بتقرّب معلومة الدرجة التانية برخص.'],
+ ['إيه تقريب الـ central difference لـ f′(x)؟',['(f(x+h) − f(x)) / h','f(x) · h','(f(x+h) − f(x−h)) / (2h)','f(x+h) / h'],2,'الـ central difference أدق من الـ forward لأنه بياخد متوسط الميل من الجنبين، فالحد الأكبر في الخطأ بيلغي نفسه.'],
+ ['(سؤال مني) على f(x) = x² بدأت من x = 5 بـ lr = 1.2. إيه اللي هيحصل؟',['هتوصل للصفر أسرع','هتقف مكانها','x هتتأرجح وتكبر لحد ما تنفجر','هتقف في local minimum'],2,'كل خطوة x بتتضرب في (1 − 2·1.2) = −1.4. الحجم أكبر من 1 فبتكبر وإشارتها بتتقلب كل مرة. جرّبها في المعمل ٢.'],
+ ['(سؤال مني) نقطة الـ gradient فيها صفر والـ Hessian عندها eigenvalues ‏3 و−1. دي إيه؟',['Local minimum','Local maximum','Saddle point','مفيش معلومة كفاية'],2,'eigenvalues مختلطة الإشارة = indefinite = saddle: طالع في اتجاه ونازل في التاني.']
+],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+AI.onTheme(()=>{if(!alive(tc))return false;bgKey=null;tan();gd1Draw();gd2Draw();bp();taylor();integ();regDraw()});
+})();
+</script>

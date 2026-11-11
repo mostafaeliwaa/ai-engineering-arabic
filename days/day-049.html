@@ -1,0 +1,747 @@
+<div class="day" id="d49-root">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 06 · Optimizers</span>
+  <h1>اليوم ٤٩: الـ gradient بيقولك تروح فين، والـ optimizer بيقرر تمشي إزاي</h1>
+  <p class="lede">الـ gradient زي البوصلة: بيشاور على الاتجاه وبس. النهاردة هتبني بإيدك <b>SGD</b> و<b>Momentum</b> و<b>RMSProp</b> و<b>Adam</b> و<b>AdamW</b>، وهتشوفهم بعينك وهم بينزلوا في وادي ضيق، وتفهم ليه <b>AdamW</b> هو اللي اتدرب بيه GPT وLLaMA وStable Diffusion.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python (standard library بس)</b></span>
+    <span>بعده: <b>Regularization</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d49-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d49-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 48) اتكلمنا عن الـ <b>Loss Functions</b>. الـ loss هو الرقم اللي الـ optimizer بتاع النهاردة بيحاول يصغّره. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه الـ MSE وحش في الـ classification؟</summary>لأن الموديل ممكن يقول 0.5 لكل حاجة ويوصل لـ MSE = 0.25 من غير ما يتعلم أي حاجة. وكمان الـ gradient بتاع الـ MSE بيبقى صغير جدًا لما الـ sigmoid يتشبع جنب 0 أو 1. الـ cross-entropy بيدي gradient قوي بالظبط لما الموديل يغلط بثقة (<span class="ltr">−log(0.1) = 2.303</span>).</details>
+  <details><summary>٢. الـ label smoothing بـ α = 0.1 و١٠ classes بيخلي الـ target الصح كام؟</summary><span class="ltr">0.9 + 0.1/10 = 0.91</span>، والباقيين 0.01. ده بيمنع الـ logits إنها تجري لما لا نهاية وبيقلل الـ overconfidence.</details>
+  <details><summary>٣. الـ loss بيقول للموديل إيه بالظبط؟</summary>هو الحاجة <b>الوحيدة</b> اللي الموديل بيحسّنها فعلًا، مش الـ accuracy ولا الـ F1. الـ optimizer بياخد الـ gradient بتاعه ويعدّل الأوزان. النهاردة هنتكلم عن «يعدّل إزاي».</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>المشكلة: التذبذب، lr واحد، الـ saddle points</div>
+    <div><b>20 min</b>SGD → Momentum → RMSProp + معمل ٠١</div>
+    <div><b>15 min</b>Adam والـ bias correction + معمل ٠٢</div>
+    <div><b>10 min</b>AdamW + معمل ٠٣</div>
+    <div><b>10 min</b>الـ learning rate والاختيار</div>
+    <div><b>20 min</b>الكود + التمارين + الكويز</div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section id="d49-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الـ gradient مش بيقولك تمشي قد إيه</h2></div>
+  <p>حسبت الـ gradients وعرفت إن الوزن رقم 4,721 لازم يقل 0.003. بس 0.003 بأنهي وحدة؟ مضروبة في إيه؟ وهل المفروض تتحرك نفس المسافة في الخطوة ١ والخطوة ١٠٠٠؟</p>
+  <p>الـ gradient descent العادي بيستخدم نفس الـ learning rate لكل بارامتر في كل خطوة:</p>
+  <div class="formula">w = w − lr · gradient</div>
+  <p>وده بيعمل ٣ مشاكل:</p>
+  <ol class="ex">
+    <li><b>التذبذب (oscillation):</b> سطح الـ loss نادرًا ما بيبقى طبق ناعم. غالبًا بيبقى <b>وادي طويل وضيق</b>. الـ gradient بيشاور <b>عرض</b> الوادي (الاتجاه الحاد)، مش <b>طوله</b> (الاتجاه المفيد). فالـ optimizer يفضل يتنطط يمين وشمال ويتقدم ببطء. أكيد شفت قبل كده الـ loss بينزل بسرعة وبعدين يقف، مش لأن الموديل وصل، لكن لأنه بيتذبذب.</li>
+    <li><b>lr واحد لكل البارامترز غلط:</b> فيه أوزان لسه في الأول ومحتاجة خطوات كبيرة، وأوزان قربت من قيمتها الصح ومحتاجة خطوات صغيرة جدًا. الـ lr اللي ينفع للأولى بيبوّظ التانية، والعكس.</li>
+    <li><b>الـ saddle points:</b> في الأبعاد الكتير، سطح الـ loss فيه مناطق مسطحة كبيرة الـ gradient فيها قريب من الصفر. الـ SGD بيزحف فيها بسرعة الـ gradient، يعني تقريبًا مش بيتحرك. الموديل شكله واقف، بس هو مش واقف، هو في منطقة مسطحة وبعدها فيه نزول مفيد.</li>
+  </ol>
+  <div class="note"><strong>التشبيه:</strong> الـ SGD بوصلة. الـ Adam زي GPS بيعرف الزحمة: بيفتكر الطريق اللي فات (momentum) وبيعرف أنهي شارع واسع وأنهي ضيق (adaptive rate لكل بارامتر).</div>
+  <p>الـ Adam بيحل التلات مشاكل: بيحتفظ بمتوسطين جاريين لكل بارامتر، متوسط الـ gradient (momentum، ضد التذبذب) ومتوسط مربع الـ gradient (rate متكيف، ضد اختلاف الأحجام)، ومعاهم <b>bias correction</b> للخطوات الأولى. بالـ defaults بتاعته بيشتغل في حوالي 80% من المشاكل. النهاردة هتبنيه من الصفر عشان تعرف إمتى وليه بيفشل في الـ 20% الباقيين.</p>
+</section>
+
+<!-- SGD / MOMENTUM / RMSPROP -->
+<section id="d49-family">
+  <div class="station-head"><span class="tag">02</span><h2>العيلة: SGD و Momentum و RMSProp</h2></div>
+
+  <h3>Stochastic Gradient Descent (SGD)</h3>
+  <p>أبسط optimizer: احسب الـ gradient على <b>mini-batch</b> وامشي عكسه.</p>
+  <div class="formula">w = w − lr · gradient</div>
+  <p>كلمة <b>stochastic</b> معناها إنك بتقدّر الـ gradient من عينة عشوائية من الداتا (mini-batch) مش من الداتا كلها. الـ noise ده مفيد فعلًا، لأنه بيساعد الموديل يطلع من الـ sharp local minima. بس هو برضه سبب التذبذب.</p>
+  <p>الـ learning rate هو المفتاح الوحيد. لو عالي، الـ loss بيـ diverge. لو واطي، التدريب بياخد عمر. القيمة الصح بتعتمد على الـ architecture والداتا والـ batch size والمرحلة اللي انت فيها. للـ SGD العادي على الشبكات الحديثة القيم المعتادة من 0.01 لـ 0.1، وحتى جوه نفس الـ run الـ lr المثالي بيتغير.</p>
+
+  <h3>Momentum: كورة نازلة من على جبل</h3>
+  <p>بدل ما تمشي بالـ gradient لوحده، بتحتفظ بـ <b>سرعة</b> بتتجمع فيها الـ gradients اللي فاتت:</p>
+  <div class="formula">m_t = β · m_{t−1} + gradient<br>w = w − lr · m_t</div>
+  <p>الـ β (عادة 0.9) بيحدد قد إيه من التاريخ نفتكره. مع β = 0.9 الـ momentum تقريبًا متوسط آخر ١٠ gradients، لأن <span class="ltr">1 / (1 − 0.9) = 10</span>.</p>
+  <p><b>ليه ده بيحل التذبذب؟</b> الـ gradients اللي في نفس الاتجاه بتتجمع وتكبر. واللي بتقلب اتجاهها بتلغي بعض. في الوادي الضيق، المركّبة «العرضية» بتقلب إشارتها كل خطوة فبتهدى، والمركّبة «الطولية» ثابتة فبتتضخم. النتيجة تسارع ناعم في الاتجاه المفيد.</p>
+  <p>بالأرقام: SGD لوحده على سطح loss وحش ممكن ياخد 10,000 خطوة. نفس المشكلة بـ momentum (β = 0.9) عادة بتاخد من 3,000 لـ 5,000. يعني الفرق كبير.</p>
+
+  <h3>RMSProp: lr خاص بكل بارامتر</h3>
+  <p>أول طريقة adaptive لكل بارامتر اشتغلت فعلًا. Hinton قالها في محاضرة على Coursera وعمرها ما اتنشرت رسميًا.</p>
+  <div class="formula">s_t = β · s_{t−1} + (1 − β) · gradient²<br>w = w − lr · gradient / (√s_t + ε)</div>
+  <p>الـ <code>s_t</code> متوسط جاري لمربعات الـ gradient. البارامتر اللي الـ gradients بتاعته كبيرة على طول بيتقسم على رقم كبير (lr فعلي أصغر). واللي الـ gradients بتاعته صغيرة بيتقسم على رقم صغير (lr فعلي أكبر).</p>
+  <p>تشبيه: مدرس عنده طالب بيجري بسرعة وطالب بيحبي. بيقول للسريع «براحة» وللبطيء «يلا شوية». كده كل البارامترز بتتحرك بسرعة متقاربة. والـ ε (عادة <span class="ltr">1e-8</span>) موجود عشان مانقسمش على صفر لو البارامتر ما اتحدّثش.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: سباق في الوادي الضيق</h3>
+      <p>السطح ده <span class="ltr">f(x, y) = 0.05·x² + 2·y²</span>: وادي طويل في اتجاه x وحاد جدًا في اتجاه y. النقطة الهدف في النص (0, 0).</p>
+      <p>دوس على أي حتة في الرسمة عشان تحط نقطة البداية، واضغط «ابدأ». اتفرج على:</p>
+      <ul class="checklist">
+        <li>• <b>SGD</b> بيتنطط عرض الوادي، ولو علّيت الـ lr شوية بيـ diverge.</li>
+        <li>• <b>Momentum</b> بيهدى في y وبيسرّع في x، وممكن يعدّي الهدف ويرجع (overshoot).</li>
+        <li>• <b>RMSProp</b> و<b>Adam</b> بيمشوا بخطوات متقاربة في الاتجاهين، لأنهم بيقسموا على حجم الـ gradient.</li>
+      </ul>
+      <div class="note"><strong>جرب:</strong> علّي lr الـ SGD لحد 0.5 وشوف الانفجار (الـ gradient في y هو <span class="ltr">4y</span>، فلو <span class="ltr">lr·4 &gt; 2</span> كل خطوة بتبعد أكتر). وبعدين رجّعه لـ 0.2 وغيّر β.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d49-valley" width="520" height="340" aria-label="مسارات الـ optimizers في وادي ضيق"></canvas>
+      <div class="mrow">
+        <label>lr (SGD/Momentum) <span id="d49-lrSv">0.2</span><input type="range" id="d49-lrS" min="0.02" max="0.55" step="0.01" value="0.2"></label>
+        <label>β momentum <span id="d49-betaV">0.9</span><input type="range" id="d49-beta" min="0" max="0.99" step="0.01" value="0.9"></label>
+        <label>lr (RMSProp/Adam) <span id="d49-lrAv">0.3</span><input type="range" id="d49-lrA" min="0.02" max="1" step="0.01" value="0.3"></label>
+        <label>speed <span id="d49-spdV">2</span><input type="range" id="d49-spd" min="1" max="6" step="1" value="2"></label>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d49-run">ابدأ</button>
+        <button type="button" id="d49-reset">من الأول</button>
+        <label style="display:flex;gap:4px;align-items:center;font-size:14px"><input type="checkbox" class="d49-show" value="0" checked> SGD</label>
+        <label style="display:flex;gap:4px;align-items:center;font-size:14px"><input type="checkbox" class="d49-show" value="1" checked> Momentum</label>
+        <label style="display:flex;gap:4px;align-items:center;font-size:14px"><input type="checkbox" class="d49-show" value="2" checked> RMSProp</label>
+        <label style="display:flex;gap:4px;align-items:center;font-size:14px"><input type="checkbox" class="d49-show" value="3" checked> Adam</label>
+      </div>
+      <div class="readout" id="d49-vread"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ADAM -->
+<section id="d49-adam">
+  <div class="station-head"><span class="tag">03</span><h2>Adam = Momentum + RMSProp + Bias Correction</h2></div>
+  <p>الـ Adam بيجمع الفكرتين. بيحتفظ بـ exponential moving average اتنين لكل بارامتر:</p>
+  <div class="formula">m_t = β₁·m_{t−1} + (1 − β₁)·gradient     ← first moment (المتوسط)<br>v_t = β₂·v_{t−1} + (1 − β₂)·gradient²    ← second moment (الـ variance)</div>
+  <h3>الـ Bias Correction: التفصيلة اللي ناس كتير بتنساها</h3>
+  <p>الـ m و v بيبدأوا بصفر. في الخطوة ١: <span class="ltr">m₁ = (1 − β₁)·gradient</span>. مع β₁ = 0.9 ده <span class="ltr">0.1·gradient</span>، يعني <b>أصغر من الحقيقي ١٠ مرات</b>. المتوسط الجاري لسه «ما سخنش». زي ترمومتر لسه داخل الأوضة، فبيقرا أقل من الحرارة الحقيقية. الـ correction بيعوّض ده:</p>
+  <div class="formula">m̂ = m_t / (1 − β₁^t)      v̂ = v_t / (1 − β₂^t)</div>
+  <p>في الخطوة ١ مع β₁ = 0.9: <span class="ltr">m̂ = m₁ / 0.1</span> = الـ gradient الحقيقي بالظبط. في الخطوة ١٠٠: <span class="ltr">1 − 0.9¹⁰⁰ ≈ 1</span>، فالتصحيح بيختفي. يعني الـ bias correction مهم في أول ~١٠ خطوات ومالوش لازمة بعد ~٥٠.</p>
+  <div class="formula">w = w − lr · m̂ / (√v̂ + ε)</div>
+  <p><b>Defaults الـ Adam:</b> <span class="ltr">lr = 0.001, β₁ = 0.9, β₂ = 0.999, ε = 1e-8</span>. بتنفع في حوالي 80% من المشاكل. لو ما نفعتش: غيّر الـ lr الأول، وبعدين β₂. وتقريبًا عمرك ما هتغير β₁ أو ε.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: شوف الـ bias بعينك</h3>
+      <p>هنا الـ gradient الحقيقي ثابت = 1 (أو noisy حوالين 1 لو فعّلت الـ noise). الخط البرتقالي هو <span class="ltr">m_raw</span> وهو بيزحف من الصفر، والأزرق هو <span class="ltr">m̂</span> بعد التصحيح.</p>
+      <p>صغّر β₁ لـ 0.5 وشوف الـ raw بيسخن بسرعة. كبّر β₂ لـ 0.999 وبص على الـ v: من غير تصحيح هتفضل قريبة من الصفر مئات الخطوات، ولو قسمت عليها من غير تصحيح الخطوات الأولى هتبقى ضخمة.</p>
+      <div class="note ai"><strong>ركّز:</strong> الـ readout تحت بيوريك حجم أول خطوة لـ Adam <b>من غير</b> تصحيح: <span class="ltr">m₁/√v₁ = (1−β₁)/√(1−β₂)</span>. مع الـ defaults ده <span class="ltr">0.1/0.0316 ≈ 3.16</span> بدل 1، يعني أول خطوة أكبر من المفروض ٣ مرات.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d49-bias" width="520" height="300" aria-label="m الخام مقابل m بعد التصحيح"></canvas>
+      <div class="mrow">
+        <label>β₁ <span id="d49-b1v">0.9</span><input type="range" id="d49-b1" min="0.5" max="0.99" step="0.01" value="0.9"></label>
+        <label>β₂ <span id="d49-b2v">0.999</span><input type="range" id="d49-b2" min="0" max="3" step="1" value="3"></label>
+        <label>step t <span id="d49-tv">1</span><input type="range" id="d49-t" min="1" max="60" step="1" value="1"></label>
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="d49-noise"> noisy gradient</label>
+      </div>
+      <div class="btns"><label style="display:flex;gap:6px;align-items:center;font-size:14px">اعرض: <select id="d49-which"><option value="m">first moment m</option><option value="v">second moment v</option></select></label></div>
+      <div class="readout">
+        <div><small>m_raw</small><b id="d49-mr">0.1</b></div>
+        <div><small>m̂</small><b id="d49-mh">1</b></div>
+        <div><small>v_raw</small><b id="d49-vr">0.001</b></div>
+        <div><small>v̂</small><b id="d49-vh">1</b></div>
+        <div><small>step 1 بدون تصحيح</small><b id="d49-s1">3.16</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ADAMW -->
+<section id="d49-adamw">
+  <div class="station-head"><span class="tag">04</span><h2>AdamW: الـ Weight Decay صح</h2></div>
+  <p>الـ L2 regularization بيضيف <span class="ltr">λ·w²</span> للـ loss. في الـ SGD العادي ده نفس الـ weight decay بالظبط (إنك تطرح <span class="ltr">λ·w</span> من الوزن كل خطوة). بس في الـ Adam <b>المساواة دي بتبوظ</b>.</p>
+  <p>فكرة Loshchilov و Hutter: لما تحط الـ L2 في الـ loss، الـ term بتاعه بيدخل في الـ gradient، والـ Adam بيقسم الـ gradient كله على <span class="ltr">√v̂</span>. يعني البارامترز اللي الـ gradient بتاعها variance كبير بتاخد regularization <b>أقل</b>، واللي الـ variance بتاعها صغير بتاخد <b>أكتر</b>. وده مش اللي عايزه، انت عايز regularization متساوي بغض النظر عن إحصائيات الـ gradient.</p>
+  <p>الـ AdamW بيحل ده: بيطبّق الـ weight decay <b>على الوزن مباشرة</b>، بعد تحديث الـ Adam:</p>
+  <div class="formula">w = w − lr · m̂ / (√v̂ + ε) − lr · λ · w</div>
+  <p>الـ term الأخير <span class="ltr">lr·λ·w</span> مش متقسم على حاجة، فكل بارامتر بيتقلّص بنفس النسبة.</p>
+  <div class="note"><strong>تشبيه:</strong> عندك ضريبة ثابتة 1% على كل حساب في البنك (AdamW). في Adam + L2 الضريبة بتتقسم على «قد إيه الحساب ده بيتحرك»، فالحسابات النشيطة تقريبًا ما بتدفعش، والراكدة بتدفع كتير. مش عادل ومش اللي انت كنت عايزه.</div>
+  <p>شكلها تفصيلة صغيرة، بس هي مش كده. الـ AdamW بيوصل لحلول أحسن من Adam + L2 في تقريبًا كل task، وهو الـ default في PyTorch لتدريب الـ transformers والـ diffusion models ومعظم الـ architectures الحديثة. BERT و GPT و LLaMA و Stable Diffusion كلهم اتدربوا بـ AdamW.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: Adam + L2 ضد AdamW</h3>
+      <p>عندنا وزنين بيبدأوا من 4. الـ loss الحقيقي مالوش رأي فيهم (الـ gradient noise بس)، فالحاجة الوحيدة اللي المفروض تشدهم للصفر هي الـ regularization.</p>
+      <ul class="checklist">
+        <li>• <b>w₁</b>: الـ gradient بتاعه noisy جدًا (σ كبيرة).</li>
+        <li>• <b>w₂</b>: الـ gradient بتاعه هادي (σ صغيرة).</li>
+      </ul>
+      <p>الخطوط المتقطعة = Adam + L2، والمتصلة = AdamW. لاحظ إن في Adam + L2 الوزن الـ noisy بيتقلص <b>أبطأ بكتير</b>، لأن الـ <span class="ltr">λw</span> اتقسم على <span class="ltr">√v̂</span> الكبيرة بتاعته. والوزن الهادي بيقع للصفر بسرعة، لأن الـ λw هو كل الـ gradient بتاعه تقريبًا، فـ Adam بيمشيه خطوة كاملة كل مرة. في AdamW الـ decay بنفس النسبة للاتنين، والفرق الباقي بينهم جاي من الـ noise بس (الوزن الـ noisy بيتهز حوالين الطريق).</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d49-wd" width="520" height="300" aria-label="حجم الوزنين مع الوقت في Adam+L2 و AdamW"></canvas>
+      <div class="mrow">
+        <label>λ (weight decay) <span id="d49-lamV">0.1</span><input type="range" id="d49-lam" min="0.01" max="0.3" step="0.01" value="0.1"></label>
+        <label>σ للـ noisy w₁ <span id="d49-sigV">2</span><input type="range" id="d49-sig" min="0.2" max="5" step="0.1" value="2"></label>
+      </div>
+      <div class="readout">
+        <div><small>Adam+L2 |w₁|</small><b id="d49-a1">-</b></div>
+        <div><small>Adam+L2 |w₂|</small><b id="d49-a2">-</b></div>
+        <div><small>AdamW |w₁|</small><b id="d49-w1">-</b></div>
+        <div><small>AdamW |w₂|</small><b id="d49-w2">-</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d49-reseed">noise جديد</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- LR & CHOICE -->
+<section id="d49-lr">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Learning Rate: أهم hyperparameter عندك</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>اللي بيحصل</th></tr>
+    <tr><td>عالي جدًا (lr &gt; 0.01 مثلًا)</td><td>الـ loss بينفجر، أوزان NaN، والتدريب بيقع</td></tr>
+    <tr><td>مظبوط</td><td>الـ loss بينزل بثبات، بيوصل لـ minimum كويس وبيعمل generalize. وغالبًا محتاج <b>schedule</b></td></tr>
+    <tr><td>واطي جدًا (lr &lt; 0.00001 مثلًا)</td><td>الـ loss بينزل ببطء، بيعلق في minimum مش أحسن حاجة، وبيضيّع compute</td></tr>
+  </table></div>
+  <p>الـ <b>schedule</b> المعتاد جزئين: <b>Warmup</b> بيطلع الـ lr من 0 للـ max في أول 1–10% من التدريب، وبعده <b>Decay</b> بينزله مع الوقت (cosine أو linear).</p>
+  <p>لو هتظبط hyperparameter واحد بس، اختار الـ learning rate. تغيير الـ lr عشر مرات بيفرق أكتر من أي قرار في الـ architecture. القيم المعتادة:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>lr</th></tr>
+    <tr><td>SGD</td><td class="ltr">0.01 – 0.1</td></tr>
+    <tr><td>Adam / AdamW</td><td class="ltr">1e-4 – 3e-4</td></tr>
+    <tr><td>Fine-tuning موديل pretrained</td><td class="ltr">1e-5 – 5e-5</td></tr>
+    <tr><td>Warmup</td><td>linear ramp في أول 1–10% من الخطوات</td></tr>
+  </table></div>
+
+  <h3>مين يكسب فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>بتدرّب إيه؟</th><th>الاختيار</th><th>Hyperparameters</th></tr>
+    <tr><td>Transformer / LLM</td><td>AdamW</td><td class="ltr">lr=1e-4, wd=0.01–0.1</td></tr>
+    <tr><td>CNN / ResNet</td><td>SGD + Momentum</td><td class="ltr">lr=0.1, momentum=0.9</td></tr>
+    <tr><td>GAN</td><td>Adam</td><td class="ltr">lr=2e-4, beta1=0.5</td></tr>
+    <tr><td>Fine-tuning</td><td>AdamW</td><td class="ltr">lr=2e-5, wd=0.01</td></tr>
+    <tr><td>لسه مش عارف</td><td>ابدأ بـ AdamW</td><td class="ltr">lr=3e-4, wd=0.01</td></tr>
+  </table></div>
+  <p>الترتيب في الدرس: SGD (بيتذبذب، بطيء بس بيلاقي minima مسطحة) ← SGD + Momentum (مسار أنعم وأسرع حوالي ٣ مرات) ← Adam (بيتكيف لكل بارامتر، convergence سريع) ← AdamW (Adam + decay صح، أحسن generalization).</p>
+  <p>للـ CNNs ناس كتير لسه بتفضّل SGD + momentum (<span class="ltr">lr=0.1, momentum=0.9, weight_decay=1e-4</span>) مع step أو cosine schedule، لأن الـ SGD بيلاقي minima أكثر تسطّح، وده غالبًا بيعمل generalize أحسن. للـ transformers والـ LLMs الـ AdamW مع warmup + cosine decay هو الـ default في كل حتة. ماتعاندش الإجماع ده من غير سبب قستُه بنفسك.</p>
+</section>
+
+<!-- CODE -->
+<section id="d49-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من الـ root بتاع الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/03-deep-learning-core/06-optimizers/code/main.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> متعملش copy-paste. افتح ملف جديد <code>my_optimizers.py</code> واكتب كل خطوة بنفسك، وبص على الأصل بس لو اتزنقت. كل الـ optimizers هنا بتعدّل الـ <code>params</code> في مكانها (in-place)، وده نفس اللي <code>optimizer.step()</code> بيعمله في PyTorch.</p>
+
+  <h3>خطوة ١: Vanilla SGD</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class SGD:
+    def __init__(self, lr=0.01):
+        self.lr = lr
+
+    def step(self, params, grads):
+        for i in range(len(params)):
+            params[i] -= self.lr * grads[i]     <span class="c"># امشي عكس الـ gradient</span></pre></div>
+
+  <h3>خطوة ٢: SGD with Momentum</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class SGDMomentum:
+    def __init__(self, lr=0.01, beta=0.9):
+        self.lr = lr
+        self.beta = beta
+        self.velocities = None                 <span class="c"># سرعة لكل بارامتر</span>
+
+    def step(self, params, grads):
+        if self.velocities is None:
+            self.velocities = [0.0] * len(params)
+        for i in range(len(params)):
+            <span class="c"># افتكر اللي فات + ضيف الجديد</span>
+            self.velocities[i] = self.beta * self.velocities[i] + grads[i]
+            params[i] -= self.lr * self.velocities[i]</pre></div>
+
+  <h3>خطوة ٣: Adam</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+class Adam:
+    def __init__(self, lr=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.m = None
+        self.v = None
+        self.t = 0                              <span class="c"># عداد الخطوات، محتاجينه للتصحيح</span>
+
+    def step(self, params, grads):
+        if self.m is None:
+            self.m = [0.0] * len(params)
+            self.v = [0.0] * len(params)
+
+        self.t += 1
+
+        for i in range(len(params)):
+            self.m[i] = self.beta1 * self.m[i] + (1 - self.beta1) * grads[i]       <span class="c"># المتوسط</span>
+            self.v[i] = self.beta2 * self.v[i] + (1 - self.beta2) * grads[i] ** 2  <span class="c"># متوسط المربع</span>
+
+            m_hat = self.m[i] / (1 - self.beta1 ** self.t)   <span class="c"># bias correction</span>
+            v_hat = self.v[i] / (1 - self.beta2 ** self.t)
+
+            params[i] -= self.lr * m_hat / (math.sqrt(v_hat) + self.epsilon)</pre></div>
+
+  <h3>خطوة ٤: AdamW</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class AdamW:
+    def __init__(self, lr=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8, weight_decay=0.01):
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.weight_decay = weight_decay
+        self.m = None
+        self.v = None
+        self.t = 0
+
+    def step(self, params, grads):
+        if self.m is None:
+            self.m = [0.0] * len(params)
+            self.v = [0.0] * len(params)
+
+        self.t += 1
+
+        for i in range(len(params)):
+            self.m[i] = self.beta1 * self.m[i] + (1 - self.beta1) * grads[i]
+            self.v[i] = self.beta2 * self.v[i] + (1 - self.beta2) * grads[i] ** 2
+
+            m_hat = self.m[i] / (1 - self.beta1 ** self.t)
+            v_hat = self.v[i] / (1 - self.beta2 ** self.t)
+
+            params[i] -= self.lr * m_hat / (math.sqrt(v_hat) + self.epsilon)
+            <span class="c"># الفرق الوحيد: decay مباشر على الوزن، مش متقسم على √v̂</span>
+            params[i] -= self.lr * self.weight_decay * params[i]</pre></div>
+
+  <h3>خطوة ٥: داتا الدايرة والشبكة اللي هنجرب عليها</h3>
+  <p>نفس circle dataset بتاع امبارح: نقطة جوه الدايرة <span class="ltr">x² + y² &lt; 1.5</span> label 1 وبرّاها 0. والشبكة طبقتين (8 hidden ReLU + sigmoid)، بتحوّل كل الأوزان لـ list واحدة عشان أي optimizer يقدر يشتغل عليها.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+
+def sigmoid(x):
+    x = max(-500, min(500, x))                 <span class="c"># حماية من الـ overflow</span>
+    return 1.0 / (1.0 + math.exp(-x))
+
+def make_circle_data(n=200, seed=42):
+    random.seed(seed)
+    data = []
+    for _ in range(n):
+        x = random.uniform(-2, 2)
+        y = random.uniform(-2, 2)
+        label = 1.0 if x * x + y * y &lt; 1.5 else 0.0
+        data.append(([x, y], label))
+    return data
+
+
+class OptimizerTestNetwork:
+    def __init__(self, optimizer, hidden_size=8):
+        random.seed(0)                          <span class="c"># نفس البداية لكل optimizer = مقارنة عادلة</span>
+        self.hidden_size = hidden_size
+        self.optimizer = optimizer
+        self.w1 = [[random.gauss(0, 0.5) for _ in range(2)] for _ in range(hidden_size)]
+        self.b1 = [0.0] * hidden_size
+        self.w2 = [random.gauss(0, 0.5) for _ in range(hidden_size)]
+        self.b2 = 0.0
+
+    def get_params(self):                       <span class="c"># كل الأوزان في list واحدة</span>
+        params = []
+        for row in self.w1:
+            params.extend(row)
+        params.extend(self.b1)
+        params.extend(self.w2)
+        params.append(self.b2)
+        return params
+
+    def set_params(self, params):               <span class="c"># رجّعهم لأماكنهم بنفس الترتيب</span>
+        idx = 0
+        for i in range(self.hidden_size):
+            for j in range(2):
+                self.w1[i][j] = params[idx]
+                idx += 1
+        for i in range(self.hidden_size):
+            self.b1[i] = params[idx]
+            idx += 1
+        for i in range(self.hidden_size):
+            self.w2[i] = params[idx]
+            idx += 1
+        self.b2 = params[idx]
+
+    def forward(self, x):
+        self.x = x
+        self.z1 = []
+        self.h = []
+        for i in range(self.hidden_size):
+            z = self.w1[i][0] * x[0] + self.w1[i][1] * x[1] + self.b1[i]
+            self.z1.append(z)
+            self.h.append(max(0.0, z))          <span class="c"># ReLU</span>
+        self.z2 = sum(self.w2[i] * self.h[i] for i in range(self.hidden_size)) + self.b2
+        self.out = sigmoid(self.z2)
+        return self.out</pre></div>
+
+  <h3>خطوة ٦: الـ gradients والتدريب</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def compute_grads(self, target):
+        eps = 1e-15
+        p = max(eps, min(1 - eps, self.out))
+        d_loss = -(target / p) + (1 - target) / (1 - p)   <span class="c"># مشتقة الـ BCE</span>
+        d_sigmoid = self.out * (1 - self.out)
+        d_out = d_loss * d_sigmoid
+
+        grads = [0.0] * (self.hidden_size * 2 + self.hidden_size + self.hidden_size + 1)
+        idx = 0
+        for i in range(self.hidden_size):                    <span class="c"># w1</span>
+            d_relu = 1.0 if self.z1[i] &gt; 0 else 0.0
+            d_h = d_out * self.w2[i] * d_relu
+            grads[idx] = d_h * self.x[0]
+            grads[idx + 1] = d_h * self.x[1]
+            idx += 2
+        for i in range(self.hidden_size):                    <span class="c"># b1</span>
+            d_relu = 1.0 if self.z1[i] &gt; 0 else 0.0
+            grads[idx] = d_out * self.w2[i] * d_relu
+            idx += 1
+        for i in range(self.hidden_size):                    <span class="c"># w2</span>
+            grads[idx] = d_out * self.h[i]
+            idx += 1
+        grads[idx] = d_out                                   <span class="c"># b2</span>
+        return grads
+
+    def train(self, data, epochs=300):
+        losses = []
+        for epoch in range(epochs):
+            total_loss = 0.0
+            correct = 0
+            for x, y in data:                                <span class="c"># sample بـ sample</span>
+                pred = self.forward(x)
+                grads = self.compute_grads(y)
+                params = self.get_params()
+                self.optimizer.step(params, grads)           <span class="c"># هنا الـ optimizer بيشتغل</span>
+                self.set_params(params)
+
+                eps = 1e-15
+                p = max(eps, min(1 - eps, pred))
+                total_loss += -(y * math.log(p) + (1 - y) * math.log(1 - p))
+                if (pred &gt;= 0.5) == (y &gt;= 0.5):
+                    correct += 1
+            avg_loss = total_loss / len(data)
+            accuracy = correct / len(data) * 100
+            losses.append((avg_loss, accuracy))
+            if epoch % 75 == 0 or epoch == epochs - 1:
+                print(f"    Epoch {epoch:3d}: loss={avg_loss:.4f}, accuracy={accuracy:.1f}%")
+        return losses</pre></div>
+
+  <h3>خطوة ٧: الـ demo — SGD على دالة بسيطة والـ bias correction</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bias_correction_demo():
+    beta1, beta2, gradient = 0.9, 0.999, 1.0
+    print("  Step | m_raw  | m_corrected | v_raw    | v_corrected")
+    print("  " + "-" * 55)
+    m = 0.0
+    v = 0.0
+    for t in range(1, 11):
+        m = beta1 * m + (1 - beta1) * gradient
+        v = beta2 * v + (1 - beta2) * gradient ** 2
+        m_hat = m / (1 - beta1 ** t)
+        v_hat = v / (1 - beta2 ** t)
+        print(f"  {t:4d} | {m:.4f} | {m_hat:.4f}      | {v:.6f} | {v_hat:.6f}")
+
+<span class="c"># صغّر f(x) = (x - 3)^2 من x = 10</span>
+x = [10.0]
+sgd = SGD(lr=0.1)
+for step in range(20):
+    grad = [2.0 * (x[0] - 3.0)]                <span class="c"># المشتقة</span>
+    sgd.step(x, grad)
+    loss = (x[0] - 3.0) ** 2
+    if step % 5 == 0 or step == 19:
+        print(f"    Step {step:2d}: x={x[0]:.6f}, loss={loss:.6f}")
+bias_correction_demo()</pre></div>
+  <details><summary>الناتج المتوقع للجزء ده</summary><pre class="term">    Step  0: x=8.600000, loss=31.360000
+    Step  5: x=4.835008, loss=3.367254
+    Step 10: x=3.601295, loss=0.361556
+    Step 15: x=3.197032, loss=0.038822
+    Step 19: x=3.080705, loss=0.006513
+  Step | m_raw  | m_corrected | v_raw    | v_corrected
+  -------------------------------------------------------
+     1 | 0.1000 | 1.0000      | 0.001000 | 1.000000
+     2 | 0.1900 | 1.0000      | 0.001999 | 1.000000
+     3 | 0.2710 | 1.0000      | 0.002997 | 1.000000
+   ...
+    10 | 0.6513 | 1.0000      | 0.009955 | 1.000000</pre>
+  <p>حسبت الأرقام دي بنفسي من نفس المعادلات (كل خطوة SGD بتضرب المسافة من 3 في 0.8). لاحظ إن الـ m_raw بعد ١٠ خطوات لسه 0.65 بس، والـ v_raw أقل من 0.01، لكن بعد التصحيح الاتنين = 1 بالظبط، يعني الـ gradient الحقيقي.</p></details>
+
+  <h3>خطوة ٨: السباق على الدايرة وأثر الـ weight decay</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>data = make_circle_data()
+configs = [
+    ("SGD (lr=0.05)", SGD(lr=0.05)),
+    ("SGD+Momentum (lr=0.05, beta=0.9)", SGDMomentum(lr=0.05, beta=0.9)),
+    ("Adam (lr=0.001)", Adam(lr=0.001)),
+    ("AdamW (lr=0.001, wd=0.01)", AdamW(lr=0.001, weight_decay=0.01)),
+]
+results = {}
+for name, opt in configs:
+    print(f"\n--- {name} ---")
+    net = OptimizerTestNetwork(opt, hidden_size=8)
+    results[name] = net.train(data, epochs=300)
+
+for name, history in results.items():
+    final_loss, final_acc = history[-1]
+    first = next((e for e, (l, a) in enumerate(history) if a &gt;= 85.0), None)   <span class="c"># أول epoch يوصل 85%</span>
+    reached = f"epoch {first}" if first is not None else "never"
+    print(f"  {name:40s}: acc={final_acc:.1f}%, loss={final_loss:.4f}, reached 85%: {reached}")
+
+<span class="c"># أوزان كبيرة في [-5, 5] و gradients عشوائية: مين بيقلّص أكتر؟</span>
+random.seed(42)
+large_weights = [random.uniform(-5, 5) for _ in range(10)]
+weights_adam, weights_adamw = list(large_weights), list(large_weights)
+opt_adam, opt_adamw = Adam(lr=0.001), AdamW(lr=0.001, weight_decay=0.1)
+print(f"  Initial weight L2 norm: {math.sqrt(sum(w*w for w in large_weights)):.4f}")
+for step in range(100):
+    grads = [random.gauss(0, 0.1) for _ in range(10)]
+    opt_adam.step(weights_adam, list(grads))
+    opt_adamw.step(weights_adamw, list(grads))
+norm_adam = math.sqrt(sum(w * w for w in weights_adam))
+norm_adamw = math.sqrt(sum(w * w for w in weights_adamw))
+print(f"    Adam  weight L2 norm: {norm_adam:.4f}")
+print(f"    AdamW weight L2 norm: {norm_adamw:.4f}")
+print(f"    AdamW shrinks weights {norm_adam/max(0.001, norm_adamw):.1f}x more")</pre></div>
+  <p>أرقام الجزء ده (الـ accuracy لكل optimizer والـ norms) هتطلع عندك لما تشغّل، وأنا ما شغلتهاش هنا. اكتبها في ورقة وقارن: مين وصل 85% الأول؟ وهل الـ AdamW قلّص الأوزان أكتر من الـ Adam؟</p>
+  <div class="note"><strong>ملاحظة:</strong> الـ lr في المقارنة مختلف (0.05 للـ SGD و 0.001 للـ Adam). ده مقصود، لأن كل optimizer ليه scale lr مختلف. المقارنة بنفس الـ lr مش عادلة.</div>
+
+  <h3>Use It: نفس الكلام في PyTorch</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.optim as optim
+
+model = torch.nn.Sequential(
+    torch.nn.Linear(784, 256),
+    torch.nn.ReLU(),
+    torch.nn.Linear(256, 10),
+)
+optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+
+for epoch in range(100):
+    optimizer.zero_grad()                                    <span class="c"># ١. صفّر</span>
+    output = model(torch.randn(32, 784))                     <span class="c"># ٢. forward</span>
+    loss = torch.nn.functional.cross_entropy(output, torch.randint(0, 10, (32,)))  <span class="c"># ٣. loss</span>
+    loss.backward()                                          <span class="c"># ٤. backward</span>
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  <span class="c"># ٥. clip</span>
+    optimizer.step()                                         <span class="c"># ٦. step</span>
+    scheduler.step()                                         <span class="c"># ٧. schedule</span></pre></div>
+  <p>احفظ الترتيب ده: <b>zero_grad ← forward ← loss ← backward ← (clip) ← step ← (schedule)</b>. لو غلطت فيه (زي إنك تنادي <code>scheduler.step()</code> قبل <code>optimizer.step()</code>) هيطلعلك bugs صغيرة وصعب تلاقيها.</p>
+  <p><b>Ship It:</b> الدرس بيطلّع <code>outputs/prompt-optimizer-selector.md</code>، وده prompt بيساعدك تختار الـ optimizer والـ learning rate المناسبين لأي architecture.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d49-exercises">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة، وابدأ بـ ١ و ٢.</p>
+  <ol class="ex">
+    <li><b>Nesterov momentum:</b> احسب الـ gradient عند نقطة «اللي جاي» <span class="ltr">w − lr·β·v</span> بدل النقطة الحالية. قارن الـ convergence بالـ momentum العادي على الدايرة.
+      <details><summary>تلميح</summary>الـ optimizer لوحده مش هيعرف يحسب الـ gradient، محتاج الشبكة. أسهل طريقة: في الـ training loop حط الأوزان مؤقتًا عند <span class="ltr">w − lr·β·v</span>، اعمل forward و compute_grads، ورجّع الأوزان، وبعدين حدّث <span class="ltr">v = β·v + g</span> و <span class="ltr">w −= lr·v</span>. فكرتها: «بص قدامك قبل ما تدوس» عشان تفرمل بدري لو هتعدّي الهدف.</details></li>
+    <li><b>Warmup + cosine:</b> اعمل schedule يطلع الـ lr linear من 0 لـ max_lr في أول 10% من الخطوات، وبعدين cosine decay لحد 0. درّب Adam بالـ schedule وبدونه، واحسب كام epoch كل واحد محتاج عشان يوصل 90% accuracy على الدايرة.
+      <details><summary>تلميح</summary><code>if step &lt; W: lr = max_lr * step / W</code> وغير كده <code>p = (step - W) / (T - W); lr = 0.5 * max_lr * (1 + math.cos(math.pi * p))</code>. قبل كل <code>step()</code> اكتب <code>opt.lr = lr</code>. و T = epochs × عدد العينات.</details></li>
+    <li><b>الـ effective learning rate:</b> تابع لكل بارامتر في Adam القيمة <span class="ltr">lr · m̂ / (√v̂ + ε)</span>. ارسم توزيعها بعد 10 و50 و200 خطوة. هل كل البارامترز بتتحدّث بنفس السرعة؟
+      <details><summary>تلميح</summary>ضيف list جوه <code>Adam.step</code> تحفظ فيها القيمة لكل i. هتلاقي إنها مش متساوية، بس متقاربة أكتر بكتير من الـ gradients الخام، لأن القسمة على <span class="ltr">√v̂</span> بتعمل normalize للحجم.</details></li>
+    <li><b>Gradient clipping:</b> اعمل clip by global norm بـ max = 1.0. درّب بـ lr عالي (0.01 لـ Adam) مع clipping ومن غيره، وعد كام run من 10 seeds بيـ diverge (الـ loss يبقى NaN).
+      <details><summary>تلميح</summary><code>norm = math.sqrt(sum(g*g for g in grads))</code>، ولو <code>norm &gt; 1.0</code> اضرب كل g في <code>1.0 / norm</code>. الاتجاه بيفضل زي ما هو، الطول بس هو اللي بيتقص. اختبر الـ NaN بـ <code>math.isnan(loss)</code>.</details></li>
+    <li><b>Adam ضد AdamW بأوزان كبيرة:</b> ابدأ الأوزان عشوائي في [-5, 5]، ودرّب 200 epoch بـ weight_decay = 0.1، وارسم L2 norm للأوزان مع الوقت للاتنين. المفروض AdamW يقلّص أسرع.
+      <details><summary>تلميح</summary>الـ Adam العادي في الكود مفيهوش weight decay أصلًا، فالـ norm هيفضل كبير. للمقارنة الأدق ضيف نسخة «Adam + L2» بإنك تضيف <span class="ltr">λ·w</span> على كل gradient قبل <code>step</code>. شوف معمل ٠٣ عشان تعرف تتوقع النتيجة.</details></li>
+    <li><b>إضافة مني · LR range test لموديل حقيقي:</b> قبل ما تـ fine-tune أي موديل (حتى الشبكة الصغيرة دي)، اعمل «LR finder»: ابدأ بـ lr = 1e-6 وكبّره ×1.1 كل batch لحد 1، وسجّل الـ loss. ارسم loss ضد log(lr) واختار lr أصغر بحوالي ١٠ مرات من النقطة اللي الـ loss بيبدأ يطلع عندها. دي فكرة Smith (2017) المذكورة في الـ Further Reading، وهي أسرع من grid search.
+      <details><summary>تلميح</summary>run واحد بس، epoch واحد أو أقل. احفظ <code>(lr, loss)</code> في list واقف أول ما الـ loss يبقى أكبر من 4 أضعاف أقل قيمة شفتها. لو بتشتغل بـ PyTorch، نفس الفكرة بتتعمل بـ <code>for g in optimizer.param_groups: g['lr'] = lr</code>.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d49-extra">
+  <div class="station-head"><span class="tag">★</span><h2>إضافة مني: اللي الدرس مقالوش صريح</h2></div>
+  <h3>حدس سريع</h3>
+  <ul class="checklist">
+    <li>• <b>Adam تقريبًا «sign descent» بذاكرة:</b> لو الـ gradient ثابت، <span class="ltr">m̂/√v̂ ≈ ±1</span>، يعني كل بارامتر بيتحرك تقريبًا <b>lr</b> في كل خطوة مهما كان حجم الـ gradient. عشان كده الـ lr في Adam معناه تقريبًا «أكبر خطوة لكل وزن»، وده سبب إن 1e-3 أو 3e-4 بينفعوا في مشاكل كتير.</li>
+    <li><b>• الـ memory:</b> Adam/AdamW بيخزّن m و v لكل بارامتر، يعني <b>ضعف</b> حجم الموديل زيادة في الـ optimizer state. موديل 7B بـ fp32 states محتاج حوالي 56 GB للـ m و v لوحدهم (7B × 2 × 4 bytes). ده سبب وجود حاجات زي 8-bit Adam والـ optimizer state sharding في التدريب الكبير.</li>
+  </ul>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li>• تستخدم <code>optim.Adam(..., weight_decay=0.01)</code> وانت فاكر إنه AdamW. في PyTorch الـ weight_decay بتاع Adam هو L2 جوه الـ gradient (النوع اللي بيبوظ). استخدم <code>optim.AdamW</code>.</li>
+    <li>• تنسى <code>optimizer.zero_grad()</code> فالـ gradients تتجمع من الـ batches اللي فاتت.</li>
+    <li>• تاخد lr الـ SGD (0.1) وتحطه لـ Adam، فالتدريب ينفجر. أو العكس، تاخد lr الـ Adam للـ SGD فما يتحركش.</li>
+    <li>• تعمل fine-tuning لموديل pretrained بـ lr تدريب من الصفر (1e-3)، فتمسح اللي الموديل اتعلمه. خليك في 1e-5 لـ 5e-5.</li>
+    <li>• تطبّق weight decay على الـ biases والـ LayerNorm weights. معظم وصفات الـ transformers بتستثنيهم بـ parameter groups.</li>
+    <li>• تحفظ checkpoint للموديل من غير الـ optimizer state. لو كمّلت التدريب بعدين، m و v هيبدأوا من صفر والـ loss هيعمل spike.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li>• <b>Pretraining:</b> الـ LLMs الكبيرة بتتدرب بـ AdamW + warmup + cosine decay + gradient clipping عند 1.0. ده بالظبط الـ loop اللي في جزء PyTorch فوق.</li>
+    <li>• <b>LoRA fine-tuning:</b> (فاكر Day 1؟) الـ optimizer state بيبقى للـ A و B الصغيرين بس، فالـ memory بتاعة AdamW بتقل جدًا. وده من أكبر أسباب انتشار الـ LoRA.</li>
+    <li>• <b>Loss spikes و NaN:</b> لما تشوفها في logs تدريب، أول حاجة تبص عليها هي الـ lr والـ warmup والـ clipping، قبل ما تشك في الداتا.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d49-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز</h2></div>
+  <div class="quiz" id="d49-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d49-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d49-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح التلات مشاكل: التذبذب، و lr واحد للكل، والـ saddle points</label></li>
+    <li><label><input type="checkbox" data-ck="2"> لعبت في سباق الوادي وشفت SGD بينفجر و Momentum بيعمل overshoot</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ bias correction ليه موجود وإمتى بيختفي أثره</label></li>
+    <li><label><input type="checkbox" data-ck="4"> أقدر أشرح الفرق بين Adam + L2 و AdamW في جملتين</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت SGD و Momentum و Adam و AdamW بإيدي وشغّلت المقارنة</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>SGD + Momentum</td><td>تدريب CNNs و ResNets، وناس كتير لسه بتفضّله للـ vision</td></tr>
+    <tr><td>Adam</td><td>الـ GANs (مع β₁ = 0.5)، والـ prototypes السريعة</td></tr>
+    <tr><td>AdamW</td><td>BERT و GPT و LLaMA و Stable Diffusion وكل fine-tuning تقريبًا</td></tr>
+    <tr><td>Bias correction</td><td>جوه أي implementation لـ Adam (PyTorch، JAX/Optax)</td></tr>
+    <tr><td>Warmup + cosine decay</td><td>الـ schedule الافتراضي لتدريب الـ transformers</td></tr>
+    <tr><td>Gradient clipping</td><td>تدريب الـ LLMs والـ RNNs، ضد الـ loss spikes</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Regularization. هنتكلم عن الطرق اللي بتمنع الموديل يحفظ الداتا بدل ما يفهمها، والـ weight decay اللي شفناه النهاردة واحدة منهم. وهنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F06-optimizers" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/06-optimizers</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+
+// roadmap
+const rm=$('d49-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===6)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: valley race ----------
+const vc=$('d49-valley'),vctx=AI.setupCanvas(vc),VW=+vc.dataset.w,VH=+vc.dataset.h;
+const XR=10,YR=XR*VH/VW; // world: x in [-10,10], y in [-YR,YR]
+const toPx=(x,y)=>[VW/2+x/XR*(VW/2),VH/2-y/YR*(VH/2)],toW=(px,py)=>[(px-VW/2)/(VW/2)*XR,(VH/2-py)/(VH/2)*YR];
+const F=(x,y)=>0.05*x*x+2*y*y,G=(x,y)=>[0.1*x,4*y];
+const NAMES=['SGD','Momentum','RMSProp','Adam'],COL=()=>[css('--muted'),css('--vec-b'),css('--ok'),css('--vec-a')];
+let start=[-8.5,2.2],paths=[],states=[],running=false,step=0,raf=null;
+function initRun(){
+  paths=NAMES.map(()=>[start.slice()]);
+  states=NAMES.map(()=>({w:start.slice(),m:[0,0],v:[0,0],t:0,dead:false}));
+  step=0;
+}
+function stepAll(){
+  const lrS=+$('d49-lrS').value,b=+$('d49-beta').value,lrA=+$('d49-lrA').value;
+  states.forEach((s,k)=>{
+    if(s.dead)return;
+    const g=G(s.w[0],s.w[1]);
+    for(let i=0;i<2;i++){
+      if(k===0){s.w[i]-=lrS*g[i]}
+      else if(k===1){s.m[i]=b*s.m[i]+g[i];s.w[i]-=lrS*s.m[i]}
+      else if(k===2){s.v[i]=0.9*s.v[i]+0.1*g[i]*g[i];s.w[i]-=lrA*g[i]/(Math.sqrt(s.v[i])+1e-8)}
+    }
+    if(k===3){s.t++;for(let i=0;i<2;i++){s.m[i]=0.9*s.m[i]+0.1*g[i];s.v[i]=0.999*s.v[i]+0.001*g[i]*g[i];
+      const mh=s.m[i]/(1-Math.pow(0.9,s.t)),vh=s.v[i]/(1-Math.pow(0.999,s.t));s.w[i]-=lrA*mh/(Math.sqrt(vh)+1e-8)}}
+    if(!isFinite(s.w[0])||!isFinite(s.w[1])||Math.abs(s.w[0])>1e3||Math.abs(s.w[1])>1e3)s.dead=true;
+    paths[k].push(s.w.slice());
+  });
+  step++;
+}
+function drawValley(){
+  vctx.clearRect(0,0,VW,VH);
+  // contours
+  vctx.strokeStyle=css('--grid');vctx.lineWidth=1.2;
+  [0.05,0.2,0.5,1,2,3.5,5,8].forEach(c=>{vctx.beginPath();for(let a=0;a<=64;a++){const th=a/64*Math.PI*2;const x=Math.sqrt(c/0.05)*Math.cos(th),y=Math.sqrt(c/2)*Math.sin(th);const p=toPx(x,y);a?vctx.lineTo(p[0],p[1]):vctx.moveTo(p[0],p[1])}vctx.stroke()});
+  vctx.strokeStyle=css('--muted');vctx.lineWidth=1;vctx.globalAlpha=.5;vctx.beginPath();vctx.moveTo(0,VH/2);vctx.lineTo(VW,VH/2);vctx.moveTo(VW/2,0);vctx.lineTo(VW/2,VH);vctx.stroke();vctx.globalAlpha=1;
+  // target
+  const [tx,ty]=toPx(0,0);vctx.fillStyle=css('--ink');vctx.beginPath();vctx.arc(tx,ty,4,0,7);vctx.fill();
+  const cols=COL(),show=[...document.querySelectorAll('.d49-show')].map(c=>c.checked);
+  paths.forEach((p,k)=>{if(!show[k])return;vctx.strokeStyle=cols[k];vctx.lineWidth=2.2;vctx.beginPath();
+    p.forEach((w,i)=>{const cx=Math.max(-50,Math.min(VW+50,toPx(w[0],w[1])[0])),cy=Math.max(-50,Math.min(VH+50,toPx(w[0],w[1])[1]));i?vctx.lineTo(cx,cy):vctx.moveTo(cx,cy)});vctx.stroke();
+    const last=p[p.length-1],q=toPx(last[0],last[1]);vctx.fillStyle=cols[k];vctx.beginPath();vctx.arc(Math.max(4,Math.min(VW-4,q[0])),Math.max(4,Math.min(VH-4,q[1])),5,0,7);vctx.fill()});
+  const s=toPx(start[0],start[1]);vctx.strokeStyle=css('--ink');vctx.lineWidth=2;vctx.beginPath();vctx.arc(s[0],s[1],7,0,7);vctx.stroke();
+  vctx.fillStyle=css('--ink');vctx.font='12px JetBrains Mono, monospace';vctx.fillText('step '+step,8,16);vctx.fillText('f = 0.05x² + 2y²',8,VH-8);
+  // readout
+  const rd=$('d49-vread');rd.innerHTML='';
+  states.forEach((st,k)=>{const d=document.createElement('div');const sm=document.createElement('small');sm.textContent=NAMES[k]+' loss';sm.style.color=cols[k];const b=document.createElement('b');b.textContent=st.dead?'diverged':f(F(st.w[0],st.w[1]),4);if(st.dead)b.style.color=css('--bad');d.appendChild(sm);d.appendChild(b);rd.appendChild(d)});
+}
+function loop(){
+  if(!document.body.contains(vc)){running=false;return}
+  const n=+$('d49-spd').value;
+  for(let i=0;i<n&&step<200;i++)stepAll();
+  drawValley();
+  if(step<200&&running)raf=requestAnimationFrame(loop);else{running=false;$('d49-run').textContent='ابدأ'}
+}
+$('d49-run').addEventListener('click',()=>{if(running){running=false;cancelAnimationFrame(raf);$('d49-run').textContent='كمّل';return}if(step>=200)initRun();running=true;$('d49-run').textContent='وقّف';raf=requestAnimationFrame(loop)});
+$('d49-reset').addEventListener('click',()=>{running=false;cancelAnimationFrame(raf);$('d49-run').textContent='ابدأ';initRun();drawValley()});
+vc.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(vc,e);start=toW(x,y);running=false;cancelAnimationFrame(raf);$('d49-run').textContent='ابدأ';initRun();drawValley()});
+[['d49-lrS','d49-lrSv'],['d49-beta','d49-betaV'],['d49-lrA','d49-lrAv'],['d49-spd','d49-spdV']].forEach(([a,b])=>$(a).addEventListener('input',()=>{$(b).textContent=$(a).value;if(a!=='d49-spd'&&!running&&step>0){initRun();drawValley()}}));
+document.querySelectorAll('.d49-show').forEach(c=>c.addEventListener('change',drawValley));
+initRun();drawValley();
+
+// ---------- Lab 2: bias correction ----------
+const bc=$('d49-bias'),bctx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+const B2=[0.9,0.99,0.995,0.999];
+let noise=[];function mkNoise(){noise=[];for(let i=0;i<60;i++){const u=Math.random()||1e-9,v=Math.random();noise.push(1+0.8*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v))}}mkNoise();
+function drawBias(){
+  const b1=+$('d49-b1').value,b2=B2[+$('d49-b2').value],T=+$('d49-t').value,nz=$('d49-noise').checked,which=$('d49-which').value;
+  $('d49-b1v').textContent=b1;$('d49-b2v').textContent=b2;$('d49-tv').textContent=T;
+  let m=0,v=0;const R=[],H=[];let atT=null;
+  for(let t=1;t<=60;t++){const g=nz?noise[t-1]:1;m=b1*m+(1-b1)*g;v=b2*v+(1-b2)*g*g;const mh=m/(1-Math.pow(b1,t)),vh=v/(1-Math.pow(b2,t));
+    R.push(which==='m'?m:v);H.push(which==='m'?mh:vh);if(t===T)atT=[m,mh,v,vh]}
+  bctx.clearRect(0,0,BW,BH);
+  const L=40,Rr=BW-12,Tp=14,Bt=BH-28,maxY=Math.max(1.6,...H,...R)*1.05;
+  const X=t=>L+(t-1)/59*(Rr-L),Y=y=>Bt-y/maxY*(Bt-Tp);
+  bctx.strokeStyle=css('--grid');bctx.lineWidth=1;bctx.fillStyle=css('--muted');bctx.font='11px JetBrains Mono, monospace';
+  for(let y=0;y<=maxY;y+=0.5){bctx.beginPath();bctx.moveTo(L,Y(y));bctx.lineTo(Rr,Y(y));bctx.stroke();bctx.fillText(f(y,1),6,Y(y)+4)}
+  for(let t=1;t<=60;t+=10){bctx.fillText(t,X(t)-4,BH-10)}bctx.fillText('t',Rr-6,BH-10);
+  bctx.setLineDash([4,4]);bctx.strokeStyle=css('--ink');bctx.beginPath();bctx.moveTo(L,Y(1));bctx.lineTo(Rr,Y(1));bctx.stroke();bctx.setLineDash([]);
+  if(nz){bctx.fillStyle=css('--muted');noise.forEach((g,i)=>{const y=which==='m'?g:g*g;if(y<=maxY){bctx.beginPath();bctx.arc(X(i+1),Y(Math.max(0,y)),2,0,7);bctx.fill()}})}
+  [[R,css('--vec-b')],[H,css('--vec-a')]].forEach(([arr,c])=>{bctx.strokeStyle=c;bctx.lineWidth=2.5;bctx.beginPath();arr.forEach((y,i)=>{i?bctx.lineTo(X(i+1),Y(y)):bctx.moveTo(X(i+1),Y(y))});bctx.stroke()});
+  bctx.strokeStyle=css('--ink');bctx.globalAlpha=.4;bctx.beginPath();bctx.moveTo(X(T),Tp);bctx.lineTo(X(T),Bt);bctx.stroke();bctx.globalAlpha=1;
+  bctx.font='12px JetBrains Mono, monospace';bctx.fillStyle=css('--vec-b');bctx.fillText(which+'_raw',L+6,Tp+12);bctx.fillStyle=css('--vec-a');bctx.fillText(which+'_hat',L+70,Tp+12);
+  $('d49-mr').textContent=f(atT[0],4);$('d49-mh').textContent=f(atT[1],4);$('d49-vr').textContent=f(atT[2],5);$('d49-vh').textContent=f(atT[3],4);
+  $('d49-s1').textContent=f((1-b1)/Math.sqrt(1-b2),2);
+}
+['d49-b1','d49-b2','d49-t'].forEach(id=>$(id).addEventListener('input',drawBias));
+$('d49-noise').addEventListener('change',()=>{mkNoise();drawBias()});$('d49-which').addEventListener('change',drawBias);
+drawBias();
+
+// ---------- Lab 3: Adam+L2 vs AdamW ----------
+const wc=$('d49-wd'),wctx=AI.setupCanvas(wc),WW=+wc.dataset.w,WH=+wc.dataset.h;
+const NS=400;let gn=[];
+function mkG(){gn=[];for(let i=0;i<NS;i++){const r=()=>{const u=Math.random()||1e-9,v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)};gn.push([r(),r()])}}mkG();
+function simWD(){
+  const lam=+$('d49-lam').value,sig=+$('d49-sig').value,lr=0.05,sc=[sig,0.05];
+  $('d49-lamV').textContent=lam;$('d49-sigV').textContent=sig;
+  const run=decoupled=>{const w=[4,4],m=[0,0],v=[0,0],hist=[[4,4]];
+    for(let t=1;t<=NS;t++){for(let i=0;i<2;i++){let g=gn[t-1][i]*sc[i];if(!decoupled)g+=lam*w[i];
+      m[i]=0.9*m[i]+0.1*g;v[i]=0.999*v[i]+0.001*g*g;const mh=m[i]/(1-Math.pow(0.9,t)),vh=v[i]/(1-Math.pow(0.999,t));
+      w[i]-=lr*mh/(Math.sqrt(vh)+1e-8);if(decoupled)w[i]-=lr*lam*w[i]}hist.push(w.slice())}return hist};
+  return {l2:run(false),aw:run(true)};
+}
+function drawWD(){
+  const r=simWD();wctx.clearRect(0,0,WW,WH);
+  const L=34,Rr=WW-10,Tp=12,Bt=WH-26,maxY=5;
+  const X=t=>L+t/NS*(Rr-L),Y=y=>Bt-Math.min(maxY,y)/maxY*(Bt-Tp);
+  wctx.strokeStyle=css('--grid');wctx.fillStyle=css('--muted');wctx.font='11px JetBrains Mono, monospace';wctx.lineWidth=1;
+  for(let y=0;y<=maxY;y++){wctx.beginPath();wctx.moveTo(L,Y(y));wctx.lineTo(Rr,Y(y));wctx.stroke();wctx.fillText(y,10,Y(y)+4)}
+  for(let t=0;t<=NS;t+=100)wctx.fillText(t,X(t)-6,WH-8);
+  const cols=[css('--vec-b'),css('--vec-a')];
+  [['l2',[6,5]],['aw',[]]].forEach(([k,dash])=>{for(let i=0;i<2;i++){wctx.setLineDash(dash);wctx.strokeStyle=cols[i];wctx.lineWidth=2.4;wctx.beginPath();r[k].forEach((w,t)=>{const y=Y(Math.abs(w[i]));t?wctx.lineTo(X(t),y):wctx.moveTo(X(t),y)});wctx.stroke()}});
+  wctx.setLineDash([]);wctx.font='12px JetBrains Mono, monospace';
+  wctx.fillStyle=cols[0];wctx.fillText('w1 (noisy)',Rr-170,Tp+12);wctx.fillStyle=cols[1];wctx.fillText('w2 (calm)',Rr-80,Tp+12);
+  wctx.fillStyle=css('--muted');wctx.fillText('- - Adam+L2   ── AdamW   |w| vs step',L+4,Bt-6);
+  const a=r.l2[NS],b=r.aw[NS];
+  $('d49-a1').textContent=f(Math.abs(a[0]),3);$('d49-a2').textContent=f(Math.abs(a[1]),3);$('d49-w1').textContent=f(Math.abs(b[0]),3);$('d49-w2').textContent=f(Math.abs(b[1]),3);
+}
+['d49-lam','d49-sig'].forEach(id=>$(id).addEventListener('input',drawWD));
+$('d49-reseed').addEventListener('click',()=>{mkG();drawWD()});
+drawWD();
+
+// ---------- quiz ----------
+const ck6=document.querySelector('#d49-checklist input[data-ck="6"]');
+AI.quiz($('d49-quizBox'),[
+ ['الـ momentum بيحل أنهي مشكلة في الـ gradient descent؟',['بيمنع الـ overfitting','بيلغي الحاجة لـ learning rate','بيقلل استهلاك الـ memory','بيهدّي التذبذب بإنه يجمع الـ gradients اللي فاتت، فيسرّع في الاتجاهات الثابتة'],3,'في الوادي الضيق الـ gradients بتتذبذب عرض الوادي وبتتقدم ببطء في طوله. الـ momentum بيجمع اللي فات: الاتجاهات الثابتة بتتضخم واللي بتتذبذب بتلغي بعض.'],
+ ['إيه الفرق الأساسي بين Adam و AdamW؟',['AdamW بيستخدم lr أعلى','AdamW بيشتغل مع الـ transformers بس','AdamW بيطبّق الـ weight decay على الأوزان مباشرة بدل ما يعدّيه من الـ gradient، فالـ regularization بيبقى صح','AdamW مابيستخدمش momentum'],2,'في Adam + L2 الـ adaptive lr بيعمل scale للـ regularization بشكل مختلف لكل بارامتر. AdamW بيفصل الـ decay عن تحديث الـ gradient فكل البارامترز بتتقلص بنفس النسبة.'],
+ ['ليه Adam بيعمل bias correction في الخطوات الأولى؟',['عشان يمنع الـ overfitting','لأن الـ moment estimates بتبدأ بصفر، فالقيم الأولى مايلة ناحية الصفر، والتصحيح بيعوّض البداية الباردة دي','عشان يعمل clip للـ gradients الكبيرة','عشان يسرّع الـ convergence'],1,'في الخطوة ١ مع β₁ = 0.9 الـ m₁ = 0.1 × gradient (أصغر ١٠ مرات). القسمة على (1 − 0.9¹) = 0.1 بترجعها للـ gradient الحقيقي، والتصحيح بيبقى ملوش أثر بعد ~٥٠ خطوة.'],
+ ['إيه الـ default hyperparameters المعروفة لـ Adam؟',['lr=0.0001, beta1=0.8, beta2=0.9','lr=0.01, beta1=0.99, beta2=0.99','lr=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8','lr=0.1, beta1=0.5, beta2=0.5'],2,'ورقة Adam الأصلية (Kingma & Ba, 2014) نصحت بـ lr=0.001 و β₁=0.9 و β₂=0.999 و ε=1e-8، وبتنفع في معظم المشاكل.'],
+ ['أنهي optimizer هو الـ default الحديث لتدريب الـ transformers والـ LLMs؟',['SGD with momentum','RMSProp','AdamW','Vanilla SGD'],2,'AdamW اتدرب بيه BERT و GPT و LLaMA وتقريبًا كل الـ transformers الحديثة: adaptive lr مع weight decay صح.'],
+ ['(إضافة مني) SGD على f = 2y² (الـ gradient = 4y). أنهي lr هيخلي التدريب يـ diverge؟',['0.05','0.2','0.4','0.6'],3,'كل خطوة y_new = y(1 − 4·lr). لو |1 − 4·lr| > 1 المسافة بتكبر، يعني lr > 0.5. مع 0.6 المعامل −1.4 فبيتنطط ويبعد. جربها في معمل ٠١.'],
+ ['(إضافة مني) بتعمل fine-tune لـ LLM وكتبت optim.Adam(params, lr=2e-5, weight_decay=0.01). إيه المشكلة؟',['الـ lr عالي جدًا للـ fine-tuning','الـ weight_decay في Adam هو L2 جوه الـ gradient، فالـ regularization مش متساوي؛ الأصح optim.AdamW','Adam مابيشتغلش مع الـ LLMs خالص','مفيش مشكلة، ده نفس AdamW'],1,'PyTorch Adam بيضيف λw على الـ gradient قبل القسمة على √v̂، وده بالظبط اللي AdamW اتعمل عشان يصلّحه.']
+],5,()=>{if(ck6&&!ck6.checked){ck6.checked=true;ck6.dispatchEvent(new Event('change'))}});
+
+AI.checklist(49,$('d49-checklist'));
+
+AI.onTheme(()=>{if(!document.body.contains(vc))return false;drawValley();drawBias();drawWD()});
+})();
+</script>

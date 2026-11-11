@@ -1,0 +1,808 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 11 · Introduction to PyTorch</span>
+  <h1>اليوم ٥٤: نفس الفريمورك اللي بنيته… بس بـ ٥٠٠ ضعف السرعة</h1>
+  <p class="lede">امبارح بنيت framework بإيدك: Module و Linear و Adam و DataLoader. النهاردة هتشوف إن <b>PyTorch</b> هو نفس الأفكار دي بالظبط، بس الـ backward بيتحسب لوحده (<b>autograd</b>)، والحسابات بتجري على C++/CUDA بدل لوبات Python. وهتدرّب MLP على MNIST من الملفات الخام.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python + PyTorch</b></span>
+    <span>قبله: <b>Build Your Own Mini Framework</b></span>
+    <span>بعده: <b>Introduction to JAX</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d54-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d54-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر امبارح</h2></div>
+  <p>من غير ما تبص، جاوب في دماغك وبعدين افتح الإجابة:</p>
+  <details><summary>١. الـ Module في الفريمورك بتاعك كان مسؤول عن إيه؟ (٣ حاجات)</summary><p><code>forward()</code> تحسب الخرج، <code>parameters()</code> ترجع الأوزان اللي بتتدرب، و<code>backward()</code> تحسب الـ gradients. في فريمورك امبارح انت كتبت الـ backward بإيدك لكل module. النهاردة PyTorch هيشيل التالتة دي عنك.</p></details>
+  <details><summary>٢. ليه محتاجين <code>train()</code> و <code>eval()</code>؟</summary><p>لأن فيه layers بتتصرف مختلف: الـ Dropout بيصفّر neurons عشوائي وقت التدريب بس، والـ BatchNorm بيستخدم إحصائيات الـ batch وقت التدريب والـ running averages وقت التقييم. كل Module فيه flag اسمه <code>training</code>.</p></details>
+  <details><summary>٣. الـ optimizer كان يعرف شكل الشبكة؟</summary><p>لأ. الـ optimizer بيشوف لستة مسطحة من الـ parameters والـ gradients بتاعتها وبس. عشان كده نفس الـ Adam بيشتغل مع أي شبكة، وده نفس التصميم في <code>torch.optim</code>.</p></details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ mini framework</div>
+    <div><b>15 min</b>Tensors: shape و dtype و device (معمل ٠١)</div>
+    <div><b>15 min</b>Autograd و الـ training loop (معمل ٠٢ و٠٣)</div>
+    <div><b>10 min</b>nn.Module و losses و optimizers و GPU</div>
+    <div><b>20 min</b>اكتب كود MNIST بإيدك وشغّله</div>
+    <div><b>10 min</b>كويز + تمرين</div>
+  </div>
+</section>
+
+<!-- WHY -->
+<section id="d54-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: فريمورك امبارح بطيء جدًا</h2></div>
+  <p>الفريمورك بتاعك شغال، بس بيعالج sample واحدة في المرة بلوبات Python متداخلة. PyTorch بيبعت نفس العمليات لـ kernels مكتوبة بـ C++/CUDA وشغالة على الـ GPU. الدرس بيقول إنه حوالي <b>٥٠٠ مرة أسرع</b> على نفس المسألة.</p>
+  <p>مثال من الدرس: على GPU واحد A100، PyTorch بيدرب ResNet-50 (25.6M parameter) على ImageNet (1.28M صورة) في حوالي ٦ ساعات. فريمورك امبارح كان هياخد حوالي ٣٠٠٠ ساعة، لو ماخلصتش منه الميموري الأول.</p>
+  <p>والسرعة مش الفرق الوحيد. فريمورك امبارح ناقصه: GPU، autodiff (انت كاتب backward لكل حاجة)، حفظ الموديل (serialization)، distributed training، mixed precision، وأي طريقة تعمل debug للـ gradients غير <code>print</code>.</p>
+  <div class="note"><strong>الخبر الحلو:</strong> PyTorch بيحافظ على نفس الـ mental model اللي انت بنيته: <span class="ltr">Module, forward(), parameters(), backward(), optimizer.step()</span>. المفاهيم بتنتقل واحد لواحد. الفرق إن ورا نفس الواجهة فيه عشر سنين من الـ systems engineering.</div>
+
+  <h3>ليه PyTorch كسب؟</h3>
+  <p>سنة ٢٠١٥ كان TensorFlow بيطلب منك تعرّف <b>static graph</b> الأول: تبني الجراف، تعمله compile، وبعدين تدخّل الداتا. الـ debug كان إنك تبحلق في رسومات الجراف، وأي تغيير في المعمارية يعني تبني الجراف من الأول.</p>
+  <p>PyTorch نزل ٢٠١٧ بفكرة تانية: <b>eager execution</b>. تكتب Python وهو يتنفذ فورًا. <code>y = model(x)</code> بتحسب y دلوقتي، مش «ضيف node هتحسب y بعدين». فـ <code>print()</code> اشتغل، و<code>pdb</code> اشتغل، و<code>if/else</code> جوه الـ forward اشتغلت.</p>
+  <p>التشبيه: الـ static graph زي إنك تكتب وصفة كاملة وتبعتها للمطبخ ومتعرفش غلطت فين غير لما الأكلة تطلع. الـ eager زي إنك واقف في المطبخ بنفسك، بتدوق كل خطوة.</p>
+  <p>حسب الدرس: نصيب PyTorch في أوراق البحث طلع من 7% (2017) لأكتر من 75% (2022)، وMeta و Google DeepMind و OpenAI و Anthropic و Hugging Face بيستخدموه كفريمورك أساسي. وTensorFlow 2.x نفسه اتحول لـ eager. الدرس: <b>تجربة المطوّر بتتراكم</b>. فريمورك أبطأ ١٠% بس الـ debug فيه أسرع ٥٠% بيكسب.</p>
+</section>
+
+<!-- TENSORS -->
+<section id="d54-tensors">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Tensor: مصفوفة ليها shape و dtype و device</h2></div>
+  <p>الـ tensor مصفوفة متعددة الأبعاد ليها ٣ خصائص مهمين:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+
+x = torch.zeros(3, 4)           <span class="c"># shape (3, 4)، float32، على الـ cpu</span>
+x = torch.randn(2, 3, 224, 224) <span class="c"># batch من صورتين RGB مقاس 224x224</span>
+x = torch.tensor([1, 2, 3])     <span class="c"># من لستة Python</span></pre></div>
+  <p><b>الـ Shape</b> هو عدد الأبعاد وحجم كل بُعد: scalar شكله <code>()</code>، vector <code>(n,)</code>، matrix <code>(m, n)</code>، و batch صور <code>(batch, channels, height, width)</code>.</p>
+  <p><b>الـ Dtype</b> بيحدد الدقة والميموري:</p>
+  <div class="tablewrap"><table>
+    <tr><th>dtype</th><th>Bits</th><th>المدى/الدقة</th><th>بيستخدم في</th></tr>
+    <tr><td class="ltr">float32</td><td>32</td><td>~7 أرقام عشرية</td><td>التدريب العادي (الافتراضي)</td></tr>
+    <tr><td class="ltr">float16</td><td>16</td><td>~3.3 أرقام عشرية</td><td>Mixed precision</td></tr>
+    <tr><td class="ltr">bfloat16</td><td>16</td><td>نفس مدى float32 بدقة أقل</td><td>تدريب الـ LLMs</td></tr>
+    <tr><td class="ltr">int8</td><td>8</td><td>من -128 لـ 127</td><td>Quantized inference</td></tr>
+  </table></div>
+  <p><b>الـ Device</b> بيحدد الحساب هيحصل فين:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+x = torch.randn(3, 4, device=device)
+x = x.to("cuda")   <span class="c"># انقله للـ GPU</span>
+x = x.cpu()        <span class="c"># رجّعه للـ CPU</span></pre></div>
+  <div class="note"><strong>أشهر error للمبتدئين:</strong> <span class="ltr">RuntimeError: Expected all tensors to be on the same device</span>. كل عملية لازم كل الـ tensors فيها تكون على نفس الجهاز. الحل: انقل كل حاجة لنفس الـ device قبل الحساب. تخيل اتنين بيحاولوا يشيلوا ترابيزة واحد في أوضة والتاني في أوضة تانية.</div>
+
+  <h3>تغيير الشكل (Reshaping) تقريبًا ببلاش</h3>
+  <p>الـ reshape بيغيّر الـ metadata (الشكل والـ strides)، مش الداتا نفسها في الميموري. يعني الأرقام فاضلة في نفس مكانها، والـ tensor بس بيقرأها بترتيب مختلف.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>x = torch.randn(2, 3, 4)
+x.view(2, 12)      <span class="c"># (2, 12) لازم الـ tensor يكون contiguous</span>
+x.reshape(6, 4)    <span class="c"># (6, 4) بتشتغل دايمًا</span>
+x.permute(2, 0, 1) <span class="c"># رتّب الأبعاد من جديد</span>
+x.unsqueeze(0)     <span class="c"># زوّد بُعد: (1, 2, 3, 4)</span>
+x.squeeze()        <span class="c"># شيل الأبعاد اللي حجمها 1</span></pre></div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: شوف الأرقام وهي بتتقري بترتيب جديد</h3>
+      <p>عندك tensor شكله <span class="ltr">(2, 3, 4)</span> فيه الأرقام من 0 لـ 23. الصف اللي تحت في الرسمة هو الميموري الحقيقية (storage)، وفوق هو اللي الـ tensor «بيشوفه».</p>
+      <p>جرّب: اعمل <code>permute</code> وبعدها <code>view</code>. هتلاقي error لأن الـ tensor بقى مش contiguous (الترتيب اللي بيقرأ بيه مش هو ترتيب الميموري). بعدها جرّب <code>reshape</code>: هتشتغل بس هتعمل نسخة جديدة.</p>
+      <div class="note ai"><strong>لاحظ:</strong> view و reshape و unsqueeze على tensor contiguous مش بيغيروا ألوان صف الميموري خالص. ده معنى «constant-time».</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d54-tc" width="520" height="380" aria-label="شكل الـ tensor وترتيبه في الميموري"></canvas>
+      <div class="readout">
+        <div><small>shape</small><b id="d54-tshape">(2, 3, 4)</b></div>
+        <div><small>strides</small><b id="d54-tstride">(12, 4, 1)</b></div>
+        <div><small>contiguous</small><b id="d54-tcont">True</b></div>
+      </div>
+      <div class="verdict" id="d54-tmsg">tensor أصلي: torch.arange(24).view(2, 3, 4)</div>
+      <div class="btns">
+        <button type="button" data-d54op="view212">view(2, 12)</button>
+        <button type="button" data-d54op="reshape64">reshape(6, 4)</button>
+        <button type="button" data-d54op="permute">permute(2, 0, 1)</button>
+        <button type="button" data-d54op="unsq">unsqueeze(0)</button>
+        <button type="button" data-d54op="sq">squeeze()</button>
+        <button type="button" data-d54op="reset">رجّع</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>حاسبة: الـ dtype بيكلفك كام ميموري؟</h3>
+      <p>كل parameter بياخد عدد bits حسب الـ dtype. اختار حجم موديل ونوع، وشوف الأوزان لوحدها (من غير gradients ولا optimizer states) محتاجة كام. ده سبب إن الـ LLMs بتتدرب بـ bfloat16 وبتتشغل أحيانًا بـ int8.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">عدد الـ parameters = <b class="mono" id="d54-pv">7B</b><input type="range" id="d54-pn" min="0" max="5" step="1" value="3"></label>
+      <label style="display:flex;gap:8px;align-items:center">الـ dtype: <select id="d54-dt"><option value="32">float32</option><option value="16">float16</option><option value="16b">bfloat16</option><option value="8">int8</option></select></label>
+      <div class="readout">
+        <div><small>bytes لكل parameter</small><b id="d54-bpp">4</b></div>
+        <div><small>ميموري الأوزان</small><b id="d54-mem">28 GB</b></div>
+      </div>
+      <canvas id="d54-mc" width="520" height="110" aria-label="مقارنة الميموري بين الأنواع"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- AUTOGRAD -->
+<section id="d54-autograd">
+  <div class="station-head"><span class="tag">03</span><h2>Autograd: الـ backward بيكتب نفسه</h2></div>
+  <p>في فريمورك امبارح كنت لازم تكتب <code>backward()</code> لكل module. PyTorch لأ. هو بيسجّل كل عملية بتحصل على الـ tensors في <b>جراف موجّه من غير دواير</b> (DAG، اسمه computational graph)، وبعدين يمشي فيه بالعكس ويحسب الـ gradients لوحده.</p>
+  <p>اسمها <b>tape-based autodiff</b>: تخيل شريط كاسيت بيسجّل كل عملية وانت ماشي في الـ forward. لما تنادي <code>.backward()</code> الشريط بيلف بالعكس، وكل عملية بتسلّم الـ gradient للي قبلها.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>x = torch.randn(3, requires_grad=True)
+y = x ** 2 + 3 * x
+z = y.sum()
+z.backward()
+print(x.grad)  <span class="c"># dz/dx = 2x + 3</span></pre></div>
+  <h3>القواعد التلاتة</h3>
+  <ol class="ex">
+    <li>الـ <b>leaf tensors</b> اللي عليها <code>requires_grad=True</code> بس هي اللي بتتجمع فيها gradients (يعني الحاجات اللي انت عملتها بإيدك زي الأوزان، مش النتايج الوسطانية).</li>
+    <li>الـ gradients <b>بتتجمع فوق بعض</b> by default. عشان كده لازم <code>optimizer.zero_grad()</code> قبل كل backward.</li>
+    <li><code>torch.no_grad()</code> بيقفل تسجيل الجراف. استخدمه وقت التقييم.</li>
+  </ol>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: الشريط وهو بيلف بالعكس</h3>
+      <p>حرّك قيم x. اضغط <b>Forward</b> وشوف القيم ماشية لقدام (أزرق). اضغط <b>Backward</b> وشوف الـ gradients راجعة (برتقالي) لحد ما توصل <code>x.grad = 2x + 3</code>.</p>
+      <p>بعدين اضغط «forward + backward تاني من غير zero_grad» وشوف الـ grad بيتضاعف. ده القاعدة رقم ٢ بعينك.</p>
+      <div class="mrow">
+        <label>x[0] = <span id="d54-x0v">1</span><input type="range" id="d54-x0" min="-3" max="3" step="0.5" value="1"></label>
+        <label>x[1] = <span id="d54-x1v">2</span><input type="range" id="d54-x1" min="-3" max="3" step="0.5" value="2"></label>
+        <label>x[2] = <span id="d54-x2v">3</span><input type="range" id="d54-x2" min="-3" max="3" step="0.5" value="3"></label>
+      </div>
+    </div>
+    <div class="instrument">
+      <canvas id="d54-gc" width="520" height="300" aria-label="الجراف الحسابي للـ autograd"></canvas>
+      <div class="readout">
+        <div><small>z = sum(y)</small><b id="d54-z">—</b></div>
+        <div><small>x.grad</small><b id="d54-xg">None</b></div>
+        <div><small>عدد مرات backward</small><b id="d54-nb">0</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d54-fw">Forward</button>
+        <button type="button" id="d54-bw">Backward</button>
+        <button type="button" id="d54-again">forward + backward تاني من غير zero_grad</button>
+        <button type="button" id="d54-zg">x.grad.zero_()</button>
+      </div>
+      <div class="verdict" id="d54-gmsg">ابدأ بـ Forward</div>
+    </div>
+  </div>
+</section>
+
+<!-- MODULE -->
+<section id="d54-module">
+  <div class="station-head"><span class="tag">04</span><h2>nn.Module: نفس اللي بنيته، بزيادات</h2></div>
+  <p><code>nn.Module</code> هو الكلاس الأساسي لأي حتة في الشبكة. انت بنيت نفس الفكرة امبارح. نسخة PyTorch بتزوّد: تسجيل الـ parameters أوتوماتيك، اكتشاف الـ modules اللي جوه بعض (recursive)، إدارة الـ device، وحفظ/تحميل بالـ state dict.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch.nn as nn
+
+class MLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()                                <span class="c"># مهم جدًا: من غيره التسجيل مش هيشتغل</span>
+        self.layer1 = nn.Linear(input_dim, hidden_dim)    <span class="c"># اتسجلت لوحدها</span>
+        self.relu = nn.ReLU()
+        self.layer2 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x = self.layer1(x)
+        x = self.relu(x)
+        x = self.layer2(x)
+        return x</pre></div>
+  <p>أول ما تحط <code>nn.Module</code> أو <code>nn.Parameter</code> كـ attribute في <code>__init__</code>، PyTorch بيسجله. و<code>model.parameters()</code> بتلم كل الـ parameters من كل الطبقات. فمش هتجمع الأوزان بإيدك زي امبارح. تشبيه: زي شنطة سفر فيها شنط أصغر؛ لما تقول «طلّعلي كل الهدوم» بيفتح كل شنطة جوه التانية لوحده.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Module</th><th>بيعمل إيه</th><th>عدد الـ Parameters</th></tr>
+    <tr><td class="ltr">nn.Linear(in, out)</td><td class="ltr">Wx + b</td><td class="ltr">in*out + out</td></tr>
+    <tr><td class="ltr">nn.Conv2d(in_ch, out_ch, k)</td><td>2D convolution</td><td class="ltr">in_ch*out_ch*k*k + out_ch</td></tr>
+    <tr><td class="ltr">nn.BatchNorm1d(features)</td><td>بيعمل normalize للـ activations</td><td class="ltr">2 * features</td></tr>
+    <tr><td class="ltr">nn.Dropout(p)</td><td>تصفير عشوائي</td><td>0</td></tr>
+    <tr><td class="ltr">nn.ReLU()</td><td class="ltr">max(0, x)</td><td>0</td></tr>
+    <tr><td class="ltr">nn.GELU()</td><td>Gaussian error linear unit</td><td>0</td></tr>
+    <tr><td class="ltr">nn.Embedding(vocab, dim)</td><td>جدول lookup</td><td class="ltr">vocab * dim</td></tr>
+    <tr><td class="ltr">nn.LayerNorm(dim)</td><td>normalization لكل sample</td><td class="ltr">2 * dim</td></tr>
+  </table></div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>حاسبة: عدّ الـ parameters بتاعة موديل MNIST</h3>
+      <p>الموديل اللي هنبنيه: <span class="ltr">784 → 256 → 128 → 10</span>. غيّر أحجام الـ hidden layers وشوف العدد بيتغير. بالقيم الأصلية لازم يطلع <b>235,146</b> زي ما الدرس قال.</p>
+      <p>فعّل BatchNorm وشوف إنه بيزوّد <span class="ltr">2 × features</span> بس لكل طبقة. والـ Dropout و ReLU صفر.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">hidden 1 = <b class="mono" id="d54-h1v">256</b><input type="range" id="d54-h1" min="16" max="1024" step="16" value="256"></label>
+      <label style="display:grid;gap:2px">hidden 2 = <b class="mono" id="d54-h2v">128</b><input type="range" id="d54-h2" min="16" max="1024" step="16" value="128"></label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d54-bn"> BatchNorm1d بعد كل Linear</label>
+      <ul class="rank-list" id="d54-plist"></ul>
+      <div class="readout"><div><small>Total parameters</small><b id="d54-ptot">235,146</b></div></div>
+    </div>
+  </div>
+
+  <h3>الـ Loss functions</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Loss</th><th>المسألة</th><th>الدخل</th></tr>
+    <tr><td class="ltr">nn.MSELoss()</td><td>Regression</td><td>أي shape</td></tr>
+    <tr><td class="ltr">nn.CrossEntropyLoss()</td><td>تصنيف لأكتر من class</td><td>Logits (مش softmax)</td></tr>
+    <tr><td class="ltr">nn.BCEWithLogitsLoss()</td><td>تصنيف binary</td><td>Logits (مش sigmoid)</td></tr>
+    <tr><td class="ltr">nn.L1Loss()</td><td>Regression أقل حساسية للـ outliers</td><td>أي shape</td></tr>
+    <tr><td class="ltr">nn.CTCLoss()</td><td>محاذاة sequences</td><td>Log probabilities</td></tr>
+  </table></div>
+  <div class="note"><strong>فخ مشهور:</strong> <code>CrossEntropyLoss</code> جواه <span class="ltr">LogSoftmax + NLLLoss</span>. ادّيله الـ logits الخام. لو عملت softmax قبله، الكود هيشتغل عادي بس الـ gradients هتبقى غلط ومن غير أي error.</div>
+  <h3>الـ Optimizers</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Optimizer</th><th>امتى</th><th>LR المعتاد</th></tr>
+    <tr><td class="ltr">SGD(params, lr, momentum)</td><td>CNNs، pipelines متظبطة كويس</td><td class="ltr">0.01 – 0.1</td></tr>
+    <tr><td class="ltr">Adam(params, lr)</td><td>نقطة البداية الافتراضية</td><td class="ltr">1e-3</td></tr>
+    <tr><td class="ltr">AdamW(params, lr, weight_decay)</td><td>Transformers و fine-tuning</td><td class="ltr">1e-4 – 1e-3</td></tr>
+    <tr><td class="ltr">LBFGS(params)</td><td>مسائل صغيرة، second-order</td><td class="ltr">1.0</td></tr>
+  </table></div>
+</section>
+
+<!-- LOOP -->
+<section id="d54-loop">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Training Loop: الخمس سطور اللي دربت كل حاجة</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>for epoch in range(num_epochs):
+    model.train()
+    for inputs, targets in train_loader:
+        inputs, targets = inputs.to(device), targets.to(device)
+        optimizer.zero_grad()               <span class="c"># ١. صفّر الـ gradients القديمة</span>
+        outputs = model(inputs)             <span class="c"># ٢. forward</span>
+        loss = criterion(outputs, targets)  <span class="c"># ٣. احسب الـ loss</span>
+        loss.backward()                     <span class="c"># ٤. autograd يحسب كل الـ gradients</span>
+        optimizer.step()                    <span class="c"># ٥. حدّث الأوزان</span></pre></div>
+  <p>الدرس بيقول إن الخمس سطور دول هما اللي دربوا GPT-4 و Stable Diffusion و LLaMA. المعمارية بتتغير، الداتا بتتغير، والسطور دي لأ.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: شغّل اللوب خطوة بخطوة</h3>
+      <p>موديل صغير جدًا: <span class="ltr">y = w·x + b</span> بيحاول يتعلم نقط مولّدة من <span class="ltr">y ≈ 2x + 1</span>. اضغط «خطوة» وشوف الخمس مراحل بتنور واحدة ورا التانية، والخط بيتعدل والـ loss بينزل.</p>
+      <p>بعدين علّم على «انسى zero_grad» ودوس «شغّل ٣٠». الـ gradients هتتراكم، والخطوات هتكبر لحد ما التدريب يتلخبط أو يفرقع. ده bug حقيقي بيحصل.</p>
+      <label style="display:grid;gap:2px">learning rate = <b class="mono" id="d54-lrv">0.05</b><input type="range" id="d54-lr" min="0.01" max="0.3" step="0.01" value="0.05"></label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d54-nozg"> انسى <code>optimizer.zero_grad()</code></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d54-lc" width="520" height="340" aria-label="خطوات الـ training loop"></canvas>
+      <div class="readout">
+        <div><small>w</small><b id="d54-w">0</b></div>
+        <div><small>b</small><b id="d54-b">0</b></div>
+        <div><small>loss</small><b id="d54-loss">—</b></div>
+        <div><small>step</small><b id="d54-step">0</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d54-one">خطوة (بالتفصيل)</button>
+        <button type="button" id="d54-run">شغّل ٣٠</button>
+        <button type="button" id="d54-lreset">ابدأ من الأول</button>
+      </div>
+      <div class="verdict" id="d54-lmsg">جاهز</div>
+    </div>
+  </div>
+
+  <h3>Dataset و DataLoader</h3>
+  <p><code>Dataset</code> كلاس abstract فيه ميثودين بس: <code>__len__</code> و<code>__getitem__</code>. و<code>DataLoader</code> بيلفه ويدّيك batching و shuffling وتحميل بأكتر من process.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torch.utils.data import Dataset, DataLoader
+
+class MNISTDataset(Dataset):
+    def __init__(self, images, labels):
+        self.images = images
+        self.labels = labels
+
+    def __len__(self):               <span class="c"># عندك كام sample</span>
+        return len(self.labels)
+
+    def __getitem__(self, idx):      <span class="c"># هات sample رقم idx</span>
+        return self.images[idx], self.labels[idx]
+
+loader = DataLoader(dataset, batch_size=64, shuffle=True, num_workers=4)</pre></div>
+  <p><code>num_workers=4</code> بيشغّل ٤ processes يحمّلوا الداتا بالتوازي والـ GPU شغال على الـ batch الحالي. زي مطعم فيه ٤ مساعدين بيقطّعوا الخضار والشيف بيطبخ، بدل ما الشيف يقف يقطّع بنفسه. في الـ workloads اللي بتعتمد على الديسك (صور كبيرة، صوت) ده لوحده ممكن يضاعف سرعة التدريب.</p>
+
+  <h3>التدريب على الـ GPU و Mixed Precision</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)                                <span class="c"># بينقل كل parameter و buffer</span>
+inputs, targets = inputs.to(device), targets.to(device) <span class="c"># وكل batch جوه اللوب</span></pre></div>
+  <p>الـ <b>mixed precision</b> بيقلل الميموري للنص ويضاعف الـ throughput على GPUs حديثة (A100، H100، RTX 4090): الـ forward والـ backward بـ float16، والـ master weights فاضلة float32 عشان الاستقرار.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torch.amp import autocast, GradScaler
+
+scaler = GradScaler()
+for inputs, targets in loader:
+    with autocast(device_type="cuda"):       <span class="c"># الحساب هنا بدقة أقل</span>
+        outputs = model(inputs)
+        loss = criterion(outputs, targets)
+    scaler.scale(loss).backward()            <span class="c"># كبّر الـ loss عشان الـ gradients الصغيرة ماتضيعش</span>
+    scaler.step(optimizer)
+    scaler.update()
+    optimizer.zero_grad()</pre></div>
+
+  <h3>مقارنة: فريمورك امبارح vs PyTorch vs JAX</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الميزة</th><th>Mini Framework (L10)</th><th>PyTorch</th><th>JAX</th></tr>
+    <tr><td>Autodiff</td><td>backward() بإيدك</td><td>Tape-based autograd</td><td>Functional transforms</td></tr>
+    <tr><td>التنفيذ</td><td>Eager (لوبات Python)</td><td>Eager (C++ kernels)</td><td>Traced + JIT compiled</td></tr>
+    <tr><td>GPU</td><td>لأ</td><td>أيوه (CUDA، ROCm، MPS)</td><td>أيوه (CUDA، TPU)</td></tr>
+    <tr><td>السرعة (MNIST MLP)</td><td class="ltr">~300s/epoch</td><td class="ltr">~0.5s/epoch</td><td class="ltr">~0.3s/epoch</td></tr>
+    <tr><td>نظام الـ modules</td><td>Module بتاعك</td><td>nn.Module</td><td>Stateless functions (Flax/Equinox)</td></tr>
+    <tr><td>الـ Debugging</td><td>print()</td><td>print()، pdb، breakpoint()</td><td>أصعب (الـ JIT tracing بيبوّظ print)</td></tr>
+    <tr><td>الـ Ecosystem</td><td>مفيش</td><td>Hugging Face، Lightning، timm</td><td>Flax، Optax، Orbax</td></tr>
+    <tr><td>صعوبة التعلم</td><td>انت بانيه</td><td>متوسطة</td><td>عالية (functional)</td></tr>
+    <tr><td>في الـ production</td><td>مسائل لعبة</td><td>Meta، OpenAI، Anthropic، HF</td><td>Google DeepMind، Midjourney</td></tr>
+  </table></div>
+</section>
+
+<!-- CODE -->
+<section id="d54-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: MLP على MNIST من الملفات الخام</h2></div>
+  <p>هنبني MLP بـ ٣ طبقات بأدوات PyTorch الأساسية بس. من غير <code>torchvision.datasets</code>: هننزّل الملفات ونفك الـ binary format بنفسنا. نزّل PyTorch الأول لو مش عندك، وبعدين شغّل ملف الدرس من فولدر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>pip install torch
+cd ai-engineering-from-scratch
+python3 phases/03-deep-learning-core/11-intro-to-pytorch/code/pytorch_intro.py</pre></div>
+  <p>الملف هينزّل MNIST في فولدر <code>mnist_data</code> جنب المكان اللي شغّلت منه (محتاج نت أول مرة)، وهيعمل ٤ تجارب كل واحدة ١٠ epochs، وفي الآخر يحفظ <code>mnist_mlp.pt</code>.</p>
+  <p><b>القاعدة:</b> متعملش copy-paste. اكتب ملف جديد <code>my_torch_mnist.py</code> بإيدك خطوة خطوة، وبص على الأصل لو اتزنقت.</p>
+
+  <h3>خطوة ١: نزّل MNIST وفك الملفات</h3>
+  <p>MNIST عبارة عن ٤ ملفات gzip: صور التدريب (60,000 × 28 × 28)، labels التدريب، صور الاختبار (10,000 × 28 × 28)، و labels الاختبار.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+import struct, gzip, urllib.request, os
+
+def download_mnist(path="./mnist_data"):
+    base_url = "https://storage.googleapis.com/cvdf-datasets/mnist/"
+    files = ["train-images-idx3-ubyte.gz", "train-labels-idx1-ubyte.gz",
+             "t10k-images-idx3-ubyte.gz", "t10k-labels-idx1-ubyte.gz"]
+    os.makedirs(path, exist_ok=True)
+    for f in files:
+        filepath = os.path.join(path, f)
+        if not os.path.exists(filepath):          <span class="c"># نزّل مرة واحدة بس</span>
+            urllib.request.urlretrieve(base_url + f, filepath)
+
+def load_images(filepath):
+    with gzip.open(filepath, "rb") as f:
+        magic, num, rows, cols = struct.unpack(">IIII", f.read(16))  <span class="c"># header: ٤ أرقام 32-bit</span>
+        data = f.read()
+        images = torch.frombuffer(bytearray(data), dtype=torch.uint8)
+        images = images.reshape(num, rows * cols).float() / 255.0     <span class="c"># فرد الصورة لـ 784 وقيم من 0 لـ 1</span>
+    return images
+
+def load_labels(filepath):
+    with gzip.open(filepath, "rb") as f:
+        magic, num = struct.unpack(">II", f.read(8))
+        data = f.read()
+        labels = torch.frombuffer(bytearray(data), dtype=torch.uint8).long()  <span class="c"># CrossEntropy عايزة long</span>
+    return labels</pre></div>
+
+  <h3>خطوة ٢: الموديل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MNISTModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(784, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),          <span class="c"># regularization</span>
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 10),       <span class="c"># 10 logits خام، من غير softmax</span>
+        )
+
+    def forward(self, x):
+        return self.net(x)</pre></div>
+  <p>عدد الـ parameters: <span class="ltr">784·256 + 256 + 256·128 + 128 + 128·10 + 10 = 235,146</span>. صغير جدًا؛ GPT-2 small فيه 124M.</p>
+
+  <h3>خطوة ٣: التدريب والتقييم</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def train_one_epoch(model, loader, criterion, optimizer, device):
+    model.train()                                 <span class="c"># dropout شغال</span>
+    total_loss, correct, total = 0, 0, 0
+    for images, labels in loader:
+        images, labels = images.to(device), labels.to(device)
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item() * images.size(0)   <span class="c"># .item() = رقم Python عادي</span>
+        _, predicted = outputs.max(1)                <span class="c"># أعلى logit = التوقع</span>
+        correct += predicted.eq(labels).sum().item()
+        total += labels.size(0)
+    return total_loss / total, correct / total
+
+def evaluate(model, loader, criterion, device):
+    model.eval()                                  <span class="c"># dropout مقفول</span>
+    total_loss, correct, total = 0, 0, 0
+    with torch.no_grad():                         <span class="c"># مفيش جراف = ميموري أقل وأسرع</span>
+        for images, labels in loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            total_loss += loss.item() * images.size(0)
+            _, predicted = outputs.max(1)
+            correct += predicted.eq(labels).sum().item()
+            total += labels.size(0)
+    return total_loss / total, correct / total</pre></div>
+
+  <h3>خطوة ٤: اربط كل حاجة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    download_mnist()
+    train_images = load_images("./mnist_data/train-images-idx3-ubyte.gz")
+    train_labels = load_labels("./mnist_data/train-labels-idx1-ubyte.gz")
+    test_images  = load_images("./mnist_data/t10k-images-idx3-ubyte.gz")
+    test_labels  = load_labels("./mnist_data/t10k-labels-idx1-ubyte.gz")
+
+    train_dataset = torch.utils.data.TensorDataset(train_images, train_labels)
+    test_dataset  = torch.utils.data.TensorDataset(test_images, test_labels)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
+    test_loader  = torch.utils.data.DataLoader(test_dataset, batch_size=256, shuffle=False)
+
+    model = MNISTModel().to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    for epoch in range(10):
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+        print(f"Epoch {epoch+1:2d} | Train Acc: {train_acc:.4f} | Test Acc: {test_acc:.4f}")
+
+    torch.save(model.state_dict(), "mnist_mlp.pt")   <span class="c"># احفظ الأوزان بس</span>
+
+if __name__ == "__main__":
+    main()</pre></div>
+  <p>حسب الدرس: بعد ١٠ epochs حوالي <b>97.8%</b> test accuracy. على CPU حوالي ٣٠ ثانية، على GPU حوالي ٥ ثواني، وعلى فريمورك امبارح بنفس المعمارية حوالي ٤٥ دقيقة.</p>
+  <details><summary>الناتج المتوقع من أول ملف الدرس (الأجزاء الثابتة)</summary><pre class="term">  Tensor Basics
+  torch.randn(3, 4):
+    shape=torch.Size([3, 4]), dtype=torch.float32, device=cpu
+  .view(2, 6):
+    shape=torch.Size([2, 6])
+  .unsqueeze(0):
+    shape=torch.Size([1, 3, 4])
+
+  Autograd Demo
+  x = [1.0, 2.0, 3.0]
+  y = x^2 + 3x
+  z = sum(y) = 32.0
+  dz/dx = 2x + 3 = [5.0, 7.0, 9.0]
+
+  MNISTModel (Dropout) Architecture:
+    net.0.weight   [256, 784]   (200,704 params)
+    net.0.bias     [256]        (256 params)
+    net.3.weight   [128, 256]   (32,768 params)
+    net.3.bias     [128]        (128 params)
+    net.6.weight   [10, 128]    (1,280 params)
+    net.6.bias     [10]         (10 params)
+    Total: 235,146 parameters</pre><p>لاحظ إن <code>nn.Linear(784, 256)</code> شكل الـ weight بتاعه <span class="ltr">[256, 784]</span> (out, in). والأسماء <span class="ltr">net.0, net.3, net.6</span> لأن الـ ReLU والـ Dropout واخدين أرقام 1،2،4،5 ومالهمش parameters. أرقام الـ loss والـ accuracy والوقت هتختلف من جهاز للتاني.</p></details>
+
+  <h3>خطوة ٥: احفظ وحمّل، وجدول الـ LR</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>torch.save(model.state_dict(), "model.pt")         <span class="c"># dictionary: اسم → tensor</span>
+
+model = MNISTModel()
+model.load_state_dict(torch.load("model.pt", weights_only=True))
+model.eval()                                       <span class="c"># متنساش قبل الـ inference</span>
+
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+for epoch in range(10):
+    train_one_epoch(model, train_loader, criterion, optimizer, device)
+    scheduler.step()                               <span class="c"># مرة كل epoch</span></pre></div>
+  <p>احفظ دايمًا <code>state_dict()</code> مش الموديل نفسه. حفظ الـ object بيستخدم pickle، وده بيبوظ أول ما تعمل refactor للكود. الـ state dict بيتنقل لأي مكان. وفيه أكتر من ١٥ scheduler جاهزين: StepLR، ExponentialLR، CosineAnnealingLR، OneCycleLR، ReduceLROnPlateau، وكلهم بيتركبوا على نفس الـ optimizer.</p>
+  <p>ملف الدرس الكامل فيه كمان: <code>get_device()</code> بتختار CUDA ثم Apple Silicon (MPS) ثم CPU، وموديل تاني بـ BatchNorm من غير Dropout، و ٤ تجارب: Adam + Dropout، SGD + Momentum + Dropout، Adam + BatchNorm، و SGD + Cosine (lr=0.05). وفي الآخر بيحمّل الموديل المحفوظ بـ <code>map_location=device</code> ويقيسه تاني.</p>
+
+  <h3>مقارنة سريعة: امبارح vs النهاردة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Mini Framework (L10)</th><th>PyTorch</th></tr>
+    <tr><td class="ltr">model = Sequential(Linear(784, 256), ReLU(), ...)</td><td class="ltr">model = nn.Sequential(nn.Linear(784, 256), nn.ReLU(), ...)</td></tr>
+    <tr><td class="ltr">pred = model.forward(x)</td><td class="ltr">pred = model(x)</td></tr>
+    <tr><td class="ltr">optimizer.zero_grad()</td><td class="ltr">optimizer.zero_grad()</td></tr>
+    <tr><td class="ltr">grad = criterion.backward(); model.backward(grad)</td><td class="ltr">loss.backward()</td></tr>
+    <tr><td class="ltr">optimizer.step()</td><td class="ltr">optimizer.step()</td></tr>
+    <tr><td>مفيش GPU</td><td class="ltr">model.to("cuda")</td></tr>
+    <tr><td>backward بإيدك لكل module</td><td>Autograd بيعمل كل حاجة</td></tr>
+  </table></div>
+  <p>الدرس بيطلّع كمان ملفين في <code>outputs/</code>: prompt لتشخيص مشاكل تدريب PyTorch، و skill reference لأنماط التدريب.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d54-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة. ٣ محتاج GPU، فلو مش عندك سيبه.</p>
+  <ol class="ex">
+    <li><b>ضيف Batch Normalization:</b> حط <code>nn.BatchNorm1d</code> بعد كل Linear (قبل الـ activation). قارن الدقة والسرعة بنسخة الـ dropout. المفروض توصل 98%+ في epochs أقل.
+      <details><summary>تلميح</summary>الملف فيه <code>MNISTModelWithBatchNorm</code> جاهز، بس اكتبه انت الأول. <span class="ltr">Linear(784,256) → BatchNorm1d(256) → ReLU</span>. والـ BatchNorm1d عددها لازم يساوي الـ out بتاع الـ Linear اللي قبلها.</details></li>
+    <li><b>LR finder:</b> درّب epoch واحدة والـ LR بيزيد أُسّيًا من 1e-7 لـ 1.0. ارسم الـ loss مقابل الـ LR. الأحسن قبل ما الـ loss يبدأ يطلع بشوية.
+      <details><summary>تلميح</summary>عدد الـ batches = N. في batch رقم i خلي <span class="ltr">lr = 1e-7 * (1.0/1e-7) ** (i/N)</span> وغيّره بـ <code>for g in optimizer.param_groups: g["lr"] = lr</code>. ارسم بـ matplotlib بمحور x لوغاريتمي (<code>plt.xscale("log")</code>).</details></li>
+    <li><b>GPU و mixed precision:</b> ضيف <code>torch.amp.autocast</code> و <code>GradScaler</code>. قيس samples/second مع وبدون. على A100 توقع حوالي ٢x.
+      <details><summary>تلميح</summary>استخدم الكود اللي في محطة ٠٥. للقياس: <code>torch.cuda.synchronize()</code> قبل ما تاخد الوقت لأن عمليات الـ GPU asynchronous، وإلا هتقيس غلط.</details></li>
+    <li><b>Dataset بتاعك:</b> نزّل Fashion-MNIST (نفس فورمات MNIST بس ملابس). اعمل <code>FashionMNISTDataset(Dataset)</code> بـ <code>__getitem__</code> و <code>__len__</code>. درّب نفس الـ MLP وقارن: توقع حوالي 88% بدل 98%.
+      <details><summary>تلميح</summary>نفس <code>load_images</code> و <code>load_labels</code> شغالين لأن الفورمات واحد. غيّر الـ URL بس، وحط الـ tensors جوه الكلاس بدل <code>TensorDataset</code>.</details></li>
+    <li><b>SGD + momentum بدل Adam:</b> <code>SGD(params, lr=0.01, momentum=0.9)</code>. قارن منحنيات التعلم، وبعدين ضيف <code>CosineAnnealingLR</code> وشوف SGD بيلحق Adam بحلول epoch 10 ولا لأ.
+      <details><summary>تلميح</summary>التجربة ٢ و ٤ في ملف الدرس بيعملوا ده بالظبط. اطبع الـ test acc كل epoch للاتنين واعمل جدول. متنساش <code>scheduler.step()</code> بعد الـ epoch مش بعد كل batch.</details></li>
+    <li><b>إضافة مني · دالة inference حقيقية:</b> اكتب <code>predict(images)</code> زي اللي بتتحط ورا API: تحمّل <code>mnist_mlp.pt</code> مرة واحدة بـ <code>map_location</code>، تعمل <code>model.eval()</code>، وجوه <code>torch.no_grad()</code> ترجّع أعلى ٣ أرقام واحتمالاتهم. قيس الوقت لـ batch من 1 ومن 256 صورة.
+      <details><summary>تلميح</summary>الاحتمالات = <code>torch.softmax(logits, dim=1)</code> (هنا الـ softmax صح لأننا مش بنحسب loss). وبعدها <code>probs.topk(3, dim=1)</code>. هتلاحظ إن الـ batch الكبير وقته للصورة الواحدة أقل بكتير؛ ده سبب الـ batching في سيرفرات الـ LLMs.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d54-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: الأخطاء اللي هتقابلها، وفين ده في الـ LLMs</h2></div>
+  <h3>أشهر ٥ أخطاء</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الغلطة</th><th>العَرَض</th><th>الحل</th></tr>
+    <tr><td>نسيت <code>zero_grad()</code></td><td>الـ loss بيتلخبط أو بيفرقع (شفتها في معمل ٠٣)</td><td>أول سطر جوه لوب الـ batch</td></tr>
+    <tr><td>نسيت <code>model.eval()</code></td><td>نفس الصورة تدّي نتايج مختلفة كل مرة (الـ Dropout لسه شغال)</td><td><code>eval()</code> قبل التقييم، و <code>train()</code> قبل التدريب</td></tr>
+    <tr><td>softmax قبل <code>CrossEntropyLoss</code></td><td>تدريب أبطأ وأسوأ من غير أي error</td><td>ادّيله logits خام</td></tr>
+    <tr><td><code>total_loss += loss</code> من غير <code>.item()</code></td><td>الميموري بتزيد كل batch</td><td><code>loss.item()</code> بيرجع رقم عادي ومش بيمسك الجراف</td></tr>
+    <tr><td>tensors على أجهزة مختلفة</td><td><span class="ltr">Expected all tensors to be on the same device</span></td><td><code>.to(device)</code> للموديل ولكل batch</td></tr>
+  </table></div>
+  <h3>الحدس اللي يفضل معاك</h3>
+  <p>PyTorch مش سحر. هو بالظبط فريمورك امبارح + شريط تسجيل (autograd) + محرك سريع (C++/CUDA). لما حاجة تبوظ، اسأل نفسك: «لو كنت كاتبها في فريمورك امبارح، كانت هتبوظ فين؟» غالبًا هتلاقي الإجابة.</p>
+  <div class="note ai"><strong>في الـ LLMs والـ Agents:</strong> أي موديل PyTorch في Hugging Face <code>transformers</code> هو <code>nn.Module</code> عادي، وملفات الأوزان اللي بتنزلها هي state dict. الـ Transformer مبني من نفس القطع اللي في جدول محطة ٠٤: <code>nn.Embedding</code> و <code>nn.LayerNorm</code> و <code>nn.GELU</code> و <code>nn.Linear</code>. وتدريبه بيستخدم AdamW و bfloat16 و mixed precision. ولما تعمل fine-tuning لموديل أو تشغّل موديل محلي للـ agent بتاعك، نفس الخمس سطور ونفس <code>no_grad</code> و <code>eval()</code> هما اللي شغالين.</div>
+</section>
+
+<!-- QUIZ -->
+<section id="d54-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d54-quizbox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d54-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d54-ck">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح shape و dtype و device، وليه view ممكن تفشل بعد permute</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فهمت الـ autograd كشريط بيلف بالعكس، وشفت الـ grad بيتراكم من غير zero_grad</label></li>
+    <li><label><input type="checkbox" data-ck="3"> أعرف الخمس سطور بتوع الـ training loop بالترتيب من غير ما أبص</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت كود MNIST بإيدي وشغلته ووصلت لحوالي 97%+</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6" id="d54-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Tensor dtype (bfloat16، int8)</td><td>تدريب الـ LLMs، والـ quantization لتشغيلها على أجهزة أصغر</td></tr>
+    <tr><td>Autograd</td><td>أي تدريب أو fine-tuning (LoRA نفسه بيعتمد عليه)</td></tr>
+    <tr><td>nn.Module و state_dict</td><td>كل موديل PyTorch على Hugging Face، والـ checkpoints</td></tr>
+    <tr><td>torch.no_grad() و eval()</td><td>الـ inference في أي API أو agent</td></tr>
+    <tr><td>DataLoader و num_workers</td><td>pipelines الداتا للصور والصوت والنصوص</td></tr>
+    <tr><td>Mixed precision</td><td>تدريب الموديلات الكبيرة على A100/H100</td></tr>
+    <tr><td>CrossEntropyLoss على logits</td><td>الـ next-token prediction في الـ LLMs</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Introduction to JAX. نفس الفكرة بطريقة functional: <code>grad</code> و <code>jit</code> و <code>vmap</code>. هنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F11-intro-to-pytorch" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/11-intro-to-pytorch</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt;
+const $=id=>document.getElementById(id);
+
+// roadmap
+const rm=$('d54-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===11)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: tensor view/reshape/permute ----------
+const tc=$('d54-tc'),tctx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+let T,storage;
+const stdStrides=sh=>{const s=[];let acc=1;for(let i=sh.length-1;i>=0;i--){s[i]=acc;acc*=sh[i]}return s};
+function isCont(t){const s=stdStrides(t.shape);return t.shape.every((n,i)=>n===1||t.strides[i]===s[i])}
+function resetT(){storage=[...Array(24).keys()];T={shape:[2,3,4],strides:[12,4,1]}}
+function elems(t){const out=[],sh=t.shape,idx=sh.map(()=>0),N=sh.reduce((a,b)=>a*b,1);
+  for(let k=0;k<N;k++){let off=0;for(let i=0;i<sh.length;i++)off+=idx[i]*t.strides[i];out.push(off);
+    for(let i=sh.length-1;i>=0;i--){idx[i]++;if(idx[i]<sh[i])break;idx[i]=0}}return out}
+function drawT(){
+  tctx.clearRect(0,0,TW,TH);
+  const sh=T.shape,offs=elems(T);
+  const cols=sh.length?sh[sh.length-1]:1,rows=sh.length>1?sh[sh.length-2]:1,blocks=offs.length/(rows*cols);
+  const maxCell=Math.min(34,Math.floor((TW-20-(blocks-1)*14)/(blocks*cols)),Math.floor(230/rows));
+  const cs=Math.max(14,maxCell),bw=cols*cs,totalW=blocks*bw+(blocks-1)*14;
+  let x0=(TW-totalW)/2;const y0=20;
+  tctx.font='11px JetBrains Mono, monospace';tctx.textAlign='center';tctx.textBaseline='middle';
+  const hue=v=>`hsl(${190-v*6},55%,68%)`;
+  for(let bI=0;bI<blocks;bI++){
+    const bx=x0+bI*(bw+14);
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+      const v=storage[offs[bI*rows*cols+r*cols+c]];
+      tctx.fillStyle=hue(v);tctx.fillRect(bx+c*cs,y0+r*cs,cs-2,cs-2);
+      tctx.fillStyle='#14212B';tctx.fillText(v,bx+c*cs+(cs-2)/2,y0+r*cs+(cs-2)/2);
+    }
+    if(blocks>1){tctx.fillStyle=css('--muted');tctx.fillText('['+bI+']',bx+bw/2,y0+rows*cs+10)}
+  }
+  // storage row
+  const sy=TH-70,sw=(TW-20)/24;
+  tctx.fillStyle=css('--muted');tctx.textAlign='left';tctx.font='12px JetBrains Mono, monospace';tctx.fillText('storage (memory order):',10,sy-14);
+  tctx.textAlign='center';tctx.font='10px JetBrains Mono, monospace';
+  for(let i=0;i<24;i++){tctx.fillStyle=hue(storage[i]);tctx.fillRect(10+i*sw,sy,sw-2,26);tctx.fillStyle='#14212B';tctx.fillText(storage[i],10+i*sw+(sw-2)/2,sy+13)}
+  // read order path
+  tctx.strokeStyle=css('--vec-b');tctx.lineWidth=1.5;tctx.beginPath();
+  offs.forEach((o,k)=>{const x=10+o*sw+(sw-2)/2,y=sy+34+ (k%2)*6;k?tctx.lineTo(x,y):tctx.moveTo(x,y)});tctx.stroke();
+  tctx.fillStyle=css('--vec-b');tctx.textAlign='left';tctx.font='11px JetBrains Mono, monospace';tctx.fillText('read order →',10,TH-12);
+  tctx.textBaseline='alphabetic';
+  $('d54-tshape').textContent='('+sh.join(', ')+(sh.length===1?',':'')+')';
+  $('d54-tstride').textContent='('+T.strides.join(', ')+')';
+  const c=isCont(T),ce=$('d54-tcont');ce.textContent=c?'True':'False';ce.style.color=c?css('--ok'):css('--bad');
+}
+const msg=(t,ok)=>{const m=$('d54-tmsg');m.textContent=t;m.style.color=ok===false?css('--bad'):ok?css('--ok'):''};
+function materialize(){const offs=elems(T);storage=offs.map(o=>storage[o]);T={shape:T.shape.slice(),strides:stdStrides(T.shape)}}
+function ops(op){
+  const n=T.shape.reduce((a,b)=>a*b,1);
+  if(op==='reset'){resetT();msg('tensor أصلي: torch.arange(24).view(2, 3, 4)')}
+  else if(op==='view212'||op==='reshape64'){
+    const ns=op==='view212'?[2,12]:[6,4];
+    if(n!==24){msg('مستحيل',false)}
+    else if(isCont(T)){T={shape:ns,strides:stdStrides(ns)};msg((op==='view212'?'view':'reshape')+': الميموري زي ما هي، اتغير الـ metadata بس',true)}
+    else if(op==='view212'){msg('RuntimeError: view size is not compatible… (مش contiguous). جرّب reshape',false)}
+    else{materialize();T={shape:ns,strides:stdStrides(ns)};msg('reshape اشتغل بس عمل نسخة جديدة في الميموري (لاحظ صف الـ storage اتغير)',true)}
+  }
+  else if(op==='permute'){
+    if(T.shape.length!==3){msg('permute(2,0,1) محتاج tensor فيه ٣ أبعاد. دوس رجّع الأول',false)}
+    else{T={shape:[T.shape[2],T.shape[0],T.shape[1]],strides:[T.strides[2],T.strides[0],T.strides[1]]};msg('permute: نفس الميموري، بس بنقرأ بترتيب تاني. بقى مش contiguous',null)}
+  }
+  else if(op==='unsq'){
+    if(T.shape.length>=4){msg('كفاية أبعاد للمعمل ده :)',null)}
+    else{T={shape:[1,...T.shape],strides:[T.shape[0]*T.strides[0],...T.strides]};msg('unsqueeze(0): زوّدنا بُعد حجمه 1 قدام، زي batch من عنصر واحد',true)}
+  }
+  else if(op==='sq'){
+    const keep=T.shape.map((s,i)=>s!==1?i:-1).filter(i=>i>=0);
+    T={shape:keep.map(i=>T.shape[i]),strides:keep.map(i=>T.strides[i])};msg('squeeze(): شلنا كل الأبعاد اللي حجمها 1',true)
+  }
+  drawT();
+}
+document.querySelectorAll('[data-d54op]').forEach(b=>b.addEventListener('click',()=>ops(b.dataset.d54op)));
+resetT();drawT();
+
+// ---------- dtype memory ----------
+const PN=[[125e6,'125M'],[1e9,'1B'],[3e9,'3B'],[7e9,'7B'],[13e9,'13B'],[70e9,'70B']];
+const DT=[['float32',4],['float16',2],['bfloat16',2],['int8',1]];
+const mcv=$('d54-mc'),mctx=AI.setupCanvas(mcv),MW=+mcv.dataset.w,MH=+mcv.dataset.h;
+function mem(){
+  const [n,lab]=PN[+$('d54-pn').value],v=$('d54-dt').value,bpp=v==='32'?4:v==='8'?1:2;
+  $('d54-pv').textContent=lab;$('d54-bpp').textContent=bpp;
+  const gb=b=>{const g=n*b/1e9;return (g<10?f(g,2):Math.round(g))+' GB'};
+  $('d54-mem').textContent=gb(bpp);
+  mctx.clearRect(0,0,MW,MH);const sel=$('d54-dt').selectedOptions[0].textContent;
+  DT.forEach(([name,b],i)=>{const y=6+i*26,w=(MW-170)*b/4;
+    mctx.fillStyle=name===sel?css('--vec-a'):css('--muted');mctx.globalAlpha=name===sel?1:.35;mctx.fillRect(80,y,w,18);mctx.globalAlpha=1;
+    mctx.fillStyle=css('--ink');mctx.font='12px JetBrains Mono, monospace';mctx.textAlign='left';mctx.fillText(name,4,y+13);mctx.fillText(gb(b),86+w,y+13)});
+}
+['d54-pn','d54-dt'].forEach(id=>{$(id).addEventListener('input',mem);$(id).addEventListener('change',mem)});mem();
+
+// ---------- Lab 2: autograd ----------
+const gc=$('d54-gc'),gctx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+let X=[1,2,3],stage=0,nb=0,grad=null,anim=null,animT=0;
+const nodes={x:[60,150,'x (leaf)'],sq:[200,80,'x ** 2'],m3:[200,220,'3 * x'],add:[330,150,'+  → y'],sum:[460,150,'sum → z']};
+const edges=[['x','sq'],['x','m3'],['sq','add'],['m3','add'],['add','sum']];
+const reduced=matchMedia('(prefers-reduced-motion:reduce)').matches;
+const vstr=a=>'['+a.map(v=>f(v,1)).join(', ')+']';
+function vals(){const sq=X.map(v=>v*v),m3=X.map(v=>3*v),y=X.map((v,i)=>sq[i]+m3[i]);return{x:X,sq,m3,add:y,sum:[y.reduce((a,b)=>a+b,0)]}}
+function drawG(){
+  gctx.clearRect(0,0,GW,GH);const V=vals();
+  edges.forEach(([a,b],i)=>{const [x1,y1]=nodes[a],[x2,y2]=nodes[b];
+    let col=css('--line'),w=1.5;
+    const fwOn=stage>=1,bwOn=stage>=2;
+    if(fwOn){col=css('--vec-a');w=2.5}
+    AI.arrow(gctx,x1+44,y1,x2-48,y2,col,w);
+    if(bwOn){gctx.setLineDash([6,4]);gctx.strokeStyle=css('--vec-b');gctx.lineWidth=2;gctx.beginPath();gctx.moveTo(x2-48,y2+10);gctx.lineTo(x1+44,y1+10);gctx.stroke();gctx.setLineDash([])}
+    if(anim&&animT<1){const fw=anim==='fw',k=fw?animT:1-animT;const px=x1+44+(x2-48-x1-44)*k,py=y1+(y2-y1)*k+(fw?0:10);
+      gctx.fillStyle=fw?css('--vec-a'):css('--vec-b');gctx.beginPath();gctx.arc(px,py,5,0,7);gctx.fill()}
+  });
+  Object.entries(nodes).forEach(([k,[x,y,l]])=>{
+    gctx.fillStyle=css('--panel');gctx.strokeStyle=k==='x'?css('--vec-b'):css('--ink');gctx.lineWidth=k==='x'?2.5:1.5;
+    gctx.beginPath();gctx.roundRect?gctx.roundRect(x-46,y-24,92,48,8):gctx.rect(x-46,y-24,92,48);gctx.fill();gctx.stroke();
+    gctx.fillStyle=css('--ink');gctx.font='12px JetBrains Mono, monospace';gctx.textAlign='center';gctx.fillText(l,x,y-6);
+    gctx.fillStyle=css('--muted');gctx.font='10px JetBrains Mono, monospace';
+    if(stage>=1||k==='x')gctx.fillText(k==='sum'?f(V.sum[0],2):vstr(V[k]),x,y+12);
+  });
+  if(stage>=2&&grad){gctx.fillStyle=css('--vec-b');gctx.font='bold 12px JetBrains Mono, monospace';gctx.textAlign='left';gctx.fillText('x.grad = '+vstr(grad),10,GH-14)}
+  gctx.textAlign='left';
+}
+function play(kind,done){
+  if(reduced){anim=null;done();drawG();return}
+  anim=kind;const t0=performance.now();cancelAnimationFrame(play.r);
+  const step=t=>{animT=Math.min(1,(t-t0)/700);drawG();if(animT<1)play.r=requestAnimationFrame(step);else{anim=null;done();drawG()}};play.r=requestAnimationFrame(step);
+}
+function gUpd(){
+  const V=vals();$('d54-z').textContent=stage>=1?f(V.sum[0],2):'—';
+  $('d54-xg').textContent=grad?vstr(grad):'None';$('d54-nb').textContent=nb;
+}
+function addGrad(){const g=X.map(v=>2*v+3);grad=grad?grad.map((v,i)=>v+g[i]):g;nb++}
+$('d54-fw').addEventListener('click',()=>{play('fw',()=>{stage=Math.max(stage,1);gUpd();$('d54-gmsg').textContent='الشريط سجّل ٤ عمليات. z اتحسبت. لسه مفيش grad.'})});
+$('d54-bw').addEventListener('click',()=>{if(stage<1){$('d54-gmsg').textContent='لازم forward الأول: مفيش شريط تلفه';return}
+  if(stage>=2){$('d54-gmsg').textContent='الجراف ده اتلف خلاص. في PyTorch تاني backward على نفس الجراف بيدي error إلا مع retain_graph=True. اعمل forward جديد.';return}
+  play('bw',()=>{addGrad();stage=2;gUpd();$('d54-gmsg').textContent='x.grad = 2x + 3. كل leaf بـ requires_grad استلمت الـ gradient بتاعها.'})});
+$('d54-again').addEventListener('click',()=>{if(!grad){$('d54-gmsg').textContent='اعمل Forward ثم Backward مرة الأول';return}
+  play('fw',()=>{stage=1;play('bw',()=>{addGrad();stage=2;gUpd();const m=$('d54-gmsg');m.textContent='الـ grad اتجمع فوق القديم (×'+nb+'). ده اللي بيحصل لو نسيت zero_grad.';m.style.color=css('--bad')})})});
+$('d54-zg').addEventListener('click',()=>{if(grad)grad=grad.map(()=>0);nb=0;gUpd();drawG();const m=$('d54-gmsg');m.textContent='الـ grad بقى أصفار. جاهز لـ backward نضيف.';m.style.color=''});
+[0,1,2].forEach(i=>$('d54-x'+i).addEventListener('input',e=>{X[i]=+e.target.value;$('d54-x'+i+'v').textContent=X[i];stage=0;grad=null;nb=0;const m=$('d54-gmsg');m.textContent='x اتغيرت: جراف جديد. ابدأ بـ Forward';m.style.color='';gUpd();drawG()}));
+gUpd();drawG();
+
+// ---------- Lab 3: training loop ----------
+const lc=$('d54-lc'),lctx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+let seed=7;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
+const P=[];for(let i=0;i<14;i++){const x=-2+4*i/13;P.push([x,2*x+1+(rnd()-.5)*1.2])}
+let W=0,B=0,gW=0,gB=0,steps=0,losses=[],phase=-1,busy=false;
+const STEPS=['zero_grad()','model(x)','criterion()','backward()','step()'];
+const lossOf=()=>P.reduce((a,[x,y])=>a+(W*x+B-y)**2,0)/P.length;
+function drawL(){
+  lctx.clearRect(0,0,LW,LH);
+  // stage strip
+  const sw=(LW-20)/5;
+  STEPS.forEach((s,i)=>{const on=i===phase;lctx.fillStyle=on?css('--vec-a'):css('--soft');lctx.fillRect(10+i*sw,8,sw-6,28);
+    lctx.fillStyle=on?css('--paper'):css('--ink');lctx.font=(on?'bold ':'')+'11px JetBrains Mono, monospace';lctx.textAlign='center';lctx.fillText((i+1)+'. '+s,10+i*sw+(sw-6)/2,26)});
+  if($('d54-nozg').checked){lctx.strokeStyle=css('--bad');lctx.lineWidth=2;lctx.beginPath();lctx.moveTo(14,22);lctx.lineTo(sw,22);lctx.stroke()}
+  // fit plot
+  const px0=10,py0=50,pw=290,ph=270,sx=x=>px0+(x+2.5)/5*pw,sy=y=>py0+ph-(y+5)/12*ph;
+  lctx.strokeStyle=css('--line');lctx.lineWidth=1;lctx.strokeRect(px0,py0,pw,ph);
+  lctx.strokeStyle=css('--grid');lctx.beginPath();lctx.moveTo(px0,sy(0));lctx.lineTo(px0+pw,sy(0));lctx.moveTo(sx(0),py0);lctx.lineTo(sx(0),py0+ph);lctx.stroke();
+  P.forEach(([x,y])=>{lctx.fillStyle=css('--vec-b');lctx.beginPath();lctx.arc(sx(x),sy(y),4,0,7);lctx.fill();
+    if(phase===2){lctx.strokeStyle=css('--bad');lctx.globalAlpha=.6;lctx.beginPath();lctx.moveTo(sx(x),sy(y));lctx.lineTo(sx(x),sy(W*x+B));lctx.stroke();lctx.globalAlpha=1}});
+  lctx.save();lctx.beginPath();lctx.rect(px0,py0,pw,ph);lctx.clip();
+  lctx.strokeStyle=css('--vec-a');lctx.lineWidth=3;lctx.beginPath();lctx.moveTo(sx(-2.5),sy(W*-2.5+B));lctx.lineTo(sx(2.5),sy(W*2.5+B));lctx.stroke();lctx.restore();
+  lctx.fillStyle=css('--muted');lctx.font='11px JetBrains Mono, monospace';lctx.textAlign='left';lctx.fillText('y = w·x + b',px0+6,py0+14);
+  // loss plot
+  const qx=315,qw=LW-qx-10;lctx.strokeStyle=css('--line');lctx.strokeRect(qx,py0,qw,ph);
+  lctx.fillStyle=css('--muted');lctx.fillText('loss (log)',qx+6,py0+14);
+  if(losses.length>1){const lg=v=>Math.log10(Math.max(1e-3,Math.min(1e6,v)));const lo=-1,hi=Math.max(2,Math.max(...losses.map(lg)));
+    lctx.strokeStyle=css('--ok');lctx.lineWidth=2;lctx.beginPath();
+    losses.forEach((v,i)=>{const x=qx+4+i/Math.max(30,losses.length-1)*(qw-8),y=py0+ph-4-(lg(v)-lo)/(hi-lo)*(ph-24);i?lctx.lineTo(x,y):lctx.moveTo(x,y)});lctx.stroke()}
+  lctx.textAlign='left';
+  $('d54-w').textContent=isFinite(W)?f(W,3):'NaN';$('d54-b').textContent=isFinite(B)?f(B,3):'NaN';
+  const L=lossOf();$('d54-loss').textContent=isFinite(L)?(L>1e5?L.toExponential(1):f(L,4)):'NaN';$('d54-step').textContent=steps;
+}
+function sub(i){
+  const lr=+$('d54-lr').value;
+  if(i===0){if(!$('d54-nozg').checked){gW=0;gB=0}}
+  if(i===3){let a=0,b=0;P.forEach(([x,y])=>{const e=W*x+B-y;a+=2*e*x/P.length;b+=2*e/P.length});gW+=a;gB+=b}
+  if(i===4){W-=lr*gW;B-=lr*gB;steps++;losses.push(lossOf())}
+}
+const LM=['بنمسح الـ gradients القديمة','الموديل بيتوقع y لكل نقطة','بنقيس الغلط (الخطوط الحمرا) = MSE','autograd بيحسب dL/dw و dL/db','الأوزان بتتحرك عكس الـ gradient'];
+function oneStep(){
+  if(busy)return;busy=true;let i=0;
+  const go=()=>{phase=i;sub(i);drawL();const m=$('d54-lmsg');m.textContent=(i+1)+'. '+LM[i]+(i===0&&$('d54-nozg').checked?' … لأ! اتنسى، فالقديم فاضل':'');m.style.color=i===0&&$('d54-nozg').checked?css('--bad'):'';
+    i++;if(i<5)setTimeout(go,reduced?0:450);else{setTimeout(()=>{phase=-1;busy=false;drawL()},reduced?0:450)}};go();
+}
+function runN(){
+  if(busy)return;busy=true;let k=0;
+  const tick=()=>{for(let i=0;i<5;i++)sub(i);phase=4;drawL();k++;
+    if(k<30&&isFinite(W))setTimeout(tick,reduced?0:60);else{phase=-1;busy=false;drawL();
+      const L=lossOf(),m=$('d54-lmsg');
+      if(!isFinite(L)||L>50){m.textContent='التدريب فرقع! الـ gradients اتراكمت أو الـ LR كبير.';m.style.color=css('--bad')}
+      else{m.textContent='الـ loss = '+f(L,3)+' · w قرّب من 2 و b قرّب من 1';m.style.color=css('--ok')}}};tick();
+}
+function lreset(){W=0;B=0;gW=0;gB=0;steps=0;losses=[lossOf()];phase=-1;$('d54-lmsg').textContent='جاهز';$('d54-lmsg').style.color='';drawL()}
+$('d54-one').addEventListener('click',oneStep);$('d54-run').addEventListener('click',runN);$('d54-lreset').addEventListener('click',()=>{if(!busy)lreset()});
+$('d54-lr').addEventListener('input',e=>{$('d54-lrv').textContent=e.target.value});
+$('d54-nozg').addEventListener('change',drawL);
+lreset();
+
+// ---------- param counter ----------
+function params(){
+  const h1=+$('d54-h1').value,h2=+$('d54-h2').value,bn=$('d54-bn').checked;
+  $('d54-h1v').textContent=h1;$('d54-h2v').textContent=h2;
+  const rows=[['Linear(784,'+h1+')',784*h1+h1],bn&&['BatchNorm1d('+h1+')',2*h1],['Linear('+h1+','+h2+')',h1*h2+h2],bn&&['BatchNorm1d('+h2+')',2*h2],['Linear('+h2+',10)',h2*10+10]].filter(Boolean);
+  const tot=rows.reduce((a,r)=>a+r[1],0),ul=$('d54-plist');ul.innerHTML='';
+  rows.forEach(([n,c])=>{const li=document.createElement('li');li.style.gridTemplateColumns='150px 1fr 80px';
+    li.innerHTML='<span class="mono" style="font-size:12px"></span><span class="bar"><i></i></span><span class="num"></span>';
+    li.children[0].textContent=n;li.querySelector('i').style.width=(c/tot*100)+'%';li.children[2].textContent=c.toLocaleString('en');ul.appendChild(li)});
+  $('d54-ptot').textContent=tot.toLocaleString('en');
+}
+['d54-h1','d54-h2','d54-bn'].forEach(id=>$(id).addEventListener('input',params));$('d54-bn').addEventListener('change',params);params();
+
+// ---------- quiz ----------
+const Q=[
+ ['يعني إيه autograd في PyTorch؟',['أداة لضغط الموديل','محرك تفاضل أوتوماتيك بيسجل العمليات ويحسب الـ gradients من غير ما تكتب backward بإيدك','framework لضبط الـ hyperparameters','مكتبة لتحميل الداتا'],1,'الـ autograd بيبني computational graph وقت الـ forward ويحسب الـ gradients لما تنادي .backward(). مش محتاج تكتب backward لكل module زي امبارح.'],
+ ['torch.no_grad() بتعمل إيه وامتى تستخدمها؟',['بتمنع الـ overfitting','بتشغّل الـ GPU','بتقفل تتبع الـ gradients وقت الـ inference فتوفر ميموري وحساب لما مش محتاج تدرب','بتجمّد كل أوزان الموديل'],2,'وقت الـ inference مش محتاج gradients. no_grad بيوفر الميموري اللي كانت هتتحجز للجراف وبيسرّع الحساب.'],
+ ['nn.Linear(784, 256) بتعمل إيه؟',['طبقة batch normalization','طبقة ReLU','dropout بنسبة 784/256','طبقة fully connected فيها weight شكله (256, 784) و bias شكله (256,)'],3,'بتحسب y = x @ W^T + b، و W شكلها (out, in) = (256, 784). دي نسخة PyTorch من الـ Linear اللي بنيتها امبارح.'],
+ ['أنهي method بتحسب الـ gradients لكل الـ parameters في الجراف؟',['optimizer.step()','loss.backward()','model.forward()','optimizer.zero_grad()'],1,'loss.backward() بيمشي في الجراف بالعكس ويحسب dL/dp لكل parameter. بعدها optimizer.step() بيستخدمهم عشان يحدّث.'],
+ ['ليه لوب التدريب في PyTorch أسرع بكتير من الـ mini framework؟',['بيستخدم أنواع داتا أصغر','بيستخدم خوارزمية مختلفة','بيتخطى الـ backward','بيشغّل العمليات كـ kernels متظبطة بـ C++/CUDA على الـ GPU، بينما لوبات Python بتتنفذ عملية عملية'],3,'PyTorch بيبعت عمليات المصفوفات لـ kernels C++/CUDA شغالة بالتوازي. Python بينفذ اللوب واحدة واحدة ومع كل عملية overhead من الـ interpreter.'],
+ ['(سؤال مني) الموديل بيطلّع logits، وانت عملت softmax عليهم وبعدين دخلتهم CrossEntropyLoss. إيه اللي هيحصل؟',['error فورًا','هيشتغل عادي بس الـ gradients هتبقى غلط من غير أي تحذير','هيبقى أدق','الـ loss هيبقى صفر'],1,'CrossEntropyLoss جواها LogSoftmax. لو عملت softmax قبلها كأنك عملته مرتين، والكود بيشتغل بس التدريب بيبوظ بصمت.'],
+ ['(سؤال مني) عملت forward و backward مرتين على نفس الأوزان من غير zero_grad. قيمة .grad هتبقى إيه؟',['الـ gradient بتاع آخر مرة بس','صفر','مجموع الـ gradients بتوع المرتين','None'],2,'PyTorch بيجمع الـ gradients by default. ده مفيد في gradient accumulation، بس لو مش قاصده لازم zero_grad قبل كل backward.']
+];
+AI.quiz($('d54-quizbox'),Q,5,()=>{const c=$('d54-ckq');c.checked=true;c.dispatchEvent(new Event('change'))});
+
+// ---------- checklist ----------
+AI.checklist(54,$('d54-ck'));
+
+// theme redraw
+AI.onTheme(()=>{if(!document.body.contains(tc))return false;drawT();mem();drawG();drawL()});
+})();
+</script>

@@ -1,0 +1,498 @@
+<div class="day" id="d486-root">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 58 · Vision Encoder Patches</span>
+  <h1>اليوم ٤٨٦: الـ tokenizer بتاع الصور — قطّع الصورة patches</h1>
+  <p class="lede">الـ transformer بياكل sequence من المتجهات، والصورة شبكة بيكسلز بـ ٣ قنوات. النهاردة هتبني «الـ tokenizer بتاع البيكسلز»: تقطع الصورة مربعات، تفرد كل مربع، تعدّيه على linear layer واحدة، وتزود إشارة مكان 2D عشان الموديل يعرف كل مربع كان فين. ده أول حتة في الـ vision encoder اللي هتكمّله بكرة.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python · PyTorch</b></span>
+    <span>النوع: <b>Build</b></span>
+    <span>بعده: <b>Vision Transformer Encoder</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — capstone lessons</span>
+    <div class="roadmap" id="d486-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d486-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر امبارح</h2></div>
+  <p>امبارح (الدرس ٥٧) ركّبت الـ auto-research loop كله من أوله لآخره: seed hypotheses ← scheduler ← experiment runner ← result bus ← اختيار أحسن نتيجة ← critic loop ← paper writer ← demo report. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه الـ demo بيعمل import للدروس اللي قبله بدل ما ينسخ الكود؟</summary>عشان ده مش framework؛ ده نفس الـ import اللي ملفات الـ tests بتعمله. بيعدّل <code>sys.path</code> لفولدر كل درس ويستخدم الـ dataclasses والـ functions العامة. لو عقد (contract) في أي مرحلة اتكسر، الـ demo هو اللي بيكشفه.</details>
+  <details><summary>٢. الـ demo مضمون إنه deterministic إزاي؟</summary>الـ runner بيستخدم numpy بـ seed ثابت، الـ critic بيمشي على أبعاد ثابتة بترتيب ثابت، الـ paper writer بيستخدم الـ prose generator الـ mocked، والـ scheduler بيكسر التعادل في الـ UCB بترتيب الـ iteration مش عشوائي. نفس الـ seed = نفس الـ report، والتيست بيشغّله مرتين ويقارن الـ manifest.</details>
+  <details><summary>٣. لو مرحلة طلّعت output مكسور، المفروض يحصل إيه؟</summary>يطلع failure واضح والمرحلة اللي بعدها ما تشتغلش على input بايظ. النهاردة هتشوف نفس الفلسفة: اختبار تكافؤ (Conv2d = unfold+linear) قبل ما تبني أي حاجة فوق الـ front end.</details>
+  <p>النهاردة بنبدأ Track جديد: بدل وكيل بيعمل research، هنبني vision encoder من الصفر حتة حتة.</p>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>تسخين + المشكلة: ليه مش بيكسل لكل token</div>
+    <div><b>20 min</b>المعامل التلاتة: القطع، الـ Conv2d، الـ position</div>
+    <div><b>35 min</b>اكتب <code>main.py</code> بإيدك وشغّل التيستات</div>
+    <div><b>15 min</b>تمرينين + الكويز</div>
+    <div><b>10 min</b>إضافة مني + الـ checklist</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d486-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: ليه patches مش pixels؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>تخيل إنك عايز تحكي لحد عن صورة في التليفون. لو قعدت تقوله لون كل بيكسل لوحده، هتقعد سنة. ولو قلتله «الصورة كلها» في جملة واحدة هيضيع منه مين جنب مين. الحل الوسط: تقسمها مربعات وتوصف كل مربع في جملة. ده بالظبط الـ patch.</p>
+      <p>صورة 224×224 RGB لو كل بيكسل token = <b>150,528</b> token. والـ attention تكلفتها <b>تربيعية</b> في طول الـ sequence:</p>
+      <div class="formula">196 × 196 = 38,416   vs   150,528 × 150,528 ≈ 22.6 billion</div>
+      <p>يعني الـ patches بتوفّر حوالي <b>590,000 مرة</b> في حساب الـ attention لكل head في كل layer. ومربع 16×16 فيه إشارة كفاية للمهام العالية زي التصنيف.</p>
+      <p>وفي الناحية التانية، لو فردت الصورة كلها في متجه واحد ضخم، هترمي الـ <b>locality</b> (مين جنب مين)، والـ attention مش هتعرف ترجّعها.</p>
+      <div class="note"><strong>التمن:</strong> بتخسر تفاصيل دقيقة جوه الـ patch الواحد. عشان كده أنظمة multimodal كتير بتشغّل فرع تاني high-resolution لما يبقى المطلوب تحديد أماكن دقيقة.</div>
+      <div class="note ai"><strong>جرب بإيدك:</strong> غيّر حجم الـ patch وشوف عدد الـ tokens وتكلفة الـ attention. دوس على أي مربع في الصورة وشوف الـ 768 رقم بتوعه (لو patch=16) متفرودين تحت كـ strip.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d486-cut" width="448" height="448" aria-label="صورة مقسمة patches"></canvas>
+      <label style="display:grid;gap:2px">patch_size = <b class="mono" id="d486-psv">16</b><input type="range" id="d486-ps" min="0" max="6" step="1" value="3"></label>
+      <div class="readout">
+        <div><small>grid</small><b id="d486-grid">14×14</b></div>
+        <div><small>num patches</small><b id="d486-np">196</b></div>
+        <div><small>seq (+CLS)</small><b id="d486-seq">197</b></div>
+        <div><small>قيم في الـ patch</small><b id="d486-flat">768</b></div>
+        <div><small>attention scores</small><b id="d486-att">38,416</b></div>
+        <div><small>توفير مقابل pixels</small><b id="d486-save">×589,815</b></div>
+      </div>
+      <canvas id="d486-strip" width="448" height="54" aria-label="الـ patch المختار متفرود"></canvas>
+      <small id="d486-sel" style="color:var(--muted)">دوس على patch في الصورة</small>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d486-proj">
+  <div class="station-head"><span class="tag">02</span><h2>linear projection واحدة كفاية · وحيلة الـ Conv2d</h2></div>
+  <p>كل patch بيتعامل كمتجه مستقل. الـ projection بتتعلم <b>basis</b>: كواشف حواف (edges)، فلاتر ألوان، textures بسيطة. layer واحدة صغيرة (<span class="ltr">768 × 768 = 589,824</span> وزن في ViT-Base) وبتتدرب بسرعة. فيه stems أعمق بالـ convolution (الـ hybrid ViT)، بس الـ linear projection المسطحة هي الـ standard، ومعظم الـ open-weight encoders الحديثة بتيجي بنفس الشكل ده بالظبط.</p>
+  <p><b>الحيلة:</b> <code>Conv2d(in_channels=3, out_channels=hidden, kernel_size=patch, stride=patch)</code> من غير padding بتدي نفس الرقم بالظبط زي unfold-then-linear. ليه؟ لأن الـ stride = حجم الـ kernel، فالفلتر بيقع على كل patch مرة واحدة من غير تداخل، وكل output عبارة عن dot product بين بيكسلز الـ patch وفلتر واحد. يعني كل فلتر = صف واحد في مصفوفة الـ linear.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: نفس الرقم بطريقتين</h3>
+      <p>صورة 8×8 (قناة واحدة) و patch = 4، يعني 4 patches. عندنا فلتر واحد 4×4 (يعني hidden = 1 للتبسيط). دوس «الخطوة الجاية»: الفلتر بيتنطط بالـ stride، وتحت هتلاقي الحسبة بطريقة الـ Conv2d وبطريقة flatten·w + b جنب بعض.</p>
+      <div class="btns">
+        <button type="button" class="primary" id="d486-step">الخطوة الجاية</button>
+        <button type="button" id="d486-rnd">صورة وفلتر جداد</button>
+        <select id="d486-filt" aria-label="نوع الفلتر"><option value="rand">فلتر عشوائي</option><option value="edge">كاشف حافة رأسية</option><option value="avg">متوسط (blur)</option></select>
+      </div>
+      <div class="note"><strong>لاحظ:</strong> الفرق دايمًا صفر (أو قريب جدًا منه بسبب الـ float). ده بالظبط اللي التيست <code>test_conv2d_matches_unfold_reference</code> بيتأكد منه بـ <code>atol=1e-5</code>.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d486-conv" width="460" height="250" aria-label="الفلتر بيتحرك على الصورة"></canvas>
+      <div class="readout">
+        <div><small>patch #</small><b id="d486-pi">0</b></div>
+        <div><small>Conv2d output</small><b id="d486-cv">0</b></div>
+        <div><small>flatten · w + b</small><b id="d486-lv">0</b></div>
+        <div><small>|diff|</small><b id="d486-df">0</b></div>
+      </div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th>المكوّن</th><th>الـ Shape</th><th>عدد البارامترز</th></tr>
+    <tr><td>Patch projection (<code>Conv2d</code>)</td><td class="ltr">(hidden, 3, P, P)</td><td class="ltr">3·P·P·hidden + hidden</td></tr>
+    <tr><td>Position embedding (ثابت)</td><td class="ltr">(num_patches, hidden)</td><td>0 (بيتحسب، مش بيتعلم)</td></tr>
+    <tr><td>CLS token (بيتعلم)</td><td class="ltr">(1, hidden)</td><td class="ltr">hidden</td></tr>
+  </table></div>
+  <p>لـ ViT-Base/16 على 224: <b class="ltr">590,592</b> في الـ projection، <b>768</b> في الـ CLS، و<b>صفر</b> للـ sinusoidal position. يعني الـ front end كله <span class="ltr">591,360</span> بارامتر، وده الرقم اللي هيطبعلك <code>front-end params</code>.</p>
+  <p><b>الـ CLS token</b>: متجه بيتعلم بنحطه في أول الـ sequence، وبيشتغل كـ «رأس تجميع» (pooling head): في الآخر بناخد الـ output بتاعه كتلخيص للصورة كلها. عشان كده 196 + 1 = <b>197</b>.</p>
+</section>
+
+<!-- STATION 3 -->
+<section id="d486-pos">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Position Embedding الـ 2D sinusoidal</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>بعد الـ projection الـ tokens ملهاش ترتيب: الـ attention بتشوفهم كيس حاجات. فلازم كل token ياخد «عنوان» يقول هو في صف كام وعمود كام.</p>
+      <p>زي عنوان شقة: نص الأرقام بيقول الدور (row) ونصها بيقول رقم الشقة (col). كل نص فيه sin و cos على ترددات مختلفة، زي عقارب ساعة بسرعات مختلفة: عقرب سريع يفرّق بين الجيران، وعقرب بطيء يفرّق بين الأماكن البعيدة.</p>
+      <div class="formula">inv[k] = exp(−ln(10000)·k / quarter)   k = 0..dim/4−1<br>row_emb = [sin(r·inv), cos(r·inv)]   col_emb = [sin(c·inv), cos(c·inv)]<br>pos[r,c] = [row_emb(r) | col_emb(c)]</div>
+      <p>عشان كده <code>dim</code> لازم يقبل القسمة على ٤: نص للصف ونص للعمود، وكل نص فيه sin وcos. الـ CLS بياخد position = أصفار.</p>
+      <p><b>ليه ثابت مش متعلّم؟</b> لأنه deterministic: تقدر تغيّر الـ resolution من غير retraining، وبيـ interpolate بنضافة لشبكات الموديل ما شافهاش في التدريب.</p>
+      <div class="note ai"><strong>جرب بإيدك:</strong> فوق خريطة الجدول نفسه (كل صف = token، كل عمود = بُعد). تحت دوس على أي خانة في الشبكة وشوف الـ cosine similarity بين عنوانها وعنوان كل الخانات التانية: الجيران بيبقوا متشابهين أكتر، وخانات نفس الصف أو نفس العمود بتشترك في نص المتجه.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d486-table" width="460" height="170" aria-label="جدول الـ position embedding"></canvas>
+      <canvas id="d486-sim" width="460" height="300" aria-label="تشابه المواقع"></canvas>
+      <div class="mrow">
+        <label>grid <span id="d486-gv">14</span><input type="range" id="d486-g" min="2" max="16" step="1" value="14"></label>
+        <label>dim <span id="d486-dv">64</span><input type="range" id="d486-d" min="1" max="16" step="1" value="4"></label>
+      </div>
+      <div class="readout">
+        <div><small>(row, col)</small><b id="d486-rc">(3, 5)</b></div>
+        <div><small>table shape</small><b id="d486-ts">(196, 64)</b></div>
+        <div><small>|pos|</small><b id="d486-nm">0</b></div>
+      </div>
+    </div>
+  </div>
+  <p><b>ملحوظة من الكود:</b> النورم بتاع كل position vector ثابت: كل زوج (sin, cos) مربعهم = 1، فالنورم = √(dim/2) لكل الخانات. ده جزء من «التوقيع» اللي الـ demo بيطبعه.</p>
+</section>
+
+<!-- STATION 4 -->
+<section id="d486-sanity">
+  <div class="station-head"><span class="tag">04</span><h2>التكافؤ كـ sanity check</h2></div>
+  <p>الـ patch step ليه طريقتين في الكتابة: <code>Conv2d</code> و unfold-then-linear صريح. لازم يدّوا نفس الـ output لنفس الأوزان. لو ما ادّوش، يبقى حسبة الـ unfold غلط، وكل الـ encoder اللي فوق مبني على رمل.</p>
+  <p>وفيه اختبار تاني من نفس النوع: لو عملت unfold وبعدين رجّعت (unflatten) من غير projection، لازم ترجع الصورة الأصلية بالظبط، لأن خطوة التقطيع نفسها قابلة للعكس. لو الرحلة دي ما رجعتش نفس البيكسلز، الـ unfold فيه bug.</p>
+  <h3>الـ pipeline كله</h3>
+  <div class="formula">224×224×3 → قطّع 16×16 → grid 14×14 → flatten كل patch → linear → 196 token × hidden → + CLS → + 2D position → (B, 197, 768)</div>
+</section>
+
+<!-- CODE -->
+<section id="d486-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: ابني <code>main.py</code></h2></div>
+  <p>من فولدر الريبو، شغّل الأصل الأول عشان تشوف الهدف (محتاج <code>torch</code> و <code>numpy</code>):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/58-vision-encoder-patches/code/main.py</pre></div>
+  <p><b>القاعدة:</b> اقفل الأصل واكتب كل خطوة بنفسك في <code>my_patches.py</code>. ارجع للأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الـ config</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import math
+from dataclasses import dataclass
+import numpy as np
+import torch
+import torch.nn as nn
+
+@dataclass(frozen=True)
+class FrontEndConfig:
+    image_size: int = 224
+    patch_size: int = 16
+    in_channels: int = 3
+    hidden: int = 768
+
+    @property
+    def grid_size(self) -&gt; int:
+        if self.image_size % self.patch_size != 0:      <span class="c"># لازم الـ patch يقسم الصورة بالظبط</span>
+            raise ValueError(f"patch_size {self.patch_size} must divide image_size {self.image_size}")
+        return self.image_size // self.patch_size
+
+    @property
+    def num_patches(self) -&gt; int:
+        return self.grid_size * self.grid_size          <span class="c"># 14*14 = 196</span></pre></div>
+
+  <h3>خطوة ٢: جدول الـ position الـ 2D</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sinusoidal_2d(grid_h: int, grid_w: int, dim: int) -&gt; torch.Tensor:
+    if dim % 4 != 0:                                    <span class="c"># نص للصف ونص للعمود، وكل نص sin+cos</span>
+        raise ValueError(f"sinusoidal_2d dim must be divisible by 4, got {dim}")
+    half = dim // 2
+    quarter = half // 2
+
+    freq = torch.arange(quarter, dtype=torch.float32)
+    inv = torch.exp(-math.log(10000.0) * freq / max(1, quarter))   <span class="c"># ترددات من سريع لبطيء</span>
+
+    rows = torch.arange(grid_h, dtype=torch.float32).unsqueeze(1) * inv.unsqueeze(0)
+    cols = torch.arange(grid_w, dtype=torch.float32).unsqueeze(1) * inv.unsqueeze(0)
+
+    row_emb = torch.cat([torch.sin(rows), torch.cos(rows)], dim=1)
+    col_emb = torch.cat([torch.sin(cols), torch.cos(cols)], dim=1)
+
+    table = torch.zeros(grid_h, grid_w, dim)
+    table[:, :, :half] = row_emb.unsqueeze(1).expand(-1, grid_w, -1)   <span class="c"># النص الأول = الصف</span>
+    table[:, :, half:] = col_emb.unsqueeze(0).expand(grid_h, -1, -1)   <span class="c"># النص التاني = العمود</span>
+    return table.reshape(grid_h * grid_w, dim)</pre></div>
+
+  <h3>خطوة ٣: الـ PatchEmbed بالـ Conv2d</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class PatchEmbed(nn.Module):
+    def __init__(self, cfg: FrontEndConfig) -&gt; None:
+        super().__init__()
+        self.cfg = cfg
+        self.proj = nn.Conv2d(cfg.in_channels, cfg.hidden,
+                              kernel_size=cfg.patch_size,
+                              stride=cfg.patch_size, bias=True)   <span class="c"># kernel = stride = patch</span>
+
+    def forward(self, x: torch.Tensor) -&gt; torch.Tensor:
+        if x.dim() != 4:                                <span class="c"># افحص الـ input قبل أي حسبة</span>
+            raise ValueError(f"expected 4D input (B,C,H,W), got shape {tuple(x.shape)}")
+        if x.shape[1] != self.cfg.in_channels:
+            raise ValueError(f"channel mismatch: got {x.shape[1]}, expected {self.cfg.in_channels}")
+        if x.shape[2] != self.cfg.image_size or x.shape[3] != self.cfg.image_size:
+            raise ValueError(f"spatial mismatch: got {tuple(x.shape[2:])}, expected "
+                             f"({self.cfg.image_size}, {self.cfg.image_size})")
+        out = self.proj(x)                              <span class="c"># (B, hidden, 14, 14)</span>
+        out = out.flatten(2).transpose(1, 2)            <span class="c"># (B, 196, hidden)</span>
+        return out</pre></div>
+
+  <h3>خطوة ٤: الـ VisionFrontEnd (CLS + position)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class VisionFrontEnd(nn.Module):
+    def __init__(self, cfg: FrontEndConfig) -&gt; None:
+        super().__init__()
+        self.cfg = cfg
+        self.patch = PatchEmbed(cfg)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.hidden))
+        nn.init.trunc_normal_(self.cls_token, std=0.02)   <span class="c"># CLS بيتعلم</span>
+
+        pos = sinusoidal_2d(cfg.grid_size, cfg.grid_size, cfg.hidden)
+        cls_pos = torch.zeros(1, cfg.hidden)              <span class="c"># الـ CLS ملوش مكان</span>
+        full = torch.cat([cls_pos, pos], dim=0).unsqueeze(0)
+        self.register_buffer("pos_embed", full, persistent=False)   <span class="c"># buffer مش parameter</span>
+
+    def forward(self, x: torch.Tensor) -&gt; torch.Tensor:
+        tokens = self.patch(x)
+        b = tokens.shape[0]
+        cls = self.cls_token.expand(b, -1, -1)            <span class="c"># نفس الـ CLS لكل صورة في الـ batch</span>
+        tokens = torch.cat([cls, tokens], dim=1)          <span class="c"># (B, 197, hidden)</span>
+        return tokens + self.pos_embed</pre></div>
+
+  <h3>خطوة ٥: صورة اختبار ثابتة + المرجع بالـ unfold</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def synthesize_image(seed: int, image_size: int = 224, channels: int = 3) -&gt; torch.Tensor:
+    rng = np.random.default_rng(seed)                   <span class="c"># seed ثابت = نفس الصورة كل مرة</span>
+    noise = rng.standard_normal((channels, image_size, image_size)).astype("float32") * 0.1
+    y = np.linspace(0.0, 1.0, image_size, dtype="float32")
+    x = np.linspace(0.0, 1.0, image_size, dtype="float32")
+    gx, gy = np.meshgrid(x, y, indexing="xy")
+    gradient = np.stack([gx, gy, (gx + gy) * 0.5], axis=0).astype("float32")
+    img = np.clip(gradient + noise + 0.5, 0.0, 1.0)     <span class="c"># gradient ناعم + noise عالي التردد</span>
+    return torch.from_numpy(img).unsqueeze(0)
+
+def unfold_then_linear(x, weight, bias, patch_size):
+    if x.dim() != 4:
+        raise ValueError(f"expected 4D input, got {tuple(x.shape)}")
+    patches = x.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
+    b, c, gh, gw, ph, pw = patches.shape                <span class="c"># (B, C, 14, 14, 16, 16)</span>
+    flat = patches.permute(0, 2, 3, 1, 4, 5).reshape(b, gh * gw, c * ph * pw)
+    w_flat = weight.reshape(weight.shape[0], -1)        <span class="c"># كل فلتر = صف</span>
+    return flat @ w_flat.T + bias</pre></div>
+  <div class="note"><strong>انتبه للـ permute:</strong> الترتيب <span class="ltr">(0, 2, 3, 1, 4, 5)</span> بيحط القنوات قبل بيكسلز الـ patch، عشان الـ flatten يطلع بنفس ترتيب أوزان الـ Conv2d <span class="ltr">(hidden, C, P, P)</span>. لو غيّرته، الفرق هيبطل صفر.</div>
+
+  <h3>خطوة ٦: الـ main وشغّل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>torch.manual_seed(0)
+cfg = FrontEndConfig()
+img = synthesize_image(seed=0)
+model = VisionFrontEnd(cfg).eval()
+print(sum(p.numel() for p in model.parameters()))      <span class="c"># 591,360</span>
+with torch.no_grad():
+    tokens = model(img)
+print(tuple(tokens.shape))                              <span class="c"># (1, 197, 768)</span>
+
+w, b = model.patch.proj.weight.detach(), model.patch.proj.bias.detach()
+diff = (unfold_then_linear(img, w, b, cfg.patch_size) - model.patch(img)).abs().max().item()
+print("ok" if diff &lt; 1e-4 else "FAIL", diff)</pre></div>
+  <details><summary>الناتج المتوقع (الأجزاء الثابتة)</summary><pre class="term">  grid size  : 14x14
+  num patches: 196
+  hidden     : 768
+  seq length : 197 (includes CLS)
+fixture image shape  : (1, 3, 224, 224)
+front-end params     : 591,360
+output token shape   : (1, 197, 768)
+  batch=4 output shape: (4, 197, 768)
+  max drift across identical batch rows: 0.000000
+  ok: unfold reference matches Conv2d to float tolerance</pre>
+  الأرقام التانية (CLS norm، الـ token norms، الـ max abs diff) بتعتمد على الـ init، فمش هكتبها. المهم الـ diff يبقى صغير جدًا (أقل من 1e-4).</details>
+
+  <h3>خطوة ٧: التيستات</h3>
+  <p>ملف التيست بيعمل <code>from main import ...</code>، فأضمن طريقة إنك تشغّله من جوه فولدر <code>code</code>:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd phases/19-capstone-projects/58-vision-encoder-patches/code
+python3 -m unittest test_main.py</pre></div>
+  <p>التيستات بتغطي: عدد الـ patches = <span class="ltr">(image/patch)²</span>، شكل الـ output فيه الـ CLS، الـ Conv2d = unfold reference، الجدول deterministic وشكله <span class="ltr">(196, 64)</span> ويرفض dim مش بيقبل القسمة على ٤، الـ CLS بيتوزع على الـ batch من غير تسريب، رفض مقاس صورة غلط، والصورة الاختبارية deterministic. المفروض تشوف <code>OK</code> لـ 9 tests.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d486-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Learned vs sinusoidal:</b> بدّل الـ sinusoidal بـ <code>nn.Parameter</code> متعلّم وقارن أول epoch loss على مهمة تصنيف صغيرة synthetic. المتعلّم بيكسب على resolution ثابت، والـ sinusoidal بيكسب لما تغيّر الـ resolution بعد التدريب.
+      <details><summary>تلميح</summary><code>self.pos_embed = nn.Parameter(torch.zeros(1, N+1, hidden))</code> مع <code>trunc_normal_(std=0.02)</code>. خلّي كل حاجة تانية زي ما هي (نفس الـ seed ونفس الداتا) عشان المقارنة تبقى عادلة.</details></li>
+    <li><b>Unfold + Linear صريح:</b> بدّل الـ <code>Conv2d</code> بـ <code>nn.Unfold</code> + <code>nn.Linear</code> واتأكد إن الـ outputs متطابقة في حدود الـ float tolerance.
+      <details><summary>تلميح</summary><code>nn.Unfold(kernel_size=P, stride=P)</code> بيطلّع <span class="ltr">(B, C·P·P, N)</span>، فاعمل <code>.transpose(1, 2)</code>. انسخ الأوزان: <code>linear.weight.data = conv.weight.reshape(hidden, -1)</code> و <code>linear.bias.data = conv.bias</code>، وقارن بـ <code>torch.allclose(..., atol=1e-5)</code>.</details></li>
+    <li><b>Patches مش مربعة:</b> ادعم patch زي 32×16 للصور العريضة، واتأكد إن جدول الـ position شغال مع grid مش مربع.
+      <details><summary>تلميح</summary>خلي الـ config فيه <code>patch_h</code> و <code>patch_w</code> و <code>image_h</code> و <code>image_w</code>، و <code>kernel_size=(ph, pw)</code>. الدالة <code>sinusoidal_2d(grid_h, grid_w, dim)</code> أصلًا بتاخد الاتنين منفصلين، فاختبر إن الشكل <span class="ltr">(gh·gw, dim)</span>.</details></li>
+    <li><b>Profiling:</b> قيس زمن الـ patch step على batch = 1 و 8 و 64. الـ patch projection نادرًا بيبقى الـ bottleneck؛ الـ attention اللي بعده هي اللي بتاكل الوقت.
+      <details><summary>تلميح</summary>استخدم <code>time.perf_counter()</code> واعمل warm-up كام مرة الأول، وجوه <code>torch.no_grad()</code>. اقسم الزمن على الـ batch عشان تشوف الزمن لكل صورة.</details></li>
+    <li><b>Frozen feature extractor:</b> استخدم الـ front end مجمد على dataset synthetic من ٤ أشكال (دواير، مربعات، مثلثات، نجوم). الـ CLS output المفروض يتفصل خطيًا.
+      <details><summary>تلميح</summary>ارسم الأشكال بـ numpy على صور 224، عدّيها على الموديل، وخد <code>tokens[:, 0]</code>، ودرّب <code>nn.Linear(hidden, 4)</code> بس فوقيهم. خلي الـ front end <code>requires_grad_(False)</code>.</details></li>
+    <li><b>إضافة مني · tokenizer budget لـ VLM:</b> اكتب دالة <code>token_budget(h, w, patch, max_tokens)</code> ترجع عدد الـ patch tokens لصورة مقاسها h×w، ولو عدّى <code>max_tokens</code> ترجع أكبر resolution (مضاعفات الـ patch) تحافظ على الـ aspect ratio وتقع تحت الحد. ده سؤال حقيقي بتقابله لما تبعت صور لموديل multimodal وعايز تتحكم في التكلفة والـ context.
+      <details><summary>تلميح</summary>عدد الـ tokens = <span class="ltr">(h // p) * (w // p)</span>. لو كبير، اضرب h و w في <span class="ltr">s = sqrt(max_tokens / tokens)</span> وقرّب لتحت لأقرب مضاعف لـ p، وتأكد بـ assert إن الناتج ≤ max_tokens.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d486-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ما قالوش بصوت عالي</h2></div>
+  <h3>الحدس: الـ patch = «كلمة» بصرية</h3>
+  <p>اسم ورقة الـ ViT نفسه «An Image is Worth 16x16 Words». الـ patch بيلعب دور الـ token في النص، والـ projection بتلعب دور الـ embedding table. الفرق إن في النص الـ embedding بيتعمل lookup بـ ID، هنا بيتحسب بضرب مصفوفة لأن الـ patch مش من vocabulary محدود.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li>• تنسى إن الـ CLS بيزود token: تعمل مصفوفة position بطول 196 بدل 197 وتاخد shape error.</li>
+    <li>• ترتيب غلط في الـ permute قبل الـ flatten: الكود يشتغل من غير error بس الأرقام مختلفة عن الـ Conv2d. عشان كده تيست التكافؤ مهم.</li>
+    <li>• صورة مقاسها مش من مضاعفات الـ patch: الـ config هنا بيرفضها بـ ValueError بدل ما الـ Conv2d يقطع الأطراف بصمت.</li>
+    <li>• تسجّل الـ position كـ <code>nn.Parameter</code> وانت عايزه ثابت: كده هيتدرب وهيتعد في البارامترز. الكود بيستخدم <code>register_buffer</code>.</li>
+    <li>• تفتكر الـ patch projection هو اللي بيبطّأ: التمرين ٤ هيوريك إن الـ attention هي اللي بتاكل.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents</h3>
+  <p>أي agent بيشوف screenshot أو PDF مصوّر بيعدّي على front end زي ده. الدرس بيقول نفس الـ front end موجود في CLIP ViT-L/14 و SigLIP و DINOv2 وعيلة Qwen-VL و InternVL؛ الاختلافات بعده (CLS ولا لأ، register tokens، patch 14 ولا 16، dynamic resolution بالـ interpolation). عمليًا: عدد الـ patches = عدد الـ tokens اللي الصورة بتاكلها من الـ context، فكل ما الصورة تكبر، التكلفة تزيد. ده سبب التمرين الإضافي.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d486-quizsec">
+  <div class="station-head"><span class="tag">08</span><h2>كويز</h2></div>
+  <div class="quiz" id="d486-quiz"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d486-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d486-ck">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح ليه 224/16 بيطلّع 197 token ومنين جه الـ 590,000×</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> شفت في المعمل إن Conv2d = flatten·w + b</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> فاهم ليه dim لازم يقبل القسمة على ٤ وإزاي الصف والعمود بيتقسموا</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت <code>main.py</code> بإيدي والتيستات عدّت</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Patch embedding (Conv2d)</td><td>أول layer في CLIP و SigLIP و DINOv2 و Qwen-VL و InternVL</td></tr>
+    <tr><td>عدد الـ patches</td><td>كام token الصورة بتاكل من الـ context في أي VLM</td></tr>
+    <tr><td>CLS token</td><td>تجميع الصورة في متجه واحد للتصنيف أو الـ retrieval</td></tr>
+    <tr><td>2D sinusoidal position</td><td>تغيير الـ resolution من غير retraining، dynamic resolution بالـ interpolation</td></tr>
+    <tr><td>Equivalence test</td><td>أي refactor لكود موديل: نفس الأوزان لازم تدي نفس الأرقام</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Vision Transformer Encoder. هنحط 12-layer transformer فوق الـ front end ده.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F58-vision-encoder-patches" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/58-vision-encoder-patches</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d486-root');
+
+// roadmap
+const lessons=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87];
+const rm=$('d486-roadmap');
+lessons.forEach(n=>{const s=document.createElement('span');s.textContent=n;if(n===58)s.className='now';rm.appendChild(s)});
+
+// ---------- Lab 1: cutter ----------
+const PS=[8,14,16,28,32,56,112];
+const cut=$('d486-cut'),cx=AI.setupCanvas(cut),CW=+cut.dataset.w,CH=+cut.dataset.h;
+const strip=$('d486-strip'),sx=AI.setupCanvas(strip),SW=+strip.dataset.w,SH=+strip.dataset.h;
+// synthetic 112x112 image (each sample = 2x2 of the 224 image)
+const N=112,IMG=new Float32Array(N*N*3);
+(function(){let s=7;const r=()=>{s=(s*16807)%2147483647;return s/2147483647-.5};
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++){const gx=x/N,gy=y/N;let R=gx,G=gy,B=(gx+gy)/2;
+    const dc=Math.hypot(x-38,y-40);if(dc<20){R=.95;G=.55;B=.15}
+    if(x>64&&x<98&&y>62&&y<96){R=.1;G=.45;B=.6}
+    const i=(y*N+x)*3;IMG[i]=Math.min(1,Math.max(0,R*.8+.1+r()*.12));IMG[i+1]=Math.min(1,Math.max(0,G*.8+.1+r()*.12));IMG[i+2]=Math.min(1,Math.max(0,B*.8+.1+r()*.12))}})();
+const off=document.createElement('canvas');off.width=N;off.height=N;
+(function(){const o=off.getContext('2d'),d=o.createImageData(N,N);for(let i=0;i<N*N;i++){d.data[i*4]=IMG[i*3]*255;d.data[i*4+1]=IMG[i*3+1]*255;d.data[i*4+2]=IMG[i*3+2]*255;d.data[i*4+3]=255}o.putImageData(d,0,0)})();
+let selP=null;
+function drawCut(){
+  const p=PS[+$('d486-ps').value],g=224/p,np=g*g,cell=CW/g;
+  $('d486-psv').textContent=p;$('d486-grid').textContent=g+'×'+g;$('d486-np').textContent=np.toLocaleString('en');
+  $('d486-seq').textContent=(np+1).toLocaleString('en');$('d486-flat').textContent=(3*p*p).toLocaleString('en');
+  $('d486-att').textContent=(np*np).toLocaleString('en');$('d486-save').textContent='×'+Math.round(150528*150528/(np*np)).toLocaleString('en');
+  cx.clearRect(0,0,CW,CH);cx.imageSmoothingEnabled=false;cx.drawImage(off,0,0,CW,CH);
+  cx.strokeStyle='rgba(255,255,255,.85)';cx.lineWidth=g>20?.6:1.2;
+  for(let i=1;i<g;i++){cx.beginPath();cx.moveTo(i*cell,0);cx.lineTo(i*cell,CH);cx.moveTo(0,i*cell);cx.lineTo(CW,i*cell);cx.stroke()}
+  if(selP&&selP[0]<g&&selP[1]<g){cx.strokeStyle=css('--vec-b');cx.lineWidth=3;cx.strokeRect(selP[1]*cell,selP[0]*cell,cell,cell)}
+  drawStrip(p,g);
+}
+function drawStrip(p,g){
+  sx.clearRect(0,0,SW,SH);
+  if(!selP||selP[0]>=g||selP[1]>=g){$('d486-sel').textContent='دوس على patch في الصورة';return}
+  const [r,c]=selP,step=Math.max(1,p/2|0),vals=[];
+  // channel-major flatten (C, P, P) like the Conv2d weight order; sample image at 2x2 resolution
+  for(let ch=0;ch<3;ch++)for(let yy=0;yy<p;yy++)for(let xx=0;xx<p;xx++){const X=Math.min(N-1,((c*p+xx)/2)|0),Y=Math.min(N-1,((r*p+yy)/2)|0);vals.push(IMG[(Y*N+X)*3+ch])}
+  const L=vals.length,w=SW/L;
+  for(let i=0;i<L;i++){const v=vals[i],ch=Math.floor(i/(p*p));sx.fillStyle=ch===0?`rgb(${v*255|0},0,0)`:ch===1?`rgb(0,${v*255|0},0)`:`rgb(0,0,${v*255|0})`;sx.fillRect(i*w,4,Math.max(w,.5)+.3,SH-22)}
+  sx.fillStyle=css('--ink');sx.font='11px JetBrains Mono, monospace';sx.fillText('R',2,SH-4);sx.fillText('G',SW/3+2,SH-4);sx.fillText('B',2*SW/3+2,SH-4);
+  sx.textAlign='right';sx.fillText(L+' values → Linear → hidden',SW-2,SH-4);sx.textAlign='left';
+  $('d486-sel').textContent='patch ('+r+', '+c+') · رقمه في الـ sequence: '+(r*g+c+1)+' (بعد الـ CLS)';
+}
+cut.addEventListener('pointerdown',e=>{const p=PS[+$('d486-ps').value],g=224/p,[x,y]=AI.evPos(cut,e);selP=[Math.min(g-1,Math.floor(y/(CH/g))),Math.min(g-1,Math.floor(x/(CW/g)))];drawCut()});
+$('d486-ps').addEventListener('input',()=>{selP=null;drawCut()});
+drawCut();
+
+// ---------- Lab 2: conv vs unfold ----------
+const cv=$('d486-conv'),vx=AI.setupCanvas(cv),VW=+cv.dataset.w,VH=+cv.dataset.h;
+let img8=[],W4=[],bias=0,pi=-1;
+function rnd(){return Math.round((Math.random()*2-1)*10)/10}
+function newData(){
+  img8=Array.from({length:64},(_,i)=>{const x=i%8,y=i/8|0;return Math.round(((x<4?.2:.8)+(y>4?.1:0)+Math.random()*.2)*10)/10});
+  const t=$('d486-filt').value;
+  if(t==='edge')W4=Array.from({length:16},(_,i)=>(i%4)<2?-.5:.5);
+  else if(t==='avg')W4=Array(16).fill(.0625);
+  else W4=Array.from({length:16},rnd);
+  bias=t==='rand'?rnd():0;pi=-1;drawConv();
+}
+function drawConv(){
+  vx.clearRect(0,0,VW,VH);
+  const s=26,ox=10,oy=24;
+  vx.fillStyle=css('--ink');vx.font='12px JetBrains Mono, monospace';vx.fillText('image 8x8',ox,14);vx.fillText('filter 4x4 (w)',ox+8*s+30,14);
+  for(let i=0;i<64;i++){const x=i%8,y=i/8|0,v=img8[i];vx.fillStyle=`rgba(${v*255|0},${v*255|0},${v*255|0},1)`;vx.fillRect(ox+x*s,oy+y*s,s-1,s-1)}
+  vx.strokeStyle=css('--muted');vx.lineWidth=2;vx.beginPath();vx.moveTo(ox+4*s,oy);vx.lineTo(ox+4*s,oy+8*s);vx.moveTo(ox,oy+4*s);vx.lineTo(ox+8*s,oy+4*s);vx.stroke();
+  if(pi>=0){const pr=pi>>1,pc=pi&1;vx.strokeStyle=css('--vec-b');vx.lineWidth=3.5;vx.strokeRect(ox+pc*4*s,oy+pr*4*s,4*s-1,4*s-1)}
+  const fx=ox+8*s+30,fs=26;
+  for(let i=0;i<16;i++){const x=i%4,y=i/4|0,w=W4[i];vx.fillStyle=w>=0?css('--vec-a'):css('--bad');vx.globalAlpha=.2+Math.min(.8,Math.abs(w)*.9);vx.fillRect(fx+x*fs,oy+y*fs,fs-1,fs-1);vx.globalAlpha=1;
+    vx.fillStyle=css('--ink');vx.font='9px JetBrains Mono, monospace';vx.textAlign='center';vx.fillText(f(w,2),fx+x*fs+fs/2,oy+y*fs+fs/2+3);vx.textAlign='left'}
+  vx.fillStyle=css('--ink');vx.font='12px JetBrains Mono, monospace';vx.fillText('b = '+f(bias,2),fx,oy+4*fs+18);
+  vx.fillText('kernel = stride = 4',fx,oy+4*fs+38);vx.fillText('→ 2x2 grid = 4 patches',fx,oy+4*fs+56);
+  if(pi<0){$('d486-pi').textContent='—';$('d486-cv').textContent='—';$('d486-lv').textContent='—';$('d486-df').textContent='—';return}
+  const pr=pi>>1,pc=pi&1;
+  // conv way: slide filter
+  let conv=bias;for(let ky=0;ky<4;ky++)for(let kx=0;kx<4;kx++)conv+=img8[(pr*4+ky)*8+pc*4+kx]*W4[ky*4+kx];
+  // unfold way: flatten patch to 16-vector then dot with flattened filter
+  const flat=[];for(let ky=0;ky<4;ky++)for(let kx=0;kx<4;kx++)flat.push(img8[(pr*4+ky)*8+pc*4+kx]);
+  const lin=flat.reduce((a,v,i)=>a+v*W4[i],0)+bias;
+  $('d486-pi').textContent=pi;$('d486-cv').textContent=f(conv,4);$('d486-lv').textContent=f(lin,4);$('d486-df').textContent=Math.abs(conv-lin).toExponential(1);
+}
+$('d486-step').addEventListener('click',()=>{pi=(pi+1)%4;drawConv()});
+$('d486-rnd').addEventListener('click',newData);$('d486-filt').addEventListener('change',newData);
+newData();
+
+// ---------- Lab 3: sinusoidal 2d ----------
+const tb=$('d486-table'),tx=AI.setupCanvas(tb),TW=+tb.dataset.w,TH=+tb.dataset.h;
+const sm=$('d486-sim'),mx=AI.setupCanvas(sm),MW=+sm.dataset.w,MH=+sm.dataset.h;
+let sel3=[3,5];
+function sin2d(gh,gw,dim){const half=dim/2,q=half/2,inv=[];for(let k=0;k<q;k++)inv.push(Math.exp(-Math.log(10000)*k/Math.max(1,q)));
+  const T=[];for(let r=0;r<gh;r++)for(let c=0;c<gw;c++){const v=new Array(dim);for(let k=0;k<q;k++){v[k]=Math.sin(r*inv[k]);v[q+k]=Math.cos(r*inv[k]);v[half+k]=Math.sin(c*inv[k]);v[half+q+k]=Math.cos(c*inv[k])}T.push(v)}return T}
+function mix(a,b,t){return a.map((v,i)=>v+(b[i]-v)*t)}
+function hex(h){h=h.replace('#','');return[parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]}
+function col(v){const a=hex(css('--vec-a')),b=hex(css('--vec-b')),p=hex(css('--panel'));const c=v>=0?mix(p,a,v):mix(p,b,-v);return`rgb(${c[0]|0},${c[1]|0},${c[2]|0})`}
+function drawPos(){
+  const g=+$('d486-g').value,dim=+$('d486-d').value*16;
+  $('d486-gv').textContent=g;$('d486-dv').textContent=dim;
+  if(sel3[0]>=g)sel3[0]=g-1;if(sel3[1]>=g)sel3[1]=g-1;
+  const T=sin2d(g,g,dim),n=T.length;
+  $('d486-ts').textContent='('+n+', '+dim+')';
+  // table heatmap: tokens on x axis, dims on y
+  tx.clearRect(0,0,TW,TH);const cw=TW/n,ch=(TH-16)/dim;
+  for(let t=0;t<n;t++)for(let d=0;d<dim;d++){tx.fillStyle=col(T[t][d]);tx.fillRect(t*cw,d*ch,cw+.4,ch+.4)}
+  tx.strokeStyle=css('--ink');tx.lineWidth=1;tx.beginPath();tx.moveTo(0,dim/2*ch);tx.lineTo(TW,dim/2*ch);tx.stroke();
+  const si=sel3[0]*g+sel3[1];tx.strokeStyle=css('--ink');tx.lineWidth=2;tx.strokeRect(si*cw,0,Math.max(cw,2),dim*ch);
+  tx.fillStyle=css('--muted');tx.font='11px JetBrains Mono, monospace';tx.fillText('tokens →   top half: row · bottom half: col',2,TH-3);
+  // similarity grid
+  mx.clearRect(0,0,MW,MH);const S=Math.min(MH-10,MW-10)/g,ox=(MW-S*g)/2,oy=5;
+  const q=T[si],nq=Math.hypot(...q);$('d486-nm').textContent=f(nq,3);$('d486-rc').textContent='('+sel3[0]+', '+sel3[1]+')';
+  for(let r=0;r<g;r++)for(let c=0;c<g;c++){const v=T[r*g+c];let dot=0;for(let k=0;k<dim;k++)dot+=v[k]*q[k];const cs=dot/(Math.hypot(...v)*nq);
+    mx.fillStyle=col((cs-.5)*2);mx.fillRect(ox+c*S,oy+r*S,S-1,S-1)}
+  mx.strokeStyle=css('--ink');mx.lineWidth=2.5;mx.strokeRect(ox+sel3[1]*S,oy+sel3[0]*S,S-1,S-1);
+  sm._geo=[ox,oy,S,g];
+}
+sm.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(sm,e),[ox,oy,S,g]=sm._geo;const c=Math.floor((x-ox)/S),r=Math.floor((y-oy)/S);if(r>=0&&c>=0&&r<g&&c<g){sel3=[r,c];drawPos()}});
+['d486-g','d486-d'].forEach(id=>$(id).addEventListener('input',drawPos));
+drawPos();
+
+// ---------- quiz ----------
+AI.quiz($('d486-quiz'),[
+ ['ليه الـ Vision Transformer بيستخدم patches بدل بيكسل لكل token؟',['الـ patches مطلوبة في PyTorch','sequence بيكسل لكل token بتفجّر حساب الـ attention تربيعيًا ومبتبقاش عملية في المقاسات العادية','الـ patches بتحسّن جودة الصورة','عشان نتجنب استخدام tokenizer'],1,'صورة 224×224 = 150,528 token بيكسل. الـ attention تربيعية في الطول، فالتقطيع 16×16 بيصغّر الـ sequence لـ 196 token ويخلّي الموديل ممكن.'],
+ ['إيه العلاقة بين Conv2d بـ kernel = stride = patch_size و flatten-then-linear؟',['الـ Conv2d بيضيف non-linearity','بيطلّعوا outputs مختلفة','الـ Conv2d طريقة أسرع لكتابة نفس الـ linear projection على كل patch','flatten-then-linear مستحيل'],2,'كل مكان في output الـ Conv2d بيعمل dot product بين بيكسلز الـ patch وفلتر واحد، وده نفس flatten-then-linear بالظبط.'],
+ ['ليه الـ 2D sinusoidal position embedding ثابت مش متعلّم؟',['إشارات sin/cos الثابتة بتـ interpolate بنضافة لشبكات الموديل ما شافهاش، وده مفيد لما الـ resolution يتغير','لازم init عشوائي','بيوفّر مساحة على الديسك','الـ positions المتعلّمة ممنوعة'],0,'الـ positions الـ sinusoidal deterministic عبر المقاسات وبتخلي نفس الـ encoder يشتغل على inputs ما اتدربش عليها.'],
+ ['طول الـ sequence لصورة 224×224 بـ patch_size=16 ومعاها CLS token واحد كام؟',['224','256','196','197'],3,'224/16 = 14، يعني 14×14 = 196 patch، زائد CLS واحد = 197.'],
+ ['ليه الـ reconstruction (unfold وبعدين unflatten) sanity check مفيد للـ patch front end؟',['بيسرّع الـ inference','رحلة البيكسلز ذهاب وعودة من غير projection لازم ترجع نفس الـ input؛ لو فشلت يبقى حسبة الـ unfold غلط','بيحسّن الدقة','مطلوب في ONNX'],1,'خطوة التقطيع قابلة للعكس من غير projection. لو الرحلة انحرفت، منطق الـ unfold فيه bug وباقي الـ encoder مش أمان.'],
+ ['إيه اللي بيتغير لما تبدّل position embedding متعلّم بالـ 2D sinusoidal بتاع الدرس؟',['مفيش حاجة','الـ sinusoidal عشوائي كل step','المتعلّم ممكن يناسب resolution ثابت أحسن شوية؛ والـ sinusoidal بيتنقل لـ resolutions جديدة من غير retraining','الـ sinusoidal بياخد بارامترز أكتر'],2,'المتعلّم مرن عند resolution واحد. الـ sinusoidal بصفر بارامترز وبيستحمل تغيير الـ resolution.'],
+ ['(سؤال مني) عدد بارامترز الـ patch projection في ViT-Base/16 (3 قنوات، hidden=768) كام؟',['589,824','590,592','768','150,528'],1,'3·16·16·768 = 589,824 وزن + 768 bias = 590,592. الـ 589,824 من غير الـ bias.'],
+ ['(سؤال مني) ليه sinusoidal_2d بترفض dim=30؟',['عشان 30 صغير','لازم dim يقبل القسمة على ٤: نص للصف ونص للعمود وكل نص sin و cos','عشان 30 مش أس لـ 2','عشان الـ CLS'],1,'half = dim/2 للصف والعمود، و quarter = half/2 للـ sin والـ cos. 30 مش بيتقسم على ٤ فالدالة بترمي ValueError، وده واحد من التيستات.']
+],6,()=>{const c=root.querySelector('input[data-ck="c6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(486,root);
+
+AI.onTheme(()=>{if(!document.body.contains(cut))return false;drawCut();drawConv();drawPos()});
+})();
+</script>

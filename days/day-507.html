@@ -1,0 +1,485 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 79 · Pipeline Parallel and Bubble Analysis</span>
+  <h1>اليوم ٥٠٧: قطّع الموديل على خط إنتاج، واحسب الوقت الضايع</h1>
+  <p class="lede">امبارح وزّعنا <b>الـ optimizer state</b> على الـ ranks (ZeRO). النهاردة بنوزّع <b>الموديل نفسه بالطول</b>: كل rank ياخد stage من الـ layers، والـ microbatches تعدّي عليهم زي خط إنتاج. المشكلة الوحيدة: في الأول وفي الآخر في ناس قاعدة مستنية. الوقت ده اسمه <b>bubble</b>، وتقليله هو الصنعة كلها.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> + PyTorch (gloo)</span>
+    <span>قبله: <b>ZeRO Optimizer State Sharding</b></span>
+    <span>بعده: <b>Sharded Checkpoint and Atomic Resume</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d507-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d507-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت ZeRO stage 1. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>موديل فيه P parameter بيتدرب بـ Adam و mixed precision. الذاكرة لكل rank في DDP العادي قد إيه؟ وفي ZeRO-1؟
+      <details><summary>الإجابة</summary>DDP: <span class="ltr">16P</span> bytes (2P params fp16 + 2P grads fp16 + 4P master fp32 + 4P first moment + 4P second moment). ZeRO-1: <span class="ltr">4P + 12P/N</span>، لأن الـ ٣ حاجات اللي الـ optimizer بس اللي بيلمسها هما اللي اتقسموا. عند N=8 ده <span class="ltr">5.5P</span>، يعني توفير ٦٥٪.</details></li>
+    <li>ليه ZeRO-1 ما بيزوّدش حجم الـ communication عن DDP؟
+      <details><summary>الإجابة</summary>لأن الـ allreduce أصلًا = reduce_scatter + allgather. ZeRO بيعمل reduce_scatter على الـ gradients (كل rank ياخد مجموع الـ shard بتاعه بس)، وبعد الـ Adam step بيعمل allgather على الـ parameters. نفس الـ bytes على السلك، والذاكرة اتقسمت على N.</details></li>
+    <li>إيه الفرق بين stage 1 و 2 و 3؟
+      <details><summary>الإجابة</summary>Stage 1 بيقسّم الـ optimizer state. Stage 2 بيقسّم كمان الـ gradients بنفس الـ bandwidth. Stage 3 (FSDP) بيقسّم الـ parameters نفسها، وبيدفع تمنها allgather لكل layer في كل forward و backward.</details></li>
+  </ol>
+  <div class="note ai"><strong>الربط بالنهاردة:</strong> ZeRO-3 بيخلّي كل rank يجمّع الـ layer كاملة قبل ما يحسبها. الـ pipeline بيمشي في طريق تاني خالص: كل rank ماسك layers بتاعته وبس، ومحدش بيجمّع حاجة. اللي بيتنقل بين الـ ranks هو الـ activations.</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>المشكلة وفكرة الـ stages</div>
+    <div><b>25 min</b>GPipe و 1F1B والـ bubble (معمل ١)</div>
+    <div><b>15 min</b>توازن الـ stages والـ deadlock (معمل ٢ و ٣)</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 PROBLEM -->
+<section id="d507-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: موديل أكبر من أي GPU</h2></div>
+  <p>موديل 70B parameter بـ fp16 محتاج <b>140 GB</b> للـ parameters لوحدها (70 مليار × 2 bytes). مفيش GPU عادي يشيل ده. عندنا طريقين:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>بتقسّم إيه</th><th>بتدفع إيه</th></tr>
+    <tr><td>ZeRO-3 (امبارح)</td><td>كل tensor بيتقطّع شرايح على كل الـ ranks</td><td>لكل layer لازم allgather عشان تجمّع الـ layer كاملة قبل الحساب، وده بيكلّف <span class="ltr">log(N)</span> hops لكل layer (حسب الدرس)</td></tr>
+    <tr><td>Pipeline Parallel (النهاردة)</td><td>الموديل بالطول: stage واحدة (كام layer) لكل rank</td><td>الحساب بقى متسلسل، فيه وقت فاضي = الـ bubble</td></tr>
+  </table></div>
+  <p>الفكرة زي <b>خط تجميع عربيات</b>: محطة ١ تركّب الشاسيه وتسلّمه لمحطة ٢ تركّب الموتور، وهكذا. الـ forward بتاع layer 1 يخلص على rank 0، فيسلّم الـ activation tensor لـ rank 1، اللي يشغّل layer 2 ويسلّم لـ rank 2... والـ backward بيرجع بالعكس. الذاكرة بتقل بشكل خطي لأن كل rank شايل stage واحدة بس.</p>
+  <div class="formula">rank 0: stage 0 → rank 1: stage 1 → rank 2: stage 2 → rank 3: stage 3 + loss<br>backward:  rank 3 ⇢ rank 2 ⇢ rank 1 ⇢ rank 0</div>
+  <p>بس لو بعتّ الـ batch كله مرة واحدة، محطة ٢ هتفضل قاعدة لحد ما محطة ١ تخلص كل حاجة. الحل: نقطّع الـ batch لـ <b>microbatches</b> صغيرين ونخليهم يمشوا ورا بعض في الخط. لسه في أول الخط (لما أول microbatch لسه موصلش لآخر stage) وفي آخره (لما آخر microbatch بيفضّي راجع) محطات فاضية. ده الـ <b>bubble</b>.</p>
+</section>
+
+<!-- 02 BUBBLE LAB -->
+<section id="d507-gpipe">
+  <div class="station-head"><span class="tag">02</span><h2>GPipe و 1F1B: نفس الـ bubble، ذاكرة مختلفة</h2></div>
+  <h3>جدول GPipe: املا الخط، وبعدين فضّيه</h3>
+  <p>GPipe بيدخّل الـ M microbatches كلهم forward الأول، ومفيش أي backward يبدأ قبل ما الكل يخلص. بعد كده يفضّي الخط backward بالعكس. لو كل forward وكل backward بياخدوا وحدة زمن واحدة:</p>
+  <ul>
+    <li>الـ forward بياخد <span class="ltr">M + N − 1</span> cycle لكل stage (M شغل + <span class="ltr">N−1</span> انتظار في الأول).</li>
+    <li>الـ backward بياخد <span class="ltr">M + N − 1</span> cycle تاني.</li>
+    <li>الشغل المفيد لكل stage = <span class="ltr">2M</span>، والـ bubble = <span class="ltr">2(N−1)</span>.</li>
+  </ul>
+  <div class="formula">bubble fraction = 2(N−1) / 2(M+N−1) = (N−1) / (M+N−1)</div>
+  <p>عند M=8 و N=4 ده ٢٧٪. عند M=64 و N=4 ده ٤.٥٪. يعني <b>كتّر الـ microbatches بالنسبة لعدد الـ stages والـ bubble يتخبّى</b>.</p>
+  <p>العيب: كل microbatch لازم يفضل شايل الـ activations بتاعته لحد ما الـ backward بتاعه ييجي. في GPipe محدش بيفضّي حاجة قبل ما الـ drain يبدأ، فذاكرة الـ activations <b>بتكبر مع M</b>.</p>
+  <h3>جدول 1F1B: واحد قدّام، واحد ورا</h3>
+  <p>أول ما forward بتاع microbatch يوصل لآخر stage، يبدأ الـ backward بتاعه على طول ويرجع. كل stage بتبدّل: forward واحد، backward واحد. الـ bubble <b>لسه <span class="ltr">N−1</span></b>، بس الـ activations المحجوزة بقت محدودة بعمق الـ pipeline (N) مش بعدد الـ microbatches. ده اللي بيستخدمه Megatron-LM و PipeDream في الـ production. الدرس بيبني GPipe الأول لأنه أبسط، و 1F1B تمرين.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ارسم الجدول بإيدك</h3>
+      <p>كل صف = stage (rank)، وكل عمود = cycle. الأزرق = forward (Fرقم)، البرتقالي = backward (Bرقم)، والفاضي = bubble. دوس «شغّل» وشوف الشغل بيدخل الخط.</p>
+      <div class="note"><strong>جرب:</strong> (١) خلّي N=4 وزوّد M من 1 لـ 32 وراقب الـ bubble بينزل. (٢) بدّل لـ 1F1B: الـ bubble نفسه بالظبط، بس «أقصى activations» على stage 0 بقى N بدل M. (٣) زوّد الـ microbatch size B وشوف الـ effective batch والذاكرة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d507-gantt" width="560" height="300" aria-label="جدول الـ pipeline: stages في cycles"></canvas>
+      <div class="mrow">
+        <label>N stages = <span id="d507-nv">4</span><input type="range" id="d507-n" min="1" max="8" value="4"></label>
+        <label>M microbatches = <span id="d507-mv">8</span><input type="range" id="d507-m" min="1" max="32" value="8"></label>
+        <label>B (microbatch size) = <span id="d507-bv">4</span><input type="range" id="d507-b" min="1" max="32" value="4"></label>
+        <label>schedule<select id="d507-sch"><option value="g">GPipe</option><option value="1">1F1B</option></select></label>
+      </div>
+      <div class="readout">
+        <div><small>total cycles</small><b id="d507-cy">22</b></div>
+        <div><small>bubble (formula)</small><b id="d507-bf">27.27%</b></div>
+        <div><small>bubble (counted)</small><b id="d507-bm">27.27%</b></div>
+        <div><small>أقصى activations على stage 0</small><b id="d507-pk">8</b></div>
+        <div><small>effective batch M×B</small><b id="d507-eb">32</b></div>
+        <div><small>ذاكرة activations ∝ peak×B</small><b id="d507-am">32</b></div>
+      </div>
+      <div class="btns"><button type="button" class="primary" id="d507-play">شغّل</button><button type="button" id="d507-full">ورّيني الجدول كله</button></div>
+    </div>
+  </div>
+
+  <h3>Microbatch ولا batch؟</h3>
+  <p>الـ pipeline بيشغّل M microbatch كل واحد حجمه B. الـ <b>effective batch</b> = <span class="ltr">M × B</span>، والـ gradient في آخر الـ step هو gradient الـ M×B مثال كلهم مع بعض. الـ bubble بيعتمد على M، والـ optimizer بيشوف M×B. فاختيار M هو موازنة: M كبير = bubble أقل، بس في GPipe = ذاكرة activations أكبر.</p>
+</section>
+
+<!-- 03 BALANCE LAB -->
+<section id="d507-balance">
+  <div class="station-head"><span class="tag">03</span><h2>ليه توازن الحساب أهم من توازن الـ parameters</h2></div>
+  <p>لو stage 0 بتاخد 50 ms و stage 1 بتاخد 100 ms، كل cycle هيستنى stage 1. الباقيين هيقعدوا 50 ms في كل cycle مستنيين. <b>أبطأ محطة بتحكم الخط كله</b>، زي طابور فيه كاشير واحد بطيء.</p>
+  <p>تقسيم الـ layers بعدد الـ parameters غلط: حساب الـ transformer أغلبه attention + MLP في كل layer، أما الـ embedding layer فيها parameters كتير جدًا بس حسابها قليل (مجرد lookup). التقسيم الصح بيساوي <b>الـ FLOPs لكل stage</b>، مش الأوزان.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: وازن الخط</h3>
+      <p>حرّك وقت كل stage وشوف الـ cycle time (= أبطأ stage) ونسبة الشغل الفعلي لكل واحدة. وبعدين جرّب تقسيم موديل من ٨ layers على ٤ stages مرة بالـ params ومرة بالـ FLOPs.</p>
+      <p style="color:var(--muted);font-size:15px">أرقام الـ layers هنا توضيحية: embedding فيها params كتير وحساب قليل، و head فيها params كتير وحساب متوسط، و ٦ blocks متساويين.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d507-bal" width="520" height="230" aria-label="وقت كل stage مقارنة بأبطأ واحدة"></canvas>
+      <div class="mrow">
+        <label>stage 0: <span id="d507-t0v">50</span> ms<input type="range" id="d507-t0" min="10" max="150" value="50"></label>
+        <label>stage 1: <span id="d507-t1v">100</span> ms<input type="range" id="d507-t1" min="10" max="150" value="100"></label>
+        <label>stage 2: <span id="d507-t2v">50</span> ms<input type="range" id="d507-t2" min="10" max="150" value="50"></label>
+        <label>stage 3: <span id="d507-t3v">50</span> ms<input type="range" id="d507-t3" min="10" max="150" value="50"></label>
+      </div>
+      <div class="readout">
+        <div><small>cycle time = max</small><b id="d507-ct">100 ms</b></div>
+        <div><small>متوسط الاستغلال</small><b id="d507-ut">63%</b></div>
+        <div><small>التقسيم</small><b id="d507-part">—</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d507-byP">قسّم بالـ params</button><button type="button" id="d507-byF">قسّم بالـ FLOPs</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 PRODUCTION + DEADLOCK -->
+<section id="d507-prod">
+  <div class="station-head"><span class="tag">04</span><h2>٣ حاجات بتخلّي الـ pipeline يتشحن</h2></div>
+  <ol class="ex">
+    <li><b>Activation checkpointing مع الـ pipeline.</b> مع M microbatches في الطريق على GPipe، ذاكرة الـ activations = M × microbatch واحد. الـ activation checkpointing بيعيد حساب الـ forward وقت الـ backward بدل ما يحفظه: بتدفع حساب وتكسب ذاكرة. الاتنين مع بعض هما اللي بيخلّوا الـ pipeline ينفع مع الـ sequences الطويلة.</li>
+    <li><b>التوازن بيتقاس، مش بيتفترض.</b> الفرق الحقيقية بتعمل profiling pass بتقيس الحساب الفعلي لكل layer (FLOPs ووقت) على نفس الـ hardware، وبعدين تقسّم على أساسه. Megatron-LM فيه flag اسمه <code>--num-layers-per-stage</code> بياخد list عشان تقدر تحط عدد layers مختلف في كل stage.</li>
+    <li><b>ترتيب send/recv لازم ما يعملش deadlock.</b> لو كل stage عملت send قبل recv، الكل هيستنى ومحدش هيستقبل. الحل المعتاد: الـ ranks الزوجية تبعت الأول وبعدين تستقبل، والفردية تستقبل الأول وبعدين تبعت. الدرس بيرتّب الـ ranks صراحة عشان النمط يبان.</li>
+  </ol>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: اعمل deadlock وفكّه</h3>
+      <p>٤ ranks، كل واحد لازم يبعت للي بعده ويستقبل من اللي قبله (في دايرة). الـ send هنا <b>blocking</b>: مش بيخلص غير لما الطرف التاني يكون واقف عند recv مستنيه. دوس «خطوة» وشوف.</p>
+      <p>زي ٤ أصحاب كل واحد ماسك هدية وبيقول «مش هاخد هديتي غير لما حد ياخد مني». لو الكل بيدّي الأول ومحدش فاضي ياخد، الكل هيفضل واقف للأبد.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d507-dl" width="520" height="220" aria-label="أربع ranks بتبعت وتستقبل"></canvas>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center">الترتيب: <select id="d507-dlmode"><option value="all">الكل: send وبعدين recv</option><option value="eo">زوجي send أولًا، فردي recv أولًا</option></select></label>
+        <button type="button" class="primary" id="d507-dlstep">خطوة</button><button type="button" id="d507-dlreset">من الأول</button>
+      </div>
+      <div class="verdict" id="d507-dlv">جاهز</div>
+    </div>
+  </div>
+  <h3>مين بيستخدم ده فعلًا</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الأداة</th><th>إيه اللي فيها</th></tr>
+    <tr><td>Megatron-LM</td><td>المرجع للـ pipeline على نطاق كبير. بيستخدم 1F1B وبيدعم tensor + pipeline + data parallel مع بعض.</td></tr>
+    <tr><td>DeepSpeed Pipeline</td><td>متكامل مع ZeRO. الـ ZeRO-1 + pipeline تركيبة شائعة لأكبر الموديلات المفتوحة.</td></tr>
+    <tr><td>PyTorch Pipe</td><td>الـ wrapper الأصلي في PyTorch، مبني على <code>torch.distributed.pipeline.sync.Pipe</code>.</td></tr>
+  </table></div>
+  <p>والـ Ship It: درس ٨٠ (بكرة) هيخزّن shards الـ parameters لكل stage في checkpoint مقسّم، ودرس ٨١ هيركّب DDP + ZeRO + pipeline في الـ demo الكامل (الـ pipeline هيفضل simulated عشان وقت التشغيل).</p>
+</section>
+
+<!-- 05 CODE -->
+<section id="d507-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: الكود خطوة بخطوة</h2></div>
+  <p>من جذر الريبو (محتاج <code>torch</code> متسطّب):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/79-pipeline-parallel/code/main.py</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_pipeline.py</code> واكتب الخطوات دي بنفسك. بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الثوابت والمعادلة المقفولة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>SEED = 23
+NUM_STAGES = 4
+NUM_MICROBATCHES = 8
+FORWARD_UNITS = 1
+BACKWARD_UNITS = 2
+
+def bubble_fraction(num_stages, num_microbatches):
+    <span class="c"># الـ forward: M + N - 1 cycles، والـ backward نفس الكلام</span>
+    <span class="c"># الشغل المفيد لكل stage = 2M، يبقى الـ bubble = (N-1)/(M+N-1)</span>
+    n, m = num_stages, num_microbatches
+    return (n - 1) / (m + n - 1)</pre></div>
+
+  <h3>خطوة ٢: جدول GPipe كـ list من (cycle, stage, microbatch, phase)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def gpipe_schedule(num_stages, num_microbatches):
+    n, m = num_stages, num_microbatches
+    schedule = []
+    <span class="c"># forward: microbatch i يدخل stage k في cycle i+k</span>
+    for mb in range(m):
+        for stage in range(n):
+            schedule.append((mb + stage, stage, mb, "F"))
+    <span class="c"># backward: يبدأ بعد ما الـ forward كله يخلص، وآخر microbatch يرجع الأول</span>
+    forward_end = m + n - 1
+    for mb in range(m):
+        for stage in reversed(range(n)):
+            cycle = forward_end + (m - 1 - mb) + (n - 1 - stage)
+            schedule.append((cycle, stage, mb, "B"))
+    return schedule</pre></div>
+
+  <h3>خطوة ٣: ارسمه Gantt، وعدّ الخانات الفاضية</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def render_gantt(schedule, num_stages, num_microbatches):
+    n = num_stages
+    max_cycle = max(c for c, _, _, _ in schedule)
+    grid = [["." for _ in range(max_cycle + 1)] for _ in range(n)]
+    for cycle, stage, mb, phase in schedule:
+        grid[stage][cycle] = f"{phase}{mb}"
+    lines = ["stage \\ cycle  " + " ".join(f"{c:>2}" for c in range(max_cycle + 1))]
+    for s, row in enumerate(grid):
+        lines.append(f"stage {s}         " + " ".join(f"{cell:>2}" for cell in row))
+    return "\n".join(lines)
+
+def measure_bubble(num_stages, num_microbatches):
+    <span class="c"># الـ bubble الفعلي = الخانات الفاضية / كل الخانات</span>
+    schedule = gpipe_schedule(num_stages, num_microbatches)
+    max_cycle = max(c for c, _, _, _ in schedule)
+    total_slots = num_stages * (max_cycle + 1)
+    return (total_slots - len(schedule)) / total_slots</pre></div>
+
+  <h3>خطوة ٤: stage حقيقية + pipeline بين ٢ ranks على gloo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class StageMLP(nn.Module):
+    def __init__(self, in_dim, hid_dim, out_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(in_dim, hid_dim)
+        self.fc2 = nn.Linear(hid_dim, out_dim)
+    def forward(self, x):
+        return torch.relu(self.fc2(torch.relu(self.fc1(x))))
+
+<span class="c"># جوه _pipe_worker، لكل microbatch:</span>
+if rank == 0:
+    x = torch.randn(batch, in_dim, generator=g)
+    act = stage(x)
+    dist.send(act.detach(), dst=1)          <span class="c"># ابعت الـ activation لقدّام</span>
+    grad = torch.zeros_like(act)
+    dist.recv(grad, src=1)                  <span class="c"># استنى الـ gradient راجع</span>
+    act.backward(grad)                      <span class="c"># كمّل الـ backward على stage 0</span>
+else:
+    buf = torch.zeros(batch, mid_dim)
+    dist.recv(buf, src=0)                   <span class="c"># استقبل من stage 0</span>
+    act = buf.detach().requires_grad_(True) <span class="c"># ورقة جديدة في الـ graph</span>
+    pred = stage(act)
+    loss = loss_fn(pred, torch.zeros(batch, out_dim))
+    loss.backward()
+    dist.send(act.grad.detach(), dst=0)     <span class="c"># رجّع gradient الـ activation</span>
+<span class="c"># بعد كل الـ microbatches: optim.step() مرة واحدة = gradient accumulation</span></pre></div>
+  <p>لاحظ: rank 0 بيعمل send وبعدين recv، و rank 1 بيعمل recv وبعدين send. ده نفس نمط «زوجي يبعت، فردي يستقبل» اللي شفته في معمل ٣، فمفيش deadlock. الـ <code>run_pipeline</code> بيعمل spawn لـ process لكل rank بـ <code>mp.get_context("spawn")</code> وملف rendezvous في temp dir، ويجمع النتايج من Queue.</p>
+
+  <h3>خطوة ٥: الـ main</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def main():
+    schedule = gpipe_schedule(NUM_STAGES, NUM_MICROBATCHES)
+    print(render_gantt(schedule, NUM_STAGES, NUM_MICROBATCHES))
+    print(f"closed-form bubble fraction: {bubble_fraction(4, 8) * 100:.2f}%")
+    print(f"measured bubble fraction:    {measure_bubble(4, 8) * 100:.2f}%")
+    for m in (1, 2, 4, 8, 16, 32, 64):
+        print(f"{m:&lt;6}{bubble_fraction(4, m)*100:&lt;10.2f}")
+    results = run_pipeline(steps=3, batch=8, microbatches=4)   <span class="c"># الـ pipeline الحقيقي</span></pre></div>
+  <details><summary>الناتج المتوقع (الأرقام محسوبة من المعادلة)</summary><pre class="term">GPipe schedule analysis: stages=4, microbatches=8
+stage \ cycle   0  1  2 ... 21
+stage 0        F0 F1 F2 ...            (22 cycle من 0 لـ 21)
+...
+closed-form bubble fraction: 27.27%
+measured bubble fraction:    27.27%
+
+bubble vs microbatch count (N=4):
+M     bubble %
+1     75.00
+2     60.00
+4     42.86
+8     27.27
+16    15.79
+32    8.57
+64    4.48
+
+running 2-stage real pipeline over gloo...
+rank 1 saw 12 microbatch losses; final norm rank 0 = ..., rank 1 = ...</pre><p>الـ 12 = 3 steps × 4 microbatches. قيم الـ norm بتعتمد على الـ seed ونسخة torch، فما حطّتهاش.</p></details>
+  <p>وشغّل الـ tests:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/79-pipeline-parallel/tests/test_pipeline.py</pre></div>
+  <p>الـ tests بتتأكد إن المعادلة = العدّ لكل N في (2,3,4) و M في (4,8,16)، وإن الـ bubble بينزل مع M، وإن كل microbatch عدّى على كل stage forward و backward، وإن N=1 يدي bubble صفر.</p>
+</section>
+
+<!-- 06 EXERCISES -->
+<section id="d507-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>ابني 1F1B</b> واتأكد إن الـ bubble زي GPipe بالظبط بس ذاكرة الـ activations محدودة.
+      <details><summary>تلميح</summary>لكل stage s: الأول اعمل <span class="ltr">min(N−s−1, M)</span> forward (warmup)، بعدين بدّل F و B لحد ما الـ forwards تخلص، وبعدين كمّل الـ backwards (cooldown). شغّلها كمحاكاة cycle بـ cycle: الـ F على stage s محتاج F نفس الـ microbatch على s−1 يكون خلص، والـ B على s محتاج B على s+1. اعمل counter لكل stage (forwards − backwards) وخد أقصى قيمة: لازم تطلع ≤ N. معمل ١ بيعمل كده بالظبط.</details></li>
+    <li><b>Profile وقت كل stage</b> على موديل أعمق ووزّن الـ stages بالوقت المقاس.
+      <details><summary>تلميح</summary>قيس كل layer لوحدها بـ <code>time.perf_counter()</code> حوالين forward+backward (خد متوسط كام تكرار بعد warmup). بعدين قسّم الـ layers لـ N مجموعات متصلة بحيث أكبر مجموع يبقى أصغر ما يمكن (DP بسيط أو binary search على الحد الأقصى).</details></li>
+    <li><b>Gradient accumulation</b> عبر الـ microbatches، واتأكد إن الـ gradient = gradient الـ forward على الـ batch الكامل.
+      <details><summary>تلميح</summary>الكود أصلًا بيعمل <code>optim.step()</code> مرة بعد كل الـ microbatches. خلّي الـ loss متوسط على الـ microbatch، واقسم على M قبل الـ backward. قارن مع موديل واحد بيشوف الـ M×B مرة واحدة بـ <code>torch.allclose(..., atol=1e-6)</code>.</details></li>
+    <li><b>ضيف activation checkpointing</b> وقيس الذاكرة اللي نزلت قصاد الحساب الزيادة.
+      <details><summary>تلميح</summary><code>torch.utils.checkpoint.checkpoint(stage, x)</code> بدل <code>stage(x)</code>. الذاكرة: <code>tracemalloc</code> على CPU أو <code>torch.cuda.max_memory_allocated()</code> على GPU. المتوقع: الذاكرة أقل والـ backward أبطأ (لأنه بيعيد الـ forward).</details></li>
+    <li><b>ادمج pipeline مع DDP</b>: كل pipeline rank ليه نسخ في data-parallel group، وفكّر في الـ schedule الثنائي.
+      <details><summary>تلميح</summary>عندك grid: <span class="ltr">PP × DP</span>. الـ activations بتمشي على محور الـ PP، والـ gradients بتتعمل لها allreduce على محور الـ DP بين ranks ماسكة نفس الـ stage. استخدم <code>dist.new_group</code> لكل محور.</details></li>
+    <li><b>إضافة مني · اختار M لهدف bubble:</b> اكتب <code>choose_microbatches(n_stages, target_bubble, max_activation_slots)</code> ترجع أصغر M يحقق <span class="ltr">bubble ≤ target</span>، وتقولك هل GPipe هيعدّي حد الذاكرة ولا لازم 1F1B. ده سؤال حقيقي بتجاوبه قبل ما تحجز cluster.
+      <details><summary>الحل</summary>من <span class="ltr">(N−1)/(M+N−1) ≤ b</span> تطلع <span class="ltr">M ≥ (N−1)(1−b)/b</span>. خد الـ ceil. عند N=8 و b=5٪: <span class="ltr">M ≥ 7×0.95/0.05 = 133</span>. الـ GPipe هيحتاج 133 slot activations، والـ 1F1B هيحتاج حوالي 8. لو الحد أقل من 133، يبقى 1F1B.</details></li>
+  </ol>
+</section>
+
+<!-- 07 EXTRA -->
+<section id="d507-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> الـ pipeline بيقسم الذاكرة على N ببلاش تقريبًا، وتمنه الوحيد وقت ثابت قدره <span class="ltr">N−1</span> cycle في أول وآخر كل step. فالشغل كله إنك تخلّي الـ step «طويل» (M كبير) عشان الوقت الثابت ده يبقى نسبة صغيرة.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>إنك تفتكر 1F1B بيقلل الـ bubble.</b> مش بيقلله (في الجدول البسيط). اللي بيقلله هو الذاكرة. لو عايز bubble أقل فعلًا، Megatron عنده جدول تاني اسمه interleaved 1F1B: كل rank بيمسك أكتر من chunk صغير من الموديل (virtual stages)، وده بيقلل الـ bubble على حساب communication أكتر. ده بره الدرس، بس الاسم مهم تعرفه.</li>
+    <li><b>إنك تقسّم الـ batch لـ microbatches صغيرين أوي.</b> الـ microbatch الصغير جدًا بيخلّي الـ GPU مش مستغل (matmuls صغيرة)، فكل cycle بقى أبطأ نسبيًا. فيه نقطة توازن، وبتلاقيها بالقياس.</li>
+    <li><b>إنك تنسى إن آخر stage فيها الـ loss.</b> وغالبًا كمان الـ LM head الكبير على الـ vocab. ده بيخلّيها أتقل من الباقي، وده مثال حي على ليه بنوازن بالـ FLOPs.</li>
+    <li><b>الـ demo الحقيقي في الكود مش overlapped.</b> rank 0 بيبعت microbatch ويستنى الـ gradient بتاعه قبل ما يبدأ اللي بعده، فالـ ranks عمليًا بيشتغلوا بالدور. ده بيثبت إن السلك شغال، مش إن الـ pipeline سريع. الـ overlap الحقيقي محتاج <code>dist.isend</code>/<code>irecv</code> وجدول زي اللي في المعمل.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs</h3>
+  <p>تدريب الموديلات الكبيرة جدًا بيستخدم ما يسمى 3D parallelism: tensor parallel جوه السيرفر الواحد (لأنه محتاج bandwidth عالي جدًا)، و pipeline parallel بين السيرفرات، و data parallel فوق الاتنين. وفي الـ inference، مكتبات زي vLLM فيها إعداد <code>pipeline_parallel_size</code> لما الموديل ما يدخلش في سيرفر واحد.</p>
+</section>
+
+<!-- 08 QUIZ -->
+<section id="d507-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d507-quizBox"></div>
+</section>
+
+<!-- 09 DONE -->
+<section id="d507-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الـ bubble وأطلّع المعادلة <span class="ltr">(N−1)/(M+N−1)</span> من الجدول</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم الفرق بين GPipe و 1F1B في الذاكرة مش في الـ bubble</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه بنوازن بالـ FLOPs مش بالـ params، وجربت معمل ٢</label></li>
+    <li><label><input type="checkbox" data-ck="4"> عملت deadlock وفكّيته في معمل ٣</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود بإيدي وشغّلت الـ main والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Pipeline stages</td><td>تدريب الموديلات اللي ما تدخلش في GPU أو سيرفر واحد</td></tr>
+    <tr><td>Bubble</td><td>حساب الكفاءة قبل حجز cluster، واختيار M</td></tr>
+    <tr><td>1F1B</td><td>Megatron-LM و PipeDream والـ production pipelines</td></tr>
+    <tr><td>توازن الـ FLOPs</td><td><code>--num-layers-per-stage</code> في Megatron، والـ profiling قبل التقسيم</td></tr>
+    <tr><td>Send/recv ordering</td><td>أي كود distributed بيستخدم point-to-point</td></tr>
+    <tr><td>Pipeline + ZeRO-1</td><td>DeepSpeed مع أكبر الموديلات المفتوحة</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Sharded Checkpoint and Atomic Resume. ازاي تحفظ حالة كل الـ ranks بالتوازي من غير ما crash في النص يبوّظ الـ checkpoint.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F79-pipeline-parallel" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/79-pipeline-parallel</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N0=507,LESSON=79,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d507-roadmap').closest('.day');
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// roadmap
+const rm=$('d507-roadmap');for(let i=1;i<=87;i++){if(i===18||i===19)continue;const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)}
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+// ---------- Lab 1: schedules ----------
+function gpipe(n,m){const s=[];for(let mb=0;mb<m;mb++)for(let k=0;k<n;k++)s.push([mb+k,k,mb,'F']);
+  const fe=m+n-1;for(let mb=0;mb<m;mb++)for(let k=n-1;k>=0;k--)s.push([fe+(m-1-mb)+(n-1-k),k,mb,'B']);return s}
+function oneF1B(n,m){
+  const ops=[];for(let k=0;k<n;k++){const w=Math.min(n-k-1,m),L=[];let fi=0,bi=0;
+    for(let i=0;i<w;i++)L.push(['F',fi++]);
+    while(fi<m){L.push(['F',fi++]);L.push(['B',bi++])}
+    while(bi<m)L.push(['B',bi++]);ops.push(L)}
+  const doneF={},doneB={},ptr=new Array(n).fill(0),out=[];let c=0;
+  while(ptr.some((p,k)=>p<ops[k].length)&&c<1000){const now=[];
+    for(let k=0;k<n;k++){const op=ops[k][ptr[k]];if(!op)continue;const [ph,mb]=op;let ok;
+      if(ph==='F')ok=k===0||doneF[(k-1)+','+mb]!==undefined&&doneF[(k-1)+','+mb]<c;
+      else ok=k===n-1?doneF[k+','+mb]!==undefined&&doneF[k+','+mb]<c:doneB[(k+1)+','+mb]!==undefined&&doneB[(k+1)+','+mb]<c;
+      if(ok)now.push([k,ph,mb])}
+    now.forEach(([k,ph,mb])=>{(ph==='F'?doneF:doneB)[k+','+mb]=c;out.push([c,k,mb,ph]);ptr[k]++});c++}
+  return out}
+const gc=$('d507-gantt'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+let sched=[],maxC=0,shown=Infinity,anim=null;
+function compute(){
+  const n=+$('d507-n').value,m=+$('d507-m').value,b=+$('d507-b').value,t=$('d507-sch').value;
+  $('d507-nv').textContent=n;$('d507-mv').textContent=m;$('d507-bv').textContent=b;
+  sched=t==='g'?gpipe(n,m):oneF1B(n,m);maxC=Math.max(...sched.map(s=>s[0]));
+  const total=n*(maxC+1),meas=(total-sched.length)/total,closed=(n-1)/(m+n-1);
+  // peak in-flight on stage 0
+  const ev=sched.filter(s=>s[1]===0).sort((a,b)=>a[0]-b[0]);let cur=0,pk=0;ev.forEach(e=>{cur+=e[3]==='F'?1:-1;pk=Math.max(pk,cur)});
+  $('d507-cy').textContent=maxC+1;$('d507-bf').textContent=f(closed*100)+'%';$('d507-bm').textContent=f(meas*100)+'%';
+  $('d507-pk').textContent=pk;$('d507-eb').textContent=m*b;$('d507-am').textContent=pk*b;
+  drawGantt();
+}
+function drawGantt(){
+  const n=+$('d507-n').value;gx.clearRect(0,0,GW,GH);
+  const LX=56,top=22,cols=maxC+1,cw=(GW-LX-6)/cols,rh=Math.min(32,(GH-top-8)/n);
+  gx.font='11px JetBrains Mono, monospace';gx.textBaseline='middle';gx.textAlign='left';
+  for(let k=0;k<n;k++){gx.fillStyle=css('--ink');gx.fillText('stage '+k,4,top+k*rh+rh/2);
+    for(let c=0;c<cols;c++){gx.fillStyle=css('--soft');gx.fillRect(LX+c*cw+.5,top+k*rh+1,cw-1,rh-2)}}
+  gx.textAlign='center';
+  sched.forEach(([c,k,mb,ph])=>{if(c>shown)return;gx.fillStyle=ph==='F'?css('--vec-a'):css('--vec-b');
+    gx.fillRect(LX+c*cw+.5,top+k*rh+1,cw-1,rh-2);
+    if(cw>=19){gx.fillStyle=css('--paper');gx.fillText(ph+mb,LX+c*cw+cw/2,top+k*rh+rh/2)}});
+  gx.fillStyle=css('--muted');gx.textAlign='left';gx.fillText('cycle →  0 … '+maxC,LX,10);
+  if(shown<Infinity){const x=LX+(Math.min(shown,maxC)+1)*cw;gx.strokeStyle=css('--ink');gx.lineWidth=1.5;gx.beginPath();gx.moveTo(x,top-4);gx.lineTo(x,top+n*rh+2);gx.stroke()}
+}
+['d507-n','d507-m','d507-b','d507-sch'].forEach(id=>$(id).addEventListener('input',()=>{cancelAnimationFrame(anim);shown=Infinity;compute()}));
+$('d507-full').addEventListener('click',()=>{cancelAnimationFrame(anim);shown=Infinity;drawGantt()});
+$('d507-play').addEventListener('click',()=>{cancelAnimationFrame(anim);if(reduce){shown=Infinity;drawGantt();return}
+  shown=-1;let last=0;const per=Math.max(60,1800/(maxC+1));
+  const step=t=>{if(!document.body.contains(gc))return;if(t-last>per){shown++;last=t;drawGantt()}if(shown<maxC)anim=requestAnimationFrame(step);else{shown=Infinity;drawGantt()}};anim=requestAnimationFrame(step)});
+compute();
+
+// ---------- Lab 2: balance ----------
+const bc=$('d507-bal'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+const LAY=[['embed',40,1],['L1',12,12],['L2',12,12],['L3',12,12],['L4',12,12],['L5',12,12],['L6',12,12],['head',40,8]];
+let partTxt='—';
+function bestSplit(key){ // contiguous split of LAY into 4 groups minimising max sum of key
+  const v=LAY.map(l=>l[key]),L=v.length;let best=null;
+  for(let a=1;a<L-2;a++)for(let b=a+1;b<L-1;b++)for(let c=b+1;c<L;c++){const g=[[0,a],[a,b],[b,c],[c,L]];
+    const mx=Math.max(...g.map(([i,j])=>v.slice(i,j).reduce((s,x)=>s+x,0)));if(!best||mx<best.mx)best={mx,g}}
+  return best.g}
+function applySplit(key,label){const g=bestSplit(key);
+  g.forEach(([i,j],s)=>{const fl=LAY.slice(i,j).reduce((a,l)=>a+l[2],0);$('d507-t'+s).value=Math.min(150,Math.max(10,fl*4))});
+  partTxt=label+': '+g.map(([i,j])=>LAY.slice(i,j).map(l=>l[0]).join('+')).join(' | ');drawBal()}
+function drawBal(){
+  const t=[0,1,2,3].map(i=>+$('d507-t'+i).value);t.forEach((v,i)=>$('d507-t'+i+'v').textContent=v);
+  const mx=Math.max(...t),ut=t.reduce((a,b)=>a+b,0)/(4*mx);
+  $('d507-ct').textContent=mx+' ms';$('d507-ut').textContent=Math.round(ut*100)+'%';$('d507-part').textContent=partTxt;
+  bx.clearRect(0,0,BW,BH);const LX=70,W=BW-LX-50;bx.font='12px JetBrains Mono, monospace';bx.textBaseline='middle';
+  t.forEach((v,i)=>{const y=18+i*50;bx.fillStyle=css('--ink');bx.textAlign='left';bx.fillText('stage '+i,4,y+14);
+    bx.fillStyle=css('--soft');bx.fillRect(LX,y,W,28);
+    bx.fillStyle=v===mx?css('--bad'):css('--vec-a');bx.fillRect(LX,y,W*v/150,28);
+    bx.setLineDash([4,3]);bx.strokeStyle=css('--muted');bx.strokeRect(LX+W*v/150,y,W*(mx-v)/150,28);bx.setLineDash([]);
+    bx.fillStyle=css('--ink');bx.fillText(Math.round(v/mx*100)+'%',LX+W*mx/150+6,y+14)});
+  const xm=LX+W*mx/150;bx.strokeStyle=css('--bad');bx.lineWidth=1.5;bx.beginPath();bx.moveTo(xm,8);bx.lineTo(xm,BH-6);bx.stroke();
+  bx.fillStyle=css('--bad');bx.textAlign='center';bx.fillText('cycle',xm,6);
+}
+[0,1,2,3].forEach(i=>$('d507-t'+i).addEventListener('input',()=>{partTxt='يدوي';drawBal()}));
+$('d507-byP').addEventListener('click',()=>applySplit(1,'params'));
+$('d507-byF').addEventListener('click',()=>applySplit(2,'FLOPs'));
+drawBal();
+
+// ---------- Lab 3: deadlock ----------
+const dc=$('d507-dl'),dx=AI.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+let prog=[],pc=[],tick=0,state='ready',lastPairs=[];
+function resetDL(){const mode=$('d507-dlmode').value;
+  prog=[0,1,2,3].map(r=>{const s=['send',(r+1)%4],v=['recv',(r+3)%4];return mode==='all'||r%2===0?[s,v]:[v,s]});
+  pc=[0,0,0,0];tick=0;state='ready';lastPairs=[];$('d507-dlv').textContent='جاهز: دوس خطوة';$('d507-dlv').style.color='';drawDL()}
+function stepDL(){if(state==='dead'||state==='done')return;tick++;const pairs=[];
+  for(let a=0;a<4;a++){const op=prog[a][pc[a]];if(!op||op[0]!=='send')continue;const b=op[1],ob=prog[b][pc[b]];
+    if(ob&&ob[0]==='recv'&&ob[1]===a&&!pairs.some(p=>p.includes(a)||p.includes(b)))pairs.push([a,b])}
+  pairs.forEach(([a,b])=>{pc[a]++;pc[b]++});lastPairs=pairs;
+  const v=$('d507-dlv');
+  if(pc.every((p,r)=>p>=prog[r].length)){state='done';v.textContent='خلصوا كلهم في '+tick+' خطوات ✓';v.style.color=css('--ok')}
+  else if(!pairs.length){state='dead';v.textContent='DEADLOCK: كل rank واقف عند send ومحدش بيستقبل';v.style.color=css('--bad')}
+  else{v.textContent='خطوة '+tick+': اتقابلوا '+pairs.map(p=>p[0]+'→'+p[1]).join(' و ');v.style.color=''}
+  drawDL()}
+function drawDL(){dx.clearRect(0,0,DW,DH);const pos=[[90,60],[430,60],[430,170],[90,170]];
+  dx.font='12px JetBrains Mono, monospace';dx.textAlign='center';dx.textBaseline='middle';
+  for(let r=0;r<4;r++){const [x,y]=pos[r],[x2,y2]=pos[(r+1)%4];const hot=lastPairs.some(p=>p[0]===r);
+    const ang=Math.atan2(y2-y,x2-x),ox=Math.cos(ang)*66,oy=Math.sin(ang)*30;
+    AI.arrow(dx,x+ox,y+oy,x2-ox,y2-oy,hot?css('--ok'):css('--line'),hot?3:2)}
+  for(let r=0;r<4;r++){const [x,y]=pos[r],op=prog[r][pc[r]];
+    dx.fillStyle=css('--panel');dx.strokeStyle=state==='dead'?css('--bad'):(op?css('--ink'):css('--ok'));dx.lineWidth=2;
+    dx.fillRect(x-62,y-26,124,52);dx.strokeRect(x-62,y-26,124,52);
+    dx.fillStyle=css('--ink');dx.fillText('rank '+r,x,y-10);
+    dx.fillStyle=op?(op[0]==='send'?css('--vec-a'):css('--vec-b')):css('--ok');
+    dx.fillText(op?(op[0]==='send'?'send → '+op[1]:'recv ← '+op[1]):'done',x,y+10)}}
+$('d507-dlstep').addEventListener('click',stepDL);$('d507-dlreset').addEventListener('click',resetDL);$('d507-dlmode').addEventListener('change',resetDL);
+resetDL();
+
+// ---------- quiz ----------
+AI.quiz($('d507-quizBox'),[
+ ['يعني إيه الـ pipeline bubble؟',['packet على الشبكة','bug في NCCL','وقت فاضي في أول وآخر الـ pipeline: stages مالهاش شغل لحد ما أول microbatch يوصلها، وبعد ما آخر واحد يمشي','memory leak'],2,'مع M microbatches و N stages، الـ bubble لكل stage = (N−1)/(M+N−1). لما M أكبر بكتير من N بيصغر.'],
+ ['ليه ذاكرة الـ activations في GPipe متناسبة مع M؟',['حد في الـ hardware','حد في الـ compiler','bug','activations كل الـ M microbatches لازم تفضل محفوظة لحد الـ backward بتاعها، ومفيش حاجة بتتفضّى قبل ما الـ drain يبدأ'],3,'GPipe بيملا الخط بكل الـ forwards قبل أي backward، فكل microbatch في الطريق شايل الـ activations بتاعته.'],
+ ['1F1B أحسن من GPipe في إيه؟',['throughput أعلى','نفس الـ bubble بس ذاكرة activations محدودة: أول ما forward الـ microbatch يوصل لآخر stage، الـ backward بتاعه يبدأ والـ activations تتفضّى','موديل أصغر','bubble أقل'],1,'Megatron-LM و PipeDream بيستخدموا 1F1B عشان الذاكرة تتحدد بعمق الـ pipeline مش بعدد الـ microbatches.'],
+ ['ليه تساوي الحساب بين الـ stages أهم من تساوي عدد الـ parameters؟',['عشان الذاكرة تبقى aligned','شكلها أحلى','أبطأ stage بتحكم كل cycle والباقي بيستناها. الـ embedding فيها params كتير وحساب قليل، فالتقسيم بالـ params بيبوّظ التوازن','أسهل في الكود'],2,'Megatron-LM بيوفّر --num-layers-per-stage كـ list عشان تحط عدد layers مختلف لما تكلفة الـ layer تختلف.'],
+ ['إيه اللي يحصل لو كل stage عملت send قبل recv؟',['bubble أعلى','بطء','deadlock على السلك، والحل المعتاد إن الـ ranks الزوجية تبعت الأول والفردية تستقبل الأول','memory leak'],2,'الـ send/recv المتزامنين محتاجين طرف يكون بيستقبل والتاني بيبعت. الدرس بيرتّب الـ ranks صراحة عشان النمط يبان.'],
+ ['Pipeline + ZeRO-1 بيجمعوا أنهي مكسبين في الذاكرة؟',['activations بس','ولا حاجة','تقسيم الـ parameters بالـ stage (كل rank شايل stage واحدة) + تقسيم الـ optimizer state (كل rank شايل 1/N من الـ optimizer بتاع الـ stage بتاعته)','ضغط و quantization'],2,'الـ pipeline بيقسم الـ layers على الـ ranks، و ZeRO بيقسم الـ optimizer state جوه الـ data-parallel group عند كل pipeline rank. المكسبين بيتضربوا في بعض.'],
+ ['(سؤال مني) N=4 و M=12. الـ bubble قد إيه؟',['20%','25%','33%','6%'],0,'(4−1)/(12+4−1) = 3/15 = 20%.'],
+ ['(سؤال مني) غيّرت من GPipe لـ 1F1B بنفس N و M. إيه اللي اتغير؟',['الـ bubble نزل للنص','الـ effective batch اتغير','أقصى activations محجوزة على stage 0 نزل من M لحوالي N، والـ bubble زي ما هو','الـ gradient بقى مختلف'],2,'نفس الشغل ونفس الـ gradient ونفس الـ bubble. اللي اتغير ترتيب الشغل، فالـ activations بتتفضّى أبدر.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N0,root);
+AI.onTheme(()=>{if(!document.body.contains(gc))return false;drawGantt();drawBal();drawDL()});
+})();
+</script>

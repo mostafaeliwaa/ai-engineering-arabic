@@ -1,0 +1,595 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 74 · Leaderboard Aggregation</span>
+  <h1>اليوم ٥٠٢: مين الأول بجد؟ ترتيب الموديلات بالإحصاء مش بالإحساس</h1>
+  <p class="lede">سهل تحسب score لكل task. الصعب إنك تجمّع scores موديلات كتير على tasks مختلفة في ترتيب واحد تقدر <b>تدافع عنه</b>. النهاردة هتبني الـ aggregator: متوسط و win-rate لكل موديل، و <b>confidence interval بالـ bootstrap</b>، ومقارنة كل موديلين بـ <b>paired bootstrap</b> تقولك الفرق حقيقي ولا صدفة، وفي الآخر جدول markdown جاهز يتحط في تعليق CI.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> + numpy</span>
+    <span>قبله: <b>Perplexity and Calibration</b></span>
+    <span>بعده: <b>End-to-End Eval Runner</b></span>
+  </div>
+  <div style="min-width:0">
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d502-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d502-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت الـ perplexity والـ ECE والـ Brier. جاوب في دماغك الأول.</p>
+  <ol class="ex">
+    <li>adapter بعت <span class="ltr">log p</span> بدل <span class="ltr">−log p</span>. هيحصل إيه في الكود بتاعك؟
+      <details><summary>الإجابة</summary>الـ NLL هيطلع سالب، و <code>PerplexityResult.from_token_nll</code> هيرمي <code>ValueError</code> فيها «did you forget the negation?». من غير الفحص ده كانت هتطلع perplexity أقل من 1، وده مستحيل.</details></li>
+    <li>موديل بيقول 0.65 لكل سؤال، والـ accuracy الكلية 0.65. الـ ECE والـ Brier هيبقوا عاملين إزاي؟
+      <details><summary>الإجابة</summary>الـ ECE شبه صفر (كله في صندوق واحد ومتوسط الثقة = الـ accuracy). بس الـ Brier عالي (حوالي <span class="ltr">0.65 × 0.35 ≈ 0.23</span>) لأن كل تنبؤ لوحده بعيد عن 0 أو 1، والـ resolution صفر.</details></li>
+    <li>ليه الـ calibration بتتحسب مرة لكل موديل مش لكل task؟
+      <details><summary>الإجابة</summary>الـ task الواحد فيه تنبؤات قليلة، فالصناديق هتبقى ضوضاء. الـ runner بيلمّ أزواج <span class="ltr">(confidence, correct)</span> من الـ eval كله الأول.</details></li>
+  </ol>
+  <div class="note ai"><strong>الربط بالنهاردة:</strong> امبارح سألنا «الرقم ده موثوق ولا ضوضاء؟» عن الـ calibration (عشان كده رجّعنا <code>populated_bins</code>). النهاردة نفس السؤال بالظبط عن الترتيب: موديل A جاب 0.78 و B جاب 0.75. ده فرق حقيقي ولا حظ؟</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>شكل الـ input والـ normalisation</div>
+    <div><b>15 min</b>Mean ضد Win-rate (معمل ١)</div>
+    <div><b>20 min</b>الـ Bootstrap والـ paired diff (معمل ٢ و ٣)</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 SHAPE -->
+<section id="d502-shape">
+  <div class="station-head"><span class="tag">01</span><h2>الداخل والخارج، وقاعدة الـ [0, 1]</h2></div>
+  <p>الـ aggregator بياخد list من سجلات <code>EvalRun</code>، سجل لكل <span class="ltr">(model, task)</span>. الـ runner في درس بكرة هو اللي هيطلّعهم. الـ aggregator مش فارق معاه الـ score اتحسب إزاي.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class EvalRun:
+    model_id: str
+    task_id: str
+    metric_name: str
+    score: float          <span class="c"># لازم في [0, 1]</span>
+    category: str = "general"
+    weight: float = 1.0   <span class="c"># موجود كـ hook بس الـ aggregator بيتجاهله</span></pre></div>
+  <p>والخارج <b>صف لكل موديل</b> (<code>LeaderboardRow</code>) فيه: <code>model_id</code> و <code>mean_score</code> و <code>mean_ci_lo</code> و <code>mean_ci_hi</code> و <code>win_rate</code> و <code>tasks_completed</code>، ومعاهم اختياري <code>categories</code> (متوسط لكل فئة). وجنبه list من <code>PairwiseDiff</code> لكل زوج موديلات.</p>
+  <h3>الـ Normalisation: ليه [0, 1] بالذات؟</h3>
+  <p>لو task بيطلّع score من 0 لـ 1 وتاني من 0 لـ 100 (زي BLEU ساعات)، التاني هيبلع المتوسط كله في صمت. تخيل تجمع درجة امتحان من 10 مع درجة من 100 وتقسم على 2. الـ aggregator <b>بيرفض</b> أي score برّه <span class="ltr">[0, 1]</span> بـ <code>ValueError</code>، وكمان بيرفض سجلين لنفس <span class="ltr">(model, task)</span>. الإصلاح مكانه فوق في طبقة الـ metric (دروس ٧١ لـ ٧٣ بتلتزم بالعقد ده)، والـ aggregator بس بيتأكد.</p>
+  <h3>الـ pipeline</h3>
+  <div class="formula">EvalRuns → pivot (model × task) → mean + bootstrap CI · win-rate · pairwise diff CI → rows → JSON + markdown</div>
+  <p>الدرس بيقول ٣ جداول بتطلع: الـ pivot لكل task، والـ rows لكل موديل، والمقارنات الزوجية. وفي الآخر الـ rows بتتحوّل JSON وجدول markdown.</p>
+</section>
+
+<!-- 02 MEAN vs WIN -->
+<section id="d502-rank">
+  <div class="station-head"><span class="tag">02</span><h2>Mean ضد Win-rate: طريقتين للترتيب</h2></div>
+  <p><b>Mean score:</b> متوسط scores الموديل على كل الـ tasks. ده الرقم الرئيسي في أي leaderboard. بس حساس للقيم الشاذة (outliers) ولعدم توازن الـ tasks.</p>
+  <p><b>Win-rate:</b> في كل task، الموديل اللي جاب أعلى score «كسب». لو فيه تعادل، <b>كل</b> المتعادلين بياخدوا فوز كامل. الـ win-rate = عدد مرات الفوز ÷ عدد الـ tasks اللي الموديل ليه فيها score. أقل حساسية للـ outliers واختلاف المقاييس، بس بيضيّع معلومة: الفوز بفرق 0.01 زي الفوز بفرق 0.5.</p>
+  <p><b>تشبيه:</b> الـ mean زي مجموع نقط في الدوري، والـ win-rate زي عدد الماتشات اللي كسبتها. فريق ممكن يكسب ماتش واحد ١٠–٠ ويخسر الباقي ٠–١، ومجموع أهدافه عالي بس خسران أغلب الماتشات.</p>
+  <p>الـ harness بيطلّع الاتنين. الـ runner بكرة بيرتّب بالـ mean افتراضيًا، وعمود الـ win-rate موجود في الجدول لو حبيت تبص عليه.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: عدّل الـ scores بإيدك</h3>
+      <p>كل عمود task وكل صف موديل. <b>اسحب لفوق أو لتحت</b> على أي خانة (أو اضغط عليها) عشان تغيّر الـ score. على اليمين هتشوف الترتيب بالـ mean والترتيب بالـ win-rate. النجمة = الفائز في الـ task ده.</p>
+      <div class="note"><strong>جرب:</strong> (١) دوس «outlier» وشوف موديل بيبقى الأول بالـ mean وهو خسران أغلب الـ tasks. (٢) دوس «تعادل» وشوف مجموع الـ win-rates بيعدّي 1. (٣) دوس «BLEU على 100» وشوف الـ aggregator بيرفض.</div>
+      <div class="btns">
+        <button type="button" id="d502-pOut">outlier</button>
+        <button type="button" id="d502-pTie">تعادل</button>
+        <button type="button" id="d502-pScale">BLEU على 100</button>
+        <button type="button" id="d502-pReset">من الأول</button>
+      </div>
+    </div>
+    <div class="instrument">
+      <canvas id="d502-hm" width="520" height="250" aria-label="جدول scores الموديلات على الـ tasks"></canvas>
+      <ul class="rank-list" id="d502-ranks"></ul>
+      <div class="verdict" id="d502-hv"></div>
+    </div>
+  </div>
+  <h3>الفئات (categories)</h3>
+  <p>لو <code>EvalRun.category</code> متحدد، الـ aggregator بيحسب متوسط لكل فئة كمان: <code>math</code> و <code>reasoning</code> و <code>code</code> و <code>safety</code> مثلًا. ده العمود اللي بيقولك إن الموديل كويس في المجمل بس ضعيف في الكود، معلومة الـ mean الرئيسي بيخبّيها.</p>
+</section>
+
+<!-- 03 BOOTSTRAP -->
+<section id="d502-boot">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Bootstrap: الرقم ده ثابت قد إيه؟</h2></div>
+  <p>المتوسط 0.78 على ١٢ task. لو كنا اخترنا ١٢ task تانيين من نفس النوع، كان هيطلع كام؟ مش معانا tasks تانية، فبنعمل الحيلة دي: نعتبر الـ tasks اللي معانا هي «العالم»، ونسحب منها عينات جديدة.</p>
+  <ol>
+    <li>عندك N task scores للموديل.</li>
+    <li>اسحب N task <b>مع الإرجاع</b> (with replacement): نفس الـ task ممكن يتسحب مرتين، وتاني ما يتسحبش خالص.</li>
+    <li>احسب متوسط العينة دي وسجّله.</li>
+    <li>كرر B مرة (1000 مثلًا).</li>
+    <li>رتّب الـ B متوسط، وخد الـ percentile <span class="ltr">α/2</span> و <span class="ltr">1 − α/2</span>. مع <span class="ltr">α = 0.05</span> ده الـ 2.5% والـ 97.5%. دي حدود الـ <b>95% CI</b>.</li>
+  </ol>
+  <p><b>تشبيه:</b> زي ما تدوق الشوربة بالمعلقة كذا مرة من نفس الحلة. لو كل معلقة طعمها مختلف جدًا، يبقى حكمك على الحلة مش ثابت (CI عريض).</p>
+  <p>الطريقة دي اسمها <b>non-parametric percentile bootstrap</b>: مش بتفترض توزيع normal، وما فيهاش scipy، numpy بس. الدوال الأساسية (<code>bootstrap_mean_ci</code> و <code>bootstrap_pairwise_diff</code>) الافتراضي فيها <span class="ltr">B = 1000</span>، والدوال العامة (<code>aggregate</code> و <code>pairwise_diffs</code>) الافتراضي <span class="ltr">b = 500</span> عشان الـ demo والـ tests يخلصوا بسرعة. والـ alpha الافتراضي 0.05.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: شوف الـ bootstrap بيشتغل</h3>
+      <p>فوق: الـ task scores (كل نقطة task). كل resample بيلوّن الـ tasks اللي اتسحبت (الرقم = اتسحب كام مرة). تحت: الـ histogram بتاع متوسطات العينات بيتبني، والخطين = حدود الـ CI.</p>
+      <div class="note"><strong>جرب:</strong> (١) دوس «شغّل» وسيبه يوصل B. (٢) زوّد عدد الـ tasks وشوف الـ CI بيضيق. (٣) زوّد التشتت وشوف الـ CI بيوسع. (٤) خلي التشتت صفر: الـ CI عرضه صفر (الـ test بتاع الدرس بيتأكد من ده).</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d502-bc" width="520" height="320" aria-label="الـ bootstrap resampling والـ histogram"></canvas>
+      <div class="mrow">
+        <label>tasks N = <span id="d502-nv">12</span><input type="range" id="d502-n" min="3" max="60" value="12"></label>
+        <label>spread = <span id="d502-sv">0.15</span><input type="range" id="d502-s" min="0" max="35" value="15"></label>
+      </div>
+      <div class="readout">
+        <div><small>mean</small><b id="d502-bm">0</b></div>
+        <div><small>resamples</small><b id="d502-bb">0 / 500</b></div>
+        <div><small>95% CI</small><b id="d502-bci">—</b></div>
+      </div>
+      <div class="btns"><button type="button" class="primary" id="d502-brun">شغّل</button><button type="button" id="d502-bone">resample واحد</button><button type="button" id="d502-bfast">500 مرة واحدة</button><button type="button" id="d502-breset">من الأول</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 PAIRED -->
+<section id="d502-paired">
+  <div class="station-head"><span class="tag">04</span><h2>المقارنة الزوجية (paired): الفرق حقيقي؟</h2></div>
+  <p>عشان تقارن A و B: احسب الفرق <b>task بـ task</b> <span class="ltr">d_t = score_A(t) − score_B(t)</span>، وبعدين اعمل bootstrap على الفروق دي، وخد الـ percentile interval. القاعدة اللي الدرس بيستخدمها:</p>
+  <div class="formula">significant  ⇔  CI of mean(d) excludes 0   (ci_lo &gt; 0  or  ci_hi &lt; 0)</div>
+  <p>لو الـ CI فيه الصفر، الـ leaderboard بيعتبرهم <b>متعادلين</b> عند المستوى ده.</p>
+  <h3>ليه paired؟</h3>
+  <p>نفس الـ task داخل في الموديلين. لو task صعب، الاتنين هيجيبوا فيه درجة واطية. لما تطرح task بـ task، صعوبة الـ task بتتلغي، ويفضل الفرق الحقيقي بين الموديلين. والـ resampling بيبقى على الـ <b>tasks</b> مش على الموديلات، فكل iteration المقارنة على نفس مجموعة الـ tasks. ده بيقلل الضوضاء جدًا.</p>
+  <p>الدرس بيلفت النظر: الـ CI اللي بيتحسب لكل موديل لوحده <b>unpaired</b>، ولو بصيت عليهم الاتنين وقلت «متداخلين يبقى متعادلين» ممكن تغلط. المقارنة الصح هي الـ paired.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: CIs متداخلة بس الفرق significant</h3>
+      <p>B أحسن من A بفرق ثابت صغير في كل task، بس الـ tasks نفسها صعوبتها مختلفة جدًا. فوق: الـ CI لكل موديل لوحده. تحت: الـ CI بتاع الفرق الزوجي.</p>
+      <div class="note"><strong>جرب:</strong> (١) خلي الفرق 0.03 وصعوبة الـ tasks عالية: الـ CIs اللي فوق متداخلة جدًا، بس الـ paired CI بعيد عن الصفر. (٢) زوّد الضوضاء الخاصة بكل موديل وشوف الـ paired CI بيوسع لحد ما يلمس الصفر. (٣) خلي الفرق صفر.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d502-pc" width="520" height="260" aria-label="مقارنة CI منفصل و paired"></canvas>
+      <div class="mrow">
+        <label>gap B−A = <span id="d502-gv">0.03</span><input type="range" id="d502-g" min="-10" max="15" value="3"></label>
+        <label>difficulty spread = <span id="d502-dv">0.25</span><input type="range" id="d502-d" min="0" max="35" value="25"></label>
+        <label>model noise = <span id="d502-zv">0.02</span><input type="range" id="d502-z" min="0" max="20" value="2"></label>
+        <label>tasks = <span id="d502-tv">30</span><input type="range" id="d502-t" min="5" max="100" value="30"></label>
+      </div>
+      <div class="verdict" id="d502-pv"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 05 MARKDOWN -->
+<section id="d502-md">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Markdown والـ JSON، والحاجات اللي الدرس مش بيعملها</h2></div>
+  <p>الـ leaderboard بيطلع كجدول markdown مترتب بالـ mean، والـ CI بمنزلتين عشريتين، وأسماء الموديلات الطويلة بتتقص لـ ٢٠ حرف. ده شكله (المثال من الدرس):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>| Rank | Model | Mean | 95% CI | Win rate | Tasks |
+|------|-------|------|--------|----------|-------|
+| 1    | gpt   | 0.78 | 0.74-0.82 | 0.62 | 50 |
+| 2    | claude| 0.75 | 0.71-0.79 | 0.34 | 50 |
+| 3    | random| 0.10 | 0.07-0.13 | 0.04 | 50 |</pre></div>
+  <p>لاحظ في المثال: الأول والتاني الـ CIs بتاعتهم متداخلة (0.74–0.82 و 0.71–0.79). من الجدول ده لوحده ما تقدرش تقول مين أحسن. لازم تبص على الـ pairwise.</p>
+  <h3>الدرس ده مش بيعمل إيه</h3>
+  <ul>
+    <li>مش بيشغّل موديلات، ومش بينادي طبقة الـ metric.</li>
+    <li>مش بيعمل أنواع تانية من الـ ECE (دي في درس امبارح).</li>
+    <li>مش بيعمل <b>وزن للـ tasks</b>: كل task بيتحسب زي التاني. الـ leaderboards الحقيقية بتوزن، والـ hook موجود في حقل <code>weight</code> بس الـ aggregator بيتجاهله.</li>
+  </ul>
+  <h3>أبعد من كده</h3>
+  <p>المسائل مش مستقلة عن بعض: لو الموديل عنده نمط غلط في الحساب، هيأثر على ١٠ مسائل math مرة واحدة. الحل الأدق <b>hierarchical bootstrap</b> بيحترم عائلات الـ tasks (يسحب عائلات الأول وبعدين tasks جواها). ده خطوة بعدين. هدف الدرس إنك توصل لأرضية سليمة: رقم تقدر تدافع عنه.</p>
+</section>
+
+<!-- 06 CODE -->
+<section id="d502-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: الكود خطوة بخطوة</h2></div>
+  <p>من جذر الريبو (محتاج <code>numpy</code> بس):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/74-leaderboard-aggregation/code/main.py
+python3 phases/19-capstone-projects/74-leaderboard-aggregation/code/tests/test_leaderboard.py</pre></div>
+  <p><b>القاعدة:</b> افتح <code>my_leaderboard.py</code> واكتب بنفسك. الترتيب: شكل البيانات، وبعدين الـ aggregator، وبعدين الـ bootstrap، وفي الآخر الـ rendering.</p>
+
+  <h3>خطوة ١: شكل البيانات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import json, math, sys
+from collections import defaultdict
+from dataclasses import dataclass, field
+import numpy as np
+
+@dataclass
+class EvalRun:
+    model_id: str
+    task_id: str
+    metric_name: str
+    score: float
+    category: str = "general"
+    weight: float = 1.0
+
+@dataclass
+class LeaderboardRow:
+    model_id: str
+    mean_score: float
+    mean_ci_lo: float
+    mean_ci_hi: float
+    win_rate: float
+    tasks_completed: int
+    categories: dict = field(default_factory=dict)   <span class="c"># متوسط لكل فئة</span>
+
+@dataclass
+class PairwiseDiff:
+    model_a: str
+    model_b: str
+    diff_mean: float
+    ci_lo: float
+    ci_hi: float
+    significant: bool</pre></div>
+  <p>الأصل فيه <code>to_dict()</code> لـ <code>LeaderboardRow</code> و <code>PairwiseDiff</code> بترجّع كل الحقول في dict.</p>
+
+  <h3>خطوة ٢: التحقق والتجميع</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _validate_runs(runs):
+    seen = set()
+    for r in runs:
+        if not (0.0 &lt;= r.score &lt;= 1.0):      <span class="c"># العقد: كله في [0, 1]</span>
+            raise ValueError(f"score for {r.model_id}/{r.task_id} not in [0,1]: {r.score}")
+        key = (r.model_id, r.task_id)
+        if key in seen:                        <span class="c"># ممنوع سجلين لنفس الزوج</span>
+            raise ValueError(f"duplicate run for {r.model_id}/{r.task_id}")
+        seen.add(key)
+
+def _by_model(runs):
+    out = defaultdict(list)
+    for r in runs:
+        out[r.model_id].append(r)
+    return dict(out)
+
+def _by_task(runs):
+    out = defaultdict(list)
+    for r in runs:
+        out[r.task_id].append(r)
+    return dict(out)</pre></div>
+
+  <h3>خطوة ٣: الـ bootstrap (لموديل واحد وللفرق الزوجي)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bootstrap_mean_ci(scores, b=1000, alpha=0.05, seed=0):
+    if len(scores) == 0:
+        return (0.0, 0.0)
+    rng = np.random.default_rng(seed)
+    arr = np.asarray(scores, dtype=np.float64)
+    n = arr.size
+    means = np.empty(b, dtype=np.float64)
+    for i in range(b):
+        idx = rng.integers(0, n, size=n)      <span class="c"># سحب مع الإرجاع</span>
+        means[i] = float(arr[idx].mean())
+    lo = float(np.percentile(means, 100.0 * (alpha / 2.0)))
+    hi = float(np.percentile(means, 100.0 * (1.0 - alpha / 2.0)))
+    return (lo, hi)
+
+def bootstrap_pairwise_diff(paired_a, paired_b, b=1000, alpha=0.05, seed=0):
+    if len(paired_a) != len(paired_b):
+        raise ValueError("paired arrays must align")
+    if len(paired_a) == 0:
+        return (0.0, 0.0, 0.0)
+    rng = np.random.default_rng(seed)
+    diffs = np.asarray(paired_a, dtype=np.float64) - np.asarray(paired_b, dtype=np.float64)
+    diff_mean = float(diffs.mean())           <span class="c"># الطرح task بـ task قبل الـ resampling</span>
+    n = diffs.size
+    boots = np.empty(b, dtype=np.float64)
+    for i in range(b):
+        idx = rng.integers(0, n, size=n)
+        boots[i] = float(diffs[idx].mean())
+    lo = float(np.percentile(boots, 100.0 * (alpha / 2.0)))
+    hi = float(np.percentile(boots, 100.0 * (1.0 - alpha / 2.0)))
+    return (diff_mean, lo, hi)</pre></div>
+
+  <h3>خطوة ٤: الـ win-rate والفئات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _win_rate(model_id, runs_by_task):
+    wins, total = 0, 0
+    for task_id, runs in runs_by_task.items():
+        scores = {r.model_id: r.score for r in runs}
+        if model_id not in scores:
+            continue                           <span class="c"># الـ task ده الموديل ما اتقيّمش فيه</span>
+        total += 1
+        best = max(scores.values())
+        if math.isclose(scores[model_id], best, abs_tol=1e-12):   <span class="c"># التعادل = فوز للكل</span>
+            wins += 1
+    if total == 0:
+        return (0.0, 0)
+    return (wins / total, total)
+
+def _category_means(runs):
+    by_cat = defaultdict(list)
+    for r in runs:
+        by_cat[r.category].append(r.score)
+    return {cat: float(np.mean(s)) for cat, s in by_cat.items()}</pre></div>
+
+  <h3>خطوة ٥: الـ aggregate والمقارنات الزوجية</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def aggregate(runs, b=500, alpha=0.05, seed=0):
+    if not runs:
+        return []
+    _validate_runs(runs)
+    by_model, by_task = _by_model(runs), _by_task(runs)
+    rows = []
+    for model_id, model_runs in by_model.items():
+        scores = [r.score for r in model_runs]
+        lo, hi = bootstrap_mean_ci(scores, b=b, alpha=alpha, seed=seed)
+        wr, completed = _win_rate(model_id, by_task)
+        rows.append(LeaderboardRow(
+            model_id=model_id, mean_score=float(np.mean(scores)),
+            mean_ci_lo=lo, mean_ci_hi=hi, win_rate=wr,
+            tasks_completed=completed if completed else len(scores),
+            categories=_category_means(model_runs)))
+    rows.sort(key=lambda r: r.mean_score, reverse=True)   <span class="c"># الترتيب بالـ mean</span>
+    return rows
+
+def pairwise_diffs(runs, b=500, alpha=0.05, seed=0):
+    if not runs:
+        return []
+    _validate_runs(runs)
+    model_ids = sorted(_by_model(runs).keys())
+    table = defaultdict(dict)                  <span class="c"># table[task][model] = score</span>
+    for r in runs:
+        table[r.task_id][r.model_id] = r.score
+    out = []
+    for i in range(len(model_ids)):
+        for j in range(i + 1, len(model_ids)):
+            a, b_id = model_ids[i], model_ids[j]
+            pa, pb = [], []
+            for task_id, ms in table.items():
+                if a in ms and b_id in ms:     <span class="c"># الـ tasks المشتركة بس</span>
+                    pa.append(ms[a]); pb.append(ms[b_id])
+            if not pa:
+                continue
+            d, lo, hi = bootstrap_pairwise_diff(pa, pb, b=b, alpha=alpha, seed=seed + i + j)
+            out.append(PairwiseDiff(a, b_id, d, lo, hi, significant=(lo &gt; 0.0 or hi &lt; 0.0)))
+    return out</pre></div>
+
+  <h3>خطوة ٦: الـ rendering والـ demo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def render_markdown(rows):
+    lines = ["| Rank | Model | Mean | 95% CI | Win rate | Tasks |",
+             "|------|-------|------|--------|----------|-------|"]
+    for i, row in enumerate(rows, start=1):
+        ci = f"{row.mean_ci_lo:.2f}-{row.mean_ci_hi:.2f}"
+        lines.append(f"| {i} | {row.model_id[:20]} | {row.mean_score:.2f} | {ci} | "
+                     f"{row.win_rate:.2f} | {row.tasks_completed} |")   <span class="c"># الاسم مقصوص لـ 20</span>
+    return "\n".join(lines)
+
+def render_json(rows):
+    return json.dumps([r.to_dict() for r in rows], indent=2)
+
+def _synthetic_runs(seed=0):
+    rng = np.random.default_rng(seed)
+    models = ["model_a", "model_b", "model_c"]
+    means = {"model_a": 0.78, "model_b": 0.72, "model_c": 0.55}
+    metric = {"arithmetic": "exact_match", "mcq": "accuracy",
+              "code_exec": "code_exec", "summary": "rouge_l"}
+    runs = []
+    for cat in ["arithmetic", "mcq", "code_exec", "summary"]:
+        for t in range(3):                     <span class="c"># 4 فئات × 3 = 12 task</span>
+            for m in models:
+                base = means[m]
+                if cat == "code_exec":
+                    base -= 0.1                <span class="c"># الكود أصعب على الكل</span>
+                if cat == "summary" and m == "model_c":
+                    base += 0.15               <span class="c"># model_c قوي في التلخيص</span>
+                score = float(np.clip(base + rng.uniform(-0.1, 0.1), 0.0, 1.0))
+                runs.append(EvalRun(m, f"{cat}_{t:02d}", metric[cat], score, cat))
+    return runs
+
+def demo():
+    runs = _synthetic_runs(seed=42)
+    rows = aggregate(runs, b=300, alpha=0.05, seed=11)
+    diffs = pairwise_diffs(runs, b=300, alpha=0.05, seed=11)
+    print(render_markdown(rows))
+    print()
+    print("Pairwise comparisons (paired bootstrap):")
+    for d in diffs:
+        sig = "yes" if d.significant else "no"
+        print(f"  {d.model_a} vs {d.model_b}: diff={d.diff_mean:+.3f} "
+              f"ci=[{d.ci_lo:+.3f},{d.ci_hi:+.3f}] significant={sig}")
+    if not rows or rows[0].mean_score &lt; rows[-1].mean_score:
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(demo())</pre></div>
+  <h3>المتوقع لما تشغّل</h3>
+  <p>الأرقام بالظبط بتعتمد على numpy، فشغّل وشوف. اللي متأكدين منه من الكود: جدول markdown فيه ٣ صفوف (<code>model_a</code> و <code>model_b</code> و <code>model_c</code>) مترتبين بالـ mean، وعمود Tasks فيه <code>12</code> لكل موديل، وبعده سطر <code>Pairwise comparisons (paired bootstrap):</code> و ٣ سطور مقارنة (a vs b، a vs c، b vs c) كل واحد فيه <code>significant=yes</code> أو <code>no</code>. والـ exit code = 0. خمّن قبل ما تشغّل: أنهي زوج تتوقع ما يطلعش significant؟ وليه فئة <code>summary</code> هتفرق في صف <code>model_c</code>؟</p>
+</section>
+
+<!-- 07 EXERCISES -->
+<section id="d502-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>الدرس ما فيهوش قايمة تمارين منفصلة، فالتمارين دي من «What this lesson does not do» و «Going further»، والأخير إضافة مني.</p>
+  <ol class="ex">
+    <li><b>وزن الـ tasks:</b> خلي <code>aggregate</code> تستخدم حقل <code>weight</code> في المتوسط وفي الـ bootstrap.
+      <details><summary>تلميح</summary>المتوسط: <code>np.average(scores, weights=w)</code>. في الـ bootstrap اسحب الـ indices زي ما هي، واحسب <code>np.average(arr[idx], weights=w[idx])</code>. ضيف test إن الأوزان كلها 1 بتطلع نفس النتيجة القديمة.</details></li>
+    <li><b>Hierarchical bootstrap:</b> اسحب <b>الفئات</b> مع الإرجاع الأول، وبعدين tasks جوه كل فئة مسحوبة.
+      <details><summary>تلميح</summary>جمّع الـ scores في <code>{category: [scores]}</code>. في كل iteration: <code>cats = rng.choice(keys, size=len(keys))</code>، ولكل فئة مسحوبة اسحب scores منها مع الإرجاع، واحسب متوسط الكل. هتلاقي الـ CI أعرض من العادي، وده الصح لما الـ tasks مترابطة.</details></li>
+    <li><b>ترتيب بالـ win-rate:</b> ضيف باراميتر <code>rank_by="mean" | "win_rate"</code> لـ <code>aggregate</code> و <code>render_markdown</code>.
+      <details><summary>تلميح</summary>غيّر بس الـ key في <code>rows.sort</code>. فكّر في كسر التعادل: لو اتنين نفس الـ win-rate، رتّب بالـ mean كـ tie-breaker عشان الترتيب يبقى deterministic.</details></li>
+    <li><b>إضافة مني · تعليق PR لتغيير prompt:</b> عندك نتايج eval لـ <code>prompt_v1</code> (الحالي) و <code>prompt_v2</code> (الجديد) على نفس ٨٠ task. اكتب دالة ترجّع نص تعليق: «v2 أحسن significantly» أو «مفيش فرق مثبت» أو «v2 أسوأ، ما تعملش merge».
+      <details><summary>الحل</summary>ابني <code>EvalRun</code> لكل نسخة كـ model_id، ونادي <code>pairwise_diffs</code>. الترتيب الأبجدي هيخلي <code>model_a = "prompt_v1"</code>، يعني الفرق <span class="ltr">v1 − v2</span>. لو <code>ci_hi &lt; 0</code> يبقى v2 أحسن، ولو <code>ci_lo &gt; 0</code> v2 أسوأ، غير كده «مفيش فرق مثبت». حط تحتها <code>render_markdown(aggregate(runs))</code>. ده بالظبط اللي فرق كتير بتحطه كـ gate في الـ CI قبل ما تغيّر prompt في production.</details></li>
+  </ol>
+</section>
+
+<!-- 08 EXTRA -->
+<section id="d502-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> أي رقم في الـ leaderboard من غير CI هو نص المعلومة. السؤال الحقيقي مش «مين أعلى» لكن «مين أعلى بفرق مش هيختفي لو غيّرنا الـ tasks».</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>«الـ CIs متداخلة يبقى متعادلين»:</b> غلط شائع. CIs منفصلة ممكن تتداخل والفرق الزوجي يبقى significant (معمل ٣). استخدم الـ paired.</li>
+    <li><b>الـ win-rate مجموعها مش 1:</b> عشان التعادل بيدّي فوز كامل لكل المتعادلين. الـ test <code>test_ties_split_to_winner</code> بيتوقع 1.0 للاتنين. ما تفسّرهاش كـ «نسبة من الكعكة».</li>
+    <li><b>عدد tasks قليل:</b> مع ١٢ task بس، الـ percentile bootstrap بيميل يطلّع CI أضيق من الحقيقة. خد الـ CI كإشارة مش كضمان.</li>
+    <li><b>موديلات ما اتقيّمتش على نفس الـ tasks:</b> الـ pairwise بيقارن على الـ tasks المشتركة بس، لكن الـ mean بيتحسب على كل tasks الموديل. فموديل اتقيّم على tasks أسهل ممكن يطلع أعلى في الـ mean ظلم.</li>
+    <li><b>مقارنات كتير:</b> مع ١٠ موديلات عندك ٤٥ زوج. عند <span class="ltr">α = 0.05</span> متوقع حوالي ٢ منهم يطلعوا significant بالصدفة. فكّر في تصحيح زي Bonferroni (<span class="ltr">α / عدد المقارنات</span>).</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents</h3>
+  <p>أي leaderboard عام للـ LLMs، أو eval داخلي قبل ما تغيّر الموديل أو الـ prompt أو الـ RAG pipeline. في شغل الـ agents بالذات، الـ eval suite غالبًا صغير (عشرات الـ tasks) ومكلف، فالـ paired bootstrap هو اللي بيمنعك تعمل ship لتغيير «أحسن ٢٪» طلع في الحقيقة ضوضاء.</p>
+</section>
+
+<!-- 09 QUIZ -->
+<section id="d502-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d502-quizBox"></div>
+</section>
+
+<!-- 10 DONE -->
+<section id="d502-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم ليه الـ aggregator بيرفض أي score برّه [0, 1]</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أشرح الفرق بين mean و win-rate ومثال يفرّق بينهم</label></li>
+    <li><label><input type="checkbox" data-ck="3"> أقدر أشرح الـ percentile bootstrap خطوة بخطوة</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم ليه الـ paired أدق، وشفت ده في معمل ٣</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود بإيدي وشغّلت الـ demo والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Normalisation لـ [0, 1]</td><td>أي suite بيخلط BLEU مع accuracy مع pass-rate</td></tr>
+    <tr><td>Mean + per-category</td><td>أعمدة math / code / safety في الـ leaderboards</td></tr>
+    <tr><td>Win-rate</td><td>مقارنات الموديلات task بـ task، وفكرة الـ arena</td></tr>
+    <tr><td>Bootstrap CI</td><td>تقارير الـ eval الجادة، والـ ± جنب الرقم</td></tr>
+    <tr><td>Paired diff</td><td>A/B بين prompts أو موديلات في الـ CI قبل الـ merge</td></tr>
+    <tr><td>Markdown table</td><td>تعليق الـ eval الأوتوماتيكي على الـ PR</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> End-to-End Eval Runner. هتلزق دروس ٧٠ لـ ٧٤ في runner واحد: tasks ← adapter ← metric ← calibration ← الـ leaderboard ده.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F74-leaderboard-aggregation" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/74-leaderboard-aggregation</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N0=502,LESSON=74,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d502-roadmap').closest('.day');
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+const rm=$('d502-roadmap');for(let i=1;i<=87;i++){if(i===18||i===19)continue;const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)}
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+function mk(seed){let s=seed>>>0||1;return()=>{s^=s<<13;s>>>=0;s^=s>>>17;s^=s<<5;s>>>=0;return s/4294967296}}
+function gauss(r){let u=0,v=0;while(!u)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const mean=a=>a.reduce((x,y)=>x+y,0)/(a.length||1);
+function pct(sorted,p){if(!sorted.length)return 0;const i=(sorted.length-1)*p/100,lo=Math.floor(i),hi=Math.ceil(i);return sorted[lo]+(sorted[hi]-sorted[lo])*(i-lo)}
+function boot(arr,B,seed){const r=mk(seed),n=arr.length,m=[];for(let b=0;b<B;b++){let s=0;for(let i=0;i<n;i++)s+=arr[Math.floor(r()*n)];m.push(s/n)}m.sort((a,b)=>a-b);return[pct(m,2.5),pct(m,97.5)]}
+
+// ---------- Lab 1: mean vs win-rate ----------
+const MODELS=['alpha','beta','gamma'],TASKS=6;
+const BASE=[[0.70,0.72,0.68,0.75,0.66,0.71],[0.62,0.80,0.64,0.69,0.73,0.60],[0.55,0.58,0.74,0.61,0.59,0.66]];
+let S=BASE.map(r=>r.slice()),scaleBug=-1;
+const hm=$('d502-hm'),hx=AI.setupCanvas(hm),HW=+hm.dataset.w,HH=+hm.dataset.h;
+const HL=70,HT=28,cw=(HW-HL-10)/TASKS,ch=(HH-HT-12)/MODELS.length;
+function drawHM(){
+  hx.clearRect(0,0,HW,HH);hx.font='12px JetBrains Mono, monospace';hx.textBaseline='middle';
+  for(let t=0;t<TASKS;t++){hx.fillStyle=css('--muted');hx.textAlign='center';hx.fillText('t'+(t+1)+(t===scaleBug?' (BLEU)':''),HL+t*cw+cw/2,HT/2)}
+  const best=[];for(let t=0;t<TASKS;t++)best.push(Math.max(...S.map(r=>r[t])));
+  for(let m=0;m<MODELS.length;m++){hx.fillStyle=css('--ink');hx.textAlign='right';hx.fillText(MODELS[m],HL-8,HT+m*ch+ch/2);
+    for(let t=0;t<TASKS;t++){const v=S[m][t],x=HL+t*cw,y=HT+m*ch,bad=v>1;
+      hx.fillStyle=bad?css('--bad'):css('--vec-a');hx.globalAlpha=bad?.5:0.12+0.8*Math.min(1,v);hx.fillRect(x+2,y+2,cw-4,ch-4);hx.globalAlpha=1;
+      hx.fillStyle=(!bad&&v>0.55)?css('--paper'):css('--ink');hx.textAlign='center';hx.fillText(bad?f(v,0):f(v,2),x+cw/2,y+ch/2);
+      if(Math.abs(v-best[t])<1e-12&&!bad){hx.fillStyle=css('--vec-b');hx.fillText('★',x+cw-11,y+12)}}}
+}
+function rankHM(){
+  const ul=$('d502-ranks'),v=$('d502-hv');ul.innerHTML='';
+  if(S.some(r=>r.some(x=>x<0||x>1))){v.textContent='ValueError: score for '+MODELS[S.findIndex(r=>r.some(x=>x>1))]+'/t'+(scaleBug+1)+' not in [0,1]. الـ aggregator رفض الـ run كله. اضغط على خانة BLEU عشان تقسمها على 100 (ده الإصلاح الصح، في طبقة الـ metric)';v.style.color=css('--bad');return}
+  const rows=MODELS.map((m,i)=>{let w=0;for(let t=0;t<TASKS;t++){const b=Math.max(...S.map(r=>r[t]));if(Math.abs(S[i][t]-b)<1e-12)w++}return{m,mean:mean(S[i]),wr:w/TASKS}});
+  const byMean=rows.slice().sort((a,b)=>b.mean-a.mean),byWr=rows.slice().sort((a,b)=>b.wr-a.wr||b.mean-a.mean);
+  byMean.forEach((r,i)=>{const li=document.createElement('li');li.innerHTML='<span>'+(i+1)+'. <b class="ltr">'+r.m+'</b></span><span style="display:block;height:10px;border-radius:5px;background:var(--soft);overflow:hidden"><i style="display:block;height:100%;background:var(--vec-a);width:'+(r.mean*100)+'%"></i></span><span class="num">'+f(r.mean,3)+'</span>';ul.appendChild(li)});
+  const li=document.createElement('li');li.innerHTML='<span style="grid-column:1/-1;color:var(--muted);font-size:14px">بالـ win-rate: '+byWr.map(r=>'<span class="ltr">'+r.m+' '+f(r.wr,2)+'</span>').join(' · ')+'</span>';ul.appendChild(li);
+  const sumW=rows.reduce((a,r)=>a+r.wr,0);
+  if(byMean[0].m!==byWr[0].m){v.textContent='الترتيبين مختلفين: '+byMean[0].m+' الأول بالـ mean و '+byWr[0].m+' الأول بالـ win-rate';v.style.color=css('--vec-b')}
+  else if(sumW>1.0001){v.textContent='مجموع الـ win-rates = '+f(sumW,2)+' (أكتر من 1) بسبب التعادل';v.style.color=css('--vec-b')}
+  else{v.textContent='الترتيبين متفقين';v.style.color=''}
+}
+function refreshHM(){drawHM();rankHM()}
+let drag=null;
+hm.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(hm,e);const t=Math.floor((x-HL)/cw),m=Math.floor((y-HT)/ch);if(t<0||t>=TASKS||m<0||m>=MODELS.length)return;
+  if(S[m][t]>1){S[m][t]=S[m][t]/100;if(!S.some(r=>r[t]>1))scaleBug=-1;refreshHM();return}
+  drag={m,t,y0:y,v0:S[m][t]};hm.setPointerCapture(e.pointerId)});
+hm.addEventListener('pointermove',e=>{if(!drag)return;const [,y]=AI.evPos(hm,e);S[drag.m][drag.t]=Math.min(1,Math.max(0,Math.round((drag.v0+(drag.y0-y)/120)*100)/100));refreshHM()});
+hm.addEventListener('pointerup',e=>{if(drag&&Math.abs(AI.evPos(hm,e)[1]-drag.y0)<3){S[drag.m][drag.t]=Math.min(1,Math.round((S[drag.m][drag.t]+0.05)*100)/100);refreshHM()}drag=null});
+$('d502-pOut').addEventListener('click',()=>{S=[[0.61,0.63,0.59,0.60,0.58,0.99],[0.64,0.66,0.63,0.65,0.62,0.30],[0.40,0.45,0.42,0.41,0.39,0.35]];scaleBug=-1;refreshHM()});
+$('d502-pTie').addEventListener('click',()=>{S=BASE.map(r=>r.slice());S[0][0]=S[1][0]=0.80;S[1][2]=S[2][2]=0.77;scaleBug=-1;refreshHM()});
+$('d502-pScale').addEventListener('click',()=>{S=BASE.map(r=>r.slice());scaleBug=3;S[0][3]=42;S[1][3]=38;S[2][3]=55;refreshHM()});
+$('d502-pReset').addEventListener('click',()=>{S=BASE.map(r=>r.slice());scaleBug=-1;refreshHM()});
+refreshHM();
+
+// ---------- Lab 2: bootstrap ----------
+const bc=$('d502-bc'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h,BMAX=500;
+let sc=[],means=[],lastIdx=null,timer=null;
+function initBoot(){stopBoot();const n=+$('d502-n').value,sp=+$('d502-s').value/100;$('d502-nv').textContent=n;$('d502-sv').textContent=f(sp,2);
+  const r=mk(7+n);sc=[];for(let i=0;i<n;i++)sc.push(Math.min(1,Math.max(0,0.7+sp*gauss(r))));means=[];lastIdx=null;updBoot()}
+let br=mk(99);
+function oneBoot(){const n=sc.length,c=new Array(n).fill(0);let s=0;for(let i=0;i<n;i++){const k=Math.floor(br()*n);c[k]++;s+=sc[k]}means.push(s/n);lastIdx=c}
+function updBoot(){
+  $('d502-bm').textContent=f(mean(sc),3);$('d502-bb').textContent=means.length+' / '+BMAX;
+  let lo=null,hi=null;if(means.length>=20){const s=means.slice().sort((a,b)=>a-b);lo=pct(s,2.5);hi=pct(s,97.5);$('d502-bci').textContent=f(lo,3)+' – '+f(hi,3)}else $('d502-bci').textContent='—';
+  bx.clearRect(0,0,BW,BH);const L=30,R=BW-14,X=v=>L+v*(R-L);
+  // top: task dots
+  bx.fillStyle=css('--muted');bx.font='11px JetBrains Mono, monospace';bx.textAlign='left';bx.textBaseline='top';bx.fillText('task scores',L,4);
+  const n=sc.length;sc.forEach((v,i)=>{const y=34+((i*37)%5)*14,cnt=lastIdx?lastIdx[i]:1;
+    bx.fillStyle=lastIdx?(cnt?css('--vec-a'):css('--soft')):css('--vec-a');bx.beginPath();bx.arc(X(v),y,6,0,7);bx.fill();
+    bx.strokeStyle=css('--line');bx.stroke();
+    if(lastIdx&&cnt>1){bx.fillStyle=css('--paper');bx.textAlign='center';bx.textBaseline='middle';bx.fillText(cnt,X(v),y)}});
+  bx.strokeStyle=css('--ink');bx.lineWidth=2;const mx=X(mean(sc));bx.beginPath();bx.moveTo(mx,24);bx.lineTo(mx,104);bx.stroke();
+  // axis
+  const HB=BH-24,HT=128;bx.strokeStyle=css('--line');bx.lineWidth=1;bx.beginPath();bx.moveTo(L,HB);bx.lineTo(R,HB);bx.stroke();
+  bx.fillStyle=css('--muted');bx.textAlign='center';bx.textBaseline='top';for(let k=0;k<=10;k+=2)bx.fillText(f(k/10,1),X(k/10),HB+4);
+  bx.textAlign='left';bx.fillText('bootstrap means',L,HT-14);
+  // histogram
+  const bins=80,h=new Array(bins).fill(0);means.forEach(m=>{h[Math.min(bins-1,Math.floor(m*bins))]++});const hmx=Math.max(1,...h);
+  for(let i=0;i<bins;i++){if(!h[i])continue;const hh=h[i]/hmx*(HB-HT);bx.fillStyle=css('--vec-a');bx.globalAlpha=.7;bx.fillRect(X(i/bins)+1,HB-hh,(R-L)/bins-1,hh);bx.globalAlpha=1}
+  if(lo!==null){bx.strokeStyle=css('--vec-b');bx.lineWidth=2;bx.setLineDash([5,4]);[lo,hi].forEach(v=>{bx.beginPath();bx.moveTo(X(v),HT);bx.lineTo(X(v),HB);bx.stroke()});bx.setLineDash([]);
+    bx.fillStyle=css('--vec-b');bx.globalAlpha=.12;bx.fillRect(X(lo),HT,Math.max(1,X(hi)-X(lo)),HB-HT);bx.globalAlpha=1}
+}
+function stopBoot(){if(timer){clearInterval(timer);timer=null;$('d502-brun').textContent='شغّل'}}
+$('d502-brun').addEventListener('click',()=>{if(timer){stopBoot();return}if(means.length>=BMAX)means=[];$('d502-brun').textContent='وقف';
+  timer=setInterval(()=>{if(!document.body.contains(bc)){stopBoot();return}for(let k=0;k<(reduce?50:5);k++){if(means.length<BMAX)oneBoot()}updBoot();if(means.length>=BMAX)stopBoot()},40)});
+$('d502-bone').addEventListener('click',()=>{stopBoot();if(means.length<BMAX)oneBoot();updBoot()});
+$('d502-bfast').addEventListener('click',()=>{stopBoot();means=[];for(let k=0;k<BMAX;k++)oneBoot();updBoot()});
+$('d502-breset').addEventListener('click',()=>{br=mk(99);initBoot()});
+['d502-n','d502-s'].forEach(id=>$(id).addEventListener('input',initBoot));
+initBoot();
+
+// ---------- Lab 3: paired vs unpaired ----------
+const pc=$('d502-pc'),px=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+function drawP(){
+  const g=+$('d502-g').value/100,d=+$('d502-d').value/100,z=+$('d502-z').value/100,T=+$('d502-t').value;
+  $('d502-gv').textContent=f(g,2);$('d502-dv').textContent=f(d,2);$('d502-zv').textContent=f(z,2);$('d502-tv').textContent=T;
+  const r=mk(314),A=[],Bm=[];for(let t=0;t<T;t++){const diff=0.6+d*gauss(r);A.push(Math.min(1,Math.max(0,diff+z*gauss(r))));Bm.push(Math.min(1,Math.max(0,diff+g+z*gauss(r))))}
+  const ca=boot(A,800,1),cb=boot(Bm,800,2),D=Bm.map((b,i)=>b-A[i]),cd=boot(D,800,3);
+  const ma=mean(A),mb=mean(Bm),md=mean(D),sig=cd[0]>0||cd[1]<0,overlap=ca[1]>=cb[0]&&cb[1]>=ca[0];
+  px.clearRect(0,0,PW,PH);const L=86,R=PW-16;px.font='12px JetBrains Mono, monospace';px.textBaseline='middle';
+  // top scale 0.3..0.9
+  const lo1=0.3,hi1=0.95,X1=v=>L+(Math.min(hi1,Math.max(lo1,v))-lo1)/(hi1-lo1)*(R-L);
+  px.fillStyle=css('--muted');px.textAlign='left';px.fillText('per-model CI (unpaired)',L,14);
+  [[ 'A',ma,ca,css('--vec-a'),48],['B',mb,cb,css('--vec-b'),82]].forEach(([n,m,c,col,y])=>{px.fillStyle=css('--ink');px.textAlign='right';px.fillText('model '+n,L-10,y);
+    px.strokeStyle=col;px.lineWidth=6;px.globalAlpha=.4;px.beginPath();px.moveTo(X1(c[0]),y);px.lineTo(X1(c[1]),y);px.stroke();px.globalAlpha=1;
+    px.fillStyle=col;px.beginPath();px.arc(X1(m),y,6,0,7);px.fill();px.fillStyle=css('--muted');px.textAlign='left';px.font='11px JetBrains Mono, monospace';px.fillText(f(c[0],2)+'–'+f(c[1],2),Math.min(R-70,X1(c[1])+8),y-12);px.font='12px JetBrains Mono, monospace'});
+  // bottom diff scale
+  const lo2=-0.15,hi2=0.2,X2=v=>L+(Math.min(hi2,Math.max(lo2,v))-lo2)/(hi2-lo2)*(R-L),y2=PH-56;
+  px.fillStyle=css('--muted');px.textAlign='left';px.fillText('paired diff B − A',L,y2-38);
+  px.strokeStyle=css('--line');px.lineWidth=1;px.beginPath();px.moveTo(L,y2+22);px.lineTo(R,y2+22);px.stroke();
+  for(let v=-0.1;v<=0.2001;v+=0.05){px.fillStyle=css('--muted');px.textAlign='center';px.font='11px JetBrains Mono, monospace';px.fillText(f(v,2),X2(v),y2+34)}
+  px.strokeStyle=css('--ink');px.setLineDash([4,4]);px.beginPath();px.moveTo(X2(0),y2-26);px.lineTo(X2(0),y2+22);px.stroke();px.setLineDash([]);
+  const col=sig?css('--ok'):css('--bad');px.strokeStyle=col;px.lineWidth=6;px.globalAlpha=.45;px.beginPath();px.moveTo(X2(cd[0]),y2);px.lineTo(X2(cd[1]),y2);px.stroke();px.globalAlpha=1;
+  px.fillStyle=col;px.beginPath();px.arc(X2(md),y2,6,0,7);px.fill();px.font='12px JetBrains Mono, monospace';
+  const v=$('d502-pv');
+  v.textContent=(overlap?'الـ CIs المنفصلة متداخلة · ':'الـ CIs المنفصلة مش متداخلة · ')+'الـ paired CI ['+f(cd[0],3)+', '+f(cd[1],3)+'] '+(sig?'ما فيهوش صفر → significant':'فيه الصفر → متعادلين');
+  v.style.color=sig?css('--ok'):css('--bad');
+}
+['d502-g','d502-d','d502-z','d502-t'].forEach(id=>$(id).addEventListener('input',drawP));
+drawP();
+
+// ---------- quiz ----------
+AI.quiz($('d502-quizBox'),[
+ ['ليه الـ aggregator بيشترط إن كل score داخل يكون في [0, 1]؟',['من غير مقياس موحد، metric واحد مداه 0–100 هيسيطر على متوسط الموديل','numpy بيطلب كده','ده مدى صناديق الـ ECE','الـ markdown عايز منزلتين عشريتين'],0,'لو الـ pass-rate في [0,1] والـ BLEU في [0,100]، التاني هيبلع المتوسط. الـ normalisation مكانها طبقة الـ metric، وهنا بس بنتأكد.'],
+ ['إيه المعلومة اللي الـ mean بيخبيها والـ win-rate بيكشفها؟',['الـ bootstrap interval','الموديل calibrated ولا لأ','الفوز task بـ task بيقاوم الـ outliers واختلاف المقاييس؛ الـ mean حساس للاتنين','عدد الـ tasks اللي خلصت'],2,'الـ win-rate بيعدّ الفوز task بـ task. موديل ممكن يجيب mean عالي من task واحد سهل ويخسر أغلب المقارنات.'],
+ ['bootstrap_mean_ci بتقدّر الـ confidence interval إزاي؟',['بافتراض توزيع normal للمتوسط','بسحب task scores مع الإرجاع، وحساب المتوسط لكل عينة، وأخد الـ percentile α/2 و 1 − α/2','بحساب الـ standard deviation تحليليًا','بنداء scipy.stats.bootstrap'],1,'percentile bootstrap غير بارامتري على الـ task scores؛ من غير افتراض توزيع ومن غير scipy.'],
+ ['إمتى الـ pairwise diff CI بيقول significant؟',['لما الموديلين عندهم أكتر من 30 task','لما الـ CI ما فيهوش الصفر','لما الـ win-rates مختلفة','لما فرق المتوسطات أكبر من 0.1'],1,'CI ما فيهوش الصفر يعني الفرق مش محتمل يكون صفر عند المستوى المختار؛ ده التعريف العملي اللي الدرس بيستخدمه.'],
+ ['ليه الـ pairwise bootstrap paired مش مستقل؟',['الـ paired بيحترم إن نفس الـ task داخل في الموديلين؛ الفروق بتتحسب task بـ task قبل الـ resampling','numpy بيدعم الـ paired بس','الـ paired أسرع','الـ independent ممنوع في Python'],0,'الـ paired بيقلل الضوضاء: بنسحب على الـ tasks مش على الموديلات، فكل iteration المقارنة على نفس مجموعة الـ tasks.'],
+ ['ليه الـ aggregator بيرجّع متوسط لكل فئة جنب الرقم الرئيسي؟',['الرقم الرئيسي ممكن يخبّي ضعف في فئة (كويس في المجمل، وحش في الكود)؛ الفئات بتكشف ده','متوسط الفئات أسرع','JSON Schema بيطلبه','الـ markdown محتاجه'],0,'موديل ممكن يكسب في المجمل لأنه معقول في كل حاجة، أو لأنه مكتسح فئة واحدة. التفصيل بالفئة بيقولك أنهي الاتنين.'],
+ ['(سؤال مني) موديلين على task واحد جابوا 0.5 و 0.5. الـ win-rate لكل واحد كام في الكود ده؟',['0.5 و 0.5','1.0 و 1.0','0 و 0','1.0 و 0'],1,'التعادل بيدّي فوز كامل لكل المتعادلين (math.isclose مع الـ max). عشان كده الـ test test_ties_split_to_winner بيتوقع 1.0 للاتنين.'],
+ ['(سؤال مني) CI الموديل A هو 0.70–0.80 و B هو 0.74–0.84. تقدر تقول إنهم متعادلين؟',['أيوه، الـ CIs متداخلة يبقى متعادلين','لأ، لازم تبص على الـ paired diff CI؛ ممكن يكون ما فيهوش الصفر رغم التداخل','أيوه لو عدد الـ tasks أقل من 30','لأ، B أحسن أكيد لأن متوسطه أعلى'],1,'الـ CIs المنفصلة unpaired وبتشيل تباين صعوبة الـ tasks. الفرق task بـ task بيلغي التباين ده، فممكن يطلع significant (معمل ٣).']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N0,root);
+AI.onTheme(()=>{if(!document.body.contains(hm))return false;drawHM();updBoot();drawP()});
+})();
+</script>

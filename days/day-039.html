@@ -1,0 +1,679 @@
+<div class="day" id="d39-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 17 · Handling Imbalanced Data</span>
+  <h1>اليوم ٣٩: لما الـ accuracy تبقى كدابة</h1>
+  <p class="lede">موديل fraud جاب <span class="ltr">99.9%</span> accuracy، وطلع بيقول «مش fraud» لكل حاجة. النهاردة هتشوف ليه ده بيحصل، وهتلعب بالـ threshold وتشوف الـ precision والـ recall والـ F1 والـ MCC بيتحركوا قدامك، وهتولّد نقط بالـ <b>SMOTE</b> بإيدك، وتحسب الـ threshold الصح من تكلفة الغلط. وبعدين تبني الـ pipeline كله من الصفر.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Anomaly Detection</b></span>
+    <span>بعده: <b>Feature Selection</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d39-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d39-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 38) اتعلمنا <b>Anomaly Detection</b>. جاوب في دماغك الأول.</p>
+  <details><summary>١. الـ Isolation Forest بيقول إن النقطة غريبة إمتى؟</summary>لما متوسط طول المسار اللي محتاجه عشان يعزلها بقطعات عشوائية يبقى قصير. الـ score <span class="ltr">2^(−E[h]/c(n))</span> بيقرّب من 1.</details>
+  <details><summary>٢. ليه الـ Z-score بيفوّت anomalies لو داتا التدريب فيها outliers ضخمة؟</summary>الـ outliers بتزق المتوسط وبتنفخ الـ std، فالحدود بتتوسع والـ anomalies المتوسطة بتبقى جوه السور. اسمها masking. الـ IQR أثبت لأن الـ percentiles مش بتتأثر بالأطراف.</details>
+  <details><summary>٣. امبارح قلنا «لو عندك labels كفاية، عاملها كـ imbalanced classification». تفتكر إيه أول مشكلة هتقابلك؟</summary>الموديل هيتعلم إن أسهل حل إنه يقول «طبيعي» دايمًا، والـ accuracy هتطلع عالية جدًا وهو مش بيلقط حاجة. ده موضوع النهاردة.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ Anomaly Detection</div>
+    <div><b>20 min</b>ليه الـ accuracy بتكدب + المقاييس + المعمل ١</div>
+    <div><b>15 min</b>Over/Under sampling والـ SMOTE + المعمل ٢</div>
+    <div><b>15 min</b>Class weights والـ threshold والتكلفة + المعمل ٣</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d39-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه الـ accuracy بتفشل؟</h2></div>
+  <p>لما <span class="ltr">0.1%</span> بس من المعاملات fraud، الموديل بيكتشف إن أرخص حل يقول «مش fraud» على طول. ده مش bug، ده التصرف «العقلاني» لو هدفك تقلل عدد الأخطاء. صح تقنيًا وملوش أي فايدة.</p>
+  <p>وده بيحصل في كل حتة الـ classification فيها مهم: تشخيص أمراض (حوالي 1% positive)، اختراق شبكات (0.01%)، عيوب تصنيع (0.5%)، spam (20%)، churn (5%). وكل ما الـ class أهم، غالبًا بتبقى أندر.</p>
+  <p>المشكلة إن الـ accuracy بتعامل كل إجابة صح زي التانية: إنك تقول على معاملة سليمة إنها سليمة، وإنك تلقط fraud، الاتنين بنقطة واحدة. بس لقط الـ fraud هو السبب الوحيد إن الموديل موجود.</p>
+  <p>مثال: 1000 عينة، 990 negative و10 positive، والموديل بيقول negative دايمًا:</p>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Predicted +</th><th>Predicted −</th></tr>
+    <tr><td>Actually +</td><td class="ltr">0 (TP)</td><td class="ltr">10 (FN)</td></tr>
+    <tr><td>Actually −</td><td class="ltr">0 (FP)</td><td class="ltr">990 (TN)</td></tr>
+  </table></div>
+  <div class="formula">Accuracy = (0 + 990) / 1000 = 99.0%   ←  وهو ما لقطش ولا حالة</div>
+
+  <h3>مقاييس أحسن</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المقياس</th><th>المعادلة</th><th>بيسأل إيه</th></tr>
+    <tr><td><b>Precision</b></td><td class="ltr">TP / (TP + FP)</td><td>من كل اللي قلت عليهم positive، كام صح؟ عالي = إنذارات كدابة قليلة</td></tr>
+    <tr><td><b>Recall</b></td><td class="ltr">TP / (TP + FN)</td><td>من كل الـ positive الحقيقيين، لقطت كام؟ عالي = تفويت قليل</td></tr>
+    <tr><td><b>F1</b></td><td class="ltr">2·P·R / (P + R)</td><td>الـ harmonic mean: بيعاقب الفرق الكبير بين P وR أكتر من المتوسط العادي</td></tr>
+    <tr><td><b>F-beta</b></td><td class="ltr">(1+β²)·P·R / (β²·P + R)</td><td>β &gt; 1 = الـ recall أهم، β &lt; 1 = الـ precision أهم. الـ F2 مشهور في الـ fraud (التفويت أوحش من الإنذار الكداب)</td></tr>
+    <tr><td><b>AUPRC</b></td><td>المساحة تحت منحنى precision-recall</td><td>الموديل العشوائي بياخد AUPRC = نسبة الـ positive (مش 0.5 زي الـ ROC)، فالتحسن بيبان بوضوح</td></tr>
+    <tr><td><b>MCC</b></td><td class="ltr">(TP·TN − FP·FN) / √((TP+FP)(TP+FN)(TN+FP)(TN+FN))</td><td>من −1 لـ +1. بيدّي رقم عالي بس لو الموديل كويس في الـ classين. متوازن حتى لو الـ classes أحجامها مختلفة جدًا</td></tr>
+  </table></div>
+  <p>للموديل اللي بيقول negative دايمًا: الـ precision = <span class="ltr">0/0</span> (غير معرّفة، وغالبًا بنخليها 0)، والـ recall = <span class="ltr">0/10 = 0</span>، والـ F1 = 0، والـ MCC = 0. كلهم كشفوه.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: اكشف الكداب</h3>
+      <p>عندنا 10,000 عينة. الموديل بيدّي score لكل واحدة، والـ negatives والـ positives ليهم توزيعين (الأزرق والبرتقالي). الخط هو الـ threshold: أي حاجة يمينه = positive.</p>
+      <div class="note"><strong>جرب:</strong> نزّل نسبة الـ positive لـ 0.5% وشوف الـ accuracy بتاعة «دايمًا negative» عاملة إزاي. حرّك الـ threshold شمال: الـ recall بيطلع والـ precision بتنزل. وبص على منحنى الـ PR: الخط المتقطع هو baseline الموديل العشوائي، وبينزل مع نسبة الـ positive. أما الـ ROC AUC فمش بيتأثر بالنسبة خالص.</div>
+      <label style="display:grid;gap:2px">نسبة الـ positive = <b class="mono" id="d39-prv">5%</b><input type="range" id="d39-pr" min="0" max="6" step="1" value="3"></label>
+      <label style="display:grid;gap:2px">قوة الموديل (separation) = <b class="mono" id="d39-sepv">2</b><input type="range" id="d39-sep" min="0" max="4" step="0.25" value="2"></label>
+      <label style="display:grid;gap:2px">الـ threshold على الـ score = <b class="mono" id="d39-thv">1</b><input type="range" id="d39-th" min="-2" max="5" step="0.05" value="1"></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d39-c1" width="520" height="200" aria-label="توزيعين للـ scores والـ threshold"></canvas>
+      <div class="readout">
+        <div><small>TP / FN</small><b id="d39-tpfn">-</b></div>
+        <div><small>FP / TN</small><b id="d39-fptn">-</b></div>
+        <div><small>Accuracy</small><b id="d39-acc">-</b></div>
+        <div><small>«دايمًا −» accuracy</small><b id="d39-acc0">-</b></div>
+        <div><small>Precision</small><b id="d39-p">-</b></div>
+        <div><small>Recall</small><b id="d39-r">-</b></div>
+        <div><small>F1</small><b id="d39-f1">-</b></div>
+        <div><small>F2</small><b id="d39-f2">-</b></div>
+        <div><small>MCC</small><b id="d39-mcc">-</b></div>
+      </div>
+      <canvas id="d39-c1b" width="520" height="200" aria-label="منحنى precision-recall"></canvas>
+      <div class="readout">
+        <div><small>AUPRC</small><b id="d39-auprc">-</b></div>
+        <div><small>AUPRC عشوائي</small><b id="d39-base">-</b></div>
+        <div><small>ROC AUC</small><b id="d39-roc">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d39-resample">
+  <div class="station-head"><span class="tag">02</span><h2>غيّر الداتا: Oversampling وUndersampling وSMOTE</h2></div>
+  <p>أول عيلة من الحلول بتغيّر <b>الداتا</b> نفسها عشان الـ classes تبقى متوازنة قبل التدريب.</p>
+  <h3>Random Oversampling</h3>
+  <p>كرّر عينات الـ minority لحد ما عددها يساوي الـ majority. بسيط ومفيش معلومة ضاعت، بس الموديل بيشوف <b>نفس النقطة بالظبط</b> مرات كتير، فممكن يحفظها (overfitting)، والتدريب بيطول.</p>
+  <h3>Random Undersampling</h3>
+  <p>شيل عينات من الـ majority لحد ما عددها يساوي الـ minority. سريع وبسيط، بس بترمي داتا ممكن تكون مفيدة، والنتايج بتبقى أكتر تذبذبًا (variance أعلى).</p>
+  <h3>SMOTE: نقط جديدة مش نسخ</h3>
+  <p>الـ Synthetic Minority Oversampling Technique بيعمل نقط minority جديدة <b>معقولة</b> بدل ما ينسخ:</p>
+  <ol class="ex">
+    <li>لكل نقطة minority <span class="ltr">x</span>، هات أقرب k جيران ليها <b>من الـ minority بس</b>.</li>
+    <li>اختار جار منهم عشوائيًا.</li>
+    <li>اعمل نقطة جديدة في مكان عشوائي على الخط اللي بينهم.</li>
+  </ol>
+  <div class="formula">new_sample = x + random(0, 1) · (neighbor − x)</div>
+  <p>مثال من الدرس: <span class="ltr">x1 = (1.0, 2.0)</span> وجارها <span class="ltr">x2 = (1.5, 2.5)</span> و<span class="ltr">t = 0.4</span>، فالنقطة الجديدة <span class="ltr">x1 + 0.4·(0.5, 0.5) = (1.2, 2.2)</span>. يعني بنملا المنطقة اللي الـ minority عايشة فيها بنقط جديدة من غير ما ننسخ.</p>
+  <p><b>عيوبه:</b> ممكن يعمل نقط فيها noise جنب حدود القرار (لو جار الـ minority بعيد ووسطهم majority)، ومش بيبص على توزيع الـ majority خالص.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>الداتا اتغيرت إزاي</th><th>الخطر</th><th>إمتى</th></tr>
+    <tr><td>Oversample</td><td>الـ minority اتكررت</td><td>Overfitting</td><td>داتا صغيرة، imbalance متوسط</td></tr>
+    <tr><td>Undersample</td><td>الـ majority اتشالت</td><td>ضياع معلومات</td><td>داتا كبيرة، عايز تدريب سريع</td></tr>
+    <tr><td>SMOTE</td><td>minority صناعية اتضافت</td><td>noise عند الحدود</td><td>imbalance متوسط، وعندك minority كفاية للـ k-NN</td></tr>
+  </table></div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: ولّد بالـ SMOTE بإيدك</h3>
+      <p>الرمادي majority (120 نقطة) والبرتقالي minority (12 نقطة بس). دوس «خطوة SMOTE» وشوف: نقطة بتتختار، وخطوط لأقرب k جيران، وجار بيتختار، والنقطة الجديدة (الزرقا) بتتحط على الخط عند t عشوائي.</p>
+      <div class="note"><strong>قارن:</strong> «Oversample» بيكرر نفس النقط (الرقم جنب النقطة = عدد النسخ). «Undersample» بيشيل majority لحد ما يبقوا 12. لاحظ كمان إن الـ k الكبير بيخلّي الـ SMOTE يوصل نقط بعيدة عن بعض ويرمي نقط في أماكن أغرب.</div>
+      <label style="display:grid;gap:2px">k (جيران) = <b class="mono" id="d39-kv">5</b><input type="range" id="d39-k" min="1" max="11" step="1" value="5"></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d39-c2" width="520" height="400" aria-label="نقط majority وminority وتوليد SMOTE"></canvas>
+      <div class="btns">
+        <button type="button" class="primary" id="d39-sm1">خطوة SMOTE</button>
+        <button type="button" id="d39-sm20">SMOTE لحد التوازن</button>
+        <button type="button" id="d39-ovr">Oversample</button>
+        <button type="button" id="d39-und">Undersample</button>
+        <button type="button" id="d39-rst">رجّع</button>
+      </div>
+      <div class="readout">
+        <div><small>majority</small><b id="d39-nmaj">120</b></div>
+        <div><small>minority</small><b id="d39-nmin">12</b></div>
+        <div><small>آخر t</small><b id="d39-lt">-</b></div>
+      </div>
+      <div class="verdict" id="d39-v2"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d39-weights">
+  <div class="station-head"><span class="tag">03</span><h2>غيّر الموديل: Class Weights والـ Threshold والتكلفة</h2></div>
+  <h3>Class Weights</h3>
+  <p>بدل ما تلعب في الداتا، غيّر <b>تمن الغلطة</b>. الغلط في الـ minority يتحسب أغلى. الوزن لكل class:</p>
+  <div class="formula">weight(class) = n_samples / (n_classes · n_class)</div>
+  <p>لو عندك 950 negative و50 positive: وزن الـ negative = <span class="ltr">1000 / (2·950) = 0.526</span>، ووزن الـ positive = <span class="ltr">1000 / (2·50) = 10.0</span>. يعني الـ positive واخد 19 ضعف، وغلطة واحدة فيه بتوجع زي 19 غلطة في الـ negative.</p>
+  <div class="instrument" style="max-width:560px">
+    <div class="mrow">
+      <label>n_negative<input type="number" id="d39-wn" value="950" min="1" style="font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)"></label>
+      <label>n_positive<input type="number" id="d39-wp" value="50" min="1" style="font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)"></label>
+    </div>
+    <div class="readout">
+      <div><small>وزن الـ negative</small><b id="d39-wneg">-</b></div>
+      <div><small>وزن الـ positive</small><b id="d39-wpos">-</b></div>
+      <div><small>النسبة</small><b id="d39-wrat">-</b></div>
+    </div>
+  </div>
+  <p>في الـ logistic regression، ده بيعدّل الـ loss:</p>
+  <div class="formula">weighted_loss = −Σ wᵢ · [ yᵢ·log(pᵢ) + (1−yᵢ)·log(1−pᵢ) ]</div>
+  <p>الـ class weights <b>بتساوي الـ oversampling في المتوسط (in expectation)</b>، بس من غير ما تعمل نقط جديدة، فهي أسرع ومفيهاش خطر الـ overfitting على نسخ مكررة.</p>
+
+  <h3>Threshold Tuning</h3>
+  <p>معظم الـ classifiers بتطلّع احتمال، والـ threshold الافتراضي 0.5. بس 0.5 رقم اعتباطي، ومع الـ imbalance الـ threshold الأحسن غالبًا أقل بكتير. الخطوات:</p>
+  <ol class="ex">
+    <li>درّب الموديل.</li>
+    <li>هات الاحتمالات على الـ <b>validation set</b> (مش الـ test).</li>
+    <li>جرّب thresholds من 0 لـ 1.</li>
+    <li>احسب الـ F1 (أو المقياس اللي يهمك) عند كل واحد.</li>
+    <li>اختار الأحسن واستخدمه في الـ production.</li>
+  </ol>
+  <p>موديل ممكن يدّي معاملة fraud احتمال 0.15. عند 0.5 هتعدّي. عند 0.10 هتتمسك. المهم هو <b>الترتيب</b> أكتر من دقة الاحتمال نفسه: طالما الـ fraud واخد احتمالات أعلى من السليم، فيه threshold بيفصلهم.</p>
+
+  <h3>Cost-Sensitive Learning</h3>
+  <p>تعميم للـ class weights: بدل وزن واحد لكل class، حط تكلفة لكل نوع غلطة:</p>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Predict +</th><th>Predict −</th></tr>
+    <tr><td>Actually +</td><td>0 (صح)</td><td class="ltr">C_FN = 100</td></tr>
+    <tr><td>Actually −</td><td class="ltr">C_FP = 1</td><td>0 (صح)</td></tr>
+  </table></div>
+  <p>تفويت fraud أغلى 100 مرة من إنذار كداب، والموديل بيقلل <b>التكلفة الكلية</b> مش عدد الأخطاء. ده أكتر طريقة منطقية لو تقدر تقدّر التكاليف الحقيقية: تفويت تشخيص سرطان غير إنذار كداب بيودّي لعينة زيادة. لما تكتب التكاليف صريحة، القرار بيبقى صح.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: الـ threshold من التكلفة</h3>
+      <p>نفس موديل المعمل ١، بس المحور هنا هو <b>الاحتمال</b> اللي الموديل بيطلّعه (calibrated). المنحنى هو التكلفة الكلية على 10,000 عينة عند كل threshold، والنقطة هي أقل تكلفة.</p>
+      <div class="note ai"><strong>إضافة مني:</strong> لو الاحتمالات calibrated (يعني 0.2 معناها فعلًا 20%)، القرار الأمثل إنك تقول positive لما <span class="ltr">p·C_FN &gt; (1−p)·C_FP</span>، يعني الـ threshold = <span class="ltr">C_FP / (C_FP + C_FN)</span>. الخط المتقطع هو الرقم ده، وهتلاقيه فوق أقل نقطة في المنحنى. ومع 1 و100 الـ threshold ≈ 0.0099، بعيد خالص عن 0.5.</div>
+      <label style="display:grid;gap:2px">C_FN (تمن التفويت) = <b class="mono" id="d39-cfnv">100</b><input type="range" id="d39-cfn" min="1" max="500" step="1" value="100"></label>
+      <label style="display:grid;gap:2px">C_FP (تمن الإنذار الكداب) = <b class="mono" id="d39-cfpv">1</b><input type="range" id="d39-cfp" min="1" max="100" step="1" value="1"></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d39-c3" width="520" height="280" aria-label="التكلفة الكلية مقابل الـ threshold"></canvas>
+      <div class="readout">
+        <div><small>أحسن threshold (تكلفة)</small><b id="d39-tc">-</b></div>
+        <div><small>النظري C_FP/(C_FP+C_FN)</small><b id="d39-tt">-</b></div>
+        <div><small>أحسن threshold (F1)</small><b id="d39-tf">-</b></div>
+        <div><small>التكلفة عند 0.5</small><b id="d39-c05">-</b></div>
+        <div><small>أقل تكلفة</small><b id="d39-cmin">-</b></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>تختار إيه؟ (Decision Flowchart)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>السؤال</th><th>الإجابة</th><th>ابدأ بـ</th></tr>
+    <tr><td rowspan="3">قد إيه الـ imbalance؟</td><td>خفيف (أقل من 70/30)</td><td>class weights الأول</td></tr>
+    <tr><td>متوسط (70/30 لـ 95/5)</td><td>SMOTE + class weights</td></tr>
+    <tr><td>شديد (أكتر من 95/5)</td><td>اجمع كذا استراتيجية (SMOTE + class weights + threshold)</td></tr>
+    <tr><td rowspan="3">حجم الداتا؟</td><td>أقل من 1000</td><td>Oversample أو SMOTE، وابعد عن الـ undersampling</td></tr>
+    <tr><td>1000 لـ 10000</td><td>SMOTE + threshold tuning</td></tr>
+    <tr><td>أكتر من 10000</td><td>الـ undersampling مقبول، أو class weights</td></tr>
+    <tr><td>بعد التدريب والتقييم بـ F1/AUPRC</td><td>الـ recall واطي؟</td><td>نزّل الـ threshold</td></tr>
+    <tr><td></td><td>الـ precision مش مقبولة؟</td><td>طلّع الـ threshold أو ضيف features</td></tr>
+    <tr><td></td><td>الاتنين تمام؟</td><td>Ship it، ومع monitoring</td></tr>
+  </table></div>
+</section>
+
+<!-- CODE -->
+<section id="d39-code">
+  <div class="station-head"><span class="tag">04</span><h2>طبّق بإيدك: الـ pipeline كله من الصفر</h2></div>
+  <p>من جوه فولدر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/17-imbalanced-data/code/imbalanced.py</pre></div>
+  <p><b>القاعدة:</b> اكتب بنفسك في <code>my_imbalanced.py</code>. الأصل للمراجعة بس.</p>
+
+  <h3>خطوة ١: داتا imbalanced</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def make_imbalanced_data(n_majority=950, n_minority=50, seed=42):
+    rng = np.random.RandomState(seed)
+    X_maj = rng.randn(n_majority, 2) * 1.0 + np.array([0.0, 0.0])    <span class="c"># الأغلبية حوالين الصفر</span>
+    X_min = rng.randn(n_minority, 2) * 0.8 + np.array([2.5, 2.5])    <span class="c"># الأقلية حوالين (2.5, 2.5)</span>
+    X = np.vstack([X_maj, X_min])
+    y = np.concatenate([np.zeros(n_majority), np.ones(n_minority)])
+    shuffle_idx = rng.permutation(len(y))
+    return X[shuffle_idx], y[shuffle_idx]</pre></div>
+
+  <h3>خطوة ٢: SMOTE من الصفر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def euclidean_distance(a, b):
+    return np.sqrt(np.sum((a - b) ** 2))
+
+
+def find_k_neighbors(X, idx, k):
+    distances = []
+    for i in range(len(X)):
+        if i == idx:                     <span class="c"># النقطة مش جارة نفسها</span>
+            continue
+        d = euclidean_distance(X[idx], X[i])
+        distances.append((i, d))
+    distances.sort(key=lambda x: x[1])
+    return [d[0] for d in distances[:k]]
+
+
+def smote(X_minority, k=5, n_synthetic=100, seed=42):
+    rng = np.random.RandomState(seed)
+    n_samples = len(X_minority)
+    k = min(k, n_samples - 1)
+    if k &lt; 1:
+        raise ValueError("SMOTE requires at least 2 minority samples")
+    synthetic = []
+    for _ in range(n_synthetic):
+        idx = rng.randint(0, n_samples)                      <span class="c"># نقطة minority عشوائية</span>
+        neighbors = find_k_neighbors(X_minority, idx, k)     <span class="c"># جيرانها من الـ minority بس</span>
+        neighbor_idx = neighbors[rng.randint(0, len(neighbors))]
+        t = rng.random()                                     <span class="c"># مكان عشوائي على الخط</span>
+        new_point = X_minority[idx] + t * (X_minority[neighbor_idx] - X_minority[idx])
+        synthetic.append(new_point)
+    return np.array(synthetic)</pre></div>
+
+  <h3>خطوة ٣: Random over/under sampling</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def random_oversample(X, y, seed=42):
+    rng = np.random.RandomState(seed)
+    classes, counts = np.unique(y, return_counts=True)
+    max_count = counts.max()
+    X_resampled = list(X)
+    y_resampled = list(y)
+    for cls, count in zip(classes, counts):
+        if count &lt; max_count:
+            cls_indices = np.where(y == cls)[0]
+            n_needed = max_count - count
+            chosen = rng.choice(cls_indices, size=n_needed, replace=True)   <span class="c"># نسخ مع تكرار</span>
+            X_resampled.extend(X[chosen])
+            y_resampled.extend(y[chosen])
+    X_out = np.array(X_resampled)
+    y_out = np.array(y_resampled)
+    shuffle = rng.permutation(len(y_out))
+    return X_out[shuffle], y_out[shuffle]
+
+
+def random_undersample(X, y, seed=42):
+    rng = np.random.RandomState(seed)
+    classes, counts = np.unique(y, return_counts=True)
+    min_count = counts.min()
+    X_resampled = []
+    y_resampled = []
+    for cls in classes:
+        cls_indices = np.where(y == cls)[0]
+        chosen = rng.choice(cls_indices, size=min_count, replace=False)   <span class="c"># خد min_count بس من كل class</span>
+        X_resampled.extend(X[chosen])
+        y_resampled.extend(y[chosen])
+    X_out = np.array(X_resampled)
+    y_out = np.array(y_resampled)
+    shuffle = rng.permutation(len(y_out))
+    return X_out[shuffle], y_out[shuffle]</pre></div>
+
+  <h3>خطوة ٤: Logistic regression بأوزان</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sigmoid(z):
+    return 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
+
+
+def logistic_regression_weighted(X, y, weights, lr=0.01, epochs=200):
+    n_samples, n_features = X.shape
+    w = np.zeros(n_features)
+    b = 0.0
+    for _ in range(epochs):
+        z = X @ w + b
+        pred = sigmoid(z)
+        error = pred - y
+        weighted_error = error * weights          <span class="c"># غلطة الـ minority بتتضرب في وزن أكبر</span>
+        gradient_w = (X.T @ weighted_error) / n_samples
+        gradient_b = np.mean(weighted_error)
+        w -= lr * gradient_w
+        b -= lr * gradient_b
+    return w, b
+
+
+def compute_class_weights(y):
+    classes, counts = np.unique(y, return_counts=True)
+    n_samples = len(y)
+    n_classes = len(classes)
+    weight_map = {}
+    for cls, count in zip(classes, counts):
+        weight_map[cls] = n_samples / (n_classes * count)
+    return np.array([weight_map[yi] for yi in y])    <span class="c"># وزن لكل عينة</span>
+
+
+def class_weighted_loss(y_true, y_pred_probs, weights):
+    eps = 1e-15
+    y_pred_probs = np.clip(y_pred_probs, eps, 1 - eps)     <span class="c"># عشان log(0)</span>
+    loss = -(y_true * np.log(y_pred_probs) + (1 - y_true) * np.log(1 - y_pred_probs))
+    return np.mean(loss * weights)</pre></div>
+
+  <h3>خطوة ٥: Threshold tuning</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def find_optimal_threshold(y_true, y_probs, metric="f1"):
+    best_threshold = 0.5
+    best_score = -1.0
+    for threshold in np.arange(0.05, 0.96, 0.01):
+        y_pred = (y_probs &gt;= threshold).astype(int)
+        tp = np.sum((y_pred == 1) &amp; (y_true == 1))
+        fp = np.sum((y_pred == 1) &amp; (y_true == 0))
+        fn = np.sum((y_pred == 0) &amp; (y_true == 1))
+        if metric == "f1":
+            prec = tp / (tp + fp) if (tp + fp) &gt; 0 else 0.0
+            rec = tp / (tp + fn) if (tp + fn) &gt; 0 else 0.0
+            score = 2 * prec * rec / (prec + rec) if (prec + rec) &gt; 0 else 0.0
+        elif metric == "recall":
+            score = tp / (tp + fn) if (tp + fn) &gt; 0 else 0.0
+        elif metric == "precision":
+            score = tp / (tp + fp) if (tp + fp) &gt; 0 else 0.0
+        else:
+            score = 0.0
+        if score &gt; best_score:
+            best_score = score
+            best_threshold = threshold
+    return best_threshold, best_score</pre></div>
+
+  <h3>خطوة ٦: المقاييس</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def confusion_matrix_values(y_true, y_pred):
+    tp = np.sum((y_pred == 1) &amp; (y_true == 1))
+    tn = np.sum((y_pred == 0) &amp; (y_true == 0))
+    fp = np.sum((y_pred == 1) &amp; (y_true == 0))
+    fn = np.sum((y_pred == 0) &amp; (y_true == 1))
+    return tp, tn, fp, fn
+
+
+def compute_metrics(y_true, y_pred):
+    tp, tn, fp, fn = confusion_matrix_values(y_true, y_pred)
+    accuracy = (tp + tn) / (tp + tn + fp + fn)
+    precision = tp / (tp + fp) if (tp + fp) &gt; 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) &gt; 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) &gt; 0 else 0.0
+    denom = np.sqrt(float((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)))
+    mcc = (tp * tn - fp * fn) / denom if denom &gt; 0 else 0.0
+    return {"accuracy": accuracy, "precision": precision,
+            "recall": recall, "f1": f1, "mcc": mcc}</pre></div>
+
+  <h3>خطوة ٧: قارن كل الطرق</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>X, y = make_imbalanced_data(950, 50, seed=42)
+split = int(0.8 * len(y))
+X_train, X_test = X[:split], X[split:]
+y_train, y_test = y[:split], y[split:]
+
+<span class="c"># Baseline: من غير أي علاج</span>
+w_base, b_base = logistic_regression_weighted(
+    X_train, y_train, np.ones(len(y_train)), lr=0.1, epochs=300)
+preds_base = (sigmoid(X_test @ w_base + b_base) &gt;= 0.5).astype(int)
+
+<span class="c"># SMOTE: ولّد لحد ما الـ classين يتساووا (على التدريب بس!)</span>
+minority_mask = y_train == 1
+X_minority = X_train[minority_mask]
+n_needed = int(np.sum(y_train == 0)) - int(np.sum(y_train == 1))
+synthetic = smote(X_minority, k=5, n_synthetic=n_needed, seed=42)
+X_smote = np.vstack([X_train, synthetic])
+y_smote = np.concatenate([y_train, np.ones(len(synthetic))])
+w_sm, b_sm = logistic_regression_weighted(
+    X_smote, y_smote, np.ones(len(y_smote)), lr=0.1, epochs=300)
+
+<span class="c"># Class weights</span>
+sample_weights = compute_class_weights(y_train)
+w_cw, b_cw = logistic_regression_weighted(
+    X_train, y_train, sample_weights, lr=0.1, epochs=300)
+probs_cw = sigmoid(X_test @ w_cw + b_cw)
+
+<span class="c"># Threshold: اتظبط على validation من التدريب، مش على الـ test</span>
+val_split = int(0.75 * len(y_train))
+X_tr, X_val = X_train[:val_split], X_train[val_split:]
+y_tr, y_val = y_train[:val_split], y_train[val_split:]
+w_val, b_val = logistic_regression_weighted(
+    X_tr, y_tr, compute_class_weights(y_tr), lr=0.1, epochs=300)
+best_thresh, best_f1 = find_optimal_threshold(
+    y_val, sigmoid(X_val @ w_val + b_val), metric="f1")
+preds_thresh = (probs_cw &gt;= best_thresh).astype(int)
+
+print(compute_metrics(y_test, preds_thresh))</pre></div>
+  <p>الملف الأصلي بيعمل ٨ أقسام: always-majority، من غير علاج، oversampling، undersampling، SMOTE، class weights، class weights + threshold، ومقارنة الـ weighted loss. وفي الآخر جدول ملخص فيه Acc وPrec وRec وF1 وMCC لكل طريقة.</p>
+  <details><summary>المفروض تشوف إيه؟</summary>
+    <p>أول سطرين محسوبين من الكود نفسه:</p>
+    <pre class="term">Dataset: 1000 samples, 50 positive (5.0%), 950 negative (95.0%)
+Train: 800 samples, Test: 200 samples</pre>
+    <p>وبعد كده (ما شغلتش الملف هنا، فمش هكتب أرقام): «Always majority» هتلاقي الـ accuracy بتاعته عالية والـ Recall والـ F1 والـ MCC كلهم 0. وقارن بنفسك: الطرق اللي بتعالج الـ imbalance المفروض ترفع الـ recall والـ MCC حتى لو الـ accuracy نزلت شوية. ولاحظ إن وزن الـ positive في قسم ٦ قريب من 10 لأن نسبة الـ positive في التدريب حوالي 5%.</p>
+  </details>
+
+  <h3>خطوة ٨: نفس الكلام بـ sklearn وimbalanced-learn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># pip install imbalanced-learn</span>
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report
+from sklearn.model_selection import train_test_split
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y)   <span class="c"># stratify = نفس النسبة في الاتنين</span>
+
+model_weighted = LogisticRegression(class_weight="balanced")
+model_weighted.fit(X_train, y_train)
+print(classification_report(y_test, model_weighted.predict(X_test)))
+
+smote = SMOTE(random_state=42)
+X_resampled, y_resampled = smote.fit_resample(X_train, y_train)   <span class="c"># على التدريب بس</span>
+model_smote = LogisticRegression()
+model_smote.fit(X_resampled, y_resampled)
+print(classification_report(y_test, model_smote.predict(X_test)))
+
+<span class="c"># الـ Pipeline بتاع imblearn بيعمل الـ SMOTE وقت الـ fit بس، مش وقت الـ predict</span>
+pipeline = Pipeline([
+    ("smote", SMOTE()),
+    ("model", LogisticRegression(class_weight="balanced")),
+])
+pipeline.fit(X_train, y_train)
+print(classification_report(y_test, pipeline.predict(X_test)))</pre></div>
+  <p>مفيش سحر: الـ SMOTE هو k-NN interpolation على الـ minority، والـ class weights بتضرب الـ loss، والـ threshold tuning هو for-loop على قيم القطع.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d39-ex">
+  <div class="station-head"><span class="tag">05</span><h2>التمارين</h2></div>
+  <p>اعمل ٣ على الأقل.</p>
+  <ol class="ex">
+    <li><b>Borderline-SMOTE:</b> عدّل الـ SMOTE يولّد بس من نقط الـ minority القريبة من حدود القرار (اللي من ضمن أقرب k جيران ليها <b>في الداتا كلها</b> فيه majority). قارنه بالـ SMOTE العادي على داتا الـ classes فيها متداخلة.
+      <details><summary>تلميح</summary>لكل نقطة minority، هات أقرب k جيران من <code>X_train</code> كله. لو عدد الـ majority فيهم بين <span class="ltr">k/2</span> و<span class="ltr">k−1</span> تبقى «danger» وتولّد منها. لو كلهم majority غالبًا دي noise، سيبها. عشان تعمل تداخل قرّب المركزين، مثلًا minority عند <span class="ltr">(1.2, 1.2)</span>.</details></li>
+    <li><b>Cost matrix:</b> اعمل cost-sensitive learning والـ cost matrix parameter. دالة بتاخد الـ cost matrix وترجّع التوقعات اللي بتقلل التكلفة المتوقعة. جرّب نسب 1:10 و1:100 و1:1000 وارسم الـ precision-recall tradeoff بيتغير إزاي.
+      <details><summary>تلميح</summary>لكل عينة: <span class="ltr">cost(predict +) = (1−p)·C_FP</span> و<span class="ltr">cost(predict −) = p·C_FN</span>. اختار الأقل. ده نفس الـ threshold <span class="ltr">C_FP/(C_FP+C_FN)</span> اللي في المعمل ٣. كل ما النسبة تكبر، الـ recall يطلع والـ precision تنزل.</details></li>
+    <li><b>Platt scaling:</b> اعمل logistic regression على الـ outputs الخام للموديل عشان تطلع احتمالات calibrated. قارن منحنى الـ PR قبل وبعد، ووضّح إن الـ calibration مش بتغيّر الترتيب (الـ AUC ثابت) بس بتخلّي الاحتمالات ليها معنى.
+      <details><summary>تلميح</summary>خد الـ logits <span class="ltr">z = X_val @ w + b</span>، ودرّب logistic بـ feature واحدة <code>z</code> على <code>y_val</code>. الناتج <span class="ltr">sigmoid(a·z + c)</span>. لو <span class="ltr">a &gt; 0</span> فالترتيب زي ما هو، فالـ AUC مش هيتغير. قارن متوسط الاحتمالات بنسبة الـ positive الحقيقية قبل وبعد.</details></li>
+    <li><b>Balanced bagging:</b> درّب كذا موديل، كل واحد على bootstrap متوازن (كل الـ minority + جزء عشوائي من الـ majority)، وخد متوسط توقعاتهم. قارنه بموديل واحد بالـ SMOTE، في الأداء وفي التذبذب بين التشغيلات.
+      <details><summary>تلميح</summary>ده undersampling بس من غير ما ترمي الداتا: كل موديل بيشوف majority مختلفة، فالغابة كلها شافت كل حاجة. نفس فكرة الـ bagging من Day 33. شغّل التجربة بـ 10 seeds واحسب الـ std بتاع الـ F1.</details></li>
+    <li><b>تجربة نسبة الـ imbalance:</b> خد داتا متوازنة وزوّد الـ imbalance تدريجيًا (50/50، 70/30، 90/10، 95/5، 99/1). عند كل نسبة درّب بالـ SMOTE ومن غيره، وارسم الـ F1 مقابل النسبة. من عند أي نسبة الـ SMOTE بيفرق فعلًا؟
+      <details><summary>تلميح</summary>استخدم <code>make_imbalanced_data(n_majority, n_minority)</code> وخلّي المجموع ثابت. خلّي الـ test بنفس النسبة الحقيقية (متعملش resample للـ test أبدًا). غالبًا الفرق مش هيبان في 70/30 وهيبان أكتر كل ما النسبة تتطرف.</details></li>
+    <li><b>إضافة مني · classifier لـ prompt injection:</b> عندك 5000 رسالة جاية لـ agent، منهم 2% بس prompt injection. المطلوب: الـ recall لازم يبقى على الأقل 95% (تفويت injection خطر)، وبعد كده عايز أعلى precision ممكنة عشان متضايقش اليوزرز العاديين. اعمل داتا صناعية بـ 2 features (score من كلمات مشبوهة + طول الرسالة)، ودرّب logistic بـ class weights، وهات الـ threshold اللي بيحقق الشرط على الـ validation، واحسب الـ precision عنده.
+      <details><summary>تلميح</summary>رتّب الـ positives في الـ validation حسب الاحتمال، وخد الـ threshold = الاحتمال عند الـ 5th percentile بتاعهم (عشان 95% منهم فوقه). قيس الـ precision على الـ test مش على نفس الـ validation. ده اسمه «recall at fixed target» وهو أقرب لطريقة شغل فرق الـ safety من الـ F1.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d39-extra">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني: اللي الدرس مقالوش صريح</h2></div>
+  <h3>الحدس في جملة</h3>
+  <p>كل الحلول بتعمل نفس الحاجة بطرق مختلفة: بتقول للموديل «الـ class دي أهم مما عددها بيوحي». الـ resampling بيقولها بالداتا، والـ weights بيقولها في الـ loss، والـ threshold بيقولها وقت القرار.</p>
+  <h3>أخطاء بتحصل كتير</h3>
+  <ul class="checklist">
+    <li>• <b>SMOTE قبل الـ split:</b> النقط الصناعية بتتعمل من نقط ممكن تقع في الـ test، فالموديل بيشوف «نسخ مشوهة» من الـ test وهو بيتدرب. ده leakage. اعمل resample على التدريب بس، وجوه كل fold في الـ CV (عشان كده الـ Pipeline بتاع imblearn موجود، زي Day 35).</li>
+    <li>• <b>Resample للـ test:</b> الـ test لازم يفضل بنفس نسبة الدنيا الحقيقية، وإلا الأرقام مش هتشبه الـ production.</li>
+    <li>• <b>نسيان <code>stratify=y</code>:</b> مع 50 positive بس، split عشوائي ممكن يحط في الـ test عدد قليل جدًا، والمقاييس تتهز جامد.</li>
+    <li>• <b>الاحتمالات بعد الـ resampling مش calibrated:</b> لو دربت على 50/50 والدنيا 5/95، الموديل هيدّي احتمالات أعلى من الحقيقة. لو بتستخدم الاحتمال نفسه (في التكلفة أو في الـ ranking مع موديلات تانية) اعمل calibration (تمرين ٣).</li>
+    <li>• <b>SMOTE على features categorical:</b> الـ interpolation بين one-hot بيطلّع قيم زي 0.4 ملهاش معنى. imbalanced-learn فيها <code>SMOTENC</code> للحالة دي.</li>
+    <li>• <b>تظبيط الـ threshold على الـ test:</b> كده الـ test بقى جزء من التدريب. الكود الأصلي بيعمل validation slice من التدريب عشان كده.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li>• <b>Guardrails:</b> classifiers للـ jailbreak والـ prompt injection والمحتوى الضار: الحالات الخطرة نادرة جدًا وسط الرسايل العادية، وفرق الـ safety غالبًا بتحدد recall مطلوب وتشوف الـ precision عنده.</li>
+    <li>• <b>تقييم LLM-as-judge:</b> لو عندك eval set فيه 3% إجابات فيها hallucination، «الـ judge دقيق 97%» ممكن يبقى معناها إنه بيقول «كويس» على طول. اطلب precision وrecall للـ class النادرة.</li>
+    <li>• <b>Intent routing:</b> agent بيوزّع الطلبات على tools، وفيه intents نادرة بس مهمة (إلغاء اشتراك، شكوى قانونية). نفس الحلول: class weights، أمثلة صناعية (ودلوقتي ممكن الـ LLM نفسه يولّدها، فكرة قريبة من SMOTE بس في مساحة النص)، وthreshold أقل للـ intents المهمة.</li>
+    <li>• <b>Focal loss:</b> في الـ object detection (موديل RetinaNet) ظهرت loss بتقلل وزن الأمثلة السهلة الكتير عشان الموديل يركز على الصعبة النادرة. نفس روح الـ class weights، ولو اشتغلت في الـ object detection هتقابلها.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d39-quiz">
+  <div class="station-head"><span class="tag">07</span><h2>كويز</h2></div>
+  <div class="quiz" id="d39-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d39-done">
+  <div class="station-head"><span class="tag">08</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح ليه موديل «دايمًا negative» بياخد accuracy عالية وهو ملوش لازمة</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> أعرف Precision وRecall وF1 وF-beta وAUPRC وMCC وإمتى أستخدم كل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> ولّدت نقط بالـ SMOTE في المعمل وفاهم فرقه عن الـ oversampling والـ undersampling</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> أقدر أحسب الـ class weights وأشرح الـ weighted loss</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> فاهم الـ threshold tuning على validation والـ cost-sensitive learning</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> كتبت smote وcompute_class_weights وfind_optimal_threshold بإيدي وشغّلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c8" id="d39-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Precision / Recall / F1 / MCC</td><td>أي classification فيها class نادرة: fraud، طب، safety</td></tr>
+    <tr><td>AUPRC</td><td>مقارنة موديلات على داتا imbalanced، تقييم الـ guardrails</td></tr>
+    <tr><td>SMOTE / resampling</td><td>تجهيز داتا التدريب، توليد أمثلة صناعية للـ classes النادرة</td></tr>
+    <tr><td>Class weights</td><td><code>class_weight="balanced"</code> في sklearn، الـ weighted cross-entropy في الـ deep learning</td></tr>
+    <tr><td>Threshold tuning</td><td>تشغيل أي classifier في الـ production، recall مطلوب عند precision معينة</td></tr>
+    <tr><td>Cost-sensitive learning</td><td>قرارات بيزنس: fraud، صيانة، تشخيص</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Feature Selection. ليه features أكتر ممكن تبوّظ الموديل، وإزاي تختار الصح بالـ variance والـ mutual information والـ RFE والـ L1 وأهمية الشجر. وهنبدأ بتسخين ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F17-imbalanced-data" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/17-imbalanced-data</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d39-root');
+
+const rm=$('d39-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===17)s.className='now';rm.appendChild(s)}
+
+function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function erf(x){const s=Math.sign(x);x=Math.abs(x);const t=1/(1+0.3275911*x);const y=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-x*x);return s*y}
+const Phi=x=>0.5*(1+erf(x/Math.SQRT2));
+const phi=x=>Math.exp(-x*x/2)/Math.sqrt(2*Math.PI);
+const N=10000,RATES=[0.5,0.2,0.1,0.05,0.02,0.005,0.001];
+
+function metrics(tp,fn,fp,tn){const P=tp+fp?tp/(tp+fp):0,R=tp+fn?tp/(tp+fn):0,F1=P+R?2*P*R/(P+R):0,F2=(4*P+R)?5*P*R/(4*P+R):0;
+  const d=Math.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn)),mcc=d?(tp*tn-fp*fn)/d:0;return{P,R,F1,F2,mcc,acc:(tp+tn)/(tp+tn+fp+fn)}}
+function counts(rate,sep,t){const nP=Math.round(N*rate),nN=N-nP,tp=Math.round(nP*(1-Phi(t-sep))),fp=Math.round(nN*(1-Phi(t)));return[tp,nP-tp,fp,nN-fp]}
+
+// ================= Lab 1 =================
+const c1=$('d39-c1'),x1=AI.setupCanvas(c1),W1=+c1.dataset.w,H1=+c1.dataset.h;
+const c1b=$('d39-c1b'),x1b=AI.setupCanvas(c1b),W1b=+c1b.dataset.w,H1b=+c1b.dataset.h;
+function draw1(){
+  const rate=RATES[+$('d39-pr').value],sep=+$('d39-sep').value,t=+$('d39-th').value;
+  $('d39-prv').textContent=(rate*100)+'%';$('d39-sepv').textContent=sep;$('d39-thv').textContent=f(t,2);
+  const nP=N*rate,nN=N-nP,lo=-4,hi=8,sx=v=>20+(v-lo)/(hi-lo)*(W1-40),base=H1-28;
+  const peak=Math.max(nN,nP)*phi(0),sy=v=>base-v/peak*(base-14);
+  x1.clearRect(0,0,W1,H1);
+  x1.fillStyle=css('--soft');x1.fillRect(sx(t),8,W1-20-sx(t),base-8);
+  [[0,nN,css('--vec-a')],[sep,nP,css('--vec-b')]].forEach(([mu,n,col])=>{x1.beginPath();x1.moveTo(sx(lo),base);for(let v=lo;v<=hi;v+=0.05)x1.lineTo(sx(v),sy(n*phi(v-mu)));x1.lineTo(sx(hi),base);x1.closePath();x1.fillStyle=col;x1.globalAlpha=.3;x1.fill();x1.globalAlpha=1;x1.strokeStyle=col;x1.lineWidth=2;x1.stroke()});
+  x1.strokeStyle=css('--ink');x1.lineWidth=2;x1.beginPath();x1.moveTo(sx(t),6);x1.lineTo(sx(t),base);x1.stroke();
+  x1.strokeStyle=css('--muted');x1.lineWidth=1;x1.beginPath();x1.moveTo(20,base);x1.lineTo(W1-20,base);x1.stroke();
+  x1.fillStyle=css('--ink');x1.font='12px JetBrains Mono, monospace';x1.fillText('negatives: '+Math.round(nN),24,18);x1.fillStyle=css('--vec-b');x1.fillText('positives: '+Math.round(nP)+(rate<=0.02?'  (tiny!)':''),24,34);
+  x1.fillStyle=css('--muted');x1.textAlign='center';x1.fillText('model score →',W1/2,H1-8);x1.textAlign='right';x1.fillText('predict +',W1-24,18);x1.textAlign='left';
+  const [tp,fn,fp,tn]=counts(rate,sep,t),m=metrics(tp,fn,fp,tn);
+  $('d39-tpfn').textContent=tp+' / '+fn;$('d39-fptn').textContent=fp+' / '+tn;
+  $('d39-acc').textContent=f(m.acc*100,1)+'%';$('d39-acc0').textContent=f((1-rate)*100,1)+'%';
+  $('d39-p').textContent=f(m.P,3);$('d39-r').textContent=f(m.R,3);$('d39-f1').textContent=f(m.F1,3);$('d39-f2').textContent=f(m.F2,3);$('d39-mcc').textContent=f(m.mcc,3);
+  // PR curve
+  x1b.clearRect(0,0,W1b,H1b);const L=40,R=W1b-14,T=10,B=H1b-30,px=v=>L+v*(R-L),py=v=>B-v*(B-T);
+  x1b.strokeStyle=css('--muted');x1b.lineWidth=1;x1b.strokeRect(L,T,R-L,B-T);
+  x1b.fillStyle=css('--muted');x1b.font='11px JetBrains Mono, monospace';x1b.textAlign='center';x1b.fillText('recall',(L+R)/2,H1b-8);
+  [0,0.5,1].forEach(v=>{x1b.fillText(v,px(v),B+13)});x1b.textAlign='right';[0,0.5,1].forEach(v=>x1b.fillText(v,L-5,py(v)+4));
+  x1b.save();x1b.translate(12,(T+B)/2);x1b.rotate(-Math.PI/2);x1b.textAlign='center';x1b.fillText('precision',0,0);x1b.restore();
+  let pts=[],au=0,prevR=0;
+  for(let tt=8;tt>=-5;tt-=0.02){const tpr=1-Phi(tt-sep),fpr=1-Phi(tt),tpE=nP*tpr,fpE=nN*fpr,P=tpE+fpE>0?tpE/(tpE+fpE):1;pts.push([tpr,P]);au+=(tpr-prevR)*P;prevR=tpr}
+  x1b.strokeStyle=css('--muted');x1b.setLineDash([5,4]);x1b.beginPath();x1b.moveTo(px(0),py(rate));x1b.lineTo(px(1),py(rate));x1b.stroke();x1b.setLineDash([]);
+  x1b.strokeStyle=css('--vec-a');x1b.lineWidth=2.5;x1b.beginPath();pts.forEach((p,i)=>i?x1b.lineTo(px(p[0]),py(p[1])):x1b.moveTo(px(p[0]),py(p[1])));x1b.stroke();
+  x1b.fillStyle=css('--vec-b');x1b.beginPath();x1b.arc(px(m.R),py(tp+fp?m.P:1),6,0,7);x1b.fill();x1b.textAlign='left';
+  $('d39-auprc').textContent=f(au,3);$('d39-base').textContent=f(rate,3);$('d39-roc').textContent=f(Phi(sep/Math.SQRT2),3);
+}
+['d39-pr','d39-sep','d39-th'].forEach(id=>$(id).addEventListener('input',()=>{draw1();draw3()}));
+draw1();
+
+// ================= Lab 2: SMOTE =================
+const c2=$('d39-c2'),x2=AI.setupCanvas(c2),W2=+c2.dataset.w,H2=+c2.dataset.h;
+let MAJ,MIN,SYN,DUP,keep,anim=null,show=null;
+function reset2(){const r=rng(17);MAJ=[];MIN=[];for(let i=0;i<120;i++)MAJ.push([gauss(r),gauss(r)]);for(let i=0;i<12;i++)MIN.push([2.5+0.8*gauss(r),2.5+0.8*gauss(r)]);SYN=[];DUP=new Array(12).fill(0);keep=null;show=null;$('d39-lt').textContent='-';$('d39-v2').textContent='';}
+reset2();
+let rs=rng(5);
+const sx2=v=>W2/2+(v-1.2)*52,sy2=v=>H2/2-(v-1.2)*52;
+function knn(i,k){return MIN.map((p,j)=>[Math.hypot(p[0]-MIN[i][0],p[1]-MIN[i][1]),j]).filter(a=>a[1]!==i).sort((a,b)=>a[0]-b[0]).slice(0,k).map(a=>a[1])}
+function draw2(){
+  x2.clearRect(0,0,W2,H2);AI.grid(x2,W2,H2,52,sx2(0),sy2(0));
+  MAJ.forEach((p,i)=>{const kept=!keep||keep.has(i);x2.globalAlpha=kept?.55:.08;x2.fillStyle=css('--muted');x2.beginPath();x2.arc(sx2(p[0]),sy2(p[1]),3,0,7);x2.fill()});x2.globalAlpha=1;
+  if(show){const a=MIN[show.i];x2.strokeStyle=css('--vec-b');x2.lineWidth=1;x2.setLineDash([3,3]);show.nb.forEach(j=>{x2.beginPath();x2.moveTo(sx2(a[0]),sy2(a[1]));x2.lineTo(sx2(MIN[j][0]),sy2(MIN[j][1]));x2.stroke()});x2.setLineDash([]);
+    const b=MIN[show.j];x2.strokeStyle=css('--ink');x2.lineWidth=2;x2.beginPath();x2.moveTo(sx2(a[0]),sy2(a[1]));x2.lineTo(sx2(b[0]),sy2(b[1]));x2.stroke();
+    x2.strokeStyle=css('--ink');x2.beginPath();x2.arc(sx2(a[0]),sy2(a[1]),10,0,7);x2.stroke()}
+  SYN.forEach(p=>{x2.fillStyle=css('--vec-a');x2.globalAlpha=.85;x2.beginPath();x2.arc(sx2(p[0]),sy2(p[1]),3.4,0,7);x2.fill()});x2.globalAlpha=1;
+  MIN.forEach((p,i)=>{x2.fillStyle=css('--vec-b');x2.beginPath();x2.arc(sx2(p[0]),sy2(p[1]),5.5,0,7);x2.fill();
+    if(DUP[i]){x2.fillStyle=css('--ink');x2.font='bold 11px JetBrains Mono, monospace';x2.fillText('×'+(DUP[i]+1),sx2(p[0])+7,sy2(p[1])-6)}});
+  const nMin=12+SYN.length+DUP.reduce((a,b)=>a+b,0),nMaj=keep?keep.size:120;
+  $('d39-nmaj').textContent=nMaj;$('d39-nmin').textContent=nMin;
+}
+function smoteOne(){const k=Math.min(+$('d39-k').value,11),i=Math.floor(rs()*12),nb=knn(i,k),j=nb[Math.floor(rs()*nb.length)],t=rs();
+  const a=MIN[i],b=MIN[j];SYN.push([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);show={i,j,nb};$('d39-lt').textContent=f(t,2);return t}
+$('d39-k').addEventListener('input',()=>{$('d39-kv').textContent=$('d39-k').value});
+$('d39-sm1').addEventListener('click',()=>{if(keep||DUP.some(Boolean))reset2();smoteOne();$('d39-v2').textContent='نقطة جديدة على الخط بين النقطة المختارة وجار من الـ k.';draw2()});
+$('d39-sm20').addEventListener('click',()=>{if(keep||DUP.some(Boolean))reset2();clearInterval(anim);const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  const need=()=>120-12-SYN.length;if(reduce){while(need()>0)smoteOne();show=null;draw2();return}
+  anim=setInterval(()=>{if(!document.body.contains(c2)||need()<=0){clearInterval(anim);show=null;draw2();$('d39-v2').textContent='اتوازنوا: 120 و120. النقط الجديدة مالية المنطقة بين نقط الـ minority، مش نسخ.';return}for(let q=0;q<4&&need()>0;q++)smoteOne();draw2()},40)});
+$('d39-ovr').addEventListener('click',()=>{reset2();const r=rng(3);for(let q=0;q<108;q++)DUP[Math.floor(r()*12)]++;$('d39-v2').textContent='نفس الـ 12 نقطة متكررة لحد 120. الموديل هيشوف نفس المكان بالظبط مرات كتير.';draw2()});
+$('d39-und').addEventListener('click',()=>{reset2();const r=rng(4),idx=MAJ.map((_,i)=>i);for(let i=idx.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[idx[i],idx[j]]=[idx[j],idx[i]]}keep=new Set(idx.slice(0,12));$('d39-v2').textContent='فضل 12 majority بس. اترمى 108 نقطة ممكن يكون فيهم معلومات مفيدة.';draw2()});
+$('d39-rst').addEventListener('click',()=>{clearInterval(anim);reset2();draw2()});
+draw2();
+
+// ================= class weights calc =================
+function cw(){const n=Math.max(1,+$('d39-wn').value||1),p=Math.max(1,+$('d39-wp').value||1),T=n+p;$('d39-wneg').textContent=f(T/(2*n),3);$('d39-wpos').textContent=f(T/(2*p),3);$('d39-wrat').textContent='×'+f(n/p,2)}
+['d39-wn','d39-wp'].forEach(id=>$(id).addEventListener('input',cw));cw();
+
+// ================= Lab 3: cost =================
+const c3=$('d39-c3'),x3=AI.setupCanvas(c3),W3=+c3.dataset.w,H3=+c3.dataset.h;
+function draw3(){
+  const rate=RATES[+$('d39-pr').value],sep=Math.max(0.25,+$('d39-sep').value),cfn=+$('d39-cfn').value,cfp=+$('d39-cfp').value;
+  $('d39-cfnv').textContent=cfn;$('d39-cfpv').textContent=cfp;
+  // p(s) = rate*phi(s-sep)/(rate*phi(s-sep)+(1-rate)*phi(s)) -> logit = log(rate/(1-rate)) + sep*s - sep^2/2
+  const sOf=p=>(Math.log(p/(1-p))-Math.log(rate/(1-rate))+sep*sep/2)/sep;
+  const nP=N*rate,nN=N-nP,pts=[];let best=[0,Infinity],bestF=[0,-1];
+  for(let i=1;i<200;i++){const p=i/200,s=sOf(p),tp=nP*(1-Phi(s-sep)),fp=nN*(1-Phi(s)),fn=nP-tp,cost=cfn*fn+cfp*fp;pts.push([p,cost]);if(cost<best[1])best=[p,cost];
+    const P=tp+fp>0?tp/(tp+fp):0,R=tp/nP,F=P+R?2*P*R/(P+R):0;if(F>bestF[1])bestF=[p,F]}
+  const mx=Math.max(...pts.map(q=>q[1])),L=48,R=W3-14,T=12,B=H3-34,px=v=>L+v*(R-L),py=v=>B-v/mx*(B-T);
+  x3.clearRect(0,0,W3,H3);x3.strokeStyle=css('--muted');x3.lineWidth=1;x3.strokeRect(L,T,R-L,B-T);
+  x3.fillStyle=css('--muted');x3.font='11px JetBrains Mono, monospace';x3.textAlign='center';[0,0.25,0.5,0.75,1].forEach(v=>x3.fillText(v,px(v),B+14));x3.fillText('probability threshold',(L+R)/2,H3-6);
+  x3.textAlign='right';x3.fillText(Math.round(mx),L-4,T+8);x3.fillText(0,L-4,B);
+  const tt=cfp/(cfp+cfn);x3.strokeStyle=css('--vec-b');x3.setLineDash([5,4]);x3.beginPath();x3.moveTo(px(tt),T);x3.lineTo(px(tt),B);x3.stroke();x3.setLineDash([]);
+  x3.strokeStyle=css('--muted');x3.setLineDash([2,3]);x3.beginPath();x3.moveTo(px(0.5),T);x3.lineTo(px(0.5),B);x3.stroke();x3.setLineDash([]);
+  x3.strokeStyle=css('--vec-a');x3.lineWidth=2.5;x3.beginPath();pts.forEach((q,i)=>i?x3.lineTo(px(q[0]),py(q[1])):x3.moveTo(px(q[0]),py(q[1])));x3.stroke();
+  x3.fillStyle=css('--ok');x3.beginPath();x3.arc(px(best[0]),py(best[1]),6,0,7);x3.fill();x3.textAlign='left';
+  const c05=pts.find(q=>Math.abs(q[0]-0.5)<1e-9)[1];
+  $('d39-tc').textContent=f(best[0],3);$('d39-tt').textContent=f(tt,4);$('d39-tf').textContent=f(bestF[0],3);$('d39-c05').textContent=Math.round(c05).toLocaleString('en');$('d39-cmin').textContent=Math.round(best[1]).toLocaleString('en');
+}
+['d39-cfn','d39-cfp'].forEach(id=>$(id).addEventListener('input',draw3));
+draw3();
+
+// ================= Quiz =================
+const Q=[
+ ['داتا fraud فيها 99.9% معاملات سليمة و0.1% fraud. موديل بيقول «سليمة» لكل حاجة. الـ accuracy بتاعته كام؟',['99.9%','0.1%','50%','100%'],0,'Accuracy = 999/1000 = 99.9%. ما لقطش ولا fraud وشكله ممتاز بالـ accuracy. عشان كده الـ accuracy خطر مع الداتا الـ imbalanced.'],
+ ['أنهي مقياس هيكشف إن موديل «دايمًا negative» ملوش لازمة؟',['Accuracy (99.9%)','True negative rate (100%)','Recall (0%) أو F1 (0%)','Specificity (100%)'],2,'Recall = TP/(TP+FN) = 0. والـ F1 = 0. الاتنين بيوضّحوا إن الموديل ما لقطش حاجة من الـ positive، والـ accuracy بتخبّي ده.'],
+ ['الـ SMOTE بيولّد عينات minority صناعية إزاي؟',['بيقلب labels عينات من الـ majority','بيعمل interpolation بين عينة minority وواحد من أقرب K جيران ليها من الـ minority','بيولّد نقط عشوائية في أي حتة في الفضاء','بينسخ عينات الـ minority زي ما هي'],1,'بيختار نقطة minority وجار من أقرب K جيران من الـ minority، ويعمل نقطة على الخط بينهم: new = x + rand(0,1)·(neighbor − x). نقط معقولة ومش نسخ.'],
+ ['نزّلت الـ threshold من 0.5 لـ 0.3 على داتا imbalanced. إيه اللي بيحصل للـ precision والـ recall؟',['الاتنين بيطلعوا','الـ precision بتطلع والـ recall بينزل','الـ recall بيطلع (بتلقط positives أكتر) والـ precision بتنزل (false positives أكتر)','ولا حاجة، الـ threshold بيأثر على السرعة بس'],2,'threshold أقل = عينات أكتر بتتقال positive. بتلقط positives أكتر (recall طالع) وبتزوّد false positives (precision نازلة).'],
+ ['ليه الـ AUPRC أوضح من الـ AUC-ROC مع داتا imbalanced جدًا؟',['الـ AUC-ROC مينفعش يتحسب للداتا الـ imbalanced','الـ AUPRC مش محتاج threshold','الـ AUPRC دايمًا أعلى من الـ AUC-ROC','الموديل العشوائي بياخد AUPRC = نسبة الـ positive (مثلًا 0.001)، فالتحسن بيبان، أما الـ AUC-ROC فبيبدأ من 0.5 مهما كان الـ imbalance'],3,'مع الـ imbalance، العدد الضخم من الـ true negatives بيخلّي الـ ROC يبان حلو. الـ baseline بتاع الـ AUPRC هو نسبة الـ positive، فالتحسن الحقيقي في لقط الـ minority بيبان أكتر. شفت ده في المعمل ١.'],
+ ['(سؤال مني) عملت SMOTE على الداتا كلها وبعدين قسمت train/test، والـ F1 طلع ممتاز. إيه المشكلة؟',['مفيش مشكلة','Leakage: نقط صناعية اتعملت من نقط الـ test، فالـ test مبقاش «جديد» على الموديل، وكمان الـ test بقى متوازن بشكل مش حقيقي','الـ SMOTE لازم k = 1','الـ F1 مينفعش مع الـ SMOTE'],1,'الـ resampling يتعمل على التدريب بس (وجوه كل fold). والـ test يفضل بالنسبة الحقيقية. الـ Pipeline بتاع imblearn بيضمن ده.'],
+ ['(سؤال مني) الاحتمالات calibrated، وتمن تفويت fraud = 100 وتمن الإنذار الكداب = 1. الـ threshold الأمثل على الاحتمال تقريبًا كام؟',['0.5','0.99','حوالي 0.01','مينفعش يتحسب'],2,'قول positive لو p·100 > (1−p)·1، يعني p > 1/101 ≈ 0.0099. شفته في المعمل ٣.']
+];
+AI.quiz($('d39-quizBox'),Q,5,()=>{const c=$('d39-ckq');if(!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(39,root);
+
+AI.onTheme(()=>{if(!document.body.contains(c1))return false;draw1();draw2();draw3()});
+})();
+</script>

@@ -1,0 +1,580 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 81 · End-to-End Distributed Training</span>
+  <h1>اليوم ٥٠٩: ركّب كل القطع في run واحد، وخلّيه يثبت إنه سليم</h1>
+  <p class="lede">من درس ٧٦ لـ ٨٠ بنيت قطعة قطعة: collectives، DDP، ZeRO-1، pipeline، sharded checkpoint. النهاردة <b>التجميع</b>: GPT صغير بيتدرب على ٤ ranks متمثّلين، بـ DDP للمزامنة و ZeRO-1 لتقسيم الـ optimizer و checkpoint مقسّم في نص الطريق. ٢٠ step، أمر واحد، وبيخلص لوحده بـ exit 0. ده مشروع تخرج التراك، فهتمشي على خطة بمراحل وكل مرحلة ليها اختبار.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> + PyTorch (gloo)</span>
+    <span>قبله: <b>Sharded Checkpoint and Atomic Resume</b></span>
+    <span>بعده: <b>Jailbreak Taxonomy</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d509-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d509-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت sharded checkpoint بـ atomic write. جاوب في دماغك الأول.</p>
+  <ol class="ex">
+    <li>ليه rename الـ manifest لازم يبقى آخر خطوة؟ وليه فولدر لكل step؟
+      <details><summary>الإجابة</summary>كل rename لوحده atomic، بس المجموعة مش transaction. فالـ manifest هو لحظة الـ commit: من غيره الـ checkpoint الجديد «مش موجود». والفولدر لكل step بيخلّي crash قبل الـ commit يسيب الـ checkpoint القديم شغال؛ لو نفس الفولدر، الـ shard renames بتبدّل القديم قبل ما الـ manifest الجديد يوصل.</details></li>
+    <li>إيه الـ ٣ حقول المهمة في الـ manifest؟
+      <details><summary>الإجابة</summary><code>world_size</code> (resume على عدد مختلف يفشل بصوت عالي)، <code>sha256</code> لكل shard (بيمسك الكتابة الناقصة)، و <code>param_shard_offset</code>/<code>param_shard_numel</code> (يرجّع كل shard لمكانه في الـ flat tensor).</details></li>
+    <li>ليه gather-then-write مش بيكبر مع الـ cluster؟
+      <details><summary>الإجابة</summary>كل الحالة بتعدّي من port واحد عند rank 0، فالسرعة = أبطأ link واحد. الكتابة المقسّمة بتستخدم كل الـ links بالتوازي.</details></li>
+  </ol>
+  <div class="note ai"><strong>الربط بالنهاردة:</strong> هتلاحظ إن الـ demo بتاع النهاردة بيجمّع الحالة على rank 0 وهو اللي بيكتب الـ ٤ shards. ده بالظبط النمط اللي امبارح قلنا إنه مش بيكبر. ليه مقبول هنا؟ هنرجعله في قسم «إضافة مني».</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>10 min</b>ليه capstone؟ والـ ٤ invariants</div>
+    <div><b>15 min</b>الموديل والذاكرة (معمل ١) وتدفق الـ step (معمل ٢)</div>
+    <div><b>35 min</b>ابني المشروع على ٦ مراحل</div>
+    <div><b>10 min</b>اكسر الـ run بإيدك (معمل ٣)</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 WHY -->
+<section id="d509-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه capstone لو كل قطعة ليها tests؟</h2></div>
+  <p>لأن <b>التركيب خاصية لوحده</b>. كل قطعة ممكن تعدّي الـ tests بتاعتها، وأول ما تشتغلوا مع بعض: الـ loss يطير، أو الـ checkpoint يرفض يعمل resume، أو ذاكرة كل rank تكبر وهي المفروض تصغر، أو run كامل يقف في deadlock. زي عربية كل قطعة فيها اتفحصت في المصنع، بس محدش ساقها لسه.</p>
+  <p>الـ demo بيتأكد من ٤ invariants:</p>
+  <div class="tablewrap"><table>
+    <tr><th>#</th><th>الـ invariant</th><th>بيمسك أنهي bug</th></tr>
+    <tr><td>a</td><td>الـ loss بينزل على الـ ٢٠ step في حدود الـ float noise (والكويز بيصيغها: الـ run يوصل لـ step 20 من غير NaN)</td><td>divergence</td></tr>
+    <tr><td>b</td><td>كل rank ماسك نفس الـ parameter norm في كل step</td><td>انحراف في المزامنة (sync drift)</td></tr>
+    <tr><td>c</td><td>ذاكرة الـ optimizer لكل rank = معادلة ZeRO-1 يعني <span class="ltr">12P/N</span> bytes</td><td>bugs في التقسيم</td></tr>
+    <tr><td>d</td><td>الـ checkpoint بتاع step 10 بيتحمّل تاني byte-equal</td><td>مشاكل في الكتابة الـ atomic</td></tr>
+  </table></div>
+  <h3>Self-terminating = exit 0</h3>
+  <p>الـ loop بتلف ٢٠ step ثابتين وتخرج. مفيش <code>while True</code>، مفيش حد بيتدخل، مفيش resume من حالة بره. run تقدر تسيبه لوحده وترجع تلاقي log كامل هو run أثبت إن السيستم متوصّل صح. ولو أي قطعة عملت deadlock، الـ demo عمره ما هيرجع، والـ test rig هيمسكه.</p>
+</section>
+
+<!-- 02 MODEL + MEMORY -->
+<section id="d509-model">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Mini GPT، وليه مش MLP</h2></div>
+  <p>الموديل صغير بقصد: ٢ transformer blocks، embed dim 32، ٤ attention heads، vocab 64، sequence length 16، batch 4. كبير كفاية يختبر كل قرار توصيل (masked multi-head attention، LayerNorm ليها weights لازم تتزامن، LM head منفصل يرجع للـ vocab)، وصغير كفاية إن ٢٠ step على ٤ CPU ranks يخلصوا في ثواني.</p>
+  <p>ليه مش الـ MLP بتاع درس ٧٧؟ الـ MLP كفاية عشان تتأكد من مزامنة الـ gradients. الـ GPT بيضيف ٣ حاجات: LM head منفصل فوق الـ vocab (هنا untied للوضوح؛ الـ GPT الكامل غالبًا بيربطه بالـ token embedding)، و softmax + cross-entropy كـ loss (حالات رقمية أكتر من MSE)، و forward مش متماثل (embeddings ← attention ← MLP في كل layer). لو فضلنا على MLP، كان هيستخبّى علينا هل التركيب بيتعامل صح مع LayerNorm ومع شكل gradient الـ embedding.</p>
+  <h3>عدّ الـ parameters بإيدك (أنا حسبتها من تعريف الكلاسات)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>الحساب</th><th>العدد</th></tr>
+    <tr><td><code>tok_embed</code></td><td class="ltr">64 × 32</td><td class="ltr">2,048</td></tr>
+    <tr><td><code>pos_embed</code></td><td class="ltr">16 × 32</td><td class="ltr">512</td></tr>
+    <tr><td>block واحد</td><td class="ltr">ln1 64 + qkv 32×96 + proj 32×32 + ln2 64 + (32×128+128) + (128×32+32)</td><td class="ltr">12,576</td></tr>
+    <tr><td>× 2 blocks</td><td></td><td class="ltr">25,152</td></tr>
+    <tr><td><code>ln_f</code></td><td class="ltr">32 + 32</td><td class="ltr">64</td></tr>
+    <tr><td><code>head</code> (من غير bias)</td><td class="ltr">32 × 64</td><td class="ltr">2,048</td></tr>
+    <tr><th>المجموع P</th><th></th><th class="ltr">29,824</th></tr>
+  </table></div>
+  <p>والـ qkv والـ proj من غير bias. يعني الـ shard لكل rank عند N=4: <span class="ltr">29,824 / 4 = 7,456</span> رقم، وذاكرة الـ optimizer لكل rank (fp32 master + m + v): <span class="ltr">7,456 × 3 × 4 = 89,472</span> bytes. ده الرقم اللي invariant (c) المفروض يطلّعه.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الـ memory profile</h3>
+      <p>اختار P و N. الأعمدة بتوريك ذاكرة كل rank بمعادلات درس ٧٨ (mixed precision بـ Adam): DDP = <span class="ltr">16P</span>، و ZeRO-1 = <span class="ltr">4P + 12P/N</span>. والسطر التالت هو اللي الـ demo بيطبعه: الـ shard بتاع الـ optimizer بس، <span class="ltr">ceil(P/N) × 12</span>.</p>
+      <div class="note"><strong>ملاحظة:</strong> الـ MiniGPT في الكود شغال fp32 مش fp16، فالـ demo بيقيس الـ optimizer shard بس، مش الذاكرة الكاملة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d509-mem" width="520" height="190" aria-label="ذاكرة كل rank: DDP ضد ZeRO-1"></canvas>
+      <label style="display:grid;gap:2px">P = <b class="mono" id="d509-pv">29,824</b><input type="range" id="d509-p" min="4" max="11" step="0.01" value="4.4746"></label>
+      <label style="display:grid;gap:2px">N ranks = <b class="mono" id="d509-nv">4</b><input type="range" id="d509-n" min="1" max="128" value="4"></label>
+      <div class="readout">
+        <div><small>DDP / rank</small><b id="d509-m1">—</b></div>
+        <div><small>ZeRO-1 / rank</small><b id="d509-m2">—</b></div>
+        <div><small>optimizer shard (اللي بيتطبع)</small><b id="d509-m3">—</b></div>
+        <div><small>التوفير</small><b id="d509-m4">—</b></div>
+      </div>
+      <div class="btns"><button type="button" data-pn="29824,4">MiniGPT · N=4</button><button type="button" data-pn="7000000000,8">7B · N=8</button><button type="button" data-pn="70000000000,64">70B · N=64</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 COMPOSITION -->
+<section id="d509-comp">
+  <div class="station-head"><span class="tag">03</span><h2>قواعد التركيب: كل قطعة ليها واجهة ضيقة</h2></div>
+  <div class="formula">spawn 4 ranks → broadcast init GPT params → for 20 steps: forward + backward (batch خاص بكل rank)<br>→ ZeRO-1 step: reduce_scatter grads + Adam on shard + allgather params → عند step 10: sharded checkpoint<br>→ كمّل لـ 20 → memory profile + resume verify + exit 0</div>
+  <div class="tablewrap"><table>
+    <tr><th>القطعة</th><th>ماسكة إيه</th><th>بتسيب إيه للـ loop</th></tr>
+    <tr><td>DDP broadcast</td><td>مزامنة الـ parameters في البداية</td><td>نداء واحد وقت البناء</td></tr>
+    <tr><td>ZeRO-1 step</td><td>مزامنة الـ gradients، تحديث الـ master copy، توزيع الـ parameters</td><td>نداء واحد كل step بدل <code>optimizer.step</code></td></tr>
+    <tr><td>Sharded checkpoint</td><td>حفظ حالة كل rank، manifest بـ sha256</td><td>بيتنادى على rank 0 بالحالة اللي اتجمعت بـ allgather</td></tr>
+    <tr><td>Training loop</td><td>forward و backward وتسجيل الـ loss</td><td>بينادي التلاتة اللي فوق بالترتيب</td></tr>
+  </table></div>
+  <p>الـ loop نفسها ما تعرفش حاجة عن reduce_scatter ولا ملفات rendezvous. ولاحظ: الـ allreduce بتاع DDP <b>مش موجود</b>، لأن reduce_scatter بتاع ZeRO-1 هو اللي بيمزامن الـ gradients. الحاجة الوحيدة اللي فاضلة من DDP هي الـ broadcast في الأول.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: امشي مع step واحد</h3>
+      <p>كل صف = rank، والـ flat vector بتاعه متقسّم ٤ chunks (chunk لكل rank). اتبع الألوان: كل rank بيبدأ بـ gradient مختلف (داتا مختلفة)، الـ reduce_scatter بيدّي كل rank مجموع الـ chunk بتاعه بس، الـ Adam بيحدّث الـ chunk ده بس، والـ allgather بيرجّع الموديل كامل ومتطابق عند الكل. وعند step 10 هتشوف الـ checkpoint.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d509-flow" width="520" height="250" aria-label="تدفق الـ ZeRO-1 step على أربع ranks"></canvas>
+      <div class="verdict" id="d509-fv">—</div>
+      <div class="btns"><button type="button" class="primary" id="d509-fnext">الخطوة الجاية</button><button type="button" id="d509-fplay">شغّل لوحده</button><button type="button" id="d509-freset">من الأول</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 PROJECT PLAN -->
+<section id="d509-plan">
+  <div class="station-head"><span class="tag">04</span><h2>خطة المشروع: ٦ مراحل، وكل مرحلة ليها اختبار</h2></div>
+  <p>ما تكتبش الملف كله مرة واحدة. كل مرحلة اقفلها باختبار صغير قبل ما تروح للي بعدها. الكود في القسم الجاي مقسّم بنفس الترتيب.</p>
+  <div class="tablewrap"><table>
+    <tr><th>المرحلة</th><th>هتبني إيه</th><th>الاختبار اللي يقفلها</th></tr>
+    <tr><td class="ltr">M1</td><td>الـ MiniGPT: attention + block + model</td><td><code>flat_param_numel(MiniGPT()) == 29824</code>، والـ output shape لـ input <span class="ltr">(4,16)</span> هو <span class="ltr">(4,16,64)</span></td></tr>
+    <tr><td class="ltr">M2</td><td>الـ flat helpers</td><td><code>scatter_flat_to_params(m, gather_flat_params(m))</code> ما يغيّرش أي parameter</td></tr>
+    <tr><td class="ltr">M3</td><td><code>ZeroOptimizer</code> (من درس ٧٨)</td><td><code>shard_bytes() == 89472</code> لكل rank عند N=4</td></tr>
+    <tr><td class="ltr">M4</td><td><code>save_sharded</code>/<code>load_sharded</code> (من درس ٨٠)</td><td>round-trip لـ state عشوائي بـ <code>torch.equal</code></td></tr>
+    <tr><td class="ltr">M5</td><td>الـ worker + <code>run_e2e</code></td><td>rank 0 رجّع ٢٠ loss، والـ norms بتاعة الـ ٤ ranks متطابقة لـ ٤ أرقام عشرية</td></tr>
+    <tr><td class="ltr">M6</td><td><code>verify_resume</code> + <code>main</code></td><td>سطر <code>RESUME VERIFIED</code> و exit code = 0، وكل الـ tests عدّت</td></tr>
+  </table></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="m1"> M1: الموديل والـ 29,824</label></li>
+    <li><label><input type="checkbox" data-ck="m2"> M2: الـ flat helpers round-trip</label></li>
+    <li><label><input type="checkbox" data-ck="m3"> M3: الـ ZeroOptimizer و 89,472 byte</label></li>
+    <li><label><input type="checkbox" data-ck="m4"> M4: الـ checkpoint round-trip</label></li>
+    <li><label><input type="checkbox" data-ck="m5"> M5: الـ run بـ ٤ ranks والـ norms متطابقة</label></li>
+    <li><label><input type="checkbox" data-ck="m6"> M6: RESUME VERIFIED و exit 0</label></li>
+  </ul>
+</section>
+
+<!-- 05 CODE -->
+<section id="d509-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: الكود بالمراحل</h2></div>
+  <p>من جذر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/81-end-to-end-distributed-train/code/main.py</pre></div>
+  <p><b>القاعدة:</b> اكتبه بنفسك في <code>my_e2e.py</code>. الـ ZeroOptimizer والـ checkpoint كتبتهم قبل كده، فحاول تكتبهم من الذاكرة الأول.</p>
+
+  <h3>M1: الـ MiniGPT</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>SEED, WORLD_SIZE, STEPS, CHECKPOINT_STEP = 41, 4, 20, 10
+BATCH, SEQ_LEN, VOCAB, EMBED_DIM, NUM_HEADS, NUM_LAYERS, LR = 4, 16, 64, 32, 4, 2, 5e-3
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        super().__init__()
+        assert embed_dim % num_heads == 0
+        self.num_heads, self.head_dim = num_heads, embed_dim // num_heads
+        self.qkv = nn.Linear(embed_dim, 3 * embed_dim, bias=False)   <span class="c"># Q و K و V في matmul واحد</span>
+        self.proj = nn.Linear(embed_dim, embed_dim, bias=False)
+
+    def forward(self, x):
+        b, t, e = x.shape
+        q, k, v = self.qkv(x).reshape(b, t, 3, self.num_heads, self.head_dim).unbind(dim=2)
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        attn = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        mask = torch.triu(torch.ones(t, t), diagonal=1).bool()       <span class="c"># ممنوع تبص على المستقبل</span>
+        attn = attn.masked_fill(mask, float("-inf")).softmax(dim=-1)
+        out = (attn @ v).transpose(1, 2).reshape(b, t, e)
+        return self.proj(out)
+
+class TransformerBlock(nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(embed_dim)
+        self.attn = CausalSelfAttention(embed_dim, num_heads)
+        self.ln2 = nn.LayerNorm(embed_dim)
+        self.mlp = nn.Sequential(nn.Linear(embed_dim, 4 * embed_dim), nn.GELU(),
+                                 nn.Linear(4 * embed_dim, embed_dim))
+    def forward(self, x):
+        x = x + self.attn(self.ln1(x))     <span class="c"># pre-norm + residual</span>
+        return x + self.mlp(self.ln2(x))
+
+class MiniGPT(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.tok_embed = nn.Embedding(VOCAB, EMBED_DIM)
+        self.pos_embed = nn.Embedding(SEQ_LEN, EMBED_DIM)
+        self.blocks = nn.ModuleList([TransformerBlock(EMBED_DIM, NUM_HEADS) for _ in range(NUM_LAYERS)])
+        self.ln_f = nn.LayerNorm(EMBED_DIM)
+        self.head = nn.Linear(EMBED_DIM, VOCAB, bias=False)          <span class="c"># untied للوضوح</span>
+    def forward(self, ids):
+        b, t = ids.shape
+        x = self.tok_embed(ids) + self.pos_embed(torch.arange(t))
+        for blk in self.blocks:
+            x = blk(x)
+        return self.head(self.ln_f(x))</pre></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># اختبار M1</span>
+m = MiniGPT()
+print(sum(p.numel() for p in m.parameters()))                 <span class="c"># 29824</span>
+print(m(torch.randint(0, 64, (4, 16))).shape)                  <span class="c"># torch.Size([4, 16, 64])</span></pre></div>
+
+  <h3>M2: الـ flat helpers</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def flat_param_numel(module):
+    return sum(p.numel() for p in module.parameters())
+
+def gather_flat_params(module):          <span class="c"># كل الـ params في tensor واحد fp32</span>
+    return torch.cat([p.detach().to(torch.float32).flatten() for p in module.parameters()])
+
+def scatter_flat_to_params(module, flat): <span class="c"># العكس: رجّع كل جزء لمكانه</span>
+    offset = 0
+    for p in module.parameters():
+        n = p.numel()
+        p.data.copy_(flat[offset:offset + n].reshape(p.shape).to(p.dtype))
+        offset += n
+
+def gather_flat_grads(module):            <span class="c"># لو param ملوش grad حط أصفار، عشان الطول يفضل ثابت</span>
+    return torch.cat([(torch.zeros_like(p.data, dtype=torch.float32) if p.grad is None
+                       else p.grad.detach().to(torch.float32)).flatten()
+                      for p in module.parameters()])</pre></div>
+
+  <h3>M3: الـ ZeroOptimizer (stage 1)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class ZeroOptimizer:
+    def __init__(self, module, world_size, rank, lr=LR, beta1=0.9, beta2=0.999, eps=1e-8):
+        self.module, self.world_size, self.rank = module, world_size, rank
+        self.lr, self.beta1, self.beta2, self.eps, self.step_count = lr, beta1, beta2, eps, 0
+        self.total = flat_param_numel(module)
+        pad = (-self.total) % world_size                    <span class="c"># padding عشان القسمة تبقى بالظبط</span>
+        self.chunk = (self.total + pad) // world_size
+        padded = torch.zeros(self.chunk * world_size)
+        padded[:self.total] = gather_flat_params(module)
+        self.master_shard = padded[rank * self.chunk:(rank + 1) * self.chunk].clone()
+        self.m_shard = torch.zeros_like(self.master_shard)  <span class="c"># Adam moments للـ shard بتاعي بس</span>
+        self.v_shard = torch.zeros_like(self.master_shard)
+
+    def shard_bytes(self):
+        return (self.master_shard.numel() + self.m_shard.numel() + self.v_shard.numel()) * 4
+
+    def step(self):
+        padded = torch.zeros(self.total + (-self.total) % self.world_size)
+        padded[:self.total] = gather_flat_grads(self.module)
+        chunks = [c.contiguous() for c in padded.chunk(self.world_size)]
+        local_grad = torch.zeros_like(chunks[0])
+        dist.reduce_scatter(local_grad, chunks, op=dist.ReduceOp.SUM)  <span class="c"># مجموع الـ chunk بتاعي بس</span>
+        local_grad.div_(self.world_size)                               <span class="c"># مجموع ← متوسط</span>
+        self.step_count += 1
+        self.m_shard.mul_(self.beta1).add_(local_grad, alpha=1 - self.beta1)
+        self.v_shard.mul_(self.beta2).addcmul_(local_grad, local_grad, value=1 - self.beta2)
+        m_hat = self.m_shard / (1 - self.beta1 ** self.step_count)
+        v_hat = self.v_shard / (1 - self.beta2 ** self.step_count)
+        self.master_shard.addcdiv_(m_hat, v_hat.sqrt().add_(self.eps), value=-self.lr)
+        gathered = [torch.zeros_like(self.master_shard) for _ in range(self.world_size)]
+        dist.all_gather(gathered, self.master_shard)                   <span class="c"># رجّع الموديل كامل للكل</span>
+        scatter_flat_to_params(self.module, torch.cat(gathered)[:self.total])
+
+    <span class="c"># zero_grad و state_dict (master/m/v/step_count) و load_state_dict زي درس ٧٨</span></pre></div>
+
+  <h3>M4: الـ checkpoint (نسخة مختصرة من درس ٨٠)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># نفس الفكرة: كل rank في rankN.bin.tmp + fsync ← manifest.json.tmp ← rename الـ shards ← rename الـ manifest</span>
+<span class="c"># الـ manifest هنا أبسط: world_size و step و shards [{rank, path, sha256}]</span>
+<span class="c"># load_sharded بيرفض world_size مختلف وبيتأكد من sha256 لكل shard (بيرمي RuntimeError)</span></pre></div>
+
+  <h3>M5: الـ worker: الداتا والـ loop والـ checkpoint</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _train_worker(rank, world_size, init_file, iface, ckpt_dir, steps, out_queue):
+    init_distributed(rank, world_size, init_file, iface)   <span class="c"># gloo + file rendezvous (درس ٧٦)</span>
+    torch.manual_seed(SEED)
+    model = MiniGPT()
+    for p in model.parameters():
+        dist.broadcast(p.data, src=0)                      <span class="c"># الحاجة الوحيدة الباقية من DDP</span>
+    optim = ZeroOptimizer(model, world_size=world_size, rank=rank, lr=LR)
+    corpus = make_corpus(SEED + 7, world_size * BATCH * (SEQ_LEN + 1) * steps)
+    rank0_losses, master_at_ckpt = [], None
+    for step in range(steps):
+        <span class="c"># كل rank بياخد block مختلف من 4×17 token في كل step</span>
+        offset = step * world_size * BATCH * (SEQ_LEN + 1) + rank * BATCH * (SEQ_LEN + 1)
+        block = corpus[offset:offset + BATCH * (SEQ_LEN + 1)].reshape(BATCH, SEQ_LEN + 1)
+        x, y = block[:, :-1], block[:, 1:]                  <span class="c"># الهدف = الـ token اللي بعده</span>
+        optim.zero_grad()
+        loss = F.cross_entropy(model(x).reshape(-1, VOCAB), y.reshape(-1))
+        loss.backward()
+        optim.step()                                       <span class="c"># ZeRO-1 بدل optimizer.step</span>
+        if rank == 0:
+            rank0_losses.append(loss.item())
+        if step + 1 == CHECKPOINT_STEP:
+            state = {"model_state": {k: v.clone() for k, v in model.state_dict().items()},
+                     "optim_state": optim.state_dict(), "rank": rank}
+            master_at_ckpt = optim.master_shard.clone()      <span class="c"># snapshot للمقارنة بعدين</span>
+            dist.barrier()
+            payloads = _gather_payloads_to_rank0(_serialize(state), world_size)
+            if rank == 0:
+                save_sharded([_deserialize(p) for p in payloads], ckpt_dir, step=CHECKPOINT_STEP)
+            dist.barrier()                                 <span class="c"># محدش يكمّل قبل ما الكتابة تخلص</span>
+    param_norm = sum(p.detach().pow(2).sum().item() for p in model.parameters()) ** 0.5
+    out_queue.put((rank, rank0_losses if rank == 0 else [], param_norm,
+                   optim.shard_bytes(), master_at_ckpt))
+    os._exit(0)</pre></div>
+  <p><code>_gather_payloads_to_rank0</code> بيعمل allgather للأحجام الأول، وبعدين بيعمل padding لكل payload لأكبر حجم ويعمل allgather للـ bytes، ويقص كل واحد على حجمه الحقيقي. ده لأن الـ allgather محتاج tensors بنفس الحجم.</p>
+
+  <h3>M6: التشغيل والتحقق</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def verify_resume(ckpt_dir, expected_world_size, expected_master_shards):
+    loaded = load_sharded(ckpt_dir, expected_world_size=expected_world_size)
+    return all(torch.equal(loaded[r]["optim_state"]["master_shard"], expected_master_shards[r])
+               for r in range(expected_world_size))
+
+<span class="c"># run_e2e: spawn لـ 4 processes، استنى النتايج من الـ Queue بـ timeout=180، وبعدين join/terminate</span>
+<span class="c"># main: اطبع جدول الـ loss، الـ norms والـ drift، الـ shard bytes قصاد المتوقع، وبعدين verify_resume</span>
+<span class="c"># لو التحقق فشل: "RESUME FAILED" و return 1. لو نجح: امسح الـ workdir و return 0</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">world_size=4, steps=20, model=MiniGPT
+model params: 29824
+starting distributed train...
+
+step  rank0_loss
+0     ...            (٢٠ سطر، من 0 لـ 19)
+...
+
+final param norm (must agree across ranks):
+  rank 0: ...
+  rank 1: ...        (نفس الرقم عند الـ ٤)
+  ...
+  drift across ranks: 0.00e+00
+
+per-rank optimiser memory (ZeRO-1 shard, bytes):
+  rank 0: 89472
+  rank 1: 89472
+  rank 2: 89472
+  rank 3: 89472
+  expected per-rank (fp32 master + m + v): 89472
+
+checkpoint at step 10: /tmp/aie_e2e_xxxx/step_0010
+RESUME VERIFIED: saved shard at step 10 matches in-memory snapshot byte-for-byte</pre><p>الـ 29824 و 89472 محسوبين من الكود. الـ drift المفروض صفر بالظبط، لأن كل الـ ranks بتعمل copy لنفس الـ flat tensor اللي جه من الـ allgather. قيم الـ loss مش هكتبها لأنها بتعتمد على نسخة torch.</p></details>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 -m unittest discover -s phases/19-capstone-projects/81-end-to-end-distributed-train/tests -v</pre></div>
+  <p>الـ tests بتشغّل الـ run الكامل وبتتأكد من: الـ norms متطابقة، الـ shard bytes = المعادلة، الـ checkpoint بيتحمّل byte-equal، فيه ٢٠ loss، والـ manifest موجود عند step الـ checkpoint.</p>
+</section>
+
+<!-- 06 BUG LAB -->
+<section id="d509-bugs">
+  <div class="station-head"><span class="tag">06</span><h2>معمل ٣: اكسر الـ run وشوف مين بيمسكك</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>ده نموذج لعبة صغير بنفس شكل الـ ZeRO-1 step بالظبط: ١٠ parameters (padding لـ 12)، ٤ ranks، كل rank ليه داتا بـ noise مختلف، و loss تربيعي بسيط. اختار bug وشوف أنهي invariant بيقفشه.</p>
+      <p>وضفت invariant خامس من عندي: <b>(e) النتيجة = run على rank واحد بنفس الداتا كلها</b> (baseline).</p>
+      <div class="note"><strong>جرب بالترتيب:</strong> (١) «من غير broadcast + seed مختلف»: الـ ٤ invariants بتعدّي، بس (e) بتفشل. (٢) «نسيت القسمة على N» مع Adam، وبعدين بدّل لـ SGD. (٣) «rank 2 فوّت الـ allgather». (٤) «LR spike».</div>
+    </div>
+    <div class="instrument">
+      <label style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">الـ bug: <select id="d509-bug">
+        <option value="none">مفيش bug</option>
+        <option value="nobcast">من غير broadcast + seed مختلف لكل rank</option>
+        <option value="nodiv">نسيت القسمة على N</option>
+        <option value="skipag">rank 2 فوّت الـ allgather</option>
+        <option value="full">كل rank شايل الـ optimizer state كامل</option>
+        <option value="ckpt">الـ snapshot اتاخد بعد step 11 بدل 10</option>
+        <option value="spike">LR × 200 في step 15</option>
+      </select></label>
+      <label style="display:flex;gap:6px;align-items:center">الـ optimizer: <select id="d509-opt"><option value="adam">Adam</option><option value="sgd">SGD</option></select></label>
+      <canvas id="d509-run" width="520" height="260" aria-label="منحنى الـ loss والـ norm لكل rank"></canvas>
+      <ul class="checklist" id="d509-inv" style="font-size:15px"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- 07 PRODUCTION -->
+<section id="d509-prod">
+  <div class="station-head"><span class="tag">07</span><h2>٣ حاجات بتكمّل التركيب للـ runs الحقيقية</h2></div>
+  <ol class="ex">
+    <li><b>Checkpoint كل K دقيقة، مش كل K step.</b> وقت الـ step بيتغير مع طول الـ sequence وعدد الـ microbatches. cadence كل ١٠ دقايق بتمسك نفس كمية الحساب مهما كان حجم الموديل. الدرس بيستخدم step عشان البساطة؛ الـ production بيستخدم الوقت.</li>
+    <li><b>اكتشف الـ divergence بدري.</b> الـ production بيضيف NaN guard بعد الـ backward، وكاشف loss spike: لو الـ loss قفز أكتر من ٢× في step واحد، ارجع للـ checkpoint اللي قبله بدل ما الـ optimizer يمشي في حالة بايظة. منحنى الدرس هادي فالـ guard مش بيشتغل، بس الـ hook موجود.</li>
+    <li><b>اجمع الـ memory profile على كل الـ ranks.</b> في الحقيقة الذاكرة بتختلف من rank لـ rank (اللي ماسك أكبر pipeline stage شايل activations أكتر). الـ production بيسجّل الـ max والـ mean؛ الدرس بيطبع لكل rank عشان يوريك إن المعادلة مظبوطة.</li>
+  </ol>
+  <div class="tablewrap"><table>
+    <tr><th>الأداة</th><th>علاقتها بالدرس</th></tr>
+    <tr><td>DeepSpeed</td><td>بيجمع DDP + ZeRO + pipeline + activation checkpointing في config واحد. التركيب بتاعنا هو شكل DeepSpeed مصغّر.</td></tr>
+    <tr><td>PyTorch FSDP</td><td>المكافئ الأصلي. <code>FullyShardedDataParallel</code> مع <code>ShardingStrategy.SHARD_GRAD_OP</code> = ZeRO-2.</td></tr>
+    <tr><td>NeMo و Megatron-LM</td><td>بيضيفوا tensor parallel للموديلات الأكبر جدًا؛ غير كده نفس الشكل.</td></tr>
+  </table></div>
+  <p><b>Ship It:</b> التراك خلص هنا. الـ ٦ دروس مع بعض هما الـ distributed-training subsystem اللي فريق حقيقي ممكن يبنيه قبل ما يعتمد DeepSpeed: الـ abstraction اتجرّب على gloo والـ failure modes اتجرّبت. ونقل ده لـ cluster حقيقي مكانه Phase 17 (البنية التحتية والـ production).</p>
+</section>
+
+<!-- 08 EXERCISES -->
+<section id="d509-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Tensor parallel للـ attention heads</b> على ٢ ranks: نص الـ heads على كل rank، و allreduce لناتج الـ attention، والـ loss لازم يطابق baseline على rank واحد.
+      <details><summary>تلميح</summary>قسّم أعمدة الـ <code>qkv</code> حسب الـ heads (كل rank ياخد heads 0-1 أو 2-3)، وقسّم صفوف الـ <code>proj</code> بنفس الشكل. كل rank يحسب جزء من الـ <code>proj</code> output، والمجموع بـ <code>all_reduce(SUM)</code> = الناتج الكامل.</details></li>
+    <li><b>Gradient accumulation على ٤ microbatches</b> وأثبت إن الـ gradient = gradient batch واحد كبير.
+      <details><summary>تلميح</summary>اقسم كل loss على ٤ قبل الـ backward، وما تعملش zero_grad بين الـ microbatches، ونادي <code>optim.step()</code> مرة واحدة. قارن بـ <code>torch.allclose</code> مع forward واحد على الـ 16 sequence.</details></li>
+    <li><b>Resume من step 10 يكمّل لحد 20</b> ويطلّع نفس الـ loss النهائي بتاع الـ run الأصلي.
+      <details><summary>تلميح</summary>حمّل <code>model_state</code> و <code>optim_state</code> لكل rank (<code>load_state_dict</code>، ومتنساش <code>step_count</code> عشان الـ bias correction)، وابدأ الـ loop من <code>step=10</code>. الداتا محسوبة بالـ offset من رقم الـ step، فهتاخد نفس الـ blocks.</details></li>
+    <li><b>Metrics export لـ JSONL</b> (loss و grad norm و step time) عشان تعمل visualization بعدين.
+      <details><summary>تلميح</summary>على rank 0: <code>f.write(json.dumps({...}) + "\n")</code> كل step. الـ grad norm الكامل محتاج <code>all_reduce</code> لمربع الـ norm المحلي (زي تمرين الـ clipping في درس ٧٨).</details></li>
+    <li><b>NaN guard بـ rollback</b> لما الـ loss يقفز، واجبر spike بـ LR multiplier لـ step واحد عشان تجرّب الـ rollback.
+      <details><summary>تلميح</summary>جرّب «LR × 200» في معمل ٣ الأول. القرار لازم يبقى متفق عليه من كل الـ ranks: اعمل <code>all_reduce</code> لـ flag (1 لو spike) بـ MAX، وبعدين الكل يحمّل الـ checkpoint مع بعض.</details></li>
+    <li><b>إضافة مني · اختبار التكافؤ مع rank واحد:</b> شغّل نفس التدريب بـ <code>world_size=1</code> و batch 16 (الـ ٤ blocks بتوع الـ ٤ ranks في كل step مع بعض)، وقارن الـ parameters النهائية بالـ run الموزّع. ده الـ invariant (e) من معمل ٣، وهو الوحيد اللي بيمسك bug الـ broadcast.
+      <details><summary>تلميح</summary>متوسط gradients ٤ ranks كل واحد متوسط على 4 sequences = متوسط على 16 sequence، فالـ Adam هيشوف نفس الـ gradient رياضيًا. الفرق هيبقى بس من ترتيب جمع الـ floats، فاستخدم <code>torch.allclose(atol=1e-5)</code>. اجمع الـ 16 sequence بنفس الـ offsets بتاعة الـ ranks بالترتيب.</details></li>
+  </ol>
+</section>
+
+<!-- 09 EXTRA -->
+<section id="d509-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> الـ invariants بتثبت إن الـ ranks <b>متفقين مع بعض</b>، مش إنهم <b>صح</b>. عشان تثبت الصح محتاج مرجع بره السيستم: run على rank واحد.</div>
+  <ul>
+    <li><b>الـ broadcast «زيادة» هنا، بس سيبه.</b> كل الـ ranks بتعمل <code>torch.manual_seed(SEED)</code> بنفس الرقم، فالموديلات أصلًا متطابقة قبل الـ broadcast. الـ broadcast هو اللي بيحميك يوم ما حد يغيّر الـ seed لكل rank أو يحمّل weights مختلفة. والأخطر (شوفته في معمل ٣): لو الـ init اختلف، ZeRO-1 هيخلّي الـ norms تتطابق بعد أول step، لأن الـ allgather بيلزق shards جاية من inits مختلفة. الموديل «متفق» بس مش الموديل اللي كنت فاكره.</li>
+    <li><b>نسيان القسمة على N ممكن يستخبى.</b> Adam بيقسم m على جذر v، فلو الـ gradient كله اتضرب في ٤، التحديث تقريبًا ما بيتغيرش (إلا من أثر الـ eps). مع SGD نفس الـ bug = learning rate × 4. يعني bug ممكن يعيش شهور ويظهر أول ما حد يغيّر الـ optimizer.</li>
+    <li><b>الـ loss على الداتا دي مش هينزل كتير.</b> الـ corpus من <code>torch.randint(0, 64)</code>، يعني tokens عشوائية منتظمة، ومفيش حاجة تتعلم. أحسن cross-entropy ممكنة = <span class="ltr">ln 64 ≈ 4.16</span>، والموديل في الأول تقريبًا عند الرقم ده. فالـ invariant الواقعي هنا هو صياغة الكويز: «يوصل لـ step 20 من غير NaN». لو عايز تشوفه بيتعلم بجد، اعمل corpus فيه pattern (مثلًا <span class="ltr">token[i+1] = (token[i] + 1) % 64</span>).</li>
+    <li><b>الـ checkpoint هنا gather-then-write.</b> الحالة كلها بتتجمع على rank 0 وهو اللي بيكتب الـ ٤ shards، وده عكس اللي اتعلمته امبارح. مقبول لموديل 30K parameter، لكن في run حقيقي كل rank يكتب ملفه بنفسه، وrank 0 يكتب الـ manifest بس بعد barrier.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents</h3>
+  <p>كل pre-training أو fine-tuning كبير بيمشي على نفس الشكل: init متزامن، step موزّع، checkpoint دوري، guard للـ divergence، و log تقدر تقراه بعدين. وفكرة «run محدود ينتهي بـ exit 0 ويتقاس بـ invariants» هي نفسها اللي بتخلّي أي agent أو pipeline ينفع يتشغّل في CI من غير بني آدم.</p>
+</section>
+
+<!-- 10 QUIZ -->
+<section id="d509-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d509-quizBox"></div>
+</section>
+
+<!-- 11 DONE -->
+<section id="d509-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه التركيب محتاج test لوحده، وأعدّ الـ ٤ invariants</label></li>
+    <li><label><input type="checkbox" data-ck="2"> حسبت الـ 29,824 و 89,472 بنفسي</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه الـ allreduce بتاع DDP مش موجود في الـ loop</label></li>
+    <li><label><input type="checkbox" data-ck="4"> قفلت المراحل M1 لـ M6 وشفت RESUME VERIFIED</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كسرت الـ run في معمل ٣ وفهمت ليه bug الـ broadcast بيعدّي من الـ ٤ invariants</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>DDP + ZeRO-1</td><td>DeepSpeed stage 1، FSDP</td></tr>
+    <tr><td>Invariants للتركيب</td><td>أي integration test لسيستم موزّع</td></tr>
+    <tr><td>Self-terminating run</td><td>CI و nightly training jobs</td></tr>
+    <tr><td>Memory profile لكل rank</td><td>تخطيط عدد الـ GPUs قبل الـ run</td></tr>
+    <tr><td>Loss-spike rollback</td><td>الـ pre-training runs الطويلة</td></tr>
+    <tr><td>Single-rank baseline</td><td>التأكد إن أي تغيير في الـ parallelism ما غيّرش الرياضة</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> تراك جديد خالص: الـ safety harness، وأوله Jailbreak Taxonomy.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F81-end-to-end-distributed-train" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/81-end-to-end-distributed-train</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N0=509,LESSON=81,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d509-roadmap').closest('.day');
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+const rm=$('d509-roadmap');for(let i=1;i<=87;i++){if(i===18||i===19)continue;const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)}
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+const bytesH=b=>b>=1e12?f(b/1e12)+' TB':b>=1e9?f(b/1e9)+' GB':b>=1e6?f(b/1e6)+' MB':b>=1e3?f(b/1e3)+' KB':Math.round(b)+' B';
+
+// ---------- Lab 1: memory ----------
+const mc=$('d509-mem'),mx=AI.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+function mem(){const P=Math.round(Math.pow(10,+$('d509-p').value)),n=+$('d509-n').value;
+  $('d509-pv').textContent=P.toLocaleString('en');$('d509-nv').textContent=n;
+  const ddp=16*P,z=4*P+12*P/n,sh=Math.ceil(P/n)*12;
+  $('d509-m1').textContent=bytesH(ddp);$('d509-m2').textContent=bytesH(z);$('d509-m3').textContent=bytesH(sh)+(P<1e7?' ('+sh.toLocaleString('en')+')':'');
+  $('d509-m4').textContent=Math.round((1-z/ddp)*100)+'%';
+  mx.clearRect(0,0,MW,MH);const LX=80,W=MW-LX-10;mx.font='12px JetBrains Mono, monospace';mx.textBaseline='middle';
+  const rows=[['DDP',[[2*P,'--muted'],[2*P,'--line'],[12*P,'--bad']]],['ZeRO-1',[[2*P,'--muted'],[2*P,'--line'],[12*P/n,'--ok']]],['shard',[[sh,'--vec-a']]]];
+  rows.forEach(([l,parts],i)=>{const y=14+i*48;mx.fillStyle=css('--ink');mx.textAlign='left';mx.fillText(l,4,y+15);let x=LX;
+    parts.forEach(([v,c])=>{const w=Math.max(1,W*v/ddp);mx.fillStyle=css(c);mx.fillRect(x,y,w,30);x+=w})});
+  mx.fillStyle=css('--muted');mx.fillText('رمادي: fp16 params + grads   أحمر/أخضر: fp32 master + m + v',LX,MH-10)}
+['d509-p','d509-n'].forEach(id=>$(id).addEventListener('input',mem));
+root.querySelectorAll('[data-pn]').forEach(b=>b.addEventListener('click',()=>{const [p,n]=b.dataset.pn.split(',').map(Number);$('d509-p').value=Math.log10(p);$('d509-n').value=n;mem()}));
+mem();
+
+// ---------- Lab 2: step flow ----------
+const fc=$('d509-flow'),fx=AI.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+const PH=['forward + backward: كل rank حسب gradient كامل على الـ batch بتاعه (ألوان مختلفة = داتا مختلفة)',
+ 'reduce_scatter: rank r استلم مجموع الـ chunk رقم r بس من الكل، وقسمه على 4',
+ 'Adam: كل rank حدّث الـ master/m/v بتوع الـ chunk بتاعه بس (ده الـ 1/N من الـ optimizer)',
+ 'allgather: كل rank بعت الـ chunk المحدّث، والكل بقى عنده نفس الموديل كامل',
+ 'step 10: الحالة اتجمعت على rank 0 وكتب rank0..3.bin + manifest.json (atomic)'];
+let fstep=1,fph=0,ftimer=null;
+function rc(r){return [css('--vec-a'),css('--vec-b'),css('--ok'),css('--bad')][r]}
+function drawFlow(){fx.clearRect(0,0,FW,FH);const LX=60,cw=(FW-LX-90)/4,rh=40;fx.font='12px JetBrains Mono, monospace';fx.textBaseline='middle';
+  for(let r=0;r<4;r++){const y=20+r*(rh+10);fx.fillStyle=css('--ink');fx.textAlign='left';fx.fillText('rank '+r,4,y+rh/2);
+    for(let c=0;c<4;c++){const x=LX+c*cw;let col=css('--soft'),a=1,txt='';
+      if(fph===0){col=rc(r);a=.55;txt='g'}
+      else if(fph===1){if(c===r){col=css('--ink');a=.8;txt='Σg/4'}else{a=.25}}
+      else if(fph===2){if(c===r){col=css('--vec-a');a=1;txt='Adam'}else{a=.25}}
+      else{col=css('--ink');a=.75;txt='w'}
+      fx.globalAlpha=a;fx.fillStyle=col;fx.fillRect(x+2,y,cw-4,rh);fx.globalAlpha=1;
+      if(txt){fx.fillStyle=css('--paper');fx.textAlign='center';fx.fillText(txt,x+cw/2,y+rh/2)}
+      if(c===r){fx.strokeStyle=css('--ink');fx.lineWidth=2;fx.strokeRect(x+2,y,cw-4,rh)}}
+    if(fph===4){fx.fillStyle=css('--ok');fx.textAlign='left';fx.fillText('→ rank'+r+'.bin',LX+4*cw+6,y+rh/2)}}
+  fx.fillStyle=css('--muted');fx.textAlign='left';fx.fillText('step '+fstep+' / 20   (المربع المحدد = الـ chunk اللي الـ rank ده مالكه)',LX,FH-8);
+  $('d509-fv').textContent=PH[fph]}
+function nextFlow(){if(fph===3){if(fstep===10){fph=4;drawFlow();return}fstep=fstep>=20?1:fstep+1;fph=0}else if(fph===4){fstep++;fph=0}else fph++;drawFlow()}
+$('d509-fnext').addEventListener('click',nextFlow);
+$('d509-freset').addEventListener('click',()=>{clearInterval(ftimer);ftimer=null;fstep=1;fph=0;drawFlow()});
+$('d509-fplay').addEventListener('click',()=>{if(ftimer){clearInterval(ftimer);ftimer=null;return}if(reduce){nextFlow();return}
+  ftimer=setInterval(()=>{if(!document.body.contains(fc)){clearInterval(ftimer);return}nextFlow()},700)});
+drawFlow();
+
+// ---------- Lab 3: bug injector (toy ZeRO-1) ----------
+function rng(seed){let a=seed>>>0;return()=>{a=a+0x6D2B79F5>>>0;let t=a;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
+const D=10,NR=4,PADN=12,CH=3,STEPS=20,T=Array.from({length:D},(_,i)=>2*Math.sin(i+1));
+function noise(step,r){const g=rng(1000+step*7+r);return Array.from({length:D},()=>(g()-.5)*1.2)}
+function initW(seed){const g=rng(seed);return Array.from({length:D},()=>(g()-.5)*2)}
+function lossOf(w,nz){let s=0;for(let i=0;i<D;i++){const d=w[i]-T[i]-nz[i];s+=.5*d*d}return s/D}
+function gradOf(w,nz){return w.map((x,i)=>(x-T[i]-nz[i])/D)}
+function optStep(opt,st,i,g,lr,t){if(opt==='sgd'){return -lr*g}
+  st.m[i]=.9*st.m[i]+.1*g;st.v[i]=.999*st.v[i]+.001*g*g;const mh=st.m[i]/(1-Math.pow(.9,t)),vh=st.v[i]/(1-Math.pow(.999,t));return -lr*mh/(Math.sqrt(vh)+1e-8)}
+function baseline(opt){const lr=opt==='sgd'?2:0.05;let w=initW(41);const st={m:new Array(D).fill(0),v:new Array(D).fill(0)},L=[];
+  for(let s=0;s<STEPS;s++){L.push(lossOf(w,noise(s,0)));const g=new Array(D).fill(0);
+    for(let r=0;r<NR;r++){const gr=gradOf(w,noise(s,r));gr.forEach((x,i)=>g[i]+=x/NR)}
+    w=w.map((x,i)=>x+optStep(opt,st,i,g[i],lr,s+1))}return{w,L}}
+function runSim(bug,opt){const lr0=opt==='sgd'?2:0.05;
+  const W=[0,1,2,3].map(r=>initW(bug==='nobcast'?41+r*13:41));
+  const pad=w=>w.concat(new Array(PADN-D).fill(0));
+  const master=[0,1,2,3].map(r=>pad(W[r]).slice(r*CH,(r+1)*CH));
+  const st=[0,1,2,3].map(()=>({m:new Array(CH).fill(0),v:new Array(CH).fill(0)}));
+  const L=[],norms=[[],[],[],[]];let snap=null,saved=null;
+  for(let s=0;s<STEPS;s++){
+    const G=[0,1,2,3].map(r=>pad(gradOf(W[r],noise(s,r))));L.push(lossOf(W[0],noise(s,0)));
+    const lr=bug==='spike'&&s===15?lr0*200:lr0;
+    for(let r=0;r<4;r++){for(let j=0;j<CH;j++){const idx=r*CH+j;let g=0;for(let q=0;q<4;q++)g+=G[q][idx];if(bug!=='nodiv')g/=NR;
+      master[r][j]+=optStep(opt,st[r],j,g,lr,s+1)}}
+    const full=[].concat(...master).slice(0,D);
+    for(let r=0;r<4;r++){if(bug==='skipag'&&r===2)continue;W[r]=full.slice()}
+    for(let r=0;r<4;r++)norms[r].push(Math.sqrt(W[r].reduce((a,x)=>a+x*x,0)));
+    if(s+1===10)saved=master.map(m=>m.slice());
+    if(s+1===(bug==='ckpt'?11:10))snap=master.map(m=>m.slice());}
+  return{W,L,norms,saved,snap}}
+const rc3=$('d509-run'),rx=AI.setupCanvas(rc3),RW=+rc3.dataset.w,RH=+rc3.dataset.h;
+function bugLab(){const bug=$('d509-bug').value,opt=$('d509-opt').value,R=runSim(bug,opt),B=baseline(opt);
+  rx.clearRect(0,0,RW,RH);const LX=40,W=RW-LX-10,h1=120,h2=90,y1=12,y2=y1+h1+28;
+  const allL=R.L.concat(B.L).filter(Number.isFinite),lmax=Math.min(Math.max(...allL),3*Math.max(...B.L)),lmin=Math.min(0,...allL);
+  rx.font='11px JetBrains Mono, monospace';rx.fillStyle=css('--muted');rx.textAlign='left';rx.textBaseline='alphabetic';rx.fillText('loss (rank 0) — متقطع = baseline',LX,y1+8);
+  const px=i=>LX+i*W/(STEPS-1),py=(v,y,h,a,b)=>y+h-(v-a)/(b-a||1)*h;
+  [[B.L,css('--muted'),true],[R.L,css('--vec-a'),false]].forEach(([arr,c,dash])=>{rx.strokeStyle=c;rx.lineWidth=2;rx.setLineDash(dash?[5,4]:[]);rx.beginPath();
+    arr.forEach((v,i)=>{const y=py(Math.min(v,lmax),y1+12,h1-12,lmin,lmax);i?rx.lineTo(px(i),y):rx.moveTo(px(i),y)});rx.stroke()});rx.setLineDash([]);
+  const allN=[].concat(...R.norms),nmax=Math.max(...allN),nmin=Math.min(...allN);
+  rx.fillStyle=css('--muted');rx.fillText('param norm لكل rank',LX,y2+8);
+  R.norms.forEach((arr,r)=>{rx.strokeStyle=[css('--vec-a'),css('--vec-b'),css('--ok'),css('--bad')][r];rx.lineWidth=r===2?2.5:1.5;rx.beginPath();
+    arr.forEach((v,i)=>{const y=py(v,y2+12,h2-12,nmin-1e-9,nmax+1e-9);i?rx.lineTo(px(i),y):rx.moveTo(px(i),y)});rx.stroke()});
+  // invariants
+  const finite=R.L.every(Number.isFinite);let spike=-1;for(let i=1;i<R.L.length;i++)if(R.L[i]>2*R.L[i-1]){spike=i;break}
+  const fn=R.norms.map(a=>a[a.length-1]),drift=Math.max(...fn)-Math.min(...fn);
+  const shardB=bug==='full'?PADN*3*4:CH*3*4,expB=CH*3*4;
+  const ckOK=R.saved.every((m,r)=>m.every((x,j)=>x===R.snap[r][j]));
+  const diff=Math.max(...R.W[0].map((x,i)=>Math.abs(x-B.w[i])));
+  const inv=[
+    ['(a) الـ loss finite'+(spike>0?' — بس فيه spike عند step '+spike+' (قفز > 2×)':''),finite&&spike<0],
+    ['(b) الـ norm متطابق: drift = '+drift.toExponential(2),drift<1e-9],
+    ['(c) الـ optimizer shard = '+shardB+' bytes (المتوقع '+expB+' = 12P/N بعد الـ padding)',shardB===expB],
+    ['(d) checkpoint step 10 = الـ snapshot byte-equal',ckOK],
+    ['(e) من عندي: مطابق للـ baseline على rank واحد، max |Δw| = '+diff.toExponential(2),diff<1e-6]];
+  const ul=$('d509-inv');ul.innerHTML='';inv.forEach(([t,ok])=>{const li=document.createElement('li');li.textContent=(ok?'✓ ':'✗ ')+t;li.style.color=ok?css('--ok'):css('--bad');ul.appendChild(li)})}
+['d509-bug','d509-opt'].forEach(id=>$(id).addEventListener('change',bugLab));bugLab();
+
+// ---------- quiz ----------
+AI.quiz($('d509-quizBox'),[
+ ['ليه الـ capstone مهم لو كل درس كان ليه tests؟',['التركيب خاصية لوحدها: القطع ممكن تعدّي الـ unit tests، بس مع بعض يحصل deadlock أو الـ loss يطير أو الذاكرة تكبر','شكل','أبطأ','أسهل في التصحيح'],0,'الـ end-to-end tests بتمسك bugs التوصيل اللي مفيش test لقطعة لوحدها بيمسكها: rendezvous، ترتيب الـ barriers، عقود الـ gather.'],
+ ['إيه الـ ٤ invariants اللي الـ demo بيتأكد منهم؟',['السرعة','tokens في الثانية','الـ hardware','(a) الـ loss يوصل لـ step 20 من غير NaN، (b) norm الـ parameters متطابق في كل الـ ranks، (c) ذاكرة الـ optimizer = معادلة ZeRO-1، (d) checkpoint الـ step 10 بيتحمّل byte-equal'],3,'كل invariant بيمسك bug مختلف: NaN = divergence، تطابق الـ norm = sync drift، الذاكرة = sharding bugs، الـ checkpoint = write atomicity.'],
+ ['ليه الموديل GPT صغير مش MLP؟',['مطلوب','عشان يبان شيك','الـ GPT بيضيف LayerNorm، وشكل gradient الـ embedding، وحالات softmax + cross-entropy اللي الـ MLP كان هيخبّيها','أسرع'],2,'مزامنة gradients الـ MLP اتأكدنا منها في درس ٧٧؛ الـ capstone محتاج موديل فيه حالات أكتر عشان يثبت التركيب على عمليات واقعية. (الدرس بيقول «LayerNorm running statistics»، والأدق إن LayerNorm ليها weights بتتزامن ومش بتاخد running stats زي BatchNorm.)'],
+ ['يعني إيه self-terminating هنا؟',['الـ process بيقتل نفسه','عدد steps ثابت (20)، exit 0 لما يخلص، من غير بني آدم؛ لو أي قطعة عملت deadlock الـ demo مش هيرجع والـ CI هيمسكه','crash recovery','يدوي'],1,'run محدود بـ exit 0 بيخلّي الـ test rig يتأكد إنه انتهى؛ while True بتخبّي الـ deadlocks.'],
+ ['الـ demo بيجمع DDP و ZeRO إزاي؟',['ZeRO بس','الاتنين في نفس الوقت','broadcast على طريقة DDP في الأول لمزامنة الـ parameters، و reduce_scatter + allgather بتوع ZeRO-1 بدل optimizer.step؛ الـ allreduce بتاع DDP اتشال لأن الـ reduce_scatter بيعمل شغله','DDP بس'],2,'ZeRO-1 ماسك مزامنة الـ gradients بالـ reduce_scatter، فمش محتاجين allreduce منفصل؛ الـ broadcast في الأول هو الحاجة الوحيدة من DDP اللي فضلت.'],
+ ['ليه الـ production بيعمل checkpoint بالوقت مش بعدد الـ steps؟',['شكله أنضف','أسرع','NCCL بيطلبه','وقت الـ step بيتغير مع طول الـ sequence وعدد الـ microbatches؛ كل ١٠ دقايق بتمسك نفس كمية الحساب مهما كان حجم الموديل'],3,'الدرس بيستخدم الـ step للوضوح؛ الـ runs الحقيقية غالبًا بتحفظ كل ٥ لـ ١٥ دقيقة.'],
+ ['(سؤال مني) كل rank عمل init بـ seed مختلف ومفيش broadcast. invariant (b) هيعمل إيه في ZeRO-1؟',['هيفشل على طول','هيعدّي بعد أول step، لأن الـ allgather بيدّي الكل نفس الموديل، بس الموديل ده متلزّق من shards جاية من inits مختلفة','هيعمل deadlock','الـ loss هيبقى NaN'],1,'التطابق بين الـ ranks مش معناه صحة. محتاج baseline على rank واحد عشان تمسك ده.'],
+ ['(سؤال مني) MiniGPT فيه 29,824 parameter و N=4. الـ shard_bytes لكل rank كام؟',['29,824','119,296','89,472','357,888'],2,'29,824 / 4 = 7,456 من غير padding، × 3 tensors (master, m, v) × 4 bytes = 89,472.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N0,root);
+AI.onTheme(()=>{if(!document.body.contains(mc))return false;mem();drawFlow();bugLab()});
+})();
+</script>

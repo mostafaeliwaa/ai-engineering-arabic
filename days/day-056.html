@@ -1,0 +1,795 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 13 · Debugging Neural Networks</span>
+  <h1>اليوم ٥٦: الموديل اشتغل ومفيش error… بس النتيجة غلط</h1>
+  <p class="lede">النهاردة آخر درس في الـ Deep Learning Core، وهو أهم درس عملي فيه. هتتعلم إزاي تلاقي الـ <b>bugs الصامتة</b>: الكود بيخلص، الـ loss بيطلع رقم، ومفيش أي رسالة خطأ، بس الموديل بايظ. هتلعب بإيدك في learning rate، gradients بتختفي، gradient checking، والـ LR finder، وبعدين تبني <code>NetworkDebugger</code> بنفسك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python + PyTorch</b></span>
+    <span>بعده: <b>Phase 4 · Image Fundamentals</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d56-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d56-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر JAX؟</h2></div>
+  <p>امبارح اتكلمنا عن JAX: دوال pure، و<code>grad</code> و<code>jit</code> و<code>vmap</code>. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه JAX بيطلب إن الدوال تبقى pure (من غير side effects)؟</summary>عشان <code>jit</code> بيتتبع الدالة مرة واحدة ويحولها لـ XLA. أي side effect (زي print أو تعديل متغير برا) مش هيتكرر بعد الـ compile، فالنتيجة تبقى غير متوقعة. ونفس الكلام لـ <code>grad</code> و<code>vmap</code>: هما transformations على الدالة نفسها.</details>
+  <details><summary>٢. إيه الفرق بين <code>jax.grad</code> و <code>loss.backward()</code> في PyTorch؟</summary><code>jax.grad(f)</code> بترجعلك <b>دالة جديدة</b> بتحسب الـ gradient (functional). في PyTorch الـ gradients بتتخزن جوه <code>param.grad</code> وبتتجمع (accumulate)، وده بالظبط سبب bug هنشوفه النهاردة: نسيان <code>zero_grad()</code>.</details>
+  <details><summary>٣. ليه الـ random في JAX محتاج <code>key</code> صريح وبتعمله <code>split</code>؟</summary>عشان مفيش global state. كل رقم عشوائي جاي من key واضح، فالتجربة تتكرر بالظبط. ده نفس روح النهاردة: الـ reproducibility أول خطوة في أي debugging.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على JAX</div>
+    <div><b>20 min</b>الأعراض والأسباب + معمل الـ training</div>
+    <div><b>15 min</b>معمل الـ gradient flow والـ gradient check</div>
+    <div><b>10 min</b>الـ LR finder والـ overfit-one-batch</div>
+    <div><b>25 min</b>اكتب الـ debugger بإيدك</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d56-mindset">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: bugs مش بتعمل crash</h2></div>
+  <p>في البرمجة العادية لما حاجة تبوظ، البرنامج بيقع: null pointer، type error، رقم غلط واضح. الـ neural network مش كده. الموديل البايظ بيكمّل التدريب للآخر، بيطبع loss، وبيطلع predictions شكلها معقول. ممكن كمان الـ loss ينزل! بس الموديل بيكون بيحفظ noise، أو بيتعلم shortcut، أو واقف في local minimum مالوش لازمة.</p>
+  <p>الدرس بيذكر تقدير من باحثين في Google إن ٦٠–٧٠٪ من وقت الـ debugging في الـ ML بيروح على الـ bugs «الصامتة» دي. والفرق بين موديل شغال وموديل بايظ غالبًا سطر واحد: <code>zero_grad()</code> ناقصة، dimension مقلوب، أو learning rate غلط بـ 10x. ومقال «Recipe for Training Neural Networks» (2019) بيبدأ بالجملة دي: أشهر أخطاء الـ neural nets هي bugs مش بتعمل crash.</p>
+  <div class="note"><strong>تشبيه:</strong> زي عربية ماشية بس الفرامل ضعيفة. مفيش لمبة حمرا بتنور. لازم أنت اللي تعمل الفحص بنفسك، وبترتيب.</div>
+  <h3>عقلية الـ debugging</h3>
+  <p>انسى طريقة «حط print وادعي». الـ feedback هنا بطيء (كل تجربة دقايق لساعات)، والعَرَض الواحد ممكن يكون ليه ٢٠ سبب. القاعدة الذهبية:</p>
+  <div class="formula">ابدأ بسيط ← زوّد حاجة واحدة ← اتأكد منها لوحدها ← كمّل</div>
+  <p>وده مسار التشخيص لما الـ loss مش بينزل، امشي فيه بالترتيب:</p>
+  <ol class="ex">
+    <li><b>شوف الـ learning rate:</b> عالي أوي ← الـ loss بيتذبذب أو بينفجر. واطي أوي ← الـ loss بالكاد بيتحرك.</li>
+    <li><b>لو الـ LR معقول، شوف الـ gradients:</b> كلها أصفار ← dead ReLUs أو vanishing. NaN/Inf ← exploding.</li>
+    <li><b>لو الـ gradients طبيعية، شوف الـ data pipeline:</b> labels متلخبطة ← accuracy عند مستوى الصدفة. bug في الـ preprocessing ← الموديل بيتعلم noise.</li>
+    <li><b>لو الداتا سليمة، شوف الـ architecture:</b> صغير أوي ← underfitting. عميق أوي ← صعب في الـ optimization.</li>
+  </ol>
+</section>
+
+<!-- STATION 2 -->
+<section id="d56-symptoms">
+  <div class="station-head"><span class="tag">02</span><h2>الأعراض التلاتة وأسبابها</h2></div>
+  <h3>عَرَض ١: الـ loss مش بينزل</h3>
+  <ul class="ex" style="display:grid;gap:8px">
+    <li><b>Learning rate غلط:</b> عالي ← تذبذب أو NaN. واطي ← نزول بطيء لدرجة إنه يبان flat. ابدأ بـ <code>1e-3</code> مع Adam، و<code>1e-1</code> أو <code>1e-2</code> مع SGD. وقبل ما تقول «في حاجة تانية غلط» جرّب دايمًا ٣ قيم بينهم 10x (مثلًا <code>1e-2, 1e-3, 1e-4</code>).</li>
+    <li><b>Dead ReLUs:</b> لو neuron جاله input سالب كبير، بيطلع 0 والـ gradient بتاعه 0، ومش هيصحى تاني أبدًا. لو نسبة كبيرة ماتت، الشبكة مش هتتعلم. افحص نسبة الـ activations اللي = 0 بالظبط بعد كل ReLU؛ لو أكتر من ٥٠٪ استخدم LeakyReLU أو قلل الـ LR.</li>
+    <li><b>Vanishing gradients:</b> في شبكة عميقة بـ sigmoid أو tanh، الـ gradient بيصغر بشكل أُسّي وهو راجع لورا، فأول layers بتوقف تتعلم. الحل: ReLU/GELU، residual connections، أو batch normalization.</li>
+    <li><b>Exploding gradients:</b> العكس، الـ gradient بيكبر أُسّيًا (مشهور في RNNs والشبكات العميقة جدًا)، والـ loss يبقى NaN. الحل: gradient clipping بـ <code>torch.nn.utils.clip_grad_norm_</code>، LR أقل، أو normalization.</li>
+  </ul>
+  <h3>عَرَض ٢: الـ loss بينزل بس الموديل وحش</h3>
+  <ul class="ex" style="display:grid;gap:8px">
+    <li><b>Overfitting:</b> train accuracy 99٪ والـ test 55٪. الموديل حفظ الداتا بدل ما يفهم النمط، والفجوة بين train loss و val loss بتكبر مع الوقت. الحل: داتا أكتر، dropout، weight decay، early stopping، data augmentation.</li>
+    <li><b>Data leakage:</b> داتا الـ test دخلت في التدريب، والـ accuracy عالية بشكل مريب. أسبابه: shuffle قبل الـ split، preprocessing بإحصائيات الداتا كلها، أو عينات مكررة بين الـ splits. الحل: اعمل split الأول، وبعدين preprocessing، ودوّر على التكرار.</li>
+    <li><b>Label errors:</b> الدرس بيذكر إن ٥–١٠٪ من الـ labels في أغلب الداتا الحقيقية غلط (Northcutt et al., 2021)، والموديل بيتعلم الغلط ده. الحل: confident learning عشان تلاقي العينات الغلط وتصلحها، أو loss truncation تتجاهل العينات اللي الـ loss بتاعها عالي جدًا.</li>
+  </ul>
+  <h3>عَرَض ٣: الـ loss بقى NaN أو Inf</h3>
+  <ul class="ex" style="display:grid;gap:8px">
+    <li><b>LR عالي:</b> الـ updates بتعدي الهدف لدرجة إن الـ weights بتنفجر. قلله 10x.</li>
+    <li><b>log(0) أو log(سالب):</b> الـ cross-entropy بيحسب <code>log(p)</code>؛ لو الموديل طلّع 0 بالظبط بينفجر. احبس الـ predictions في <code>[eps, 1-eps]</code> بـ <code>eps=1e-7</code>.</li>
+    <li><b>قسمة على صفر:</b> الـ batch norm بيقسم على الـ std؛ batch قيمها ثابتة يبقى std=0. ضيف epsilon للمقام (PyTorch بيعمل كده لوحده، بس الـ implementation بتاعك ممكن لأ).</li>
+    <li><b>Overflow:</b> activations كبيرة داخلة <code>exp()</code> تطلع Inf، والـ softmax أكتر واحد بيتأذي. الحل: اطرح الـ max قبل الـ exp (الـ log-sum-exp trick).</li>
+  </ul>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: اكسر الـ training بإيدك</h3>
+      <p>ده تدريب بـ SGD على loss بسيطة (bowl في بُعدين). غيّر الـ learning rate وفعّل bug واحد كل مرة. تحت الرسمة فيه <b>نفس منطق</b> الدالة <code>check_loss_health</code> من كود الدرس بيحكم على المنحنى.</p>
+      <div class="note"><strong>جرّب:</strong> (١) LR = 3 وشوف الـ NaN. (٢) LR = 0.0001 وشوف «مش بينزل». (٣) رجّع LR = 0.1 وشيل <code>zero_grad</code>: المنحنى بيطلع وينزل ومش بيوصل. (٤) فعّل «داتا مش normalized» مع نفس الـ LR = 0.1 وشوف الانفجار، وبعدين نزّل الـ LR لـ 0.01.</div>
+      <div class="note ai"><strong>ملاحظة:</strong> المحور الرأسي log scale. الـ loss هنا مش cross-entropy حقيقي، هو نموذج مبسط عشان تشوف شكل كل عَرَض.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d56-trainCanvas" width="520" height="300" aria-label="منحنى الـ loss مع الوقت"></canvas>
+      <label style="display:grid;gap:2px">learning rate = <b class="mono" id="d56-lrv">0.1</b><input type="range" id="d56-lr" min="-4" max="1" step="0.1" value="-1"></label>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d56-bugZero"> نسيت <code>zero_grad()</code></label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d56-bugDead"> Dead ReLUs (كل الـ gradient = 0)</label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d56-bugNorm"> داتا مش normalized</label>
+      </div>
+      <div class="readout">
+        <div><small>أول loss</small><b id="d56-l0">-</b></div>
+        <div><small>آخر loss</small><b id="d56-lN">-</b></div>
+        <div><small>check_loss_health</small><b id="d56-health">-</b></div>
+      </div>
+      <div class="verdict" id="d56-trainVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d56-flow">
+  <div class="station-head"><span class="tag">03</span><h2>تقنية ٢ و٣: إحصائيات الـ activations والـ gradient flow</h2></div>
+  <h3>Activation statistics: كشف دوري على كل layer</h3>
+  <p>راقب الـ mean والـ std بتوع خرج كل layer أثناء التدريب. الشبكة السليمة بتحافظ على mean قريب من 0 و std قريب من 1 (بعد الـ normalization)، أو على الأقل أرقام محدودة. زي ما الدكتور بيقيس الضغط والحرارة:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>Mean</th><th>Std</th><th>التشخيص</th></tr>
+    <tr><td>Healthy</td><td class="ltr">~0</td><td class="ltr">~1</td><td>الشبكة بتتعلم طبيعي</td></tr>
+    <tr><td>Saturated</td><td class="ltr">&gt;&gt;0 or &lt;&lt;0</td><td class="ltr">~0</td><td>الـ activations لازقة في قيم متطرفة</td></tr>
+    <tr><td>Dead</td><td class="ltr">0</td><td class="ltr">0</td><td>neurons ميتة (كلها أصفار)</td></tr>
+    <tr><td>Exploding</td><td class="ltr">&gt;&gt;10</td><td class="ltr">&gt;&gt;10</td><td>الـ activations بتكبر من غير حد</td></tr>
+  </table></div>
+  <h3>Gradient flow: ارسم حجم الـ gradient لكل layer</h3>
+  <p>في الشبكة السليمة متوسط حجم الـ gradient متقارب بين الـ layers (مثلًا 0.05، 0.04، 0.06، 0.05). لو أول layers عندها gradient أصغر 1000 مرة من آخر layers (مثلًا 0.0001 مقابل 0.08)، يبقى عندك vanishing gradients.</p>
+  <div class="note"><strong>تشبيه:</strong> لعبة التليفون المكسور. الرسالة (الـ gradient) بتتنقل من آخر الطابور لأوله، وكل واحد بيضربها في رقم. لو الرقم أقل من ١ (زي sigmoid اللي مشتقتها أقصاها 0.25) الرسالة بتوصل همس. لو أكبر من ١ بتوصل صريخ.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: التليفون المكسور</h3>
+      <p>كل عمود = متوسط حجم الـ gradient في layer (المحور log). الخطوط المتقطعة هي حدود <code>check_gradients</code> في الكود: أقل من <code>1e-7</code> = vanishing، أكتر من <code>100</code> = exploding.</p>
+      <p>جرّب sigmoid مع ٢٠ layer، وبعدين حوّلها ReLU، وبعدين علّي الـ weight scale لـ 1.6، وفي الآخر فعّل residual.</p>
+      <div class="note ai"><strong>تنبيه:</strong> ده نموذج مبسط (كل layer بتضرب في مشتقة الـ activation × مقياس الـ weights) عشان تشوف الفكرة، مش أرقام شبكة حقيقية.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d56-flowCanvas" width="520" height="300" aria-label="حجم الـ gradient في كل layer"></canvas>
+      <div class="mrow">
+        <label>depth <span id="d56-depthv">12</span><input type="range" id="d56-depth" min="2" max="30" step="1" value="12"></label>
+        <label>weight scale <span id="d56-scalev">1.0</span><input type="range" id="d56-scale" min="0.5" max="2" step="0.05" value="1"></label>
+      </div>
+      <div class="btns">
+        <select id="d56-act" aria-label="الـ activation"><option value="sigmoid">sigmoid</option><option value="tanh">tanh</option><option value="relu" selected>ReLU</option></select>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d56-res"> residual connections</label>
+      </div>
+      <div class="readout">
+        <div><small>grad أول layer</small><b id="d56-gFirst">-</b></div>
+        <div><small>grad آخر layer</small><b id="d56-gLast">-</b></div>
+        <div><small>last / first</small><b id="d56-gRatio">-</b></div>
+      </div>
+      <div class="verdict" id="d56-flowVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d56-gradcheck">
+  <div class="station-head"><span class="tag">04</span><h2>تقنية ١: Gradient Checking</h2></div>
+  <p>لو كتبت الـ backward بإيدك (زي الـ mini framework في درس ١٠)، إزاي تعرف إنه صح؟ قارن الـ gradient التحليلي (من backprop) بالـ gradient العددي (من finite differences): زق الـ parameter شوية لفوق وشوية لتحت وشوف الـ loss اتغير قد إيه.</p>
+  <div class="formula">grad_numerical = (loss(w + eps) − loss(w − eps)) / (2 · eps)</div>
+  <div class="formula">rel_diff = |grad_analytical − grad_numerical| / max(|grad_analytical|, |grad_numerical|, 1e-8)</div>
+  <p>لو <code>rel_diff &lt; 1e-5</code> ← صح. لو <code>rel_diff &gt; 1e-3</code> ← غالبًا فيه bug أكيد. ما بينهم ← اختلافات صغيرة تستاهل نظرة.</p>
+  <div class="note"><strong>تشبيه:</strong> عايز تتأكد إن عداد السرعة في العربية مظبوط؟ قيس المسافة اللي مشيتها في ثانيتين واقسم. ده الـ numerical. العداد هو الـ analytical. لو مختلفين، العداد بايظ.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: افحص backward بإيدك</h3>
+      <p>الـ loss هنا: <code class="ltr">L(w) = (tanh(1.5·w) − 0.3)²</code>. الـ backward الصح:</p>
+      <div class="formula">dL/dw = 2·(t − 0.3)·(1 − t²)·1.5   where t = tanh(1.5w)</div>
+      <p>فعّل «backward فيه bug» (نسي مشتقة الـ tanh) وشوف الـ rel_diff بيقفز. وبعدين حرّك الـ eps: لاحظ إن eps صغير أوي بيبوّظ النتيجة برضه بسبب أخطاء التقريب (rounding) في الأرقام، وعشان كده الكود بيستخدم <code>eps=1e-4</code> و<code>double</code>.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d56-gcCanvas" width="520" height="240" aria-label="rel_diff مقابل eps"></canvas>
+      <div class="mrow">
+        <label>w = <span id="d56-wv">0.5</span><input type="range" id="d56-w" min="-2" max="2" step="0.05" value="0.5"></label>
+        <label>eps = <span id="d56-epsv">1e-4</span><input type="range" id="d56-eps" min="-13" max="-1" step="0.5" value="-4"></label>
+      </div>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d56-gcBug"> backward فيه bug (نسيت <code>(1 − t²)</code>)</label>
+      <div class="readout">
+        <div><small>analytical</small><b id="d56-gA">-</b></div>
+        <div><small>numerical</small><b id="d56-gN">-</b></div>
+        <div><small>rel_diff</small><b id="d56-gR">-</b></div>
+      </div>
+      <div class="verdict" id="d56-gcVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d56-overfit">
+  <div class="station-head"><span class="tag">05</span><h2>تقنية ٤ و٥: Overfit-One-Batch والـ LR Finder</h2></div>
+  <h3>Overfit-One-Batch: أهم تقنية في الدرس</h3>
+  <p>خد batch صغير (٨–٣٢ عينة) ودرّب عليه ١٠٠ خطوة أو أكتر. المفروض الـ loss يوصل قريب من الصفر والـ training accuracy توصل ١٠٠٪. لو ده محصلش، عندك bug أساسي في الموديل أو الـ training loop، <b>متكملش</b> للتدريب الكامل.</p>
+  <div class="note"><strong>تشبيه:</strong> قبل ما تذاكر كتاب كامل، اتأكد إنك تقدر تحفظ ٨ سطور. لو مش عارف تحفظهم، المشكلة مش في الكتاب، المشكلة فيك (أو في النضارة).</div>
+  <p>التست ده بيمسك:</p>
+  <ul class="ex" style="display:grid;gap:4px">
+    <li>loss function بايظة</li>
+    <li>backward pass بايظ</li>
+    <li>architecture أصغر من إنها تمثل الداتا</li>
+    <li>optimizer مش متوصل بالـ parameters بتاعة الموديل</li>
+    <li>الداتا والـ labels مش متطابقين</li>
+  </ul>
+  <p>بياخد حوالي ٣٠ ثانية، وبيوفر ساعات. وبيشتغل لأن الشبكات قادرة تحفظ حتى labels عشوائية (Zhang et al., 2017)، فلو مش قادرة تحفظ ٨ عينات يبقى أكيد في حاجة مكسورة.</p>
+
+  <h3>Learning Rate Finder (Leslie Smith, 2017)</h3>
+  <p>زوّد الـ learning rate بشكل أُسّي من صغير جدًا (<code>1e-7</code>) لكبير جدًا (<code>10</code>) على مدار epoch واحد وسجّل الـ loss. ارسم الـ loss مقابل الـ LR. الدرس بيقول إن أحسن LR تقريبًا أصغر بـ 10x من النقطة اللي الـ loss بينزل فيها أسرع. مثال الدرس: أسرع نزول عند <code>1e-2</code> ← اختار حوالي <code>1e-3</code>.</p>
+  <p>الكود بتاع الدرس بيعمل حاجة قريبة: بيقف لو الـ loss بقى NaN أو أكبر من ١٠ أضعاف أحسن loss، وبعدين بياخد الـ LR اللي قبل نقطة أقل loss بـ ١٠ خطوات كاقتراح.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: شغّل الـ LR finder</h3>
+      <p>ده linear regression صغير (٦٤ نقطة، ٣ features) بيتدرب بـ SGD، والـ LR بيزيد كل خطوة من <code>1e-7</code> لـ <code>10</code> على ١٠٠ خطوة، بنفس منطق <code>find_learning_rate</code>.</p>
+      <p>قارن بين داتا normalized وداتا الـ features فيها بمقاييس مختلفة (×1، ×10، ×100). لاحظ إن الـ LR الآمن بيقل جدًا والمنحنى بيتزحلق لشمال.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d56-lrCanvas" width="520" height="280" aria-label="الـ loss مقابل الـ learning rate"></canvas>
+      <div class="btns">
+        <button type="button" class="primary" id="d56-lrRun">شغّل الـ sweep</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d56-lrRaw"> features مش normalized</label>
+      </div>
+      <div class="readout">
+        <div><small>خطوات قبل ما يقف</small><b id="d56-lrSteps">-</b></div>
+        <div><small>أقل loss عند</small><b id="d56-lrMin">-</b></div>
+        <div><small>Suggested LR</small><b id="d56-lrSug">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6 -->
+<section id="d56-pytorch">
+  <div class="station-head"><span class="tag">06</span><h2>أشهر bugs في PyTorch والجدول الأم</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الـ Bug</th><th>العَرَض</th><th>الحل</th></tr>
+    <tr><td>نسيت <code>optimizer.zero_grad()</code></td><td>الـ gradients بتتجمع عبر الـ batches والـ loss بيتذبذب</td><td>حط <code>zero_grad()</code> قبل <code>loss.backward()</code></td></tr>
+    <tr><td>نسيت <code>model.eval()</code> وقت الـ test</td><td>dropout والـ batch norm بيتصرفوا غلط، والـ test accuracy بتتغير من run للتاني</td><td><code>model.eval()</code> مع <code>torch.no_grad()</code></td></tr>
+    <tr><td>Shapes غلط</td><td>broadcasting صامت بيطلع نتيجة غلط من غير error</td><td>اطبع الـ shapes بعد كل عملية وأنت بتعمل debug</td></tr>
+    <tr><td>CPU/GPU mismatch</td><td><code>RuntimeError: expected CUDA tensor</code></td><td><code>.to(device)</code> على الموديل والداتا الاتنين</td></tr>
+    <tr><td>مش بتعمل detach</td><td>الـ computation graph بيكبر لحد OOM</td><td><code>.detach()</code> أو <code>with torch.no_grad()</code></td></tr>
+    <tr><td>In-place ops بتكسر autograd</td><td><code>RuntimeError: modified by in-place operation</code></td><td>بدل <code>x += 1</code> اكتب <code>x = x + 1</code></td></tr>
+    <tr><td>داتا مش normalized</td><td>الـ loss واقف عند مستوى الصدفة</td><td>normalize لـ mean=0 و std=1</td></tr>
+    <tr><td>Labels بـ dtype غلط</td><td>الـ cross-entropy عايز <code>Long</code> وجالها <code>Float</code></td><td><code>labels.long()</code></td></tr>
+  </table></div>
+  <h3>الجدول الأم للتشخيص (احفظه)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>العَرَض</th><th>السبب المحتمل</th><th>أول حاجة تجربها</th></tr>
+    <tr><td>الـ loss واقف عند <code>-log(1/num_classes)</code></td><td>الموديل بيتوقع توزيع uniform</td><td>افحص الـ data pipeline واتأكد إن الـ labels ماشية مع الـ inputs</td></tr>
+    <tr><td>NaN بعد كام خطوة</td><td>LR عالي</td><td>قلل الـ LR بـ 10x</td></tr>
+    <tr><td>NaN من أول خطوة</td><td>log(0) أو قسمة على صفر</td><td>ضيف epsilon</td></tr>
+    <tr><td>تذبذب جامد</td><td>LR عالي أو batch صغير</td><td>قلل الـ LR، كبّر الـ batch</td></tr>
+    <tr><td>بينزل وبعدين plateau</td><td>LR عالي على مرحلة الـ fine-tuning</td><td>LR schedule (cosine أو step decay)</td></tr>
+    <tr><td>train عالي و test واطي</td><td>Overfitting</td><td>dropout، weight decay، داتا أكتر</td></tr>
+    <tr><td>train = test = صدفة</td><td>الموديل مش بيتعلم أي حاجة</td><td>overfit-one-batch test</td></tr>
+    <tr><td>train = test بس الاتنين واطيين</td><td>Underfitting</td><td>موديل أكبر، layers أكتر، features أكتر</td></tr>
+    <tr><td>الـ gradients كلها أصفار</td><td>dead ReLUs أو graph متفصول</td><td>LeakyReLU، افحص <code>.requires_grad</code></td></tr>
+    <tr><td>Out of memory</td><td>batch كبير أو الـ graph مش بيتمسح</td><td>صغّر الـ batch، <code>torch.no_grad()</code> في الـ eval</td></tr>
+  </table></div>
+  <div class="note ai"><strong>مثال سريع على أول سطر:</strong> عندك 10 classes، يبقى <code>-log(1/10) = ln(10) ≈ 2.30</code>. لو الـ loss واقف عند 2.30 بالظبط، الموديل بيقول «مش عارف» لكل حاجة بالتساوي.</div>
+</section>
+
+<!-- CODE -->
+<section id="d56-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: ابني الـ debugging toolkit</h2></div>
+  <p>من الـ root بتاع الريبو شغّل الملف الأصلي الأول (محتاج <code>torch</code> متسطب):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/03-deep-learning-core/13-debugging-neural-networks/code/debug_neural_nets.py</pre></div>
+  <p><b>القاعدة:</b> بعد ما تشوف الناتج، اقفل الملف واكتب كل خطوة بنفسك في <code>my_debugger.py</code>. بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: NetworkDebugger بالـ hooks</h3>
+  <p>الـ hooks دي «كاميرات مراقبة» بتتركب على كل layer: الـ forward hook بيصور الخرج، والـ backward hook بيصور الـ gradient اللي راجع.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+import math
+import copy
+
+
+class NetworkDebugger:
+    def __init__(self, model):
+        self.model = model
+        self.activation_stats = {}
+        self.gradient_stats = {}
+        self.loss_history = []
+        self.hooks = []
+        self._register_hooks()
+
+    def _register_hooks(self):
+        <span class="c"># ركّب hook على كل Linear/Conv2d/ReLU/LeakyReLU</span>
+        for name, module in self.model.named_modules():
+            if isinstance(module, (nn.Linear, nn.Conv2d, nn.ReLU, nn.LeakyReLU)):
+                hook = module.register_forward_hook(self._make_activation_hook(name))
+                self.hooks.append(hook)
+                hook = module.register_full_backward_hook(self._make_gradient_hook(name))
+                self.hooks.append(hook)
+
+    def _make_activation_hook(self, name):
+        def hook(module, input, output):
+            with torch.no_grad():                  <span class="c"># المراقبة مش جزء من الـ graph</span>
+                out = output.detach().float()
+                self.activation_stats[name] = {
+                    "mean": out.mean().item(),
+                    "std": out.std().item(),
+                    "fraction_zero": (out == 0).float().mean().item(),  <span class="c"># نسبة الميتين</span>
+                    "min": out.min().item(),
+                    "max": out.max().item(),
+                }
+        return hook
+
+    def _make_gradient_hook(self, name):
+        def hook(module, grad_input, grad_output):
+            if grad_output[0] is not None:
+                with torch.no_grad():
+                    grad = grad_output[0].detach().float()
+                    self.gradient_stats[name] = {
+                        "mean": grad.mean().item(),
+                        "std": grad.std().item(),
+                        "abs_mean": grad.abs().mean().item(),   <span class="c"># حجم الـ gradient</span>
+                        "max": grad.abs().max().item(),
+                    }
+        return hook
+
+    def record_loss(self, loss_value):
+        self.loss_history.append(loss_value)</pre></div>
+
+  <h3>خطوة ٢: الفحوصات الأوتوماتيك</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def check_loss_health(self):
+        if len(self.loss_history) &lt; 2:
+            return "NOT_ENOUGH_DATA"
+        recent = self.loss_history[-10:]
+        if any(math.isnan(v) or math.isinf(v) for v in recent):
+            return "NAN_OR_INF"
+        if len(self.loss_history) &gt;= 20:           <span class="c"># قارن أول 10 بآخر 10</span>
+            first_half = sum(self.loss_history[:10]) / 10
+            second_half = sum(self.loss_history[-10:]) / 10
+            if second_half &gt;= first_half * 0.99:
+                return "NOT_DECREASING"
+        if len(recent) &gt;= 5:                        <span class="c"># الفروق متلخبطة = تذبذب</span>
+            diffs = [recent[i + 1] - recent[i] for i in range(len(recent) - 1)]
+            if max(diffs) - min(diffs) &gt; 2 * abs(sum(diffs) / len(diffs) + 1e-10):
+                return "OSCILLATING"
+        return "HEALTHY"
+
+    def check_activations(self):
+        issues = []
+        for name, stats in self.activation_stats.items():
+            if stats["fraction_zero"] &gt; 0.5:
+                issues.append(f"DEAD_NEURONS: {name} has {stats['fraction_zero']:.0%} zero activations")
+            if abs(stats["mean"]) &gt; 10:
+                issues.append(f"EXPLODING_ACTIVATIONS: {name} mean={stats['mean']:.2f}")
+            if stats["std"] &lt; 1e-6:
+                issues.append(f"COLLAPSED_ACTIVATIONS: {name} std={stats['std']:.2e}")
+        return issues if issues else ["HEALTHY"]
+
+    def check_gradients(self):
+        issues = []
+        grad_magnitudes = []
+        for name, stats in self.gradient_stats.items():
+            grad_magnitudes.append((name, stats["abs_mean"]))
+            if stats["abs_mean"] &lt; 1e-7:
+                issues.append(f"VANISHING_GRADIENT: {name} abs_mean={stats['abs_mean']:.2e}")
+            if stats["abs_mean"] &gt; 100:
+                issues.append(f"EXPLODING_GRADIENT: {name} abs_mean={stats['abs_mean']:.2e}")
+        if len(grad_magnitudes) &gt;= 2:
+            first_mag = grad_magnitudes[0][1]
+            last_mag = grad_magnitudes[-1][1]
+            if last_mag &gt; 0 and first_mag / (last_mag + 1e-15) &gt; 100:
+                issues.append(f"GRADIENT_RATIO: first/last = {first_mag / (last_mag + 1e-15):.0f}x (vanishing)")
+        return issues if issues else ["HEALTHY"]
+
+    def remove_hooks(self):                         <span class="c"># شيل الكاميرات لما تخلص</span>
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks.clear()</pre></div>
+  <p>الملف الأصلي فيه كمان <code>print_report()</code> بتطبع حالة الـ loss، وكل التشخيصات، والإحصائيات لكل layer. اكتبها بنفسك: لفّ على <code>check_activations()</code> و<code>check_gradients()</code> واطبع كل سطر.</p>
+
+  <h3>خطوة ٣: Overfit-One-Batch</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def overfit_one_batch(model, x_batch, y_batch, criterion, lr=0.01, steps=200):
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    model.train()
+    for step in range(steps):
+        optimizer.zero_grad()                       <span class="c"># الترتيب ده مقدس</span>
+        output = model(x_batch)
+        loss = criterion(output, y_batch)
+        loss.backward()
+        optimizer.step()
+        if step % 50 == 0 or step == steps - 1:
+            with torch.no_grad():
+                if output.shape[-1] == 1:
+                    preds = (output &gt; 0).float().squeeze()
+                else:
+                    preds = output.argmax(dim=1)
+                targets = y_batch if y_batch.dim() == 1 else y_batch.squeeze()
+                acc = (preds == targets).float().mean().item()
+            print(f"  Step {step:3d} | Loss: {loss.item():.6f} | Accuracy: {acc:.1%}")
+    final_loss = loss.item()
+    if final_loss &gt; 0.1:                            <span class="c"># محفظش 8 عينات؟ في bug</span>
+        print(f"\n  FAIL: Loss did not converge ({final_loss:.4f}). Model or training loop is broken.")
+        return False
+    print(f"\n  PASS: Loss converged to {final_loss:.6f}")
+    return True</pre></div>
+
+  <h3>خطوة ٤: LR Finder</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def find_learning_rate(model, x_data, y_data, criterion, start_lr=1e-7, end_lr=10, steps=100):
+    original_state = copy.deepcopy(model.state_dict())   <span class="c"># هنرجّع الموديل زي ما كان</span>
+    optimizer = torch.optim.SGD(model.parameters(), lr=start_lr)
+    lr_mult = (end_lr / start_lr) ** (1 / steps)          <span class="c"># زيادة أُسّية كل خطوة</span>
+    model.train()
+    results, best_loss, current_lr = [], float("inf"), start_lr
+    for step in range(steps):
+        optimizer.zero_grad()
+        loss = criterion(model(x_data), y_data)
+        if math.isnan(loss.item()) or loss.item() &gt; best_loss * 10:
+            break                                         <span class="c"># انفجر، كفاية</span>
+        best_loss = min(best_loss, loss.item())
+        results.append((current_lr, loss.item()))
+        loss.backward()
+        optimizer.step()
+        current_lr *= lr_mult
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = current_lr
+    model.load_state_dict(original_state)
+    if len(results) &lt; 10:
+        print("  Could not complete LR sweep -- loss diverged too quickly")
+        return results
+    min_loss_idx = min(range(len(results)), key=lambda i: results[i][1])
+    suggested_lr = results[max(0, min_loss_idx - 10)][0]  <span class="c"># 10 خطوات قبل أقل loss</span>
+    print(f"  Suggested learning rate: {suggested_lr:.2e}")
+    return results</pre></div>
+
+  <h3>خطوة ٥: Gradient Checker</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _flat_to_multi_index(flat_idx, shape):        <span class="c"># رقم مسطح ← index متعدد الأبعاد</span>
+    multi_idx = []
+    remaining = flat_idx
+    for dim in reversed(shape):
+        multi_idx.insert(0, remaining % dim)
+        remaining //= dim
+    return tuple(multi_idx)
+
+
+def gradient_check(model, x, y, criterion, eps=1e-4):
+    model.train()
+    x_double, y_double = x.double(), y.double()    <span class="c"># double عشان دقة الـ finite differences</span>
+    model_double = model.double()
+    overall_max_diff, checked = 0, 0
+    for name, param in model_double.named_parameters():
+        if not param.requires_grad:
+            continue
+        layer_max_diff = 0
+        model_double.zero_grad()
+        loss = criterion(model_double(x_double), y_double)
+        loss.backward()
+        analytical_grad = param.grad.clone()
+        for i in range(min(5, param.numel())):      <span class="c"># أول 5 أرقام بس في كل parameter</span>
+            idx = _flat_to_multi_index(i, param.shape)
+            original = param.data[idx].item()
+            param.data[idx] = original + eps
+            with torch.no_grad():
+                loss_plus = criterion(model_double(x_double), y_double).item()
+            param.data[idx] = original - eps
+            with torch.no_grad():
+                loss_minus = criterion(model_double(x_double), y_double).item()
+            param.data[idx] = original               <span class="c"># رجّعه زي ما كان</span>
+            numerical = (loss_plus - loss_minus) / (2 * eps)
+            analytical = analytical_grad[idx].item()
+            denom = max(abs(numerical), abs(analytical), 1e-8)
+            layer_max_diff = max(layer_max_diff, abs(numerical - analytical) / denom)
+            checked += 1
+        overall_max_diff = max(overall_max_diff, layer_max_diff)
+        status = "OK" if layer_max_diff &lt; 1e-5 else "MISMATCH"
+        print(f"  {name}: max_rel_diff={layer_max_diff:.2e} [{status}]")
+    model.float()
+    return overall_max_diff</pre></div>
+
+  <h3>خطوة ٦: اكسر شبكات عن قصد وشخّصها</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>torch.manual_seed(42)
+x = torch.randn(64, 10)
+y = (x[:, 0] &gt; 0).long()                            <span class="c"># label = هل أول feature موجب؟</span>
+criterion = nn.CrossEntropyLoss()
+
+<span class="c"># BUG 1: lr=10 مع SGD</span>
+model1 = nn.Sequential(nn.Linear(10, 32), nn.ReLU(), nn.Linear(32, 2))
+dbg = NetworkDebugger(model1)
+opt = torch.optim.SGD(model1.parameters(), lr=10.0)
+for step in range(20):
+    opt.zero_grad()
+    loss = criterion(model1(x), y)
+    dbg.record_loss(loss.item())
+    loss.backward()
+    opt.step()
+print(dbg.check_loss_health(), dbg.check_activations(), dbg.check_gradients())
+dbg.remove_hooks()
+
+<span class="c"># BUG 2: Dead ReLUs: كل الـ weights = -1 والـ bias = -5</span>
+model2 = nn.Sequential(nn.Linear(10, 32), nn.ReLU(), nn.Linear(32, 32), nn.ReLU(), nn.Linear(32, 2))
+with torch.no_grad():
+    for m in model2.modules():
+        if isinstance(m, nn.Linear):
+            m.weight.fill_(-1.0)
+            m.bias.fill_(-5.0)
+
+<span class="c"># BUG 3: شيل opt.zero_grad() من الـ loop (SGD lr=0.01)</span>
+<span class="c"># HEALTHY: Adam lr=1e-3 مع zero_grad للمقارنة</span>
+<span class="c"># وفي الآخر: overfit_one_batch(model, x[:8], y[:8], criterion)</span>
+<span class="c"># و gradient_check على Linear(3,4) + Tanh + Linear(4,1) مع MSELoss</span></pre></div>
+  <details><summary>الناتج المتوقع (الشكل العام)</summary>
+    <p>الأرقام بالظبط هتختلف حسب نسخة PyTorch، فركّز على الحالات: الملف بيطبع عناوين <code class="ltr">BUG 1: Learning rate too high (lr=10)</code> و<code class="ltr">BUG 2: Dead ReLUs from bad initialization</code> و<code class="ltr">BUG 3: Missing zero_grad</code> و<code class="ltr">HEALTHY NETWORK</code>، وتحت كل واحد <code class="ltr">=== NETWORK DEBUGGER REPORT ===</code>. في BUG 2 المفروض تشوف سطور <code class="ltr">DEAD_NEURONS</code> لطبقات الـ ReLU. وبعدين <code class="ltr">=== OVERFIT ONE BATCH TEST ===</code> اللي المفروض يخلص بـ <code class="ltr">PASS</code>، والـ LR finder بيطبع <code class="ltr">Suggested learning rate</code>، والـ gradient check على الموديل الـ smooth المفروض يطبع <code class="ltr">[OK]</code> لكل parameter.</p>
+  </details>
+
+  <h3>خطوة ٧: أدوات جاهزة هتستخدمها في الشغل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># PyTorch: يمسك أول عملية طلعت NaN/Inf في الـ backward ويقولك هي فين</span>
+with torch.autograd.detect_anomaly():
+    output = model(input_tensor)
+    loss = criterion(output, target)
+    loss.backward()
+
+for name, param in model.named_parameters():
+    if param.grad is not None:
+        print(f"{name}: grad_mean={param.grad.abs().mean():.2e}")
+
+<span class="c"># Weights &amp; Biases: سجّل الـ loss والـ LR والـ grad norm كل epoch</span>
+import wandb
+wandb.init(project="debug-training")
+for epoch in range(100):
+    loss = train_one_epoch()
+    wandb.log({
+        "loss": loss,
+        "lr": optimizer.param_groups[0]["lr"],
+        "grad_norm": torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf")),
+    })
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            wandb.log({f"grad/{name}": wandb.Histogram(param.grad.cpu().numpy())})
+
+<span class="c"># TensorBoard: histograms للـ weights والـ gradients</span>
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter("runs/debug_experiment")
+for epoch in range(100):
+    loss = train_one_epoch()
+    writer.add_scalar("Loss/train", loss, epoch)
+    for name, param in model.named_parameters():
+        writer.add_histogram(f"weights/{name}", param, epoch)
+        if param.grad is not None:
+            writer.add_histogram(f"gradients/{name}", param.grad, epoch)</pre></div>
+  <p>لاحظ الحركة الذكية: <code>clip_grad_norm_(..., float("inf"))</code> مش بيعمل clipping فعلي (الحد لا نهائي)، بس بيرجعلك الـ total grad norm عشان تسجله.</p>
+
+  <h3>الـ checklist قبل أي تدريب كامل</h3>
+  <ol class="ex">
+    <li>شغّل overfit-one-batch. لو فشل، اقف.</li>
+    <li>اطبع ملخص الموديل واتأكد إن عدد الـ parameters منطقي.</li>
+    <li>اعمل forward pass واحد بداتا عشوائية وافحص shape الخرج.</li>
+    <li>درّب ٥ epochs واتأكد إن الـ loss بينزل.</li>
+    <li>افحص إحصائيات الـ activations: مفيش layers ميتة ولا منفجرة.</li>
+    <li>افحص الـ gradient flow: مفيش vanishing ولا exploding.</li>
+    <li>افحص الـ data pipeline: اطبع ٥ عينات عشوائية مع الـ labels.</li>
+  </ol>
+  <div class="note"><strong>Ship it:</strong> الدرس بيطلّع ملفين في <code>outputs/</code>: <code>prompt-nn-debugger.md</code> (prompt لتشخيص فشل التدريب) و<code>skill-debug-checklist.md</code> (checklist على شكل decision tree). وفي الـ production: ركّب hooks في سكريبتات التدريب، سجّل الإحصائيات لـ W&amp;B أو TensorBoard كل N خطوة، اعمل alerts أوتوماتيك للـ NaN أو neurons ميتة (&gt;80٪ أصفار) أو انفجار gradients، وشغّل overfit-one-batch كل ما تغيّر الـ architecture أو الـ data pipeline.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d56-exercises">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة (أنصحك بـ ١ و٥)، والباقي كمّله في الـ warm-up بكرة.</p>
+  <ol class="ex">
+    <li><b>كاشف الـ exploding gradients:</b> عدّل <code>NetworkDebugger</code> عشان يكتشف لما الـ gradients تعدي حد معين ويقترح قيمة لـ gradient clipping. جرّبه على شبكة ٢٠ layer من غير normalization.
+      <details><summary>تلميح</summary>احسب الـ total grad norm بعد <code>backward()</code> (مجموع مربعات <code>param.grad</code> وجذر). سجّل التاريخ بتاعه، ولو قفز فوق مثلًا ١٠ أضعاف المتوسط، اقترح <code>max_norm</code> قريب من المتوسط العادي. ابني الشبكة بـ loop: <code>[nn.Linear(32,32), nn.ReLU()] * 20</code> مع weights أكبر من الطبيعي (مثلًا اضرب الـ init في ٢) عشان تشوف الانفجار.</details></li>
+    <li><b>محيي الـ neurons الميتة:</b> دالة تلاقي الـ ReLU neurons اللي دايمًا بتطلع 0 وتعيد init للـ weights الداخلة ليها بـ Kaiming. وريني إنها بترجّع شبكة أكتر من ٧٠٪ من الـ neurons فيها ميتة.
+      <details><summary>تلميح</summary>عدّي batch كبير واحسب لكل neuron (عمود) هل كل القيم = 0: <code>(out == 0).all(dim=0)</code>. الصفوف المقابلة في <code>weight</code> بتاع الـ Linear اللي قبله هي اللي تعيدلها init بـ <code>nn.init.kaiming_normal_</code> وصفّر الـ bias بتاعها. استخدم init الـ BUG 2 (weight=-1، bias=-5) كشبكة ميتة.</details></li>
+    <li><b>LR finder برسمة:</b> خلّي <code>find_learning_rate</code> يحفظ النتايج في CSV، واكتب سكريبت منفصل يقرا الـ CSV ويرسم LR مقابل loss بـ matplotlib. لاقي أحسن LR لـ ResNet-18 على CIFAR-10.
+      <details><summary>تلميح</summary><code>csv.writer</code> مع عمودين <code>lr,loss</code>. في الرسمة استخدم <code>plt.xscale("log")</code>. ResNet-18 و CIFAR-10 موجودين في <code>torchvision</code>؛ لو مفيش GPU خليها على subset صغير. متصدقش «الرقم السحري»، طبّق القاعدة: قبل أسرع نزول بـ 10x.</details></li>
+    <li><b>فاحص الـ data pipeline:</b> دالة تفحص: عينات مكررة بين train و test، عدم توازن في الـ labels (نسبة أكبر من 10:1)، الـ normalization (mean قريب من 0 و std قريب من 1)، وقيم NaN/Inf. جرّبها على داتا بوّظتها عن قصد.
+      <details><summary>تلميح</summary>للتكرار: حوّل كل صف لـ tuple (أو hash للـ bytes) وحطهم في <code>set</code> واعمل intersection. للتوازن: <code>torch.bincount(labels)</code> وقسّم الأكبر على الأصغر. للـ NaN: <code>torch.isnan(x).any()</code> و<code>torch.isinf</code>. بوّظ الداتا بإنك تنسخ ١٠ صفوف من train لـ test وتحط NaN في خانة.</details></li>
+    <li><b>Debug لفشل حقيقي:</b> خد الـ mini-framework من درس ١٠، ودخّل bug صغير (مثلًا اقلب الـ weight matrix transpose في الـ backward)، واستخدم gradient checking عشان تحدد بالظبط أنهي parameter الـ gradients بتاعته غلط. اكتب خطوات الـ debugging.
+      <details><summary>تلميح</summary>نفّذ نفس فكرة <code>gradient_check</code> بس على الكلاس بتاعك: لكل parameter زق خانة بـ ±eps واحسب الـ loss. الـ parameter اللي هيطلع عليه MISMATCH هو اللي الـ backward بتاعه فيه الـ bug. خلي الـ matrix مربعة لو عايز الـ bug يعدّي من غير shape error، وده بالظبط اللي بيخليه bug صامت.</details></li>
+    <li><b>إضافة مني · LLM صغير الـ loss بتاعه واقف عند 10.8:</b> بتدرّب GPT صغير بـ vocab حجمه 50257 والـ loss من أول خطوة لحد الألف واقف حوالين 10.8. شخّص المشكلة بالجدول الأم، واكتب ٣ فحوصات بالترتيب هتعملها.
+      <details><summary>الإجابة</summary><code>ln(50257) ≈ 10.82</code>، يعني الموديل بيتوقع توزيع uniform على كل الـ tokens = مش بيتعلم خالص (السطر الأول في الجدول الأم). الفحوصات: (١) overfit-one-batch على ٨ جمل؛ لو فشل يبقى bug في الـ loop أو الـ loss. (٢) اتأكد إن الـ targets هي الـ inputs مزحولة token واحدة (<code>y = x[:, 1:]</code>)، ومش هي نفس الـ inputs ومش متلخبطة. (٣) اطبع الـ grad norm لكل layer؛ لو صفر يبقى graph متفصول (مثلًا <code>.item()</code> أو <code>.detach()</code> قبل الـ backward) أو optimizer مش متوصل بـ <code>model.parameters()</code>.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d56-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <h3>١. ليه sigmoid بتعمل vanishing بالأرقام؟</h3>
+  <p>أقصى مشتقة لـ sigmoid هي 0.25 (عند الصفر). لو الـ gradient عدّى على ١٠ layers، في أحسن الأحوال اتضرب في <code>0.25¹⁰ ≈ 9.5e-7</code>، يعني أقل من واحد على مليون. ده اللي شفته في المعمل ٢. الـ residual connection بيضيف طريق «مباشر» مشتقته 1، فالـ gradient بيلاقي سكة ما يتقسمش فيها.</p>
+  <h3>٢. ترتيب الـ hooks في الـ backward مقلوب</h3>
+  <p>في <code>check_gradients</code> الـ dictionary بيتملي بترتيب تنفيذ الـ backward hooks، والـ backward بيمشي من آخر layer لأولها. فـ <code>grad_magnitudes[0]</code> غالبًا هو آخر layer و<code>[-1]</code> هو أول layer. عشان كده لما الكود بيقسم first/last ويلاقيه أكبر من 100 بيسميه vanishing: الـ gradient عند الخرج أكبر ١٠٠ مرة من عند الدخل. لو اتلخبطت في الترتيب ده هتقرا التشخيص بالعكس.</p>
+  <h3>٣. الـ heuristics بتغلط</h3>
+  <p>جرّب في المعمل ١ LR = 0.32 (من غير أي bug): الـ loss بينزل بسرعة جدًا وبشكل سليم، بس <code>check_loss_health</code> بيقول OSCILLATING، لأن الفروق بين الخطوات بتقل بسرعة فالمدى بتاعها بيبان كبير مقارنة بمتوسطها. وبالعكس: نسيان <code>zero_grad</code> بيطلع هنا NOT_DECREASING مش OSCILLATING، مع إن المنحنى بيتذبذب بعينك. الدرس: الـ alerts الأوتوماتيك بتنبهك، بس ارسم المنحنى دايمًا قبل ما تحكم.</p>
+  <h3>٤. أخطاء شائعة هتقابلها</h3>
+  <ul class="ex" style="display:grid;gap:6px">
+    <li>تحط <code>softmax</code> في آخر الموديل وبعدين تستخدم <code>nn.CrossEntropyLoss</code>، وهي أصلًا بتعمل log-softmax جواها. النتيجة: تدريب أبطأ وأسوأ من غير أي error.</li>
+    <li>تعمل shape <code>(N,1)</code> مع <code>(N,)</code> في الـ MSE: الـ broadcasting بيعمل مصفوفة <code>N×N</code> ويحسب loss غلط في صمت (PyTorch ممكن يطلع warning بس سهل تفوّته).</li>
+    <li>الـ augmentation أو الـ shuffle بيبوّظ ربط الـ input بالـ label. اطبع ٥ عينات دايمًا (البند ٧ في الـ checklist).</li>
+    <li>تقيس الـ validation من غير <code>model.eval()</code> فالأرقام تتنطط كل مرة.</li>
+  </ul>
+  <h3>٥. فين ده في الـ LLMs والـ agents؟</h3>
+  <p>كل fine-tuning لـ LLM (حتى LoRA) بيقع في نفس المطبات: loss spikes بتتعالج بـ gradient clipping و warmup (درس ٩)، NaN مع fp16 بسبب overflow، وloss واقف عند <code>ln(vocab)</code> لو الـ labels مش مزحولة صح. ولما تبني agents، نفس العقلية بتنفع: bug صامت (الـ agent بيرد بثقة بس غلط) + اختبار صغير الأول (مهمة واحدة سهلة لازم ينجح فيها) + logs لكل خطوة بدل ما تحكم على النتيجة النهائية بس.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d56-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d56-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d56-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d56-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أفرق بين الأعراض التلاتة (مش بينزل / بينزل بس وحش / NaN) وأسباب كل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> شفت NaN والتذبذب و vanishing gradients بعيني في المعامل</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> فهمت gradient checking وليه eps صغير أوي بيبوّظ</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت NetworkDebugger و overfit_one_batch بإيدي وشغّلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c6" id="d56-ckQuiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Overfit-one-batch</td><td>أول تست قبل أي تدريب أو fine-tuning، وأي تغيير في الـ architecture</td></tr>
+    <tr><td>Gradient clipping</td><td>تدريب الـ RNNs والـ Transformers والـ LLMs (loss spikes)</td></tr>
+    <tr><td>Gradient checking</td><td>لما تكتب backward بإيدك أو custom autograd function أو CUDA kernel</td></tr>
+    <tr><td>LR finder</td><td>اختيار الـ LR لموديل أو داتا جديدة قبل الـ schedule</td></tr>
+    <tr><td>Activation/gradient stats</td><td>dashboards في W&amp;B و TensorBoard أثناء التدريب الطويل</td></tr>
+    <tr><td><code>-log(1/C)</code> loss</td><td>كشف إن الموديل مش بيتعلم (classification أو LLM بـ <code>ln(vocab)</code>)</td></tr>
+    <tr><td>Data leakage</td><td>تقييم الموديلات والـ benchmarks، وأرقام «حلوة زيادة عن اللزوم»</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> بنبدأ Phase 4 · Computer Vision بدرس Image Fundamentals: البيكسلز، الـ channels، والـ color spaces. وهنبدأ بمراجعة ٥ دقايق على الـ debugging.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F13-debugging-neural-networks" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/13-debugging-neural-networks</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt;
+const $=id=>document.getElementById(id);
+const sci=v=>(!isFinite(v)||isNaN(v))?'NaN':(Math.abs(v)<1e-3||Math.abs(v)>=1e4?(+v).toExponential(2):String(f(v,4)));
+
+// roadmap
+const rm=$('d56-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===13)s.className='now';rm.appendChild(s)}
+
+// ---------- shared log-axis helpers ----------
+function logY(v,lo,hi,top,bot){const l=Math.log10(Math.max(lo,Math.min(hi,v)));return bot-(l-Math.log10(lo))/(Math.log10(hi)-Math.log10(lo))*(bot-top)}
+
+// ---------- Lab 1: training simulator ----------
+const tc=$('d56-trainCanvas'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+function healthOf(h){
+  if(h.length<2)return'NOT_ENOUGH_DATA';
+  const recent=h.slice(-10);
+  if(recent.some(v=>!isFinite(v)))return'NAN_OR_INF';
+  if(h.length>=20){const a=h.slice(0,10).reduce((s,v)=>s+v,0)/10,b=h.slice(-10).reduce((s,v)=>s+v,0)/10;if(b>=a*0.99)return'NOT_DECREASING'}
+  if(recent.length>=5){const d=[];for(let i=0;i<recent.length-1;i++)d.push(recent[i+1]-recent[i]);
+    const mean=d.reduce((s,v)=>s+v,0)/d.length;if(Math.max(...d)-Math.min(...d)>2*Math.abs(mean+1e-10))return'OSCILLATING'}
+  return'HEALTHY';
+}
+function simTrain(){
+  const lr=Math.pow(10,+$('d56-lr').value),noZero=$('d56-bugZero').checked,dead=$('d56-bugDead').checked,raw=$('d56-bugNorm').checked;
+  const a=raw?40:1,b=raw?0.01:0.5;let w=[3,3],acc=[0,0];const H=[];
+  for(let s=0;s<60;s++){
+    let L=0.5*(a*w[0]*w[0]+b*w[1]*w[1]);
+    if(!isFinite(L)||L>1e30){L=NaN}
+    H.push(L);if(isNaN(L)){continue}
+    let g=[a*w[0],b*w[1]];if(dead)g=[0,0];
+    if(noZero){acc=[acc[0]+g[0],acc[1]+g[1]];g=acc}
+    w=[w[0]-lr*g[0],w[1]-lr*g[1]];
+  }
+  return{lr,H};
+}
+function drawTrain(){
+  const {lr,H}=simTrain();$('d56-lrv').textContent=lr<0.01?lr.toExponential(1):f(lr,3);
+  tx.clearRect(0,0,TW,TH);const L=44,R=TW-10,T=10,B=TH-28,lo=1e-6,hi=1e6;
+  tx.strokeStyle=css('--grid');tx.lineWidth=1;tx.fillStyle=css('--muted');tx.font='11px JetBrains Mono, monospace';
+  for(let e=-6;e<=6;e+=2){const y=logY(Math.pow(10,e),lo,hi,T,B);tx.beginPath();tx.moveTo(L,y);tx.lineTo(R,y);tx.stroke();tx.fillText('1e'+e,4,y+4)}
+  tx.fillText('step',R-30,TH-8);
+  tx.strokeStyle=css('--vec-a');tx.lineWidth=2.5;tx.beginPath();let started=false,nanAt=-1;
+  H.forEach((v,i)=>{const x=L+i/(H.length-1)*(R-L);if(!isFinite(v)){if(nanAt<0)nanAt=i;return}const y=logY(v,lo,hi,T,B);started?tx.lineTo(x,y):tx.moveTo(x,y);started=true});tx.stroke();
+  if(nanAt>=0){const x=L+nanAt/(H.length-1)*(R-L);tx.fillStyle=css('--bad');tx.globalAlpha=.15;tx.fillRect(x,T,R-x,B-T);tx.globalAlpha=1;tx.font='bold 14px JetBrains Mono, monospace';tx.fillText('NaN',x+8,T+20)}
+  const st=healthOf(H);
+  $('d56-l0').textContent=sci(H[0]);$('d56-lN').textContent=sci(H[H.length-1]);
+  const hb=$('d56-health');hb.textContent=st;hb.style.color=st==='HEALTHY'?css('--ok'):css('--bad');
+  const msg={HEALTHY:'الـ loss بينزل بانتظام. ده الشكل اللي عايزه.',NAN_OR_INF:'انفجار: الـ LR عالي على الـ loss دي. قلله 10x.',NOT_DECREASING:'الـ loss مش بينزل في المتوسط: LR واطي أوي، أو الـ gradients = 0 (dead)، أو gradients بتتجمع (zero_grad ناقصة) فبيلف حوالين نفسه.',OSCILLATING:'تذبذب: الـ updates بتعدي الهدف. شوف الـ LR و zero_grad. (ولو الـ loss نازل بسرعة جدًا، الـ heuristic ممكن يغلط هنا.)'};
+  $('d56-trainVerdict').textContent=msg[st]||'';
+}
+['d56-lr','d56-bugZero','d56-bugDead','d56-bugNorm'].forEach(id=>$(id).addEventListener('input',drawTrain));
+['d56-bugZero','d56-bugDead','d56-bugNorm'].forEach(id=>$(id).addEventListener('change',drawTrain));
+drawTrain();
+
+// ---------- Lab 2: gradient flow ----------
+const fc=$('d56-flowCanvas'),fx=AI.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+function drawFlow(){
+  const n=+$('d56-depth').value,s=+$('d56-scale').value,act=$('d56-act').value,res=$('d56-res').checked;
+  $('d56-depthv').textContent=n;$('d56-scalev').textContent=f(s,2);
+  const d={sigmoid:0.25,tanh:0.7,relu:1}[act],fac=s*d,step=res?1+0.05*fac:fac;
+  const g=[];for(let k=0;k<n;k++){g.push(0.05*Math.pow(step,n-1-k))} // g[0] = first layer
+  fx.clearRect(0,0,FW,FH);const L=44,R=FW-10,T=10,B=FH-28,lo=1e-12,hi=1e4;
+  fx.font='11px JetBrains Mono, monospace';
+  for(let e=-12;e<=4;e+=4){const y=logY(Math.pow(10,e),lo,hi,T,B);fx.strokeStyle=css('--grid');fx.lineWidth=1;fx.beginPath();fx.moveTo(L,y);fx.lineTo(R,y);fx.stroke();fx.fillStyle=css('--muted');fx.fillText('1e'+e,4,y+4)}
+  [[1e-7,'vanish'],[100,'explode']].forEach(([v,t])=>{const y=logY(v,lo,hi,T,B);fx.strokeStyle=css('--bad');fx.setLineDash([5,4]);fx.beginPath();fx.moveTo(L,y);fx.lineTo(R,y);fx.stroke();fx.setLineDash([]);fx.fillStyle=css('--bad');fx.fillText(t,R-56,y-4)});
+  const bw=(R-L)/n;
+  g.forEach((v,i)=>{const y=logY(v,lo,hi,T,B),bad=v<1e-7||v>100;fx.fillStyle=bad?css('--bad'):css('--vec-a');fx.fillRect(L+i*bw+1,y,Math.max(1,bw-2),B-y)});
+  fx.fillStyle=css('--muted');fx.fillText('layer 1 (input)',L,TH-8);fx.textAlign='right';fx.fillText('layer '+n+' (output)',R,TH-8);fx.textAlign='left';
+  const first=g[0],last=g[n-1],ratio=last/first;
+  $('d56-gFirst').textContent=sci(first);$('d56-gLast').textContent=sci(last);$('d56-gRatio').textContent=sci(ratio)+'x';
+  const v=$('d56-flowVerdict');
+  if(first<1e-7){v.textContent='Vanishing: أول layers مش بتتعلم خالص.';v.style.color=css('--bad')}
+  else if(first>100){v.textContent='Exploding: الـ gradient بينفجر وهو راجع، والـ loss هيبقى NaN.';v.style.color=css('--bad')}
+  else if(ratio>100){v.textContent='الـ gradient عند الخرج أكبر من 100 مرة من الدخل: بداية vanishing.';v.style.color=css('--vec-b')}
+  else if(ratio<0.01){v.textContent='الـ gradient بيكبر وهو راجع: بداية exploding.';v.style.color=css('--vec-b')}
+  else{v.textContent='Gradient flow صحي: الأحجام متقاربة بين الـ layers.';v.style.color=css('--ok')}
+}
+['d56-depth','d56-scale','d56-act','d56-res'].forEach(id=>{$(id).addEventListener('input',drawFlow);$(id).addEventListener('change',drawFlow)});
+drawFlow();
+
+// ---------- Lab 3: gradient check ----------
+const gc=$('d56-gcCanvas'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+const X=1.5,Y=0.3,loss=w=>{const t=Math.tanh(X*w);return(t-Y)*(t-Y)};
+const loss32=loss; // double precision, زي الكود
+function anal(w,bug){const t=Math.tanh(X*w);return bug?2*(t-Y)*X:2*(t-Y)*(1-t*t)*X}
+function rel(w,eps,bug){const num=(loss32(w+eps)-loss32(w-eps))/(2*eps),an=anal(w,bug);return{num,an,r:Math.abs(num-an)/Math.max(Math.abs(num),Math.abs(an),1e-8)}}
+function drawGC(){
+  const w=+$('d56-w').value,le=+$('d56-eps').value,eps=Math.pow(10,le),bug=$('d56-gcBug').checked;
+  $('d56-wv').textContent=f(w,2);$('d56-epsv').textContent='1e'+le;
+  const o=rel(w,eps,bug);
+  $('d56-gA').textContent=sci(o.an);$('d56-gN').textContent=sci(o.num);$('d56-gR').textContent=sci(o.r);
+  const v=$('d56-gcVerdict');
+  if(o.r<1e-5){v.textContent='OK: الـ backward صح.';v.style.color=css('--ok')}
+  else if(o.r<1e-3){v.textContent='WARN: فرق صغير. غالبًا eps مش مناسب أو دقة الأرقام.';v.style.color=css('--vec-b')}
+  else{v.textContent=bug?'MISMATCH: الـ backward فيه bug فعلًا.':'MISMATCH: بس الـ backward صح! المشكلة هنا من eps (rounding أو truncation).';v.style.color=css('--bad')}
+  gx.clearRect(0,0,GW,GH);const L=44,R=GW-10,T=10,B=GH-26,lo=1e-12,hi=10;
+  gx.font='11px JetBrains Mono, monospace';
+  for(let e=-12;e<=0;e+=3){const y=logY(Math.pow(10,e),lo,hi,T,B);gx.strokeStyle=css('--grid');gx.lineWidth=1;gx.beginPath();gx.moveTo(L,y);gx.lineTo(R,y);gx.stroke();gx.fillStyle=css('--muted');gx.fillText('1e'+e,4,y+4)}
+  [[1e-5,css('--ok')],[1e-3,css('--bad')]].forEach(([t,c])=>{const y=logY(t,lo,hi,T,B);gx.strokeStyle=c;gx.setLineDash([5,4]);gx.beginPath();gx.moveTo(L,y);gx.lineTo(R,y);gx.stroke();gx.setLineDash([])});
+  const ex=e=>L+(e+13)/12*(R-L);
+  gx.strokeStyle=css('--vec-a');gx.lineWidth=2;gx.beginPath();
+  for(let e=-13;e<=-1;e+=0.1){const r=rel(w,Math.pow(10,e),bug).r,x=ex(e),y=logY(r||1e-12,lo,hi,T,B);e===-13?gx.moveTo(x,y):gx.lineTo(x,y)}gx.stroke();
+  const cx=ex(le),cy=logY(o.r||1e-12,lo,hi,T,B);gx.fillStyle=css('--vec-b');gx.beginPath();gx.arc(cx,cy,6,0,7);gx.fill();
+  gx.fillStyle=css('--muted');gx.fillText('eps 1e-13',L,GH-6);gx.textAlign='right';gx.fillText('1e-1',R,GH-6);gx.textAlign='left';gx.fillText('rel_diff',L+4,T+12);
+}
+['d56-w','d56-eps','d56-gcBug'].forEach(id=>{$(id).addEventListener('input',drawGC);$(id).addEventListener('change',drawGC)});
+drawGC();
+
+// ---------- Lab 4: LR finder ----------
+const lc=$('d56-lrCanvas'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+function rng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){return Math.sqrt(-2*Math.log(r()+1e-12))*Math.cos(2*Math.PI*r())}
+let lrRes=null,lrAnim=null;
+function sweep(raw){
+  const r=rng(7),n=64,sc=raw?[1,10,100]:[1,1,1],tw=[1,-2,0.5];const Xs=[],Ys=[];
+  for(let i=0;i<n;i++){const z=[gauss(r),gauss(r),gauss(r)];Xs.push(z.map((v,j)=>v*sc[j]));Ys.push(z[0]*tw[0]+z[1]*tw[1]+z[2]*tw[2]+0.1*gauss(r))}
+  let w=[0,0,0];const start=1e-7,end=10,steps=100,mult=Math.pow(end/start,1/steps);let lr=start,best=Infinity;const res=[];
+  for(let s=0;s<steps;s++){
+    let L=0;const g=[0,0,0];
+    for(let i=0;i<n;i++){const p=Xs[i][0]*w[0]+Xs[i][1]*w[1]+Xs[i][2]*w[2],e=p-Ys[i];L+=e*e;for(let j=0;j<3;j++)g[j]+=2*e*Xs[i][j]/n}
+    L/=n;
+    if(isNaN(L)||L>best*10)break;
+    best=Math.min(best,L);res.push([lr,L]);
+    for(let j=0;j<3;j++)w[j]-=lr*g[j];
+    lr*=mult;
+  }
+  return res;
+}
+function drawLR(k){
+  lx.clearRect(0,0,LW,LH);const L=44,R=LW-10,T=10,B=LH-28,lo=1e-3,hi=1e3;
+  lx.font='11px JetBrains Mono, monospace';
+  for(let e=-3;e<=3;e++){const y=logY(Math.pow(10,e),lo,hi,T,B);lx.strokeStyle=css('--grid');lx.lineWidth=1;lx.beginPath();lx.moveTo(L,y);lx.lineTo(R,y);lx.stroke();lx.fillStyle=css('--muted');lx.fillText('1e'+e,4,y+4)}
+  const ex=lr=>L+(Math.log10(lr)+7)/8*(R-L);
+  for(let e=-7;e<=1;e+=2){const x=ex(Math.pow(10,e));lx.fillStyle=css('--muted');lx.fillText('1e'+e,x-14,LH-8)}
+  if(!lrRes)return;const pts=lrRes.slice(0,k);
+  lx.strokeStyle=css('--vec-a');lx.lineWidth=2.5;lx.beginPath();
+  pts.forEach(([lr,v],i)=>{const x=ex(lr),y=logY(v,lo,hi,T,B);i?lx.lineTo(x,y):lx.moveTo(x,y)});lx.stroke();
+  if(k>=lrRes.length&&lrRes.length>=10){
+    let mi=0;lrRes.forEach((p,i)=>{if(p[1]<lrRes[mi][1])mi=i});const si=Math.max(0,mi-10);
+    [[mi,css('--vec-b'),'min'],[si,css('--ok'),'suggested']].forEach(([i,c,t])=>{const x=ex(lrRes[i][0]),y=logY(lrRes[i][1],lo,hi,T,B);lx.fillStyle=c;lx.beginPath();lx.arc(x,y,6,0,7);lx.fill();lx.fillText(t,x+8,y-8)});
+    $('d56-lrMin').textContent=lrRes[mi][0].toExponential(1);$('d56-lrSug').textContent=lrRes[si][0].toExponential(1);
+  }
+  $('d56-lrSteps').textContent=k+' / 100';
+}
+function runLR(){
+  lrRes=sweep($('d56-lrRaw').checked);$('d56-lrMin').textContent='-';$('d56-lrSug').textContent='-';
+  cancelAnimationFrame(lrAnim);
+  if(matchMedia('(prefers-reduced-motion:reduce)').matches){drawLR(lrRes.length);return}
+  let k=1;const tick=()=>{if(!document.body.contains(lc))return;drawLR(k);if(k<lrRes.length){k++;lrAnim=requestAnimationFrame(tick)}};tick();
+}
+$('d56-lrRun').addEventListener('click',runLR);
+$('d56-lrRaw').addEventListener('change',runLR);
+lrRes=sweep(false);drawLR(lrRes.length);
+
+// ---------- quiz ----------
+const ck=document.getElementById('d56-ckQuiz');
+const Q=[
+ ['ليه الـ debugging في الـ neural networks أصعب من البرمجة العادية؟',['مفيش أدوات debugging للـ neural networks','الشبكة ممكن تطلع نتايج غلط من غير أي error أو crash: الكود بيشتغل بس النتيجة غلط في صمت','الـ neural networks بتستخدم لغات برمجة مختلفة','الـ neural networks مينفعش تتعملها tests'],1,'الـ bugs العادية بتعمل crash أو exception. هنا بتاخد رقم غلط وبس: loss مش بينزل، accuracy واقفة، أو output غلط بشكل خفي، ومفيش رسالة تقولك فين المشكلة.'],
+ ['يعني إيه تقنية «overfit one batch»؟',['تدرب على الداتا كلها لحد ما يحصل overfitting','تعمل overfit على الـ validation set','تستخدم batch size كبير جدًا','تدرب على batch صغير واحد لحد ما الـ loss يقرب من الصفر، عشان تتأكد إن الموديل قادر يحفظ كام عينة'],3,'لو الموديل مش قادر يحفظ batch صغير (٤–٨ عينات) لـ loss قريب من الصفر، فيه حاجة مكسورة من الأساس: architecture غلط، loss بايظة، أو training loop غلط. ده أول تشخيص تعمله.'],
+ ['الـ loss بقى NaN بعد كام خطوة تدريب. إيه السبب الأرجح؟',['الموديل فيه parameters قليلة','الـ activation function غلط','exploding gradients أو overflow، غالبًا من LR عالي أو مفيش gradient clipping','الداتا صغيرة'],2,'الـ NaN غالبًا جاي من overflow: الـ gradients بتنفجر، الـ weights بتكبر من غير حد، وعمليات زي log(0) أو exp(1000) بتطلع infinity/NaN. قلل الـ LR أو ضيف gradient clipping.'],
+ ['الـ training loss بينزل بس الـ validation loss ثابت من الأول. ده معناه إيه؟',['الموديل بيتعلم أنماط من الـ training ومش بتتعمم: غالبًا مشكلة في الـ data pipeline (train و val مختلفين) أو overfitting شديد','الـ LR واطي','الموديل محتاج layers أكتر','الموديل بيعمل overfitting'],0,'لو الـ validation عمره ما اتحسن، يا إما الموديل بيحفظ noise الـ training، يا إما فيه bug في الـ pipeline بيخلي توزيع الـ train والـ validation مختلفين من الأساس.'],
+ ['منحنى الـ loss flat تمامًا (مش بينزل خالص). تفحص إيه الأول؟',['جرّب architecture تانية','غيّر الـ optimizer','اتأكد إن الـ gradients مش صفر، والـ LR مش صغير أوي، والـ loss فعلًا معتمدة على predictions الموديل','زوّد الداتا'],2,'Loss flat يعني الموديل مش بيتحدث. أسباب شائعة: gradients = 0 (neurons ميتة أو tensors متفصولة)، LR صغير جدًا، أو loss مش بتوصّل gradient للموديل (زي إنك تستخدم .item() قبل .backward()).'],
+ ['(إضافة مني) موديل classification بـ 10 classes والـ loss واقف عند حوالي 2.30 من أول التدريب. ده بيقول إيه؟',['الموديل وصل لأحسن حل','الموديل بيتوقع توزيع uniform على الـ 10 classes، يعني مش بيتعلم','الـ LR عالي ولازم يتقلل لـ 1e-5','الداتا فيها NaN'],1,'-log(1/10) = ln(10) ≈ 2.30. ده أول سطر في الجدول الأم: افحص الـ data pipeline والـ labels وشغّل overfit-one-batch.'],
+ ['(إضافة مني) في gradient check، استخدمت eps = 1e-13 والـ rel_diff طلع كبير، مع إن الـ backward صح. ليه؟',['لأن الـ backward أكيد فيه bug','لأن eps صغير أوي فالفرق loss(w+eps) − loss(w−eps) بيضيع في أخطاء التقريب','لأن الـ gradient check مبيشتغلش مع tanh','لأن لازم eps يبقى 1 بالظبط'],1,'eps صغير جدًا يخلي الفرق في الـ loss أصغر من دقة الأرقام، فالـ numerical gradient يبقى noise. عشان كده الكود بيستخدم eps=1e-4 ويحوّل لـ double. جرّبها في المعمل ٣.']
+];
+AI.quiz($('d56-quizBox'),Q,5,()=>{ck.checked=true;AI.store.set('aiefs-d56-c6','1')});
+AI.checklist(56,$('d56-checklist'));
+
+// redraw on theme change
+AI.onTheme(()=>{if(!document.body.contains(tc))return false;drawTrain();drawFlow();drawGC();drawLR(lrRes?lrRes.length:0)});
+})();
+</script>

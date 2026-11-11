@@ -1,0 +1,709 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 07 · Unsupervised Learning</span>
+  <h1>اليوم ٢٩: مفيش إجابات… خلّي الداتا تتكلم لوحدها</h1>
+  <p class="lede">كل اللي فات كان فيه <b>labels</b>: داخل وإجابته الصح. النهاردة مفيش مدرّس ولا answer key. الخوارزمية لازم تلاقي البنية لوحدها: تجمّع الحاجات المتشابهة (<b>clustering</b>) وتطلّع النقط الغريبة (<b>anomalies</b>). هتبني بإيدك <b>K-Means</b> و<b>DBSCAN</b> و<b>GMM</b> و<b>Hierarchical</b>، وتشوف كل واحدة بتفكر إزاي.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>محتاج: <b>Norms &amp; Distances، Probability &amp; Distributions، ودروس Phase 2 من ١ لـ ٦</b></span>
+    <span>بعده: <b>Feature Engineering &amp; Selection</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d29-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d29-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: KNN</h2></div>
+  <details><summary>١. ليه KNN اسمه lazy learner؟</summary>لأن <code>fit</code> بتخزن الداتا وبس. كل الشغل (حساب المسافات والتصويت) بيحصل وقت الـ prediction.</details>
+  <details><summary>٢. ليه لازم تعمل scaling قبل أي خوارزمية معتمدة على المسافة؟</summary>عشان الـ feature اللي مداها كبير (مرتب بالآلاف) ما تغرقش اللي مداها صغير (سن بالسنين). النهاردة K-Means و DBSCAN معتمدين على المسافة برضه، فنفس الكلام بالظبط.</details>
+  <details><summary>٣. لعنة الأبعاد بتعمل إيه في كلمة «أقرب»؟</summary>في أبعاد كتير كل المسافات بتقرب من بعض، فـ«أقرب جار» يفقد معناه. وده هيأثر على أي clustering معتمد على المسافة في الأبعاد العالية.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>المشكلة + فكرة الـ clustering</div>
+    <div><b>20 min</b>K-Means واختيار K + معمل ١</div>
+    <div><b>15 min</b>DBSCAN + معمل ٢</div>
+    <div><b>15 min</b>Hierarchical و GMM + معمل ٣</div>
+    <div><b>20 min</b>اكتب الكود بإيدك</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d29-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الـ labels غالية</h2></div>
+  <p>تخيّل مستشفى عنده ملايين ملفات مرضى، محدش قعد يكتب على كل ملف المرض بتاعه. أو موقع e-commerce عنده ملايين sessions ومحدش قسّم الزباين لشرائح بإيده. أو فريق security عنده logs شبكة ومحدش علّم كل حاجة غريبة فيها.</p>
+  <p>هنا بييجي الـ <b>Unsupervised Learning</b>: بيلاقي أنماط من غير ما حد يقوله يدور على إيه. بيجمّع النقط المتشابهة، ويكتشف بنية مستخبية، ويطلّع الحاجات الشاذة.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ supervised زي إنك تذاكر من كتاب في آخره الإجابات. الـ unsupervised زي إنك تبص على كومة داتا خام لحد ما الأنماط تبان لوحدها. زي ما تفضّي درج كله مسامير وصواميل وزراير وتبدأ تقسمهم أكوام من غير ما حد يقولك الأنواع إيه.</div>
+  <p><b>المشكلة الحقيقية:</b> مفيش labels، يعني مفيش «صح» و«غلط» تقيس بيهم مباشرة. محتاج أدوات تانية تحكم بيها هل البنية اللي الخوارزمية لقتها ليها معنى ولا لأ (هنشوف inertia و silhouette).</p>
+  <h3>الـ Clustering: جمّع الحاجات المتشابهة</h3>
+  <p>الـ clustering بيدي كل نقطة رقم مجموعة (cluster)، بحيث النقط اللي في نفس المجموعة تبقى شبه بعض أكتر من النقط اللي في مجموعات تانية. والسؤال الدايم: يعني إيه «شبه بعض»؟ (أيوه، تاني: دالة المسافة).</p>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>بتطلّع إيه</th></tr>
+    <tr><td>K-Means</td><td>clusters مسطحة، شكلها كروي (spherical)</td></tr>
+    <tr><td>DBSCAN</td><td>أي شكل، وبتعلّم الـ noise</td></tr>
+    <tr><td>Hierarchical</td><td>شجرة clusters متداخلة جوه بعض</td></tr>
+    <tr><td>GMM</td><td>انتماء «ناعم» (احتمالات)، و clusters بيضاوية</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d29-km">
+  <div class="station-head"><span class="tag">02</span><h2>K-Means: الحصان الشغّال</h2></div>
+  <p>K-Means بيقسم الداتا لـ <b>K</b> مجموعات بالظبط. كل مجموعة ليها <b>centroid</b> (مركز الكتلة = متوسط نقطها)، وكل نقطة بتنتمي لأقرب centroid.</p>
+  <p><b>تشبيه:</b> عندك K عربيات فول وعايز تحطهم في الحي. كل ساكن بيروح لأقرب عربية. بعدها كل عربية بتتحرك لنص زباينها بالظبط. الزباين يعيدوا يختاروا الأقرب… وهكذا لحد ما محدش يغيّر.</p>
+  <h3>Lloyd's algorithm</h3>
+  <ol class="ex">
+    <li>اختار K نقط عشوائية من الداتا كـ centroids أولية.</li>
+    <li><b>Assign:</b> كل نقطة تروح لأقرب centroid.</li>
+    <li><b>Update:</b> احسب كل centroid من جديد = متوسط النقط اللي اتعينت له.</li>
+    <li>كرر ٢ و٣ لحد ما التعيينات تبطّل تتغير.</li>
+  </ol>
+  <div class="formula">inertia = Σᵢ ‖xᵢ − μ_c(i)‖²        (مجموع مربعات المسافة من كل نقطة لـ centroid بتاعها)</div>
+  <p>K-Means بيقلل الـ <b>inertia</b>، بس بيوصل لـ <b>local minimum</b> بس. يعني بداية مختلفة ممكن تدي نتيجة مختلفة. عشان كده المكتبات بتستخدم بداية أذكى اسمها <b>K-Means++</b> (هتكتبها في التمرين ١) وبتعيد التشغيل كذا مرة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: شغّل K-Means خطوة بخطوة</h3>
+      <p>نفس فكرة الريبو: ٣ blobs حوالين <span class="ltr">[2,2]</span> و <span class="ltr">[8,3]</span> و <span class="ltr">[5,8]</span>. الدواير الكبيرة هي الـ centroids. دوس «خطوة» وشوف الـ assign والـ update بالتبادل.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>دوس «init عشوائي» كذا مرة وشغّل لحد ما يستقر. ساعات بيقع في حل وحش (مركزين في blob واحد). ده الـ local minimum.</li>
+        <li>جرّب «<bdi>K-Means++</bdi>»: البداية بتتفرّق أحسن فنادرًا ما بيقع.</li>
+        <li>حرّك K وبص على رسمة الـ elbow تحت: الـ inertia بتنزل جامد لحد K=3 وبعدين بتهدى. والـ silhouette أعلى حاجة عند K الصح غالبًا.</li>
+        <li>غيّر الداتا لـ «moons»: K-Means بيقطعهم بخط مستقيم غلط، لأنه بيفترض clusters كروية.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d29-kmC" width="520" height="400" aria-label="معمل K-Means"></canvas>
+      <div class="mrow">
+        <label>K = <span id="d29-kV">3</span><input type="range" id="d29-k" min="1" max="8" value="3"></label>
+        <label>data <select id="d29-kmData"><option value="blobs">3 blobs</option><option value="moons">moons</option></select></label>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d29-step">خطوة</button>
+        <button type="button" id="d29-run">شغّل لحد ما يستقر</button>
+        <button type="button" id="d29-rand">init عشوائي</button>
+        <button type="button" id="d29-pp"><bdi>K-Means++</bdi></button>
+      </div>
+      <div class="readout">
+        <div><small>iteration</small><b id="d29-it">0</b></div>
+        <div><small>الخطوة الجاية</small><b id="d29-ph">assign</b></div>
+        <div><small>inertia</small><b id="d29-in">–</b></div>
+        <div><small>silhouette</small><b id="d29-si">–</b></div>
+      </div>
+      <canvas id="d29-elC" width="520" height="150" aria-label="رسمة الـ elbow"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d29-k">
+  <div class="station-head"><span class="tag">03</span><h2>تختار K إزاي؟</h2></div>
+  <h3>Elbow method</h3>
+  <p>شغّل K-Means لـ <span class="ltr">K = 1, 2, 3, …</span> وارسم الـ inertia قصاد K. دوّر على «الكوع»: النقطة اللي بعدها زيادة K ما بتقللش الـ inertia بشكل يستاهل. (الـ inertia دايمًا بتنزل مع K، ولو K = عدد النقط بتبقى صفر، فمش هتختار أقل inertia، هتختار الكوع.)</p>
+  <h3>Silhouette score</h3>
+  <p>لكل نقطة: <b>a</b> = متوسط مسافتها لزمايلها في نفس الـ cluster. <b>b</b> = متوسط مسافتها لأقرب cluster تاني.</p>
+  <div class="formula">s = (b − a) / max(a, b)        −1 (في الـ cluster الغلط) … 0 (على الحدود) … +1 (متجمّعة كويس)</div>
+  <p>خد المتوسط على كل النقط تطلع درجة واحدة للتقسيمة كلها. <b>تشبيه:</b> كل واحد في فرح بيسأل نفسه: «أنا أقرب لترابيزتي ولا للترابيزة اللي جنبي؟». لو أقرب لترابيزته بكتير، s قريبة من 1.</p>
+</section>
+
+<!-- STATION 4 -->
+<section id="d29-db">
+  <div class="station-head"><span class="tag">04</span><h2>DBSCAN: الـ clusters هي المناطق الزحمة</h2></div>
+  <p>K-Means بيفترض إن الـ clusters كروية، ولازم تقوله K من الأول. DBSCAN ما بيفترضش ولا واحدة منهم. بيعرّف الـ cluster إنه منطقة <b>كثيفة</b> مفصولة عن غيرها بمناطق <b>فاضية</b>.</p>
+  <p><b>تشبيه:</b> بص على صورة ميدان من فوق. التجمعات الزحمة هي الـ clusters، مهما كان شكلها (طابور طويل، دايرة، حرف U). والواحد الواقف لوحده في الركن ده noise.</p>
+  <h3>اتنين parameters</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>eps</b>: نص قطر الجيرة.</li>
+    <li><b>min_samples</b>: أقل عدد نقط عشان المنطقة تتحسب كثيفة.</li>
+  </ul>
+  <h3>تلات أنواع نقط</h3>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>التعريف</th></tr>
+    <tr><td><b>Core</b></td><td>جواه eps فيه على الأقل min_samples نقطة (في كود الريبو النقطة نفسها بتتعد)</td></tr>
+    <tr><td><b>Border</b></td><td>جوه eps من core point، بس هو نفسه مش core</td></tr>
+    <tr><td><b>Noise</b></td><td>لا core ولا border. دي الـ outliers (label = −1)</td></tr>
+  </table></div>
+  <p>DBSCAN بيوصل الـ core points اللي جوه eps من بعض في نفس الـ cluster (زي سلسلة ناس ماسكين إيدين بعض). الـ border بينضم لـ cluster أقرب core جنبه. والـ noise ملوش cluster.</p>
+  <p><b>نقط قوته:</b> أي شكل، بيحدد عدد الـ clusters لوحده، وبيطلّع الـ outliers. <b>نقطة ضعفه:</b> clusters بكثافات مختلفة (eps واحد مش هيناسب الاتنين).</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: العب بـ eps و min_samples</h3>
+      <p>النقط المليانة الكبيرة = core، الدواير الفاضية = border، علامة × رمادي = noise. عدّي الماوس (أو المس) على أي نقطة تشوف دايرة الـ eps بتاعتها وعدد جيرانها.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>على moons (هنا الـ noise أقل من الريبو، 0.06 بدل 0.1، عشان الهلالين ما يلمسوش بعض): دوّر على eps يطلّع clusters = 2 مع noise قليل. ده الفصل اللي K-Means مقدرش يعمله. وفي الريبو، الهلالين بـ noise 0.1 بيقربوا من بعض أكتر، فبص في الـ output هل eps=0.3 فصلهم ولا دمجهم.</li>
+        <li>كبّر eps أوي: كله بيبقى cluster واحد. صغّره أوي: كله noise. ده أشهر غلط في DBSCAN.</li>
+        <li>جرّب «كثافتين مختلفتين»: مش هتلاقي eps واحد يمسك الـ cluster المزحوم والمفرود مع بعض من غير ما يبوّظ واحد فيهم.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d29-dbC" width="520" height="400" aria-label="معمل DBSCAN"></canvas>
+      <div class="mrow">
+        <label>eps = <span id="d29-eV">0.30</span><input type="range" id="d29-eps" min="0.05" max="1.2" step="0.01" value="0.3"></label>
+        <label>min_samples = <span id="d29-mV">5</span><input type="range" id="d29-min" min="2" max="15" value="5"></label>
+      </div>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">data <select id="d29-dbData"><option value="moons">moons + outliers</option><option value="blobs">3 blobs + outliers</option><option value="dens">كثافتين مختلفتين</option></select></label>
+      </div>
+      <div class="readout">
+        <div><small>clusters</small><b id="d29-nc">–</b></div>
+        <div><small>core</small><b id="d29-ncore">–</b></div>
+        <div><small>border</small><b id="d29-nb">–</b></div>
+        <div><small>noise</small><b id="d29-nn">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d29-hc">
+  <div class="station-head"><span class="tag">05</span><h2>Hierarchical Clustering: شجرة العيلة</h2></div>
+  <p>بدل ما يطلّع تقسيمة واحدة، بيبني شجرة اسمها <b>dendrogram</b> فيها clusters متداخلة جوه بعض. زي شجرة العيلة: أفراد ← عيلات صغيرة ← عيلات كبيرة ← قبيلة واحدة.</p>
+  <h3>Agglomerative (من تحت لفوق)</h3>
+  <ol class="ex">
+    <li>ابدأ وكل نقطة cluster لوحدها.</li>
+    <li>ادمج أقرب اتنين clusters.</li>
+    <li>كرر لحد ما يفضل cluster واحد.</li>
+    <li>اقطع الشجرة عند المستوى اللي يديك K اللي انت عايزه.</li>
+  </ol>
+  <h3>«أقرب cluster» يعني إيه؟ (linkage)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Linkage</th><th>المسافة بين clusterين</th><th>بالبلدي</th></tr>
+    <tr><td>Single</td><td>أقل مسافة بين أي نقطتين</td><td>أقرب اتنين يمسكوا إيد بعض. بيعمل سلاسل طويلة وحساس للـ noise</td></tr>
+    <tr><td>Complete</td><td>أكبر مسافة بين أي نقطتين</td><td>أبعد اتنين. بيطلّع clusters مدمجة</td></tr>
+    <tr><td>Average</td><td>متوسط المسافة بين كل الأزواج</td><td>حل وسط</td></tr>
+    <tr><td>Ward</td><td>الدمج اللي بيزوّد الـ within-cluster variance أقل حاجة</td><td>الأحسن للـ clusters المدمجة</td></tr>
+  </table></div>
+  <div class="formula">Ward cost(A, B) = SS(A ∪ B) − SS(A) − SS(B)        SS = Σ ‖x − centroid‖²</div>
+  <p>العيب: محتاج مسافات كل الأزواج، فالميموري <span class="ltr">O(n²)</span> وغير عملي على داتا كبيرة. الكود في الريبو بيجربه على أول 30 نقطة بس.</p>
+</section>
+
+<!-- STATION 6 -->
+<section id="d29-gmm">
+  <div class="station-head"><span class="tag">06</span><h2>GMM: انتماء بالاحتمالات</h2></div>
+  <p>K-Means بيدي <b>hard assignment</b>: كل نقطة في cluster واحد بالظبط. الـ <b>Gaussian Mixture Model</b> بيدي <b>soft assignment</b>: كل نقطة ليها احتمال تنتمي لكل cluster. نقطة في النص بين اتنين ممكن تبقى 50% / 50%.</p>
+  <p>الـ GMM بيفترض إن الداتا اتولدت من خليط K توزيعات Gaussian، كل واحد ليه mean و covariance ووزن (mixing weight). الخوارزمية اسمها <b>EM (Expectation-Maximization)</b> وبتبدّل بين:</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>E-step:</b> احسب احتمال إن كل نقطة جاية من كل Gaussian (الـ responsibilities).</li>
+    <li><b>M-step:</b> حدّث الـ mean والـ covariance والـ weight لكل Gaussian عشان تعظّم الـ likelihood بتاع الداتا.</li>
+  </ul>
+  <div class="formula">E:  r_ij = w_j · N(x_i | μ_j, σ²_j) / Σ_k w_k · N(x_i | μ_k, σ²_k)
+M:  w_j = Σ_i r_ij / n      μ_j = Σ_i r_ij x_i / Σ_i r_ij      σ²_j = Σ_i r_ij ‖x_i − μ_j‖² / (d · Σ_i r_ij)</div>
+  <p>GMM يقدر يمثّل clusters <b>بيضاوية</b> (مش كروية بس) لو استخدمت full covariance، وبيتعامل مع الـ clusters المتداخلة بشكل طبيعي. <b>خد بالك:</b> كود الريبو بيستخدم variance واحدة لكل Gaussian (spherical) للتبسيط، يعني الدواير في الكود دايرية. ده نفس اللي في المعمل.</p>
+  <div class="note"><strong>تشبيه:</strong> K-Means زي مدرّس بيقول «انت في فصل أ، خلاص». GMM زي مدرّس بيقول «انت 70% شبه طلبة أ و30% شبه طلبة ب». ولو عملت «hard» وخليت الـ variance صغيرة جدًا، الـ GMM بيقرب من K-Means، عشان كده بيسموه أحيانًا «soft K-Means».</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: EM قدام عينك</h3>
+      <p>لون كل نقطة = خليط ألوان الـ Gaussians حسب الـ responsibilities بتاعتها. النقط اللي في المنطقة المشتركة لونها بيبقى ممزوج. الدواير = <span class="ltr">1σ</span> و <span class="ltr">2σ</span> لكل Gaussian.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>دوس «EM step» واحدة واحدة: المراكز بتتحرك والدواير بتكبر وتصغر لحد ما تمسك الـ blobs.</li>
+        <li>كبّر «التداخل»: النقط اللي في النص بتبقى ألوانها ممزوجة. K-Means كان هيقطعها قطع حاد.</li>
+        <li>دوس على أي نقطة تشوف الـ responsibilities بتاعتها بالأرقام. والـ log-likelihood لازم ما ينزلش من خطوة للتانية.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d29-gmC" width="520" height="400" aria-label="معمل GMM"></canvas>
+      <label style="display:grid;gap:2px">التداخل (spread) = <b class="mono" id="d29-sV">1.0</b><input type="range" id="d29-spread" min="0.4" max="2.2" step="0.05" value="1"></label>
+      <div class="btns">
+        <button type="button" class="primary" id="d29-em">EM step</button>
+        <button type="button" id="d29-emRun">شغّل 30 خطوة</button>
+        <button type="button" id="d29-emReset">بداية جديدة</button>
+      </div>
+      <div class="readout">
+        <div><small>iteration</small><b id="d29-git">0</b></div>
+        <div><small>log-likelihood</small><b id="d29-ll">–</b></div>
+        <div><small>weights</small><b id="d29-w">–</b></div>
+        <div><small>النقطة المختارة r</small><b id="d29-r">دوس نقطة</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 7 -->
+<section id="d29-which">
+  <div class="station-head"><span class="tag">07</span><h2>أستخدم أنهي؟ و Anomaly Detection</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>الأحسن لـ</th><th>تجنبها لما</th></tr>
+    <tr><td>K-Means</td><td>داتا كبيرة، clusters كروية، K معروف</td><td>أشكال غير منتظمة، فيه outliers</td></tr>
+    <tr><td>DBSCAN</td><td>K مش معروف، أي شكل، كشف outliers</td><td>كثافات مختلفة، أبعاد عالية جدًا</td></tr>
+    <tr><td>Hierarchical</td><td>داتا صغيرة، محتاج dendrogram، K مش معروف</td><td>داتا كبيرة (ميموري <span class="ltr">O(n²)</span>)</td></tr>
+    <tr><td>GMM</td><td>clusters متداخلة، محتاج احتمالات</td><td>داتا كبيرة جدًا، أبعاد كتير</td></tr>
+  </table></div>
+  <h3>كشف الشواذ بالـ clustering</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>K-Means:</b> النقط البعيدة عن أي centroid = شاذة.</li>
+    <li><b>DBSCAN:</b> نقط الـ noise هي الشواذ بالتعريف.</li>
+    <li><b>GMM:</b> النقط اللي احتمالها واطي تحت كل الـ Gaussians = شاذة.</li>
+  </ul>
+  <p>في آخر كود الريبو بيضيف 3 نقط بعيدة جدًا (<span class="ltr">[20,20]</span> و <span class="ltr">[−5,−5]</span> و <span class="ltr">[15,0]</span>) للـ blobs ويشغّل DBSCAN، والمفروض يطلّعهم noise. معمل ٢ فيه outliers بنفس الفكرة.</p>
+  <div class="note"><strong>من الـ output في الريبو (skill-clustering-guide.md):</strong> فيه decision checklist (تعرف K؟ شكل الـ clusters؟ فيه noise؟ محتاج احتمالات؟ حجم الداتا؟)، ومقاييس تانية زي BIC/AIC لاختيار عدد مكونات الـ GMM، و Calinski-Harabasz (أعلى أحسن) و Davies-Bouldin (أقل أحسن)، ونصيحة لاختيار eps: ارسم المسافة لأقرب k-th جار لكل نقطة متترتبة ودوّر على الكوع. وبيذكر Mini-Batch K-Means و BIRCH للداتا الضخمة و HDBSCAN كتطوير لـ DBSCAN.</div>
+</section>
+
+<!-- CODE -->
+<section id="d29-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من الـ root بتاع الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/07-unsupervised-learning/code/clustering.py</pre></div>
+  <details><summary>إيه اللي هتشوفه</summary><p>الأقسام بالترتيب: K-Means على 3 blobs (centroids قريبة من المراكز الحقيقية + silhouette)، الـ Elbow method (inertia لـ K من 1 لـ 6 و silhouette من 2 لـ 6)، DBSCAN على الـ blobs (عدد clusters و noise)، GMM (means و weights و silhouette)، Hierarchical بـ Ward على 30 نقطة، DBSCAN على moons، K-Means على moons (والكود نفسه بيطبع إنه بيفصلهم وحش)، وأخيرًا anomaly detection. الأرقام بالظبط بتعتمد على الـ seed، فركّز تتأكد من الاتجاهات: الـ inertia بتقع جامد لحد K=3، الـ silhouette أعلى عند K الصح، والنقط التلاتة البعيدة بتطلع في آخر الشواذ.</p></details>
+  <p>متعملش copy-paste. اكتب في <code>my_clustering.py</code> بإيدك خطوة خطوة وشغّل بعد كل خطوة.</p>
+
+  <h3>خطوة ١: K-Means</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+
+def euclidean_distance(a, b):
+    return math.sqrt(sum((ai - bi) ** 2 for ai, bi in zip(a, b)))
+
+def kmeans(data, k, max_iterations=100, seed=42):
+    random.seed(seed)
+    n_features = len(data[0])
+    centroids = random.sample(data, k)            <span class="c"># K نقط عشوائية كبداية</span>
+
+    for iteration in range(max_iterations):
+        clusters = [[] for _ in range(k)]
+        assignments = []
+        for point in data:                        <span class="c"># Assign: أقرب centroid</span>
+            distances = [euclidean_distance(point, c) for c in centroids]
+            nearest = distances.index(min(distances))
+            clusters[nearest].append(point)
+            assignments.append(nearest)
+
+        new_centroids = []
+        for cluster in clusters:                  <span class="c"># Update: المتوسط</span>
+            if len(cluster) == 0:                 <span class="c"># cluster فاضي؟ ابدأه من نقطة عشوائية</span>
+                new_centroids.append(random.choice(data))
+                continue
+            centroid = [sum(p[j] for p in cluster) / len(cluster) for j in range(n_features)]
+            new_centroids.append(centroid)
+
+        if all(euclidean_distance(o, n) &lt; 1e-6 for o, n in zip(centroids, new_centroids)):
+            print(f"  Converged at iteration {iteration + 1}")   <span class="c"># المراكز وقفت</span>
+            break
+        centroids = new_centroids
+
+    return assignments, centroids</pre></div>
+
+  <h3>خطوة ٢: inertia و silhouette و elbow</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def compute_inertia(data, assignments, centroids):
+    total = 0.0
+    for point, cid in zip(data, assignments):
+        total += euclidean_distance(point, centroids[cid]) ** 2
+    return total
+
+def silhouette_score(data, assignments):
+    n = len(data)
+    if n &lt; 2:
+        return 0.0
+    clusters = {}
+    for i, c in enumerate(assignments):
+        clusters.setdefault(c, []).append(i)
+    if len(clusters) &lt; 2:                         <span class="c"># cluster واحد: مفيش «أقرب cluster تاني»</span>
+        return 0.0
+
+    scores = []
+    for i in range(n):
+        own = assignments[i]
+        own_members = [j for j in clusters[own] if j != i]
+        if len(own_members) == 0:
+            scores.append(0.0)
+            continue
+        a = sum(euclidean_distance(data[i], data[j]) for j in own_members) / len(own_members)
+        b = float("inf")
+        for cid, members in clusters.items():     <span class="c"># أقرب cluster تاني بالمتوسط</span>
+            if cid == own:
+                continue
+            avg = sum(euclidean_distance(data[i], data[j]) for j in members) / len(members)
+            b = min(b, avg)
+        scores.append(0.0 if max(a, b) == 0 else (b - a) / max(a, b))
+    return sum(scores) / len(scores)
+
+def find_best_k(data, max_k=10):
+    print("Elbow method:")
+    inertias = []
+    for k in range(1, max_k + 1):
+        assignments, centroids = kmeans(data, k)
+        inertia = compute_inertia(data, assignments, centroids)
+        inertias.append(inertia)
+        print(f"  K={k}: inertia={inertia:.2f}")
+    print("\nSilhouette scores:")
+    for k in range(2, max_k + 1):                 <span class="c"># silhouette محتاج K ≥ 2</span>
+        assignments, centroids = kmeans(data, k)
+        print(f"  K={k}: silhouette={silhouette_score(data, assignments):.4f}")
+    return inertias</pre></div>
+
+  <h3>خطوة ٣: DBSCAN</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def dbscan(data, eps, min_samples):
+    n = len(data)
+    labels = [-1] * n                             <span class="c"># الكل noise لحد ما يثبت العكس</span>
+    cluster_id = 0
+
+    def region_query(idx):                        <span class="c"># كل الجيران جوه eps (منهم النقطة نفسها)</span>
+        return [i for i in range(n) if euclidean_distance(data[idx], data[i]) &lt;= eps]
+
+    visited = [False] * n
+    for i in range(n):
+        if visited[i]:
+            continue
+        visited[i] = True
+        neighbors = region_query(i)
+        if len(neighbors) &lt; min_samples:          <span class="c"># مش core: سيبه noise مؤقتًا</span>
+            labels[i] = -1
+            continue
+
+        labels[i] = cluster_id                    <span class="c"># core: ابدأ cluster جديد</span>
+        seed_set = list(neighbors)
+        seed_set.remove(i)
+        j = 0
+        while j &lt; len(seed_set):                  <span class="c"># وسّع الـ cluster</span>
+            q = seed_set[j]
+            if not visited[q]:
+                visited[q] = True
+                q_neighbors = region_query(q)
+                if len(q_neighbors) &gt;= min_samples:   <span class="c"># q كمان core: ضيف جيرانه</span>
+                    for nb in q_neighbors:
+                        if nb not in seed_set:
+                            seed_set.append(nb)
+            if labels[q] == -1:                   <span class="c"># border أو noise قديم: انضم</span>
+                labels[q] = cluster_id
+            j += 1
+        cluster_id += 1
+    return labels</pre></div>
+
+  <h3>خطوة ٤: GMM بالـ EM</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def gmm(data, k, max_iterations=100, seed=42):
+    random.seed(seed)
+    n, d = len(data), len(data[0])
+    indices = random.sample(range(n), k)
+    means = [list(data[i]) for i in indices]
+    variances = [1.0] * k                         <span class="c"># variance واحدة لكل Gaussian (spherical)</span>
+    weights = [1.0 / k] * k
+
+    def gaussian_pdf(x, mean, variance):
+        d = len(x)
+        coeff = 1.0 / ((2 * math.pi * variance) ** (d / 2))
+        exponent = -sum((xi - mi) ** 2 for xi, mi in zip(x, mean)) / (2 * variance)
+        return coeff * math.exp(max(exponent, -500))   <span class="c"># حماية من underflow</span>
+
+    for iteration in range(max_iterations):
+        responsibilities = []                     <span class="c"># E-step</span>
+        for i in range(n):
+            probs = [weights[j] * gaussian_pdf(data[i], means[j], variances[j]) for j in range(k)]
+            total = sum(probs) or 1e-300
+            responsibilities.append([p / total for p in probs])
+
+        old_means = [list(m) for m in means]
+        for j in range(k):                        <span class="c"># M-step</span>
+            r_sum = sum(responsibilities[i][j] for i in range(n))
+            if r_sum &lt; 1e-10:
+                continue
+            weights[j] = r_sum / n
+            for dim in range(d):
+                means[j][dim] = sum(responsibilities[i][j] * data[i][dim] for i in range(n)) / r_sum
+            variances[j] = sum(
+                responsibilities[i][j] * sum((data[i][dim] - means[j][dim]) ** 2 for dim in range(d))
+                for i in range(n)
+            ) / (r_sum * d)
+            variances[j] = max(variances[j], 1e-6)  <span class="c"># ما تخليش variance تقع لصفر</span>
+
+        shift = sum(euclidean_distance(old_means[j], means[j]) for j in range(k))
+        if shift &lt; 1e-6:
+            print(f"  GMM converged at iteration {iteration + 1}")
+            break
+
+    assignments = [r.index(max(r)) for r in responsibilities]   <span class="c"># hard من الـ soft</span>
+    return assignments, means, weights, responsibilities</pre></div>
+
+  <h3>خطوة ٥: Agglomerative (موجودة في الكود، مش في الشرح)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def agglomerative_clustering(data, n_clusters=3, linkage="ward"):
+    n = len(data)
+    cluster_map = {i: [i] for i in range(n)}      <span class="c"># كل نقطة cluster لوحدها</span>
+    active = list(range(n))
+    merge_history = []
+
+    def centroid(idx):
+        return [sum(data[i][d] for i in idx) / len(idx) for d in range(len(data[0]))]
+
+    def ss(idx):                                  <span class="c"># مجموع مربعات المسافة للمركز</span>
+        c = centroid(idx)
+        return sum(euclidean_distance(data[i], c) ** 2 for i in idx)
+
+    def cluster_distance(c1, c2):
+        pairs = [euclidean_distance(data[i], data[j]) for i in c1 for j in c2]
+        if linkage == "single":
+            return min(pairs)
+        if linkage == "complete":
+            return max(pairs)
+        if linkage == "average":
+            return sum(pairs) / len(pairs)
+        return ss(c1 + c2) - ss(c1) - ss(c2)      <span class="c"># ward: الزيادة في الـ variance</span>
+
+    next_id = n
+    while len(active) &gt; n_clusters:
+        best, pair = float("inf"), None
+        for a in range(len(active)):
+            for b in range(a + 1, len(active)):
+                dist = cluster_distance(cluster_map[active[a]], cluster_map[active[b]])
+                if dist &lt; best:
+                    best, pair = dist, (active[a], active[b])
+        ca, cb = pair                             <span class="c"># ادمج أقرب اتنين</span>
+        cluster_map[next_id] = cluster_map[ca] + cluster_map[cb]
+        merge_history.append((ca, cb, best, len(cluster_map[next_id])))
+        active.remove(ca); active.remove(cb); active.append(next_id)
+        next_id += 1
+
+    labels = [0] * n
+    for lbl, cid in enumerate(active):
+        for p in cluster_map[cid]:
+            labels[p] = lbl
+    return labels, merge_history</pre></div>
+  <p>ملحوظة: في الريبو كل linkage مكتوب بالتفصيل (حساب الـ centroids والـ variances جوه فرع ward). أنا لخّصت الـ ward في دالة <code>ss</code>، والحساب نفسه.</p>
+
+  <h3>خطوة ٦: الداتا والتشغيل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_blobs(centers, n_per_cluster=50, spread=0.5, seed=42):
+    random.seed(seed)
+    data, labels = [], []
+    for label, (cx, cy) in enumerate(centers):
+        for _ in range(n_per_cluster):
+            data.append([cx + random.gauss(0, spread), cy + random.gauss(0, spread)])
+            labels.append(label)
+    return data, labels
+
+def make_moons(n_samples=200, noise=0.1, seed=42):
+    random.seed(seed)
+    data, labels = [], []
+    half = n_samples // 2
+    for i in range(half):                         <span class="c"># الهلال الفوقاني</span>
+        t = math.pi * i / half
+        data.append([math.cos(t) + random.gauss(0, noise), math.sin(t) + random.gauss(0, noise)])
+        labels.append(0)
+    for i in range(half):                         <span class="c"># الهلال التحتاني المقلوب</span>
+        t = math.pi * i / half
+        data.append([1 - math.cos(t) + random.gauss(0, noise),
+                     1 - math.sin(t) - 0.5 + random.gauss(0, noise)])
+        labels.append(1)
+    return data, labels
+
+if __name__ == "__main__":
+    data, _ = make_blobs([[2, 2], [8, 3], [5, 8]], n_per_cluster=50, spread=0.8)
+    assignments, centroids = kmeans(data, k=3)
+    print("Centroids:", [[round(c, 2) for c in cent] for cent in centroids])
+    print("Silhouette:", round(silhouette_score(data, assignments), 4))
+    find_best_k(data, max_k=6)
+
+    db = dbscan(data, eps=1.5, min_samples=5)
+    print("DBSCAN clusters:", len(set(db) - {-1}), "noise:", db.count(-1))
+
+    moons, _ = make_moons(200, noise=0.1)
+    mdb = dbscan(moons, eps=0.3, min_samples=5)
+    print("moons DBSCAN clusters:", len(set(mdb) - {-1}))
+    mkm, _ = kmeans(moons, k=2)
+    print("moons K-Means silhouette:", round(silhouette_score(moons, mkm), 4))
+
+    weird = data + [[20.0, 20.0], [-5.0, -5.0], [15.0, 0.0]]   <span class="c"># شواذ</span>
+    lab = dbscan(weird, eps=1.5, min_samples=5)
+    print("anomalies:", [weird[i] for i in range(len(lab)) if lab[i] == -1][-3:])</pre></div>
+
+  <h3>خطوة ٧: نفس الحاجة بـ scikit-learn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import silhouette_score as sklearn_silhouette
+
+km = KMeans(n_clusters=3, random_state=42).fit(data)
+db = DBSCAN(eps=1.5, min_samples=5).fit(data)
+agg = AgglomerativeClustering(n_clusters=3).fit(data)
+gmm_model = GaussianMixture(n_components=3, random_state=42).fit(data)</pre></div>
+  <p>النسخ اللي كتبتها بإيدك بتوريك المكتبة بتحسب إيه بالظبط. المكتبة بتضيف ثبات رقمي، و init أذكى (K-Means++)، و GPU acceleration، بس المنطق نفسه.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d29-ex">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>K-Means++:</b> بدل centroids عشوائية: اختار الأول عشوائي، وكل واحد بعده باحتمال متناسب مع <b>مربع</b> مسافته لأقرب centroid موجود. قارن سرعة التقارب مع الـ init العشوائي.
+      <details><summary>تلميح</summary>لكل نقطة احسب <span class="ltr">D(x)² = min over centroids ‖x − c‖²</span>، وبعدين اختار بـ <code>random.choices(data, weights=D2)</code>. عدّ الـ iterations لحد «Converged» على 20 seed مختلف وخد المتوسط. زرار K-Means++ في المعمل ١ بيعمل نفس الفكرة.</details></li>
+    <li><b>Hierarchical بـ Ward + dendrogram:</b> طلّع الـ dendrogram كقايمة دمج متداخلة، واقطعه عند مستويات مختلفة، وقارن بـ K-Means.
+      <details><summary>تلميح</summary>الـ <code>merge_history</code> فيها <span class="ltr">(a, b, distance, size)</span> لكل دمج. لو كملت الدمج لحد cluster واحد (<code>n_clusters=1</code>)، تقدر تقطع عند أي K بإنك تلغي آخر <span class="ltr">K−1</span> دمج. قارن الـ labels بـ K-Means على نفس الـ 30 نقطة (خد بالك أرقام الـ clusters ممكن تبقى متبدلة).</details></li>
+    <li><b>Anomaly pipeline:</b> شغّل DBSCAN و GMM على نفس الداتا، وعلّم النقط اللي الاتنين متفقين إنها شاذة (noise في DBSCAN، واحتمال واطي في GMM). قيس التداخل واشرح إمتى بيختلفوا.
+      <details><summary>تلميح</summary>احتمال النقطة في GMM = <span class="ltr">Σ_j w_j · N(x | μ_j, σ²_j)</span>. اعتبر أقل 5% شواذ. هيختلفوا غالبًا عند نقط على أطراف cluster مفرود: GMM يشوفها احتمالها معقول لأن الـ variance كبيرة، و DBSCAN يشوفها noise لأن الكثافة حواليها قليلة (أو العكس حسب eps).</details></li>
+    <li><b>إضافة مني · تجميع أسئلة اليوزرز لـ chatbot:</b> هات 40 سؤال حقيقي من FAQ أو issues لأي مشروع، حوّلهم لـ bag-of-words (زي تمرين امبارح)، وطبّعهم (normalize) واعمل K-Means بـ K من 3 لـ 8. اختار K بالـ silhouette، واطبع لكل cluster أكتر 5 كلمات في الـ centroid بتاعه. ده بالظبط اللي فرق الـ AI بتعمله عشان تعرف اليوزرز بيسألوا عن إيه قبل ما يبنوا RAG أو يكتبوا prompts.
+      <details><summary>تلميح</summary>بعد الـ normalize، مسافة L2 بترتب زي الـ cosine، فـ K-Means العادي ينفع. لو cluster طلع فيه كلمات زي «the, is, how» بس، يبقى محتاج تشيل الـ stop words، وده بالظبط موضوع بكرة (TF-IDF).</details></li>
+  </ol>
+</section>
+
+<!-- MINE -->
+<section id="d29-mine">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس ما قالهوش</h2></div>
+  <h3>الحدس</h3>
+  <p>الـ clustering مش «اكتشاف الحقيقة». هو إجابة على سؤال «لو التشابه معناه كذا، المجموعات تبقى إيه؟». غيّر الـ features أو الـ scaling أو المسافة، تطلعلك مجموعات تانية خالص، والاتنين «صح» رياضيًا. عشان كده الـ clusters فرضيات لازم تتأكد منها بمعرفة المجال، مش labels جاهزة.</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>تشغّل K-Means من غير scaling للـ features. (نفس درس امبارح.)</li>
+    <li>تختار K بالعين من رسمة 2D والداتا الحقيقية أبعادها كتير. استخدم silhouette.</li>
+    <li>K-Means على أشكال هلال أو حلقة. ده شغل DBSCAN.</li>
+    <li>تشغّل مرة واحدة بس وتصدق النتيجة. K-Means بيوصل لـ local minimum، شغّله بكذا seed وخد أقل inertia.</li>
+    <li>تقارن inertia بين K مختلفة وتختار الأقل. الأقل دايمًا K الأكبر.</li>
+    <li>تعامل أرقام الـ clusters كأنها ليها معنى. cluster 0 في run ممكن يبقى cluster 2 في run تاني.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <p><b>IVF index</b> في FAISS و pgvector: بيعمل K-Means على الـ embeddings، ووقت البحث بيدور جوه أقرب clusters بس بدل كل المتجهات. <b>Product quantization</b> بيستخدم K-Means عشان يضغط المتجهات. <b>تنضيف داتا التدريب</b>: بيعملوا clustering للـ embeddings عشان يشيلوا التكرار أو يوازنوا المواضيع. <b>Topic discovery</b> على محادثات اليوزرز أو الـ traces بتاعة الـ agent عشان تعرف فين بيفشل. و<b>anomaly detection</b> على الـ embeddings عشان تمسك prompts غريبة أو داتا drift.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d29-quiz">
+  <div class="station-head"><span class="tag">11</span><h2>كويز</h2></div>
+  <div class="quiz" id="d29-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d29-done">
+  <div class="station-head"><span class="tag">12</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d29-ck">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح Lloyd's algorithm وليه بيوصل لـ local minimum</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أعرف أختار K بالـ elbow والـ silhouette</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم core و border و noise في DBSCAN وأثر eps و min_samples</label></li>
+    <li><label><input type="checkbox" data-ck="4"> أعرف الفرق بين linkages الـ hierarchical، وبين hard و soft assignment</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت K-Means و DBSCAN و GMM بإيدي وشغلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>K-Means</td><td>IVF indexes في vector databases، product quantization، customer segmentation</td></tr>
+    <tr><td>DBSCAN / HDBSCAN</td><td>topic modeling على embeddings، كشف outliers، داتا جغرافية</td></tr>
+    <tr><td>GMM و EM</td><td>soft clustering، نماذج احتمالية، و EM نفسها فكرة بتتكرر في ML كتير</td></tr>
+    <tr><td>Hierarchical</td><td>تصنيفات متداخلة (taxonomies)، علم الأحياء، تنظيم مستندات</td></tr>
+    <tr><td>Silhouette / Elbow</td><td>تقييم أي تقسيم من غير labels</td></tr>
+    <tr><td>Anomaly detection</td><td>fraud، security logs، مراقبة الموديلات في الـ production</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Feature Engineering &amp; Selection. أكبر رافعة في الـ ML الكلاسيكي: إزاي تحوّل الداتا الخام لـ features تخلّي الموديل يشوف النمط.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F07-unsupervised-learning" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/07-unsupervised-learning</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+const rm=$('d29-roadmap');for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===7)s.className='now';rm.appendChild(s)}
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(R){let u=0,v=0;while(!u)u=R();v=R();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const EXTRA=['#7B5EA7','#8A8F2E','#C2477F','#3E8E7E'];
+const pal=()=>[css('--vec-a'),css('--vec-b'),css('--ok'),css('--bad')].concat(EXTRA);
+const d2=(a,b)=>{const x=a[0]-b[0],y=a[1]-b[1];return x*x+y*y};
+function blobs(R,C,n,s){const P=[];C.forEach(c=>{for(let i=0;i<n;i++)P.push([c[0]+gauss(R)*s,c[1]+gauss(R)*s])});return P}
+function moons(R,n,noise){const P=[],h=n/2;for(let i=0;i<h;i++){const t=Math.PI*i/h;P.push([Math.cos(t)+gauss(R)*noise,Math.sin(t)+gauss(R)*noise])}for(let i=0;i<h;i++){const t=Math.PI*i/h;P.push([1-Math.cos(t)+gauss(R)*noise,1-Math.sin(t)-.5+gauss(R)*noise])}return P}
+function view(P,W,H,pad){let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;P.forEach(p=>{x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1])});const s=Math.min((W-2*pad)/(x1-x0),(H-2*pad)/(y1-y0)),ox=(W-(x1-x0)*s)/2,oy=(H-(y1-y0)*s)/2;return{s,to:p=>[ox+(p[0]-x0)*s,H-oy-(p[1]-y0)*s],from:(px,py)=>[(px-ox)/s+x0,(H-oy-py)/s+y0]}}
+function lightGrid(ctx,W,H){ctx.strokeStyle=css('--grid');ctx.lineWidth=1;for(let x=0;x<W;x+=26){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}for(let y=0;y<H;y+=26){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}}
+
+/* ---- Lab 1: K-Means ---- */
+const kc=$('d29-kmC'),kx=AI.setupCanvas(kc),KW=+kc.dataset.w,KH=+kc.dataset.h;
+const ec=$('d29-elC'),ex=AI.setupCanvas(ec),EW=+ec.dataset.w,EH=+ec.dataset.h;
+let KD,KV,cent=[],asg=[],iter=0,phase='assign',initR=rng(7),timer=null,elbow=[],sils=[];
+function silh(P,A){const n=P.length,K=Math.max(...A)+1;if(K<2)return 0;let tot=0;for(let i=0;i<n;i++){const sum=new Array(K).fill(0),cnt=new Array(K).fill(0);for(let j=0;j<n;j++){if(i===j)continue;sum[A[j]]+=Math.sqrt(d2(P[i],P[j]));cnt[A[j]]++}if(!cnt[A[i]]){continue}const a=sum[A[i]]/cnt[A[i]];let b=Infinity;for(let k=0;k<K;k++)if(k!==A[i]&&cnt[k])b=Math.min(b,sum[k]/cnt[k]);if(b===Infinity)continue;const m=Math.max(a,b);tot+=m?(b-a)/m:0}return tot/n}
+function assignAll(P,C){return P.map(p=>{let b=0,bd=Infinity;C.forEach((c,k)=>{const d=d2(p,c);if(d<bd){bd=d;b=k}});return b})}
+function updateC(P,A,C,R){return C.map((c,k)=>{let sx=0,sy=0,n=0;P.forEach((p,i)=>{if(A[i]===k){sx+=p[0];sy+=p[1];n++}});return n?[sx/n,sy/n]:P[Math.floor(R()*P.length)].slice()})}
+function inertia(P,A,C){return P.reduce((s,p,i)=>s+d2(p,C[A[i]]),0)}
+function initRand(P,k,R){const idx=[];while(idx.length<k){const i=Math.floor(R()*P.length);if(!idx.includes(i))idx.push(i)}return idx.map(i=>P[i].slice())}
+function initPP(P,k,R){const C=[P[Math.floor(R()*P.length)].slice()];while(C.length<k){const D=P.map(p=>Math.min(...C.map(c=>d2(p,c))));const tot=D.reduce((a,b)=>a+b,0);let r=R()*tot,i=0;while(r>D[i]&&i<P.length-1){r-=D[i];i++}C.push(P[i].slice())}return C}
+function fullKM(P,k,R){let C=initPP(P,k,R),A;for(let t=0;t<60;t++){A=assignAll(P,C);const N=updateC(P,A,C,R);const mv=N.reduce((s,c,i)=>s+d2(c,C[i]),0);C=N;if(mv<1e-12)break}A=assignAll(P,C);return{A,C}}
+function kmData(){const R=rng(42);KD=$('d29-kmData').value==='blobs'?blobs(R,[[2,2],[8,3],[5,8]],50,.8):moons(R,200,.1);KV=view(KD,KW,KH,26);
+  elbow=[];sils=[];for(let k=1;k<=8;k++){let best=null;for(let s=0;s<3;s++){const r=fullKM(KD,k,rng(100+k*7+s));const I=inertia(KD,r.A,r.C);if(!best||I<best.I)best={I,A:r.A}}elbow.push(best.I);sils.push(k>1?silh(KD,best.A):null)}
+  resetKM('rand')}
+function resetKM(kind){stop();const k=+$('d29-k').value;cent=kind==='pp'?initPP(KD,k,initR):initRand(KD,k,initR);asg=[];iter=0;phase='assign';drawKM()}
+function stepKM(){if(phase==='assign'){asg=assignAll(KD,cent);phase='update';iter++}else{const N=updateC(KD,asg,cent,initR);const mv=N.reduce((s,c,i)=>s+d2(c,cent[i]),0);cent=N;phase='assign';if(mv<1e-12){const A2=assignAll(KD,cent);if(A2.every((v,i)=>v===asg[i])){drawKM();return false}}}drawKM();return true}
+function stop(){if(timer){clearInterval(timer);timer=null}}
+function drawKM(){const C=pal(),k=+$('d29-k').value;$('d29-kV').textContent=k;
+  kx.clearRect(0,0,KW,KH);lightGrid(kx,KW,KH);
+  KD.forEach((p,i)=>{const[x,y]=KV.to(p);kx.fillStyle=asg.length?C[asg[i]%C.length]:css('--muted');kx.globalAlpha=asg.length?.85:.55;kx.beginPath();kx.arc(x,y,4,0,7);kx.fill()});kx.globalAlpha=1;
+  if(asg.length&&phase==='update'){kx.lineWidth=.6;KD.forEach((p,i)=>{const[x,y]=KV.to(p),[cx,cy]=KV.to(cent[asg[i]]);kx.strokeStyle=C[asg[i]%C.length];kx.globalAlpha=.25;kx.beginPath();kx.moveTo(x,y);kx.lineTo(cx,cy);kx.stroke()});kx.globalAlpha=1}
+  cent.forEach((c,k)=>{const[x,y]=KV.to(c);kx.fillStyle=C[k%C.length];kx.strokeStyle=css('--ink');kx.lineWidth=2.5;kx.beginPath();kx.arc(x,y,11,0,7);kx.fill();kx.stroke();kx.fillStyle=css('--paper');kx.font='bold 11px JetBrains Mono, monospace';kx.textAlign='center';kx.fillText(k,x,y+4);kx.textAlign='left'});
+  $('d29-it').textContent=iter;$('d29-ph').textContent=phase;
+  if(asg.length){$('d29-in').textContent=f(inertia(KD,asg,cent),1);const nk=new Set(asg).size;$('d29-si').textContent=nk>1?f(silh(KD,asg),3):'–'}else{$('d29-in').textContent='–';$('d29-si').textContent='–'}
+  drawElbow(k)}
+function drawElbow(k){ex.clearRect(0,0,EW,EH);const L=40,R=EW-40,T=12,B=EH-24,mx=Math.max(...elbow),X=i=>L+i/7*(R-L);
+  ex.strokeStyle=css('--grid');ex.lineWidth=1;for(let i=0;i<=3;i++){const y=B-i/3*(B-T);ex.beginPath();ex.moveTo(L,y);ex.lineTo(R,y);ex.stroke()}
+  ex.strokeStyle=css('--vec-a');ex.lineWidth=2.5;ex.beginPath();elbow.forEach((v,i)=>{const y=B-v/mx*(B-T);i?ex.lineTo(X(i),y):ex.moveTo(X(i),y)});ex.stroke();
+  ex.strokeStyle=css('--vec-b');ex.setLineDash([4,3]);ex.beginPath();let st=false;sils.forEach((v,i)=>{if(v==null)return;const y=B-Math.max(0,v)*(B-T);st?ex.lineTo(X(i),y):ex.moveTo(X(i),y);st=true});ex.stroke();ex.setLineDash([]);
+  elbow.forEach((v,i)=>{ex.fillStyle=i===k-1?css('--ink'):css('--vec-a');ex.beginPath();ex.arc(X(i),B-v/mx*(B-T),i===k-1?6:3.5,0,7);ex.fill()});
+  ex.font='11px JetBrains Mono, monospace';ex.fillStyle=css('--muted');ex.textAlign='center';for(let i=0;i<8;i++)ex.fillText('K='+(i+1),X(i),EH-8);ex.textAlign='left';
+  ex.fillStyle=css('--vec-a');ex.fillText('inertia',4,14);ex.fillStyle=css('--vec-b');ex.fillText('silhouette',R-30,14)}
+$('d29-step').addEventListener('click',()=>{stop();stepKM()});
+$('d29-run').addEventListener('click',()=>{stop();let n=0;timer=setInterval(()=>{if(!document.body.contains(kc)||!stepKM()||++n>200)stop()},220)});
+$('d29-rand').addEventListener('click',()=>resetKM('rand'));$('d29-pp').addEventListener('click',()=>resetKM('pp'));
+$('d29-k').addEventListener('input',()=>resetKM('rand'));$('d29-kmData').addEventListener('change',kmData);
+kmData();
+
+/* ---- Lab 2: DBSCAN ---- */
+const dc=$('d29-dbC'),dx=AI.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;let DD,DV,lab=[],typ=[],hov=-1;
+function dbData(){const v=$('d29-dbData').value,R=rng(11);
+  if(v==='moons'){DD=moons(R,200,.06).concat([[-1.3,1.4],[2.4,-1],[0.5,0.25],[2.3,1.3],[-1.2,-0.8]])}
+  else if(v==='blobs'){DD=blobs(R,[[2,2],[8,3],[5,8]],50,.8).map(p=>[p[0]/5,p[1]/5]).concat([[4,4],[-1,-1],[3,0]])}
+  else{DD=blobs(R,[[0,0]],80,.12).concat(blobs(R,[[1.6,.2]],50,.45)).concat([[-.9,1.2],[2.8,1.4]])}
+  DV=view(DD,DW,DH,24);runDB()}
+function runDB(){const eps=+$('d29-eps').value,ms=+$('d29-min').value,n=DD.length,e2=eps*eps;$('d29-eV').textContent=eps.toFixed(2);$('d29-mV').textContent=ms;
+  const nb=DD.map((p,i)=>{const r=[];for(let j=0;j<n;j++)if(d2(p,DD[j])<=e2)r.push(j);return r});
+  const core=nb.map(r=>r.length>=ms);lab=new Array(n).fill(-1);let cid=0;
+  for(let i=0;i<n;i++){if(lab[i]!==-1||!core[i])continue;lab[i]=cid;const q=[i];while(q.length){const a=q.pop();if(!core[a])continue;nb[a].forEach(b=>{if(lab[b]===-1){lab[b]=cid;q.push(b)}})}cid++}
+  typ=DD.map((p,i)=>core[i]?'core':lab[i]>=0?'border':'noise');
+  $('d29-nc').textContent=cid;$('d29-ncore').textContent=typ.filter(t=>t==='core').length;$('d29-nb').textContent=typ.filter(t=>t==='border').length;$('d29-nn').textContent=typ.filter(t=>t==='noise').length;
+  drawDB()}
+function drawDB(){const C=pal(),eps=+$('d29-eps').value;dx.clearRect(0,0,DW,DH);lightGrid(dx,DW,DH);
+  if(hov>=0){const[x,y]=DV.to(DD[hov]);dx.fillStyle=css('--vec-a');dx.globalAlpha=.12;dx.beginPath();dx.arc(x,y,eps*DV.s,0,7);dx.fill();dx.globalAlpha=1;dx.strokeStyle=css('--vec-a');dx.lineWidth=1.5;dx.stroke()}
+  DD.forEach((p,i)=>{const[x,y]=DV.to(p),t=typ[i];
+    if(t==='noise'){dx.strokeStyle=css('--muted');dx.lineWidth=1.8;dx.beginPath();dx.moveTo(x-4,y-4);dx.lineTo(x+4,y+4);dx.moveTo(x+4,y-4);dx.lineTo(x-4,y+4);dx.stroke()}
+    else if(t==='core'){dx.fillStyle=C[lab[i]%C.length];dx.beginPath();dx.arc(x,y,4.5,0,7);dx.fill()}
+    else{dx.strokeStyle=C[lab[i]%C.length];dx.lineWidth=2;dx.beginPath();dx.arc(x,y,4,0,7);dx.stroke()}});
+  if(hov>=0){const e2=eps*eps,cnt=DD.filter(q=>d2(q,DD[hov])<=e2).length,[x,y]=DV.to(DD[hov]);dx.fillStyle=css('--ink');dx.font='12px JetBrains Mono, monospace';const s=typ[hov]+' · '+cnt+' in eps';const w=dx.measureText(s).width;const tx=Math.min(DW-w-6,x+10);dx.fillText(s,tx,Math.max(14,y-10))}}
+function hovDB(e){const[x,y]=AI.evPos(dc,e);let b=-1,bd=400;DD.forEach((p,i)=>{const[px,py]=DV.to(p),d=(px-x)**2+(py-y)**2;if(d<bd){bd=d;b=i}});if(b!==hov){hov=b;drawDB()}}
+dc.addEventListener('pointermove',hovDB);dc.addEventListener('pointerdown',hovDB);dc.addEventListener('pointerleave',()=>{hov=-1;drawDB()});
+['d29-eps','d29-min'].forEach(id=>$(id).addEventListener('input',runDB));$('d29-dbData').addEventListener('change',dbData);
+dbData();
+
+/* ---- Lab 3: GMM / EM ---- */
+const gc=$('d29-gmC'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;let GD,GV,mu,va,wt,resp,git=0,sel=-1,gR=rng(5),gTimer=null;
+const GV0=view([[-1,-1],[11,11]],GW,GH,10);
+function hex(c){c=c.trim();if(c[0]==='#'){if(c.length===4)c='#'+c[1]+c[1]+c[2]+c[2]+c[3]+c[3];return[parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)]}const m=c.match(/\d+/g);return m?m.slice(0,3).map(Number):[128,128,128]}
+function pdf(x,m,v){return Math.exp(Math.max(-d2(x,m)/(2*v),-500))/(2*Math.PI*v)}
+function gData(){const s=+$('d29-spread').value;$('d29-sV').textContent=f(s,2);GD=blobs(rng(42),[[2.5,3],[7.5,3.5],[5,7.5]],50,s);GV=GV0;gReset()}
+function gReset(){if(gTimer){clearInterval(gTimer);gTimer=null}const idx=[];while(idx.length<3){const i=Math.floor(gR()*GD.length);if(!idx.includes(i))idx.push(i)}mu=idx.map(i=>GD[i].slice());va=[1,1,1];wt=[1/3,1/3,1/3];git=0;eStep();drawG()}
+function eStep(){resp=GD.map(p=>{const pr=[0,1,2].map(j=>wt[j]*pdf(p,mu[j],va[j]));const t=pr.reduce((a,b)=>a+b,0)||1e-300;return pr.map(v=>v/t)})}
+function ll(){return GD.reduce((s,p)=>s+Math.log([0,1,2].reduce((a,j)=>a+wt[j]*pdf(p,mu[j],va[j]),0)||1e-300),0)}
+function mStep(){const n=GD.length;for(let j=0;j<3;j++){const rs=resp.reduce((s,r)=>s+r[j],0);if(rs<1e-10)continue;wt[j]=rs/n;mu[j]=[0,1].map(d=>GD.reduce((s,p,i)=>s+resp[i][j]*p[d],0)/rs);va[j]=Math.max(1e-6,GD.reduce((s,p,i)=>s+resp[i][j]*d2(p,mu[j]),0)/(rs*2))}}
+function emStep(){mStep();eStep();git++;drawG()}
+function drawG(){const C=[css('--vec-a'),css('--vec-b'),css('--ok')].map(hex),Cs=[css('--vec-a'),css('--vec-b'),css('--ok')];gx.clearRect(0,0,GW,GH);lightGrid(gx,GW,GH);
+  for(let j=0;j<3;j++){const[x,y]=GV.to(mu[j]),s=Math.sqrt(va[j])*GV.s;[1,2].forEach(m=>{gx.strokeStyle=Cs[j];gx.lineWidth=m===1?2.5:1.2;gx.setLineDash(m===1?[]:[5,4]);gx.beginPath();gx.arc(x,y,s*m,0,7);gx.stroke()});gx.setLineDash([])}
+  GD.forEach((p,i)=>{const r=resp[i],c=[0,1,2].map(d=>Math.round(r[0]*C[0][d]+r[1]*C[1][d]+r[2]*C[2][d]));const[x,y]=GV.to(p);gx.fillStyle='rgb('+c.join(',')+')';gx.beginPath();gx.arc(x,y,i===sel?7:4.5,0,7);gx.fill();if(i===sel){gx.strokeStyle=css('--ink');gx.lineWidth=2;gx.stroke()}});
+  for(let j=0;j<3;j++){const[x,y]=GV.to(mu[j]);gx.fillStyle=css('--ink');gx.beginPath();gx.moveTo(x-7,y);gx.lineTo(x+7,y);gx.moveTo(x,y-7);gx.lineTo(x,y+7);gx.strokeStyle=css('--ink');gx.lineWidth=3;gx.stroke()}
+  $('d29-git').textContent=git;$('d29-ll').textContent=f(ll(),1);$('d29-w').textContent=wt.map(w=>f(w,2)).join(' / ');
+  $('d29-r').textContent=sel>=0?resp[sel].map(v=>f(v,2)).join(' / '):'دوس نقطة'}
+gc.addEventListener('pointerdown',e=>{const[x,y]=AI.evPos(gc,e);let b=-1,bd=500;GD.forEach((p,i)=>{const[px,py]=GV.to(p),d=(px-x)**2+(py-y)**2;if(d<bd){bd=d;b=i}});sel=b;drawG()});
+$('d29-em').addEventListener('click',emStep);
+$('d29-emRun').addEventListener('click',()=>{if(gTimer)clearInterval(gTimer);let n=0;gTimer=setInterval(()=>{if(!document.body.contains(gc)||++n>30){clearInterval(gTimer);gTimer=null;return}emStep()},160)});
+$('d29-emReset').addEventListener('click',gReset);$('d29-spread').addEventListener('input',()=>{sel=-1;gData()});
+gData();
+
+/* ---- quiz ---- */
+const ck=document.querySelector('#d29-ck input[data-ck="6"]');
+AI.quiz($('d29-quizBox'),[
+ ['إيه اللي بيميّز الـ unsupervised learning عن الـ supervised؟',['مفيهوش outputs عليها labels، والخوارزمية بتلاقي البنية لوحدها','دايمًا بيدي نتايج أحسن','بيستخدم داتا أكتر','بيشتغل على النص بس'],0,'مفيش labels. الخوارزمية بتكتشف الأنماط والمجموعات من غير ما حد يقولها الإجابة الصح.'],
+ ['K-Means محتاج تحددله إيه قبل التدريب؟',['عدد الـ clusters K','مراكز الـ clusters بالظبط','مقياس المسافة','الـ labels لكل نقطة'],0,'لازم تديله K. بعدها بيعين النقط لأقرب centroid ويحسب الـ centroids من جديد لحد ما يستقر.'],
+ ['K-Means بيفشل على هلالين متداخلين و DBSCAN بينجح. ليه؟',['DBSCAN دايمًا أحسن من K-Means في كل داتا','DBSCAN بيستخدم داتا أكتر','DBSCAN بيلاقي الـ clusters بالكثافة فيقدر يمسك أي شكل، و K-Means بيفترض clusters كروية','K-Means مش بيعرف يتعامل مع داتا 2D'],2,'K-Means بيعين لأقرب centroid فبيطلّع مناطق محدبة. DBSCAN بيكبّر الـ cluster من المناطق الكثيفة، فيمسك أي شكل طالما متوصل بالكثافة. شفتها في المعمل ١ و٢.'],
+ ['الـ silhouette score بيقيس إيه؟',['عدد الـ clusters اللي اتلقت','قد إيه كل نقطة شبه الـ cluster بتاعها مقارنة بأقرب cluster تاني','سرعة الخوارزمية','نسبة الـ outliers في الداتا'],1,'(b − a) / max(a, b): a متوسط المسافة جوه الـ cluster، b متوسط المسافة لأقرب cluster تاني. من −1 لـ +1.'],
+ ['الـ GMM بيختلف عن K-Means في التعيين إزاي؟',['GMM بيدي hard assignment وكل نقطة في cluster واحد بالظبط','GMM بيدي soft assignment: كل نقطة ليها احتمال تنتمي لكل cluster','GMM بيشتغل على داتا بُعد واحد بس','GMM مش بيستخدم مراكز خالص'],1,'K-Means hard، و GMM بيحسب احتمال إن النقطة جاية من كل Gaussian، ويقدر يمثل clusters بيضاوية ومتداخلة. الألوان الممزوجة في المعمل ٣.'],
+ ['(سؤال إضافي) زوّدت K في K-Means من 3 لـ 8. الـ inertia هتعمل إيه غالبًا؟',['هتزيد عشان الـ clusters كترت','هتقل، وعشان كده ما بنختارش K بأقل inertia لكن بالكوع','هتفضل زي ما هي','هتبقى سالبة'],1,'مراكز أكتر = كل نقطة أقرب لمركز. ولو K = عدد النقط، الـ inertia = صفر. عشان كده بندور على الكوع أو بنستخدم silhouette.'],
+ ['(سؤال إضافي) الـ IVF index في vector database بيستخدم الـ clustering إزاي؟',['بيدرّب classifier على الـ embeddings','بيعمل K-Means على المتجهات، ووقت البحث بيدور جوه أقرب clusters بس','بيرتب المتجهات أبجديًا','بيمسح المتجهات الـ noise'],1,'K-Means بيقسم المتجهات لـ lists. الـ query بتتقارن بالـ centroids الأول، وبعدين البحث بيحصل جوه أقرب كام list بس، فأسرع بكتير من البحث في الكل.']
+],5,()=>{if(ck){ck.checked=true;AI.store.set('aiefs-d29-6','1')}});
+AI.checklist(29,$('d29-ck'));
+
+AI.onTheme(()=>{if(!document.body.contains(kc)){stop();return false}drawKM();drawDB();drawG()});
+})();
+</script>

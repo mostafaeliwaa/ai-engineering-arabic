@@ -1,0 +1,698 @@
+<div class="day" id="d11-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 11 · Singular Value Decomposition</span>
+  <h1>اليوم ١١: الـ SVD، السكينة السويسري بتاعة الـ Linear Algebra</h1>
+  <p class="lede">أي مصفوفة في الدنيا، بأي شكل وأي rank، بتعمل ٣ حاجات ورا بعض: <b>تلف، تمط، تلف</b>. الـ SVD بيفصّلك الـ ٣ خطوات دول. ومن هنا هتعرف تضغط صورة، وتشيل noise، وتحل معادلات ملهاش حل مظبوط، وتفهم الـ PCA من جوه، وتشوف أصل فكرة الـ LoRA.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia)</span>
+    <span>امبارح: <b>Dimensionality Reduction</b></span>
+    <span>بكرة: <b>Tensor Operations</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d11-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d11-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ PCA بتدور على إيه بالظبط؟</summary>
+    <p>بتدور على الاتجاهات اللي الداتا فيها متفرقة أكتر حاجة (أكبر variance)، وبترتبهم: أول اتجاه فيه أكبر variance، والتاني عمودي عليه وفيه اللي بعده، وهكذا. بعدين بتسقط الداتا على أول k اتجاهات بس.</p></details>
+  <details><summary>٢. لو أول ٣ components بيشرحوا ٩٥٪ من الـ explained variance، ده معناه إيه عمليًا؟</summary>
+    <p>إنك تقدر ترمي باقي الأبعاد وتخسر ٥٪ بس من «انتشار» الداتا. يعني الداتا عايشة فعليًا في فضاء ٣ أبعاد تقريبًا حتى لو عندها أعمدة كتير.</p></details>
+  <details><summary>٣. إمتى تستخدم t-SNE أو UMAP بدل الـ PCA؟</summary>
+    <p>لما الشكل اللي في الداتا مش خطي وانت عايز ترسمها (visualization) في 2D أو 3D وتشوف الـ clusters. الـ PCA خطية، أسرع، وتنفع كـ preprocessing قبل موديل. النهاردة هتكتشف إن الـ PCA نفسها طلعت SVD متنكّر.</p></details>
+</section>
+
+<section>
+  <h2>خطة الساعتين</h2>
+  <div class="plan">
+    <div><b>10 min</b>التسخين + المشكلة: ليه eigendecomposition مش كفاية</div>
+    <div><b>20 min</b>لف، مط، لف: معمل ٠١</div>
+    <div><b>20 min</b>Low-rank وضغط الصور والـ noise: معمل ٠٢</div>
+    <div><b>15 min</b>Pseudoinverse والـ least squares: معمل ٠٣</div>
+    <div><b>35 min</b>اكتب الكود وشغّله بنفسك</div>
+    <div><b>20 min</b>تمرينين + الكويز + الـ checklist</div>
+  </div>
+</section>
+
+<section id="d11-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: مصفوفة 1000×2000 ومش مربعة</h2></div>
+  <p>تخيل عندك مصفوفة 1000×2000. ممكن تكون تقييمات يوزرز لأفلام، أو جدول كام مرة كل كلمة ظهرت في كل document، أو بيكسلز صورة. عايز تضغطها، أو تنضفها من الـ noise، أو تلاقي الـ structure المستخبي فيها، أو تحل بيها least squares.</p>
+  <p>الـ eigendecomposition اللي شفناها قبل كده بتشتغل على المصفوفات <b>المربعة</b> بس، وكمان لازم يكون عندها مجموعة كاملة من الـ eigenvectors المستقلة. يعني شروط كتير.</p>
+  <div class="note"><strong>الـ SVD ملوش شروط:</strong> أي مصفوفة، أي شكل، أي rank. بيفكّها لـ ٣ عوامل بتكشف الهندسة بتاعة اللي المصفوفة بتعمله في الفضاء. عشان كده بيتقال عليه أعم وأنفع factorization في الـ linear algebra كلها.</div>
+</section>
+
+<section id="d11-geo">
+  <div class="station-head"><span class="tag">02</span><h2>المعنى الهندسي: لف ← مط ← لف</h2></div>
+  <div class="formula">A (m×n) = U (m×m) · Σ (m×n) · Vᵀ (n×n)</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>اقرا المعادلة من اليمين للشمال، زي ما المتجه بيعدي عليها:</p>
+      <ol class="ex">
+        <li><b class="ltr">Vᵀ</b>: بتلف المتجهات في فضاء الدخل (n بُعد) لحد ما «الاتجاهات المهمة» تبقى على المحاور.</li>
+        <li><b class="ltr">Σ</b>: بتمط أو تكبس على كل محور لوحده. الأرقام اللي على قطرها هي الـ <b>singular values</b>.</li>
+        <li><b class="ltr">U</b>: بتلف النتيجة لفضاء الخرج (m بُعد).</li>
+      </ol>
+      <p>يعني المصفوفة بتاخد <b>دايرة</b> (أو كرة) من المدخلات، تلفها، تمطها لـ <b>قطع ناقص</b> (ellipse)، وتلف القطع الناقص. الـ singular values هي أطوال أنصاف محاور القطع الناقص ده.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> حرّك الـ slider بتاع «المرحلة» من 0 لـ 3 وشوف الدايرة بتعدي بكل خطوة. النقط الملونة بتوريك فين راحت كل نقطة. بعدين جرب «Rank 1» وشوف الدايرة اتكبست على خط لأن σ₂ = 0.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d11-geoCanvas" width="520" height="440" aria-label="دايرة بتتحول لقطع ناقص على ٣ مراحل"></canvas>
+      <label style="display:grid;gap:2px">المرحلة: <b class="mono" id="d11-stageLbl">3 · U Σ Vᵀ p = A p</b><input type="range" id="d11-stage" min="0" max="3" step="0.01" value="3"></label>
+      <div class="mrow">
+        <label>a <span id="d11-vA">3</span><input type="range" id="d11-ma" min="-3" max="3" step="0.1" value="3"></label>
+        <label>b <span id="d11-vB">1</span><input type="range" id="d11-mb" min="-3" max="3" step="0.1" value="1"></label>
+        <label>c <span id="d11-vC">1</span><input type="range" id="d11-mc" min="-3" max="3" step="0.1" value="1"></label>
+        <label>d <span id="d11-vD">3</span><input type="range" id="d11-md" min="-3" max="3" step="0.1" value="3"></label>
+      </div>
+      <div class="readout">
+        <div><small>A</small><b id="d11-gA">[[3,1],[1,3]]</b></div>
+        <div><small>σ₁</small><b id="d11-gS1">4</b></div>
+        <div><small>σ₂</small><b id="d11-gS2">2</b></div>
+        <div><small>rank</small><b id="d11-gR">2</b></div>
+        <div><small>|det| = σ₁·σ₂</small><b id="d11-gDet">8</b></div>
+        <div><small>condition σ₁/σ₂</small><b id="d11-gK">2</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" data-d11m="3,1,1,3">مثال الدرس [[3,1],[1,3]]</button>
+        <button type="button" data-d11m="1,1.5,0,1">ميل (shear)</button>
+        <button type="button" data-d11m="0,-1,1,0">لفة بس</button>
+        <button type="button" data-d11m="1,2,0.5,1">Rank 1</button>
+        <button type="button" id="d11-play" class="primary">شغّل المراحل</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="d11-parts">
+  <div class="station-head"><span class="tag">03</span><h2>كل قطعة في الـ SVD معناها إيه</h2></div>
+  <p>لمصفوفة A شكلها m×n:</p>
+  <div class="formula">U: m×m orthogonal (UᵀU = I)   ·   Σ: m×n diagonal   ·   V: n×n orthogonal (VᵀV = I)<br>σ₁ ≥ σ₂ ≥ … ≥ σᵣ &gt; 0     r = rank(A)</div>
+  <div class="tablewrap"><table>
+    <tr><th>القطعة</th><th>اسمها</th><th>معناها</th></tr>
+    <tr><td class="ltr">columns of V</td><td>Right singular vectors</td><td>قاعدة orthonormal لفضاء <b>الدخل</b>. دي الاتجاهات اللي المصفوفة بتوديها لاتجاهات عمودية على بعض في الخرج. اعتبرها «نظام الإحداثيات الطبيعي» للدخل.</td></tr>
+    <tr><td class="ltr">diag of Σ</td><td>Singular values</td><td>معاملات المط. σᵢ بتقولك المصفوفة بتمط قد إيه على الاتجاه vᵢ. دايمًا ≥ 0 ومترتبة من الكبير للصغير. σ = 0 معناها الاتجاه ده اتمسح خالص.</td></tr>
+    <tr><td class="ltr">columns of U</td><td>Left singular vectors</td><td>قاعدة orthonormal لفضاء <b>الخرج</b>. uᵢ هو المكان اللي vᵢ بيروحله بعد المط.</td></tr>
+  </table></div>
+  <div class="formula">A · vᵢ = σᵢ · uᵢ</div>
+  <p>المعادلة دي لوحدها بتديك صورة «إحداثية بإحداثية» لأي مصفوفة: خد الاتجاه vᵢ، مطه σᵢ مرة، هتلاقيه نزل على uᵢ.</p>
+
+  <h3>شكل مجموع الطبقات (Outer product form)</h3>
+  <div class="formula">A = σ₁ u₁ v₁ᵀ + σ₂ u₂ v₂ᵀ + … + σᵣ uᵣ vᵣᵀ</div>
+  <p>كل حد <span class="ltr">σᵢ uᵢ vᵢᵀ</span> هو مصفوفة rank 1 (outer product). المصفوفة كلها = مجموع r طبقة زي دي. تشبيه: زي ما ترسم صورة بطبقات شفافة؛ أول طبقة فيها الشكل العام، والتانية بتضيف أهم تفصيلة بعدها، وهكذا. لو وقفت بعد k طبقة، معاك أحسن تقريب ممكن بـ rank k.</p>
+  <div class="formula">A₁ = σ₁u₁v₁ᵀ  (النمط المسيطر)    A₂ = A₁ + σ₂u₂v₂ᵀ    Aₖ = مجموع أول k حدود</div>
+</section>
+
+<section id="d11-eig">
+  <div class="station-head"><span class="tag">04</span><h2>علاقته بالـ Eigendecomposition</h2></div>
+  <p>الـ SVD والـ eigen قرايب أوي. لو ضربت <span class="ltr">AᵀA</span>:</p>
+  <div class="formula">AᵀA = V Σᵀ Uᵀ U Σ Vᵀ = V (ΣᵀΣ) Vᵀ      AAᵀ = U (ΣΣᵀ) Uᵀ</div>
+  <ul class="ex">
+    <li>الـ <b>V</b> هي الـ eigenvectors بتاعة <span class="ltr">AᵀA</span>، والـ <b>U</b> هي الـ eigenvectors بتاعة <span class="ltr">AAᵀ</span>.</li>
+    <li>الـ eigenvalues في الحالتين = <span class="ltr">σᵢ²</span>.</li>
+  </ul>
+  <p>ده بيقولك ٣ حاجات:</p>
+  <ol class="ex">
+    <li>الـ singular values دايمًا حقيقية وموجبة أو صفر، لأنها جذور eigenvalues لمصفوفة positive semi-definite.</li>
+    <li>ممكن تحسب SVD عن طريق eigen لـ <span class="ltr">AᵀA</span>، بس ده بيـ<b>ربّع</b> الـ condition number ويضيّع دقة. الخوارزميات المتخصصة بتتجنب ده.</li>
+    <li>لو A مربعة و symmetric positive semi-definite، الـ SVD والـ eigendecomposition هما نفس الحاجة.</li>
+  </ol>
+</section>
+
+<section id="d11-lowrank">
+  <div class="station-head"><span class="tag">05</span><h2>Truncated SVD: أحسن ضغط ممكن (Eckart–Young)</h2></div>
+  <div class="formula">Aₖ = Uₖ Σₖ Vₖᵀ     Uₖ: m×k   Σₖ: k×k   Vₖ: n×k<br>error (spectral) = σₖ₊₁     error (Frobenius) = √(σₖ₊₁² + … + σᵣ²)</div>
+  <p>نظرية <b>Eckart–Young–Mirsky</b> بتقول إن لو احتفظت بأكبر k singular values واتجاهاتهم، هتطلع <b>أحسن</b> تقريب بـ rank k، بالـ Frobenius norm وبالـ spectral norm. مش «تقريب كويس» وخلاص؛ مفيش أي مصفوفة rank k تانية أقرب لـ A من كده. والغلط اللي بيفضل هو بالظبط الـ singular values اللي رميتها.</p>
+  <p>لو الـ singular values بتقع بسرعة، k صغيرة بتكفي. لو بتقع ببطء، يبقى المصفوفة ملهاش structure منخفض الـ rank.</p>
+
+  <h3>ضغط الصور</h3>
+  <p>صورة grayscale = مصفوفة. صورة 800×600 فيها 480,000 رقم. بـ rank k هتخزن:</p>
+  <div class="formula">Uₖ: 800k  +  Σₖ: k  +  Vₖ: 600k  =  k·(800 + 600 + 1) = 1401k</div>
+  <div class="tablewrap"><table>
+    <tr><th>k</th><th>عدد الأرقام</th><th>من الأصل</th></tr>
+    <tr><td class="ltr">10</td><td class="ltr">14,010</td><td class="ltr">2.9%</td></tr>
+    <tr><td class="ltr">50</td><td class="ltr">70,050</td><td class="ltr">14.6%</td></tr>
+    <tr><td class="ltr">100</td><td class="ltr">140,100</td><td class="ltr">29.2%</td></tr>
+  </table></div>
+  <p>الصور الطبيعية الـ singular values بتاعتها بتقع بسرعة: الأوائل بيمسكوا الشكل العام (أشكال، تدرجات)، والأواخر بيمسكوا التفاصيل الدقيقة والـ noise. حسب الدرس، rank 50 غالبًا بيطلع صورة شبه الأصل بتخزين أقل بـ 85%.</p>
+
+  <h3>شيل الـ noise</h3>
+  <p>الإشارة النضيفة بتتركز في أول كام singular value، والـ noise بيتوزع على <b>كلهم</b> بقيم صغيرة. فلو بصيت على الـ singular values هتلاقي «فجوة»: اللي فوقها signal خليه، واللي تحتها noise ارميه، وبعدين اعمل reconstruct بـ Aₖ.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: اضغط صورة ونضّفها بإيدك</h3>
+      <p>الصورة دي 48×48 = 2,304 رقم، واتحسبلها SVD في المتصفح دلوقتي. حرّك k وشوف الشمال (الأصل) واليمين (Aₖ)، وتحت طيف الـ singular values.</p>
+      <p>الصورة «الناعمة» معمولة بنفس معادلة الكود بتاع الدرس: <span class="ltr">sin X·cos Y + 0.5·sin(2X+Y)</span>. لاحظ إن بعد k = 4 الصورة بتبقى مطابقة تقريبًا. ليه؟ لأن المعادلة دي لما تفكها بتطلع مجموع ٣ حدود من شكل f(x)·g(y)، والـ normalization بيضيف ثابت (حد رابع). يعني rank الصورة ≤ 4 مهما كبرت.</p>
+      <div class="note ai"><strong>جرب الـ noise:</strong> فعّل الـ noise، وبص على الطيف: هتشوف الفجوة بين الـ signal والأرضية بتاعة الـ noise. دوس «لاقي أحسن k» وشوف الخطأ عن الصورة النضيفة بيقل إزاي.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d11-imgCanvas" width="520" height="270" aria-label="الصورة الأصلية والصورة المضغوطة"></canvas>
+      <canvas id="d11-specCanvas" width="520" height="120" aria-label="طيف الـ singular values"></canvas>
+      <label style="display:grid;gap:2px">k = <b class="mono" id="d11-kLbl">4</b><input type="range" id="d11-k" min="1" max="48" step="1" value="4"></label>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">الصورة: <select id="d11-pat"><option value="smooth">ناعمة (معادلة الدرس)</option><option value="shape">أشكال حادة</option></select></label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d11-noise"> noise</label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">σ<sub>noise</sub> <input type="range" id="d11-nl" min="0.05" max="0.6" step="0.05" value="0.25" style="width:90px"></label>
+        <button type="button" id="d11-best">لاقي أحسن k</button>
+      </div>
+      <div class="readout">
+        <div><small>تخزين k(2N+1)/N²</small><b id="d11-iSt">-</b></div>
+        <div><small>Energy Σσ²</small><b id="d11-iEn">-</b></div>
+        <div><small>RMSE عن الداخل</small><b id="d11-iRm">-</b></div>
+        <div><small>خطأ عن النضيفة</small><b id="d11-iCl">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="d11-apps">
+  <div class="station-head"><span class="tag">06</span><h2>الـ SVD في الـ Recommendations وفي الـ NLP</h2></div>
+  <h3>أنظمة الترشيح (Netflix Prize)</h3>
+  <p>عندك مصفوفة يوزرز × أفلام وأغلب الخانات فاضية (؟). الفكرة: المصفوفة دي الـ rank بتاعها صغير، لأن أذواق الناس مش مستقلة تمامًا. فيه كام «عامل خفي» (latent factor) بيفسر أغلب التفضيلات: أكشن ولا دراما، قديم ولا جديد، فلسفي ولا حماسي.</p>
+  <div class="tablewrap"><table>
+    <tr><th></th><th class="ltr">Movie1</th><th class="ltr">Movie2</th><th class="ltr">Movie3</th><th class="ltr">Movie4</th><th class="ltr">Movie5</th></tr>
+    <tr><td class="ltr">User1</td><td>5</td><td>؟</td><td>3</td><td>؟</td><td>1</td></tr>
+    <tr><td class="ltr">User2</td><td>؟</td><td>4</td><td>؟</td><td>2</td><td>؟</td></tr>
+    <tr><td class="ltr">User3</td><td>3</td><td>؟</td><td>5</td><td>؟</td><td>؟</td></tr>
+    <tr><td class="ltr">User4</td><td>؟</td><td>؟</td><td>؟</td><td>4</td><td>3</td></tr>
+  </table></div>
+  <ul class="ex">
+    <li><b class="ltr">U</b>: بروفايل كل يوزر في فضاء العوامل الخفية.</li>
+    <li><b class="ltr">Σ</b>: أهمية كل عامل.</li>
+    <li><b class="ltr">Vᵀ</b>: بروفايل كل فيلم في نفس الفضاء.</li>
+  </ul>
+  <p>التقييم المتوقع = dot product بين بروفايل اليوزر وبروفايل الفيلم (موزون بالـ singular values). الـ low-rank approximation بتملا الخانات الفاضية. عمليًا بيستخدموا نسخ زي incremental SVD بتاع Simon Funk أو ALS (alternating least squares) اللي بتتعامل مع الخانات الناقصة مباشرة، بس الفكرة واحدة: latent factors.</p>
+
+  <h3>Latent Semantic Analysis (LSA / LSI)</h3>
+  <p>طبّق SVD على مصفوفة كلمات × documents (كام مرة الكلمة ظهرت في كل doc)، واحتفظ بـ k = 2 مثلًا. كل document بيبقى نقطة في «فضاء مفاهيم» ثنائي، وكل كلمة كمان. «cat» و«dog» بيقربوا من بعض (حيوانات أليفة على الأرض)، و«fish» و«ocean» بيقربوا (مية). ليه بيشتغل؟ لأن الكلمات المترادفة بتظهر في documents شبه بعض، فالـ SVD بيحطهم في نفس الأبعاد الخفية. الدرس بيقول إن Word2Vec و GloVe ممكن تتشاف كأحفاد للفكرة دي.</p>
+</section>
+
+<section id="d11-pinv">
+  <div class="station-head"><span class="tag">07</span><h2>الـ Pseudoinverse والاستقرار العددي</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ Moore–Penrose pseudoinverse <span class="ltr">A⁺</span> بيعمم فكرة المعكوس لمصفوفات مش مربعة أو singular. بالـ SVD بقى سهل جدًا:</p>
+      <div class="formula">A⁺ = V Σ⁺ Uᵀ</div>
+      <p>و Σ⁺ بتتعمل كده: اعمل transpose لـ Σ، وكل σᵢ مش صفر بدّلها بـ 1/σᵢ، والأصفار تفضل أصفار. لو A شكلها m×n يبقى A⁺ شكلها n×m.</p>
+      <p>لو <span class="ltr">Ax = b</span> ملهاش حل مظبوط (معادلات أكتر من المجاهيل)، فإن <span class="ltr">x = A⁺b</span> هو حل الـ least squares اللي بيقلل <span class="ltr">‖Ax − b‖</span>. نفس نتيجة الـ normal equations <span class="ltr">(AᵀA)⁻¹Aᵀb</span>، بس أكثر استقرارًا عدديًا.</p>
+      <div class="note"><strong>معمل ٠٣:</strong> كل نقطة <span class="ltr">(x, y)</span> = معادلة <span class="ltr">m·x + c = y</span>. يعني A فيها عمود x وعمود ١. اسحب النقط، أو دوس على مكان فاضي تضيف نقطة. الخط هو <span class="ltr">A⁺b</span> محسوب بالـ SVD. جرب تحط كل النقط على نفس x: σ₂ هتبقى صفر، والـ pseudoinverse هيرجعلك أصغر حل (minimum norm) بدل ما يقع.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d11-lsCanvas" width="520" height="380" aria-label="نقط وخط least squares"></canvas>
+      <div class="readout">
+        <div><small>slope m</small><b id="d11-lM">1.5</b></div>
+        <div><small>intercept c</small><b id="d11-lC">1.667</b></div>
+        <div><small>‖Ax − b‖</small><b id="d11-lR">0.408</b></div>
+        <div><small>σ₁ , σ₂</small><b id="d11-lS">-</b></div>
+        <div><small>condition</small><b id="d11-lK">-</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" id="d11-lsReset">نقط الدرس (1,3) (2,5) (3,6)</button>
+        <button type="button" id="d11-lsVert">كلهم على x واحدة</button>
+      </div>
+    </div>
+  </div>
+
+  <h3>ليه نحسب SVD مباشرة ومنحسبش eigen لـ AᵀA؟</h3>
+  <p>لأن <span class="ltr">AᵀA</span> بتربّع الـ singular values، فبتربّع الـ condition number (<span class="ltr">σmax/σmin</span>)، وده بيضخّم أخطاء الحساب.</p>
+  <div class="formula">σ(A) = [1000, 1, 0.001]  →  κ(A) = 10⁶<br>eig(AᵀA) = [10⁶, 1, 10⁻⁶]  →  κ(AᵀA) = 10¹²   (٦ أرقام دقة زيادة ضاعت)</div>
+  <p>الخوارزميات الحديثة (Golub–Kahan bidiagonalization) بتشتغل على A نفسها وعمرها ما بتكوّن AᵀA. عشان كده دايمًا فضّل <code>np.linalg.svd(A)</code> على <code>np.linalg.eig(A.T @ A)</code>. والـ condition number K معناه إن غلطة حجمها ε في الدخل ممكن تبقى K·ε في الخرج؛ K = 10⁶ يعني بتخسر حوالي ٦ أرقام دقة.</p>
+</section>
+
+<section id="d11-pca">
+  <div class="station-head"><span class="tag">08</span><h2>الـ PCA هي SVD على داتا متسنترة</h2></div>
+  <p>ده مش تشبيه. هي حرفيًا نفس الحسبة. لو X داتا (samples × features) وطرحت منها المتوسط:</p>
+  <div class="formula">C = Xᵀ X / (n − 1)     X = U Σ Vᵀ  ⇒  XᵀX = V Σ² Vᵀ  ⇒  C = V (Σ² / (n−1)) Vᵀ</div>
+  <ul class="ex">
+    <li>الـ principal components هي بالظبط الـ right singular vectors <b>V</b>.</li>
+    <li>الـ explained variance لكل component = <span class="ltr">σᵢ² / (n − 1)</span>.</li>
+  </ul>
+  <p>الـ PCA في sklearn متعملة بالـ SVD مش بالـ eigendecomposition، لأنها أسرع وأكثر استقرارًا عدديًا. يعني كل اللي اتعلمته امبارح كان SVD من تحت.</p>
+  <div class="note"><strong>خد بالك:</strong> الـ «n − 1» هنا هو عدد الـ samples ناقص واحد، مش عدد الأعمدة. ولو نسيت تعمل centering قبل الـ SVD، أول component هيشاور على المتوسط نفسه بدل اتجاه الانتشار.</div>
+</section>
+
+<section id="d11-code">
+  <div class="station-head"><span class="tag">09</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من الـ root بتاع الريبو (اللي عملتله clone في Day 1)، شغّل الملف الكامل الأول عشان تشوف كل الـ demos:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+git pull
+python3 phases/01-math-foundations/11-singular-value-decomposition/code/svd.py</pre></div>
+  <p>ولو عندك Julia:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>julia phases/01-math-foundations/11-singular-value-decomposition/code/svd.jl</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> اقفل الملف واكتب الخطوات دي بنفسك في <code>my_svd.py</code>. بص على الأصل بس لو اتزنقت. الأرقام اللي تحت مكتوبة لما تكون محسوبة بالرياضة بالظبط؛ الباقي هوصفلك شكله، وقارن انت باللي يطلعلك.</p>
+
+  <h3>خطوة ١: Power iteration، إزاي تلاقي أكبر اتجاه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def power_iteration(M, num_iters=200, tol=1e-10):
+    n = M.shape[1]
+    v = np.random.randn(n)            <span class="c"># ابدأ باتجاه عشوائي</span>
+    v = v / np.linalg.norm(v)
+    for _ in range(num_iters):
+        Mv = M @ v                    <span class="c"># اضرب في المصفوفة</span>
+        norm = np.linalg.norm(Mv)
+        if norm &lt; tol:
+            return 0.0, v
+        v_new = Mv / norm             <span class="c"># رجّع الطول 1</span>
+        if np.abs(np.dot(v_new, v)) &gt; 1 - tol:   <span class="c"># الاتجاه ثبت؟ اقف</span>
+            v = v_new
+            break
+        v = v_new
+    eigenvalue = v @ M @ v            <span class="c"># Rayleigh quotient</span>
+    return eigenvalue, v</pre></div>
+  <p>الفكرة: كل ما تضرب أي متجه في المصفوفة، المركّبة اللي في اتجاه أكبر eigenvalue بتكبر أسرع من الباقي، فبعد كام لفة المتجه بيلف ناحيته.</p>
+
+  <h3>خطوة ٢: SVD من الصفر بالـ deflation</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def svd_from_scratch(A, k=None):
+    m, n = A.shape
+    if k is None:
+        k = min(m, n)
+    sigmas, us, vs = [], [], []
+    A_residual = A.copy().astype(float)
+    for i in range(k):
+        AtA = A_residual.T @ A_residual            <span class="c"># eigenvectors بتوعها = V</span>
+        eigenvalue, v = power_iteration(AtA, num_iters=300)
+        if eigenvalue &lt; 1e-10:                      <span class="c"># مفيش حاجة فاضلة</span>
+            break
+        sigma = np.sqrt(max(eigenvalue, 0))        <span class="c"># σ = √λ</span>
+        u = A_residual @ v / sigma                 <span class="c"># A v = σ u</span>
+        u_norm = np.linalg.norm(u)
+        if u_norm &gt; 1e-10:
+            u = u / u_norm
+        sigmas.append(sigma); us.append(u); vs.append(v)
+        A_residual = A_residual - sigma * np.outer(u, v)   <span class="c"># شيل الطبقة دي</span>
+    U = np.column_stack(us) if us else np.empty((m, 0))
+    S = np.array(sigmas)
+    V = np.column_stack(vs) if vs else np.empty((n, 0))
+    return U, S, V</pre></div>
+  <p>ده نفس «شكل مجموع الطبقات»: لاقي أكبر طبقة، اطرحها، ودوّر على اللي بعدها.</p>
+
+  <h3>خطوة ٣: قارن بـ NumPy</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>np.random.seed(42)
+A = np.random.randn(6, 4)
+
+U_ours, S_ours, V_ours = svd_from_scratch(A)
+U_np, S_np, Vt_np = np.linalg.svd(A, full_matrices=False)   <span class="c"># خد بالك: بترجع Vt مش V</span>
+
+print("Ours: ", np.round(S_ours, 4))
+print("NumPy:", np.round(S_np, 4))
+A_ours = U_ours @ np.diag(S_ours) @ V_ours.T
+print(f"Reconstruction error: {np.linalg.norm(A - A_ours):.10f}")
+
+for i in range(4):                       <span class="c"># اتأكد إن A v = σ u</span>
+    lhs = A @ Vt_np[i]; rhs = S_np[i] * U_np[:, i]
+    print(i, np.allclose(lhs, rhs, atol=1e-10) or np.allclose(lhs, -rhs, atol=1e-10))</pre></div>
+  <details><summary>المفروض تشوف إيه؟</summary><p>٤ singular values مترتبة من الكبير للصغير، وقيمك هي هي قيم NumPy بعد التقريب لـ ٤ أرقام. الـ reconstruction error رقم صغير جدًا قريب من الصفر، والـ ٤ أسطر الأخيرة كلها <code>True</code>. الإشارة ± في الـ vectors ممكن تختلف بينك وبين NumPy؛ ده طبيعي لأن −u و −v برضه حل صحيح.</p></details>
+
+  <h3>خطوة ٤: الهندسة: لف ومط ولف</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>A = np.array([[3.0, 1.0],
+              [1.0, 3.0]])
+U, S, Vt = np.linalg.svd(A)
+print("Sigma:", np.round(S, 4))
+print(np.round(U.T @ U, 6))      <span class="c"># لازم I</span>
+
+theta = np.linspace(0, 2 * np.pi, 8, endpoint=False)
+for t in theta:
+    p = np.array([np.cos(t), np.sin(t)])       <span class="c"># نقطة على الدايرة</span>
+    step1 = Vt @ p                              <span class="c"># لفة</span>
+    step2 = S * step1                           <span class="c"># مط</span>
+    step3 = U @ step2                           <span class="c"># لفة</span>
+    print(np.round(step3, 2), np.round(A @ p, 2))   <span class="c"># الاتنين نفس الحاجة</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Sigma: [4. 2.]</pre><p>المصفوفة دي symmetric و eigenvalues بتوعها 4 و2، فالـ singular values هي 4 و2 بالظبط (جربها في معمل ٠٢ بزرار «مثال الدرس»). <code>U.T @ U</code> بتطلع مصفوفة الوحدة، وفي كل سطر من الـ loop العمودين متطابقين.</p></details>
+
+  <h3>خطوة ٥: Low-rank approximation بأرقام مضبوطة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>np.random.seed(42)
+m, n = 100, 80
+U_true = np.linalg.qr(np.random.randn(m, 5))[0]      <span class="c"># أعمدة orthonormal</span>
+V_true = np.linalg.qr(np.random.randn(n, 5))[0]
+S_true = np.array([50, 30, 15, 8, 3], dtype=float)
+A = U_true @ np.diag(S_true) @ V_true.T              <span class="c"># rank 5 بالظبط</span>
+
+U, S, Vt = np.linalg.svd(A, full_matrices=False)
+print(np.round(S[:10], 4))
+A_norm = np.linalg.norm(A, 'fro')
+for k in range(1, 8):
+    A_k = U[:, :k] @ np.diag(S[:k]) @ Vt[:k, :]
+    err = np.linalg.norm(A - A_k, 'fro')
+    print(f"{k:3d}  {err:10.4f}  {err/A_norm:10.6f}  {k*(m+n+1)/(m*n):7.1%}")</pre></div>
+  <details><summary>الناتج المتوقع (محسوب من Eckart–Young)</summary>
+    <p>أول ٥ singular values هي 50, 30, 15, 8, 3 والباقي ≈ 0. الخطأ = جذر مجموع مربعات اللي اترمى، يعني مثلًا عند k=1: <span class="ltr">√(30²+15²+8²+3²) = √1198</span>.</p>
+    <pre class="term">  1     34.6121    0.569174     2.3%
+  2     17.2627    0.283873     4.5%
+  3      8.5440    0.140501     6.8%
+  4      3.0000    0.049333     9.0%   (ممكن تظهر 9.1%)
+  5      0.0000    0.000000    11.3%   (رقم صغير جدًا مش صفر بالظبط)</pre>
+    <p>بعد k=5 الخطأ بيفضل ≈ 0 والتخزين بيزيد على الفاضي.</p></details>
+
+  <h3>خطوة ٦: ضغط صورة وشيل noise</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def compress_image_svd(image, k):
+    U, S, Vt = np.linalg.svd(image, full_matrices=False)
+    return U[:, :k] @ np.diag(S[:k]) @ Vt[:k, :]
+
+np.random.seed(42)
+clean = np.outer(np.sin(np.linspace(0, 4*np.pi, 100)),
+                 np.cos(np.linspace(0, 2*np.pi, 80)))   <span class="c"># rank 1</span>
+noisy = clean + 0.3 * np.random.randn(100, 80)
+
+U, S, Vt = np.linalg.svd(noisy, full_matrices=False)
+denoised = U[:, :5] @ np.diag(S[:5]) @ Vt[:5, :]       <span class="c"># خلّي أول 5 بس</span>
+print(f"Noisy error:    {np.linalg.norm(noisy - clean):.4f}")
+print(f"Denoised error: {np.linalg.norm(denoised - clean):.4f}")</pre></div>
+  <details><summary>المفروض تشوف إيه؟</summary><p>الـ denoised error أصغر بكتير من الـ noisy error. في الملف الكامل <code>svd.py</code> هتلاقي demo بيجرب noise بمستويات 0.1 و0.5 و1.0 و2.0 ويدوّر على أحسن k؛ لاحظ إن الإشارة النضيفة هناك rank 3، فأحسن k بتبقى قريبة من 3 لما الـ noise قليل، وبتقل لما الـ noise يزيد.</p></details>
+
+  <h3>خطوة ٧: Pseudoinverse</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def pseudoinverse_via_svd(A, tol=1e-10):
+    U, S, Vt = np.linalg.svd(A, full_matrices=False)
+    S_inv = np.array([1.0 / s if s &gt; tol else 0.0 for s in S])   <span class="c"># اقلب اللي مش صفر بس</span>
+    return Vt.T @ np.diag(S_inv) @ U.T
+
+<span class="c"># معادلات أكتر من المجاهيل: least squares</span>
+A = np.array([[1, 1], [2, 1], [3, 1]], dtype=float)
+b = np.array([3.0, 5.0, 6.0])
+x = pseudoinverse_via_svd(A) @ b
+print(np.round(x, 6), np.linalg.norm(A @ x - b))
+
+<span class="c"># مجاهيل أكتر من المعادلات: أصغر حل</span>
+A2 = np.array([[1, 2, 3], [4, 5, 6]], dtype=float)
+print(np.round(pseudoinverse_via_svd(A2) @ np.array([14.0, 32.0]), 6))
+
+<span class="c"># مصفوفة singular</span>
+A3 = np.array([[1, 2], [2, 4]], dtype=float)
+print(np.round(pseudoinverse_via_svd(A3) @ np.array([3.0, 6.0]), 6))</pre></div>
+  <details><summary>الناتج المتوقع (محسوب بالرياضة)</summary>
+    <pre class="term">[1.5      1.666667] 0.408248...
+[1. 2. 3.]
+[0.6 1.2]</pre>
+    <p>الأول: أحسن خط للنقط (1,3) (2,5) (3,6) هو <span class="ltr">y = 1.5x + 5/3</span>، والـ residuals <span class="ltr">[1/6, −1/3, 1/6]</span>. التاني: <span class="ltr">[1,2,3]</span> بيحقق المعادلتين وهو أصغر حل (norm = √14 ≈ 3.741657). التالت: A3 الـ singular values بتاعتها 5 و0، والحل <span class="ltr">[0.6, 1.2]</span> (norm ≈ 1.341641) هو أصغر x بيحقق المعادلة.</p></details>
+
+  <h3>خطوة ٨: Condition number وخصائص المصفوفة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>for name, M in [("Well", [[2, 1], [1, 2]]), ("Moderate", [[10, 7], [7, 5]]),
+                ("Ill", [[1, 1], [1, 1.0001]])]:
+    S = np.linalg.svd(np.array(M, dtype=float), compute_uv=False)
+    print(name, round(S[0] / S[-1], 1))           <span class="c"># σmax / σmin</span>
+
+A = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=float)
+S = np.linalg.svd(A, compute_uv=False)
+print("rank:", np.sum(S &gt; 1e-10))
+print(np.linalg.norm(A, 'fro'), np.sqrt(np.sum(S**2)))   <span class="c"># Frobenius = √Σσ²</span>
+print(S[0], np.linalg.norm(A, 2))                         <span class="c"># spectral = σ₁</span>
+print(np.sum(S))                                          <span class="c"># nuclear = Σσ</span></pre></div>
+  <details><summary>الناتج المتوقع</summary>
+    <p>الـ condition numbers تقريبًا: 3.0 ثم 223.0 ثم 40002.0 (كل ما تقرب المصفوفة من singular، الرقم بيطير). المصفوفة 1..9 الـ rank بتاعها 2 مع إنها 3×3 (الصفوف معتمدة على بعض)، والـ Frobenius = √285 ≈ 16.881943 بالطريقتين، والـ spectral norm ≈ 16.848103، والـ nuclear ≈ 17.916473. وفي الملف الكامل هتلاقي كمان إن |det| لمصفوفة مربعة = حاصل ضرب الـ singular values (للمصفوفة [[3,1],[1,3]]: 4×2 = 8).</p></details>
+  <p>في <code>svd.py</code> كمان demo للـ recommendation (١٠ يوزرز × ٨ أفلام، rank 3) و LSA (١٥ كلمة × ٦ documents) و «PCA is SVD» اللي بيطبع <code>Variances match: True</code>. شغّلهم واقرا الطباعة بتاعتهم بعناية.</p>
+</section>
+
+<section id="d11-ex">
+  <div class="station-head"><span class="tag">10</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة (أنصح بـ ٣ و٥)، والباقي في تسخين بكرة.</p>
+  <ol class="ex">
+    <li><b>SVD من غير power iteration:</b> احسب eigendecomposition لـ <span class="ltr">AᵀA</span> عشان تجيب V والـ singular values، وبعدين <span class="ltr">U = A V Σ⁻¹</span>. قارن الدقة بنسخة الـ power iteration وبـ NumPy.
+      <details><summary>تلميح</summary>استخدم <code>np.linalg.eigh</code> ورتب الـ eigenvalues تنازليًا (ورتب الـ vectors معاهم). σ = √λ. اتأكد إن <span class="ltr">U Σ Vᵀ</span> بيرجع A، وقارن الخطأ. جرب كمان على مصفوفة ill-conditioned وشوف مين بيخسر دقة الأول (هتلاقي طريقة AᵀA هي اللي بتقع، عشان بتربّع الـ condition number).</details></li>
+    <li><b>صورة حقيقية:</b> حمّل صورة grayscale واضغطها بـ k = 1, 5, 10, 25, 50, 100. لكل k احسب الـ compression ratio والـ relative error، ولاقي أول k الصورة فيها بتبقى مقبولة بعينك.
+      <details><summary>تلميح</summary>استخدم <code>truncated_svd</code> و<code>reconstruct</code> و<code>compression_ratio(m, n, k)</code> من ملف الدرس. الخطأ لازم يقل كل ما k تزيد. الإجابة هي أول k مبقتش تشوف فيها «بلوكات» واضحة.</details></li>
+    <li><b>Recommendation system صغير:</b> مصفوفة 10×8 تقييمات فيها خانات ناقصة. املاهم بمتوسط الصف، اعمل SVD، وخد rank 3، واستخدمه تتوقع الناقص.
+      <details><summary>تلميح</summary>علّم الخانات الناقصة، املاها بمتوسط الصف، reconstruct بـ rank 3. بعدين قيس: كام توقع طلع برا نطاق التقييم، وإيه أكبر تغيير حصل في خانة كانت معروفة. rank 3 مش بيضمن الاتنين، فاعمل clip للتوقعات لو عايز تقييمات صالحة.</details></li>
+    <li><b>LSA على ٣ مواضيع:</b> مصفوفة documents × terms مقاسها 100×50 فيها ٣ مواضيع، كل موضوع ليه ٥ كلمات. ضيف noise، واعمل SVD، واتأكد إن أول ٣ singular values أكبر بكتير من الباقي. اسقط الـ documents على الـ 3D واتأكد إن كل موضوع متجمع مع بعضه.
+      <details><summary>تلميح</summary>كل موضوع ياخد بلوك من ٥ كلمات بقيم عالية في الـ documents بتاعته، وnoise صغير. اطبع الـ singular values: أول ٣ لازم أكبر بكتير من الرابع. لوّن النقط حسب الموضوع.</details></li>
+    <li><b>أحسن k مع كل مستوى noise:</b> مصفوفة نضيفة rank 3 مقاسها 50×40، وضيف Gaussian noise بـ σ = 0.1, 0.5, 1.0, 2.0. لكل مستوى جرب k من 1 لـ 40 وقيس الخطأ عن النضيفة، وارسم أحسن k مع الـ noise.
+      <details><summary>تلميح</summary>اعمل النضيفة = حاصل ضرب مصفوفة عشوائية 50×3 في 3×40. المتوقع: أحسن k قريبة من 3 لما الـ noise قليل، وبتصغر لما الـ noise يكبر (لأن الـ components الضعيفة بتغرق في الـ noise). ده بالظبط اللي معمل ٠٢ بيوريهولك.</details></li>
+    <li><b>إضافة مني · اضغط embeddings بتوع RAG:</b> عندك 1000 chunk وكل واحد embedding طوله 384 (اعملهم عشوائي بس بـ structure: مثلًا 1000×20 مضروبة في 20×384 + noise). اعمل truncated SVD لـ 64 بُعد، وقارن: لكل query، هل أقرب ٥ chunks بالـ cosine في الـ 384 هما نفسهم في الـ 64؟ احسب نسبة التطابق (recall@5) والتوفير في الذاكرة.
+      <details><summary>تلميح</summary>اعمل centering الأول. الـ query لازم تتسقط بنفس الـ Vₖ: <span class="ltr">q_small = (q − mean) @ Vt[:64].T</span>. لو الداتا فعلًا rank 20 تقريبًا، هتلاقي التطابق عالي والذاكرة نزلت لـ 64/384 ≈ 17%. ده نفس منطق تقليل أبعاد الـ vectors في الـ vector databases.</details></li>
+  </ol>
+</section>
+
+<section id="d11-extra">
+  <div class="station-head"><span class="tag">11</span><h2>إضافة مني: اللي الدرس ما قالهوش صريح</h2></div>
+  <h3>الحدس في جملة</h3>
+  <p>الـ SVD بيقولك «المصفوفة دي بتعمل إيه فعلًا»: هي بتهتم بأنهي اتجاهات (V)، وبتكبرها قد إيه (Σ)، وبتوديها فين (U). والـ singular values المترتبة هي «قايمة أولويات» المصفوفة.</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="ex">
+    <li><code>np.linalg.svd</code> بترجع <b>Vt</b> مش V، وبترجع S كـ vector مش مصفوفة. لازم <code>np.diag(S)</code> قبل الضرب.</li>
+    <li>من غير <code>full_matrices=False</code>، U هتطلع m×m كاملة، ومش هتعرف تضرب <code>U @ np.diag(S) @ Vt</code> مباشرة لو المصفوفة مش مربعة.</li>
+    <li>الإشارة: (uᵢ, vᵢ) و(−uᵢ, −vᵢ) الاتنين صح. متقارنش vectors من مكتبتين بـ == ، قارن بالـ absolute أو اتأكد من A v = σ u.</li>
+    <li>الـ PCA من غير centering = نتيجة غلط.</li>
+    <li>ملا الخانات الناقصة بأصفار في الـ ratings بيعلّم الموديل إن اليوزر كره الفيلم. الدرس استخدم متوسط الصف، والإنتاج بيستخدم ALS أو طرق بتتعامل مع الناقص.</li>
+    <li>الـ SVD الكامل لمصفوفة ضخمة تقيل (حوالي O(m·n·min(m,n))). لو محتاج أول k بس، استخدم randomized/truncated SVD (زي <code>TruncatedSVD</code> في sklearn).</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents</h3>
+  <ul class="ex">
+    <li><b>LoRA:</b> فاكر Day 1؟ الـ LoRA بتفترض إن تعديل الأوزان ΔW ليه rank صغير وبتتعلمه كـ B·A. الـ SVD هو اللي بيقولك «أحسن تقريب rank r» يعني إيه بالظبط، وتقدر تستخدمه تقيس هل ΔW بعد fine-tuning كامل فعلًا low-rank: بص على الـ singular values بتاعتها.</li>
+    <li><b>ضغط الموديلات:</b> ممكن تستبدل مصفوفة وزن W (d×d) بـ <span class="ltr">Uₖ Σₖ</span> و <span class="ltr">Vₖᵀ</span>، يعني layerين أصغر. نفس حسبة التخزين بتاعة الصور.</li>
+    <li><b>Embeddings والـ RAG:</b> الـ LSA هي جد الـ embeddings، وتقليل أبعاد الـ vectors قبل التخزين في vector DB منطقه نفس منطق الـ truncated SVD (تمرين ٦).</li>
+    <li><b>Least squares في كل حتة:</b> أي «fit» خطي (calibration، linear probe على activations) بيتحل جوه المكتبات بطرق قريبة من الـ pseudoinverse.</li>
+  </ul>
+</section>
+
+<section id="d11-quiz">
+  <div class="station-head"><span class="tag">12</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d11-quizBox"></div>
+</section>
+
+<section id="d11-done">
+  <div class="station-head"><span class="tag">13</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d11-checklist">
+    <li><label><input type="checkbox" data-ck="geo"> أقدر أشرح «لف، مط، لف» وأقول U و Σ و V كل واحدة بتعمل إيه</label></li>
+    <li><label><input type="checkbox" data-ck="lab"> لعبت في المعامل التلاتة وشفت الفجوة بين الـ signal والـ noise في الطيف</label></li>
+    <li><label><input type="checkbox" data-ck="code"> كتبت <code>power_iteration</code> و<code>svd_from_scratch</code> بإيدي وقارنتهم بـ NumPy</label></li>
+    <li><label><input type="checkbox" data-ck="pinv"> فهمت ليه <code>svd(A)</code> أحسن من <code>eig(A.T @ A)</code> وجربت الـ pseudoinverse</label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="quiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Truncated SVD / Eckart–Young</td><td>ضغط الصور، ضغط أوزان الموديلات، تقليل أبعاد الـ embeddings</td></tr>
+    <tr><td>Low rank</td><td>الـ LoRA، الـ latent factors في الـ recommendations</td></tr>
+    <tr><td>Singular value gap</td><td>شيل الـ noise من القياسات والداتا</td></tr>
+    <tr><td>Pseudoinverse</td><td>Least squares، linear regression، الأنظمة الـ singular</td></tr>
+    <tr><td>Condition number</td><td>الاستقرار العددي، ليه الـ solvers بتتجنب AᵀA</td></tr>
+    <tr><td>PCA = SVD</td><td>sklearn PCA، الـ preprocessing، visualization</td></tr>
+    <tr><td>LSA</td><td>البحث الدلالي القديم، جد الـ Word2Vec والـ GloVe</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Tensor Operations. هنطلع من المصفوفات (2D) للـ tensors (أي عدد أبعاد) اللي الـ PyTorch عايش عليها، وهنبدأ بتسخين على الـ SVD.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F11-singular-value-decomposition" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/11-singular-value-decomposition</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, f=A.fmt, $=id=>document.getElementById(id);
+const root=$('d11-root');
+
+// roadmap
+const rm=$('d11-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===11)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: rotate, scale, rotate ----------
+const gc=$('d11-geoCanvas'),gx=A.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h,GS=36,gox=GW/2,goy=GH/2;
+let Mx=[3,1,1,3],anim=null;
+const ids=['d11-ma','d11-mb','d11-mc','d11-md'],lbl=['d11-vA','d11-vB','d11-vC','d11-vD'];
+function svd2(m){
+  const [a,b,c,d]=m;
+  const p=a*a+c*c,q=a*b+c*d,r=b*b+d*d;            // AᵀA = [[p,q],[q,r]]
+  const tr=p+r,disc=Math.sqrt(Math.max(0,(p-r)*(p-r)/4+q*q));
+  const l1=tr/2+disc,l2=Math.max(0,tr/2-disc);
+  const phi=0.5*Math.atan2(2*q,p-r);
+  const v1=[Math.cos(phi),Math.sin(phi)],v2=[-Math.sin(phi),Math.cos(phi)];
+  const s1=Math.sqrt(l1),s2=Math.sqrt(l2);
+  const Av=v=>[a*v[0]+b*v[1],c*v[0]+d*v[1]];
+  let u1=s1>1e-9?Av(v1).map(x=>x/s1):[1,0];
+  let u2;
+  if(s2>1e-6){u2=Av(v2).map(x=>x/s2)}else{u2=[-u1[1],u1[0]]}
+  return {s1,s2,v1,v2,u1,u2};
+}
+const stageNames=['0 · p (الدخل)','1 · Vᵀ p (لفة)','2 · Σ Vᵀ p (مط)','3 · U Σ Vᵀ p = A p'];
+function stagePts(t,S){
+  const N=72,out=[];
+  for(let i=0;i<N;i++){
+    const th=i/N*Math.PI*2,p=[Math.cos(th),Math.sin(th)];
+    const st0=p;
+    const st1=[S.v1[0]*p[0]+S.v1[1]*p[1],S.v2[0]*p[0]+S.v2[1]*p[1]];
+    const st2=[S.s1*st1[0],S.s2*st1[1]];
+    const st3=[st2[0]*S.u1[0]+st2[1]*S.u2[0],st2[0]*S.u1[1]+st2[1]*S.u2[1]];
+    const st=[st0,st1,st2,st3],k=Math.min(2,Math.floor(t)),e=t-k;
+    out.push([st[k][0]+(st[k+1][0]-st[k][0])*e,st[k][1]+(st[k+1][1]-st[k][1])*e]);
+  }
+  return out;
+}
+function drawGeo(){
+  const t=+$('d11-stage').value,S=svd2(Mx);
+  gx.clearRect(0,0,GW,GH);A.grid(gx,GW,GH,GS,gox,goy);
+  const P=v=>[gox+v[0]*GS,goy-v[1]*GS];
+  // faint unit circle reference
+  gx.strokeStyle=css('--muted');gx.globalAlpha=.4;gx.setLineDash([4,4]);gx.beginPath();gx.arc(gox,goy,GS,0,7);gx.stroke();gx.setLineDash([]);gx.globalAlpha=1;
+  const pts=stagePts(t,S);
+  gx.fillStyle=css('--vec-a');gx.globalAlpha=.14;gx.beginPath();pts.forEach((p,i)=>{const q=P(p);i?gx.lineTo(...q):gx.moveTo(...q)});gx.closePath();gx.fill();gx.globalAlpha=1;
+  gx.strokeStyle=css('--vec-a');gx.lineWidth=2;gx.stroke();
+  // colored markers to track rotation
+  [[0,css('--vec-b')],[18,css('--ok')],[36,css('--bad')]].forEach(([i,c])=>{const q=P(pts[i]);gx.fillStyle=c;gx.beginPath();gx.arc(q[0],q[1],6,0,7);gx.fill()});
+  // axes of the result: σ·u at stage 3, σ·e at stage 2, v at stage 0
+  const ink=css('--ink');
+  if(t>2.5){A.arrow(gx,gox,goy,...P([S.s1*S.u1[0],S.s1*S.u1[1]]),css('--vec-b'),3);if(S.s2>1e-6)A.arrow(gx,gox,goy,...P([S.s2*S.u2[0],S.s2*S.u2[1]]),ink,2.5)}
+  else if(t<0.5){A.arrow(gx,gox,goy,...P(S.v1),css('--vec-b'),3);A.arrow(gx,gox,goy,...P(S.v2),ink,2.5)}
+  gx.font='13px JetBrains Mono, monospace';gx.fillStyle=ink;
+  gx.fillText(t>2.5?'σ₁u₁ (برتقالي) · σ₂u₂':t<0.5?'v₁ (برتقالي) · v₂':'',10,20);
+  $('d11-stageLbl').textContent=stageNames[Math.round(t)];
+  $('d11-gA').textContent=`[[${f(Mx[0],1)},${f(Mx[1],1)}],[${f(Mx[2],1)},${f(Mx[3],1)}]]`;
+  $('d11-gS1').textContent=f(S.s1,3);$('d11-gS2').textContent=f(S.s2,3);
+  const rank=S.s1<1e-9?0:(S.s2<1e-6?1:2);
+  const rr=$('d11-gR');rr.textContent=rank;rr.style.color=rank<2?css('--bad'):'';
+  $('d11-gDet').textContent=f(S.s1*S.s2,3);
+  $('d11-gK').textContent=S.s2>1e-6?f(S.s1/S.s2,2):'∞';
+}
+function setM(m){Mx=m.slice();ids.forEach((id,i)=>{$(id).value=Mx[i];$(lbl[i]).textContent=f(Mx[i],1)});drawGeo()}
+ids.forEach((id,i)=>$(id).addEventListener('input',e=>{Mx[i]=+e.target.value;$(lbl[i]).textContent=f(Mx[i],1);drawGeo()}));
+$('d11-stage').addEventListener('input',()=>{cancelAnimationFrame(anim);drawGeo()});
+root.querySelectorAll('[data-d11m]').forEach(b=>b.addEventListener('click',()=>setM(b.dataset.d11m.split(',').map(Number))));
+$('d11-play').addEventListener('click',()=>{
+  cancelAnimationFrame(anim);const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  if(reduce){$('d11-stage').value=3;drawGeo();return}
+  const t0=performance.now(),dur=4200;
+  const step=now=>{if(!document.body.contains(gc))return;const k=Math.min(1,(now-t0)/dur);$('d11-stage').value=3*k;drawGeo();if(k<1)anim=requestAnimationFrame(step)};
+  anim=requestAnimationFrame(step);
+});
+setM(Mx);
+
+// ---------- Lab 2: image compression & denoising ----------
+const N=48,ic=$('d11-imgCanvas'),ix=A.setupCanvas(ic),IW=+ic.dataset.w,IH=+ic.dataset.h;
+const sc=$('d11-specCanvas'),sx=A.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+let clean=null,input=null,dec=null;
+function rng(seed){let s=seed>>>0;return()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function makeImage(kind){
+  const M=new Float64Array(N*N);
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+    const x=-3+6*j/(N-1),y=-3+6*i/(N-1);let v;
+    if(kind==='smooth'){v=Math.sin(x)*Math.cos(y)+0.5*Math.sin(2*x+y)}
+    else{const dx=j-17,dy=i-18,r=Math.hypot(dx,dy);v=(r>7&&r<12)?1:0;if(j>28&&j<41&&i>8&&i<40&&(Math.abs(i-24)<3||Math.abs(j-34)<3))v=1;if(i+j>70&&i+j<76)v=0.6}
+    M[i*N+j]=v}
+  let mn=Infinity,mx=-Infinity;M.forEach(v=>{mn=Math.min(mn,v);mx=Math.max(mx,v)});
+  for(let k=0;k<M.length;k++)M[k]=(M[k]-mn)/((mx-mn)||1);   // 0..1 (الدرس بيضرب في 255)
+  return M;
+}
+// Jacobi eigen-decomposition of symmetric AᵀA, then σ = √λ
+function decompose(Am){
+  const n=N,C=new Float64Array(n*n);
+  for(let i=0;i<n;i++)for(let j=i;j<n;j++){let s=0;for(let r=0;r<n;r++)s+=Am[r*n+i]*Am[r*n+j];C[i*n+j]=C[j*n+i]=s}
+  const V=new Float64Array(n*n);for(let i=0;i<n;i++)V[i*n+i]=1;
+  for(let sweep=0;sweep<12;sweep++){
+    let off=0;for(let p=0;p<n;p++)for(let q=p+1;q<n;q++)off+=C[p*n+q]*C[p*n+q];
+    if(off<1e-20)break;
+    for(let p=0;p<n;p++)for(let q=p+1;q<n;q++){
+      const apq=C[p*n+q];if(Math.abs(apq)<1e-15)continue;
+      const th=(C[q*n+q]-C[p*n+p])/(2*apq),t=Math.sign(th||1)/(Math.abs(th)+Math.sqrt(th*th+1)),c=1/Math.sqrt(t*t+1),s=t*c;
+      for(let k=0;k<n;k++){const akp=C[k*n+p],akq=C[k*n+q];C[k*n+p]=c*akp-s*akq;C[k*n+q]=s*akp+c*akq}
+      for(let k=0;k<n;k++){const apk=C[p*n+k],aqk=C[q*n+k];C[p*n+k]=c*apk-s*aqk;C[q*n+k]=s*apk+c*aqk}
+      for(let k=0;k<n;k++){const vkp=V[k*n+p],vkq=V[k*n+q];V[k*n+p]=c*vkp-s*vkq;V[k*n+q]=s*vkp+c*vkq}
+    }
+  }
+  const order=[...Array(n).keys()].sort((a,b)=>C[b*n+b]-C[a*n+a]);
+  const S=order.map(i=>Math.sqrt(Math.max(0,C[i*n+i])));
+  const Vc=order.map(i=>{const v=new Float64Array(n);for(let k=0;k<n;k++)v[k]=V[k*n+i];return v});
+  const AV=Vc.map(v=>{const w=new Float64Array(n);for(let r=0;r<n;r++){let s=0;for(let k=0;k<n;k++)s+=Am[r*n+k]*v[k];w[r]=s}return w}); // A v = σ u
+  return {S,Vc,AV};
+}
+function recon(k){const R=new Float64Array(N*N);for(let c=0;c<k;c++){const w=dec.AV[c],v=dec.Vc[c];for(let i=0;i<N;i++){const wi=w[i];if(!wi)continue;for(let j=0;j<N;j++)R[i*N+j]+=wi*v[j]}}return R}
+const rmse=(X,Y)=>{let s=0;for(let i=0;i<X.length;i++)s+=(X[i]-Y[i])**2;return Math.sqrt(s/X.length)};
+const fro=(X,Y)=>{let s=0,t=0;for(let i=0;i<X.length;i++){s+=(X[i]-Y[i])**2;t+=Y[i]**2}return Math.sqrt(s/t)};
+function rebuild(){
+  clean=makeImage($('d11-pat').value);input=Float64Array.from(clean);
+  if($('d11-noise').checked){const r=rng(42),nl=+$('d11-nl').value;for(let i=0;i<input.length;i++)input[i]+=nl*gauss(r)}
+  dec=decompose(input);drawImg();
+}
+function paintMat(M,ox,oy,size){
+  const px=size/N;
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){let v=Math.max(0,Math.min(1,M[i*N+j]));const g=Math.round(20+v*215);ix.fillStyle=`rgb(${g},${g},${g})`;ix.fillRect(ox+j*px,oy+i*px,Math.ceil(px),Math.ceil(px))}
+}
+function drawImg(){
+  const k=+$('d11-k').value;$('d11-kLbl').textContent=k;
+  const R=recon(k);
+  ix.clearRect(0,0,IW,IH);
+  const size=240;paintMat(input,10,24,size);paintMat(R,IW-10-size,24,size);
+  ix.fillStyle=css('--ink');ix.font='13px JetBrains Mono, monospace';
+  ix.fillText($('d11-noise').checked?'input (noisy)':'input',10,16);ix.fillText('A_k, k='+k,IW-10-size,16);
+  // spectrum
+  sx.clearRect(0,0,SW,SH);const S=dec.S,mx=S[0]||1,bw=SW/N;
+  for(let i=0;i<N;i++){const h=Math.max(1,(SH-22)*Math.sqrt(S[i]/mx));sx.fillStyle=i<k?css('--vec-a'):css('--muted');sx.globalAlpha=i<k?1:.45;sx.fillRect(i*bw+1,SH-16-h,bw-2,h)}
+  sx.globalAlpha=1;sx.fillStyle=css('--ink');sx.font='11px JetBrains Mono, monospace';sx.fillText('σ_i  (√ scale)',4,12);sx.fillText('1',2,SH-3);sx.fillText(String(N),SW-16,SH-3);
+  const tot=S.reduce((a,s)=>a+s*s,0),en=S.slice(0,k).reduce((a,s)=>a+s*s,0)/tot;
+  $('d11-iSt').textContent=f(100*k*(2*N+1)/(N*N),1)+'%';
+  $('d11-iEn').textContent=f(100*en,2)+'%';
+  $('d11-iRm').textContent=f(rmse(input,R),4);
+  $('d11-iCl').textContent=$('d11-noise').checked?(f(fro(R,clean),3)+' (noisy: '+f(fro(input,clean),3)+')'):'—';
+}
+$('d11-k').addEventListener('input',drawImg);
+['d11-pat','d11-noise','d11-nl'].forEach(id=>$(id).addEventListener(id==='d11-nl'?'change':'input',rebuild));
+$('d11-best').addEventListener('click',()=>{
+  if(!$('d11-noise').checked){$('d11-noise').checked=true;rebuild()}
+  let best=1,be=Infinity;for(let k=1;k<=N;k++){const e=fro(recon(k),clean);if(e<be){be=e;best=k}}
+  $('d11-k').value=best;drawImg();
+});
+rebuild();
+
+// ---------- Lab 3: least squares via pseudoinverse ----------
+const lc=$('d11-lsCanvas'),lx=A.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h,LS=48,lox=50,loy=LH-40;
+let pts=[[1,3],[2,5],[3,6]],dragI=-1;
+const toPx=p=>[lox+p[0]*LS,loy-p[1]*LS],toW=(x,y)=>[(x-lox)/LS,(loy-y)/LS];
+function solve(){
+  // A = [x 1], SVD via AᵀA (2×2) — هنا مقبول عشان صغيرة، والدرس شرح ليه مش دايمًا
+  const n=pts.length;let p=0,q=0,r=n;pts.forEach(([x])=>{p+=x*x;q+=x});
+  const tr=p+r,disc=Math.sqrt(Math.max(0,(p-r)*(p-r)/4+q*q)),l1=tr/2+disc,l2=Math.max(0,tr/2-disc);
+  const phi=0.5*Math.atan2(2*q,p-r),V=[[Math.cos(phi),Math.sin(phi)],[-Math.sin(phi),Math.cos(phi)]];
+  const S=[Math.sqrt(l1),Math.sqrt(l2)],tol=1e-8*S[0];
+  let sol=[0,0];
+  for(let i=0;i<2;i++){if(S[i]<=tol||S[i]<1e-9)continue;
+    // uᵢ = A vᵢ / σᵢ ;  x += vᵢ (uᵢ·b)/σᵢ
+    let ub=0;pts.forEach(([x,y])=>{ub+=(x*V[i][0]+V[i][1])/S[i]*y});
+    sol[0]+=V[i][0]*ub/S[i];sol[1]+=V[i][1]*ub/S[i]}
+  let res=0;pts.forEach(([x,y])=>{res+=(sol[0]*x+sol[1]-y)**2});
+  return {m:sol[0],c:sol[1],res:Math.sqrt(res),S};
+}
+function drawLS(){
+  lx.clearRect(0,0,LW,LH);A.grid(lx,LW,LH,LS,lox,loy);
+  const R=solve(),ink=css('--ink');
+  lx.fillStyle=css('--muted');lx.font='11px JetBrains Mono, monospace';
+  for(let i=1;i<10;i++)lx.fillText(i,lox+i*LS-3,loy+14);for(let i=1;i<7;i++)lx.fillText(i,lox-14,loy-i*LS+4);
+  const x0=-1,x1=10;lx.strokeStyle=css('--vec-a');lx.lineWidth=2.5;lx.beginPath();lx.moveTo(...toPx([x0,R.m*x0+R.c]));lx.lineTo(...toPx([x1,R.m*x1+R.c]));lx.stroke();
+  pts.forEach(([x,y])=>{const a=toPx([x,y]),b=toPx([x,R.m*x+R.c]);lx.strokeStyle=css('--bad');lx.setLineDash([4,3]);lx.lineWidth=1.5;lx.beginPath();lx.moveTo(...a);lx.lineTo(...b);lx.stroke();lx.setLineDash([]);
+    lx.fillStyle=css('--vec-b');lx.beginPath();lx.arc(a[0],a[1],7,0,7);lx.fill()});
+  lx.fillStyle=ink;lx.font='13px JetBrains Mono, monospace';lx.fillText(`y = ${f(R.m,3)}x + ${f(R.c,3)}`,lox+8,22);
+  $('d11-lM').textContent=f(R.m,4);$('d11-lC').textContent=f(R.c,4);$('d11-lR').textContent=f(R.res,4);
+  $('d11-lS').textContent=f(R.S[0],3)+' , '+f(R.S[1],3);
+  const kk=$('d11-lK');if(R.S[1]<1e-9){kk.textContent='∞ (singular)';kk.style.color=css('--bad')}else{kk.textContent=f(R.S[0]/R.S[1],1);kk.style.color=''}
+}
+lc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(lc,e);let bi=-1,bd=18;pts.forEach((p,i)=>{const q=toPx(p),d=Math.hypot(q[0]-x,q[1]-y);if(d<bd){bd=d;bi=i}});
+  if(bi<0){if(pts.length>=12)return;const w=toW(x,y);pts.push([Math.round(w[0]*10)/10,Math.round(w[1]*10)/10]);bi=pts.length-1}
+  dragI=bi;lc.setPointerCapture(e.pointerId);drawLS()});
+lc.addEventListener('pointermove',e=>{if(dragI<0)return;const [x,y]=A.evPos(lc,e);let w=toW(x,y);w=[Math.max(0,Math.min(9.5,Math.round(w[0]*10)/10)),Math.max(0,Math.min(7,Math.round(w[1]*10)/10))];pts[dragI]=w;drawLS()});
+lc.addEventListener('pointerup',()=>dragI=-1);
+$('d11-lsReset').addEventListener('click',()=>{pts=[[1,3],[2,5],[3,6]];drawLS()});
+$('d11-lsVert').addEventListener('click',()=>{pts=[[3,2],[3,4],[3,5.5]];drawLS()});
+drawLS();
+
+// ---------- Quiz ----------
+const Q=[
+ ['ميزة الـ SVD على الـ eigendecomposition إيه؟',['الـ SVD دايمًا أسرع في الحساب','الـ SVD بيطلّع مصفوفات أصغر','الـ SVD بيشتغل على أي مصفوفة بأي شكل، والـ eigendecomposition محتاجة مصفوفة مربعة وعندها eigenvectors كاملة','الـ SVD مش محتاج حسابات عددية'],2,'الـ eigendecomposition بتشتغل بس على المربعة اللي عندها n eigenvectors مستقلة. الـ SVD بيفك أي m×n لـ U·Σ·Vᵀ من غير شروط على الشكل أو الـ rank.'],
+ ['يعني إيه «low-rank approximation»؟',['تحويل المصفوفة لنوع داتا بدقة أقل','شيل الصفوف اللي قيمها صغيرة','ترتيب صفوف المصفوفة حسب حجمها','تقريب المصفوفة بأهم components بس، فتطلع مصفوفة أبسط بعدد اتجاهات مستقلة أقل'],3,'rank k يعني تحتفظ بأكبر k singular values واتجاهاتهم وترمي الباقي. نظرية Eckart–Young بتثبت إن ده أحسن تقريب ممكن بالـ rank ده.'],
+ ['في A = U·Σ·Vᵀ، كل عامل بيمثل أنهي عملية هندسية؟',['التلاتة بيعملوا نفس الحاجة: لفة','U بتضغط، Σ بتمد، Vᵀ بتعمل normalize','Vᵀ بتلف في فضاء الدخل، Σ بتمط على المحاور، U بتلف لفضاء الخرج','U بتمط، Σ بتلف، Vᵀ بتعمل إزاحة'],2,'لف ← مط ← لف. Vᵀ بتلف الدخل لحد ما يتصف مع الاتجاهات الأساسية، Σ بتمط/تكبس على كل محور، وU بتلف النتيجة لفضاء الخرج.'],
+ ['ليه sklearn بتعمل الـ PCA بالـ SVD بدل eigendecomposition لمصفوفة الـ covariance؟',['الـ SVD بيدي نتايج مختلفة أدق للـ ML','الـ SVD أسهل يتوزع على الـ GPUs','الـ SVD بيشتغل على مصفوفة الداتا مباشرة من غير ما يكوّن الـ covariance، فبيتجنب تربيع الـ condition number وبيبقى أكثر استقرارًا','الـ SVD مش محتاج centering للداتا'],2,'تكوين AᵀA بيربّع الـ singular values والـ condition number. لو A عندها [1000, 0.001] يبقى AᵀA عندها [10⁶, 10⁻⁶]، يعني ٦ أرقام دقة ضاعت. الـ SVD بيشتغل على A نفسها.'],
+ ['الـ truncated SVD بيخلي الـ recommendation systems تتوقع التقييمات الناقصة إزاي؟',['بيدرّب neural network على التقييمات الموجودة','بيفك مصفوفة التقييمات لبروفايلات خفية لليوزرز والأفلام، والـ dot product بين بروفايل يوزر وبروفايل فيلم هو التوقع','بيملا الناقص بمتوسط التقييمات','بيجمّع اليوزرز المتشابهين وينسخ تقييماتهم'],1,'U = بروفايلات اليوزرز، Σ = أهمية كل عامل خفي، Vᵀ = بروفايلات الأفلام. الـ reconstruction بـ rank صغير بيملا الناقص بناءً على العوامل اللي بتفسر الأذواق.'],
+ ['(سؤال مني) عندك مصفوفة singular values بتاعتها [9, 4, 0.5, 0.1]. أقل خطأ Frobenius ممكن لو قربتها بـ rank 2 قد إيه؟',['0.5','√(0.5² + 0.1²) ≈ 0.51','4.6','مفيش طريقة نعرف من غير الـ vectors'],1,'Eckart–Young: الخطأ في الـ Frobenius = جذر مجموع مربعات الـ singular values اللي رميتها. والـ spectral error = σ₃ = 0.5.'],
+ ['(سؤال مني) LoRA بـ rank r على layer d×d. أنهي جملة صح؟',['التحديث ΔW = B·A أقصى rank ليه r، فهو حرفيًا low-rank approximation','الـ LoRA بتعمل SVD للأوزان في كل خطوة تدريب','الـ LoRA بتشيل أصغر singular values من W','الـ rank r لازم يساوي d'],0,'B (d×r) في A (r×d) مستحيل يطلع rank أكبر من r. فالـ LoRA بتراهن إن التعديل المطلوب عايش في عدد قليل من الاتجاهات، وده نفس منطق الـ truncated SVD.']
+];
+A.quiz($('d11-quizBox'),Q,5,()=>{const c=root.querySelector('input[data-ck="quiz"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- Checklist ----------
+A.checklist(11,root);
+
+// ---------- Theme redraw ----------
+A.onTheme(()=>{if(!document.body.contains(gc))return false;drawGeo();drawImg();drawLS()});
+})();
+</script>

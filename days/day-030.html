@@ -1,0 +1,622 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 08 · Feature Engineering &amp; Selection</span>
+  <h1>اليوم ٣٠: feature حلوة أحسن من ألف صف داتا</h1>
+  <p class="lede">بتجرب موديل، النتيجة متوسطة. تجرب موديل أشيك، برضه متوسطة. تقعد أسبوع تظبط hyperparameters، تحسن بسيط. وبعدين حد يحوّل الداتا الخام لـ features أحسن، فـ logistic regression بسيط يكسب الـ ensemble المتظبط بتاعك. النهاردة هتتعلم ده: <b>Feature Engineering</b> (تبني features تبيّن النمط) و<b>Feature Selection</b> (ترمي اللي بيزوّد noise من غير signal).</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>محتاج: <b>Statistics for ML و Linear Algebra من Phase 1، ودروس Phase 2 من ١ لـ ٧</b></span>
+    <span>بعده: <b>Model Evaluation</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d30-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d30-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: Unsupervised Learning</h2></div>
+  <details><summary>١. خطوتين Lloyd's algorithm بيكررهم إيه؟</summary><b>Assign</b>: كل نقطة لأقرب centroid. <b>Update</b>: كل centroid = متوسط نقطه. لحد ما التعيينات تبطّل تتغير.</details>
+  <details><summary>٢. شغّلت K-Means على features من غير scaling: واحدة مرتب بالآلاف وواحدة سن. إيه اللي هيحصل؟</summary>الـ clusters هتتقسم تقريبًا على المرتب بس، لأن المسافة كلها بتتحكم فيها الـ feature الكبيرة. النهاردة هنحل ده رسمي بالـ scaling.</details>
+  <details><summary>٣. DBSCAN بيعتبر نقطة noise إمتى؟</summary>لما ما تبقاش core (جوه eps فيه أقل من min_samples) ولا border (مش جوه eps من أي core). النقطة دي ملهاش cluster وبتتعامل كـ outlier.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>المشكلة والـ pipeline</div>
+    <div><b>15 min</b>Numerical transforms + معمل ١</div>
+    <div><b>15 min</b>Categorical + الـ leakage + معمل ٣</div>
+    <div><b>10 min</b>Text و TF-IDF + معمل ٢</div>
+    <div><b>10 min</b>Missing values و interactions و selection</div>
+    <div><b>20 min</b>اكتب الكود + تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d30-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه الـ representation أهم من الخوارزمية؟</h2></div>
+  <p>في الـ ML الكلاسيكي، <b>شكل الداتا</b> بيفرق أكتر من اختيار الخوارزمية. موديل سعر بيت فيه «المساحة» و«عدد الأوض» هيكسب موديل فيه «العنوان كـ string خام» مهما كان الـ learner متطور. الخوارزمية بتشتغل باللي انت بتديهولها وبس.</p>
+  <div class="note"><strong>تشبيه:</strong> طباخ شاطر جدًا ومعاه مكونات بايظة، هيطلع أكل وحش. طباخ عادي ومكوناته طازة ومتقطعة صح، هيكسبه. الـ features هي المكونات، والموديل هو الطباخ.</div>
+  <p><b>Feature engineering</b> = تحويل الداتا الخام لتمثيلات تسهّل على الموديل يلاقي النمط. <b>Feature selection</b> = رمي الـ features اللي بتضيف noise من غير signal. مع بعض هما أعلى حاجة بتجيب نتيجة في الـ ML الكلاسيكي.</p>
+  <h3>الـ Feature Pipeline</h3>
+  <div class="formula">Raw Data → Handle Missing Values → { Numerical Transforms | Categorical Encoding | Text Features } → Feature Interactions → Feature Selection → Model-Ready Data</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d30-num">
+  <div class="station-head"><span class="tag">02</span><h2>الأرقام: نادرًا ما بتكون جاهزة</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>التحويل</th><th>المعادلة</th><th>إمتى</th></tr>
+    <tr><td><b>Min-max scaling</b></td><td class="ltr">(x − min) / (max − min) → [0, 1]</td><td>عايز مدى ثابت. حساس للـ outliers (outlier واحد يكبس الباقي جنب الصفر)</td></tr>
+    <tr><td><b>Standardization</b> (z-score)</td><td class="ltr">(x − mean) / std → mean 0, std 1</td><td>الافتراضي للخوارزميات المعتمدة على المسافة (K-Means، KNN، SVM)</td></tr>
+    <tr><td><b>Log transform</b></td><td class="ltr">log(x + 1)</td><td>توزيع مايل لليمين (دخل، عدد سكان، عدد كلمات). بيحوّل العلاقات المضروبة لمجموعة</td></tr>
+    <tr><td><b>Binning</b></td><td>تقسيم المدى لـ n صناديق بعرض متساوي</td><td>العلاقة مع الـ target مش خطية بس على شكل سلالم (فئات سن مثلًا)</td></tr>
+    <tr><td><b>Polynomial</b></td><td class="ltr">x², x³, x₁·x₂</td><td>تخلّي موديل خطي يمسك علاقات مش خطية، بتمن features أكتر</td></tr>
+  </table></div>
+  <p>الـ <code>+1</code> في الـ log عشان <span class="ltr">log(0)</span> مش معرّف. وليه الـ log بيحوّل الضرب لجمع؟ لأن <span class="ltr">log(a·b) = log a + log b</span>. فلو السعر بيتضاعف بنسبة مع كل حاجة، بعد الـ log بقى بيزيد بمقدار ثابت، وده اللي الموديل الخطي بيحبه.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: شوف كل تحويل بيعمل إيه في التوزيع</h3>
+      <p>500 قيمة «دخل» مايلة لليمين (أغلب الناس دخلهم قليل وشوية دخلهم عالي جدًا). اختار التحويل وشوف الـ histogram والأرقام.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>Standardize و min-max بيغيروا <b>المحور بس</b>، الشكل المايل زي ما هو. الـ scaling مش بيصلّح الـ skew.</li>
+        <li>اختار log: الذيل الطويل اتلم والتوزيع بقى شبه الجرس. قيمة الـ skew بتقرب من الصفر.</li>
+        <li>شغّل «ضيف outlier» واختار min-max: كل الداتا اتكبست في أول عمود، لأن الـ max بقى ضخم.</li>
+        <li>binning: حرّك عدد الصناديق. بعرض متساوي، الذيل بياخد صناديق شبه فاضية.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d30-histC" width="520" height="300" aria-label="histogram للتحويلات"></canvas>
+      <div class="btns" id="d30-tr">
+        <button type="button" class="primary" data-t="raw">raw</button>
+        <button type="button" data-t="minmax">min-max</button>
+        <button type="button" data-t="std">standardize</button>
+        <button type="button" data-t="log">log(x+1)</button>
+        <button type="button" data-t="bin">binning</button>
+      </div>
+      <div class="mrow">
+        <label>bins = <span id="d30-bV">5</span><input type="range" id="d30-bins" min="2" max="12" value="5"></label>
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="d30-out"> ضيف outlier</label>
+      </div>
+      <div class="readout">
+        <div><small>mean</small><b id="d30-mean">–</b></div>
+        <div><small>std</small><b id="d30-std">–</b></div>
+        <div><small>min … max</small><b id="d30-mm">–</b></div>
+        <div><small>skew</small><b id="d30-sk">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d30-cat">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Categories: الموديل محتاج أرقام</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>بتعمل إيه</th><th>مثال <span class="ltr">color = red / blue / green</span></th><th>خد بالك</th></tr>
+    <tr><td><b>One-hot</b></td><td>عمود binary لكل category</td><td class="ltr">is_red, is_blue, is_green</td><td>ممتاز للـ cardinality القليلة، بس بينفجر مع categories كتير</td></tr>
+    <tr><td><b>Label</b></td><td>رقم صحيح لكل category</td><td class="ltr">red=0, blue=1, green=2</td><td>بيعمل ترتيب وهمي (green &gt; blue &gt; red). مناسب للـ tree-based models بس</td></tr>
+    <tr><td><b>Target</b></td><td>متوسط الـ target لكل category</td><td class="ltr">red → متوسط السعر للأحمر</td><td>قوي بس خطير: leakage عالي. اتحسب على الـ train بس</td></tr>
+  </table></div>
+  <h3>Target encoding مع smoothing</h3>
+  <p>category فيها صفين بس متوسطها مش موثوق. فبنخلطه مع المتوسط العام حسب عدد الصفوف:</p>
+  <div class="formula">weight = count / (count + smoothing)        enc(cat) = weight · mean(cat) + (1 − weight) · global_mean</div>
+  <p><b>تشبيه:</b> مطعم جديد عنده تقييمين 5 نجوم. هل هو أحسن من مطعم عنده 2000 تقييم متوسطهم 4.6؟ غالبًا لأ. الـ smoothing بيقول: «لحد ما يجيلك تقييمات كفاية، افترض إنه قريب من المتوسط العام».</p>
+  <h3>الـ Data leakage</h3>
+  <p>الـ leakage = استخدام معلومة في التدريب مش هتبقى موجودة وقت التوقع، فالنتيجة تطلع متفائلة بزيادة. في الـ target encoding: لو حسبت المتوسطات على الداتا كلها (والـ test جواها)، الـ labels بتاعة الـ test دخلت في الـ features. ولو category فيها صف واحد، الـ encoding بتاعه = الـ target بتاعه بالظبط. الموديل بيشوف الإجابة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: الـ target encoding بيغش إزاي</h3>
+      <p>feature اسمها <code>user_id</code> فيها categories كتير، وكل category فيها صفوف قليلة. <b>الـ target هنا random تمامًا</b>، مفيش أي علاقة حقيقية. بنعمل target encoding على الـ train، ونقيس الـ correlation بين الـ encoding والـ target على الـ train وعلى test منفصل.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>smoothing = 0 و categories كتير: correlation الـ train عالي جدًا (الموديل «فاكر» إن الـ feature قوية)، والـ test حوالين الصفر. ده overfitting من الـ encoding نفسه.</li>
+        <li>زوّد الـ smoothing: الـ encoding بيتسحب ناحية المتوسط العام والكذبة على الـ train بتقل.</li>
+        <li>جرّب «leave-one-out» (تمرين ٢): كل صف بيتحسب له المتوسط من غير الـ target بتاعه، فالغش بيختفي تقريبًا.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d30-teC" width="520" height="240" aria-label="معمل target encoding"></canvas>
+      <div class="mrow">
+        <label>smoothing = <span id="d30-smV">0</span><input type="range" id="d30-sm" min="0" max="50" value="0"></label>
+        <label>categories = <span id="d30-ncV">100</span><input type="range" id="d30-nc" min="3" max="300" value="100"></label>
+      </div>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d30-loo"> leave-one-out على الـ train</label>
+        <button type="button" id="d30-reseed">داتا جديدة</button>
+      </div>
+      <div class="readout">
+        <div><small>corr train</small><b id="d30-ctr">–</b></div>
+        <div><small>corr test</small><b id="d30-cte">–</b></div>
+        <div><small>صفوف لكل category</small><b id="d30-rpc">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d30-text">
+  <div class="station-head"><span class="tag">04</span><h2>النص: من كلام لأرقام</h2></div>
+  <p><b>Count vectorizer:</b> عدّ كل كلمة في المستند. <span class="ltr">"the cat sat on the mat"</span> ← <span class="ltr">{the: 2, cat: 1, sat: 1, on: 1, mat: 1}</span>.</p>
+  <p><b>TF-IDF:</b> بيوزن الكلمة بقد إيه هي مميزة على مستوى كل المستندات. الكلمات المنتشرة زي «the» وزنها قليل، والكلمات النادرة المميزة وزنها عالي.</p>
+  <div class="formula">TF(word, doc) = count(word in doc) / total words in doc
+IDF(word)     = log( total docs / docs containing word )
+TF-IDF        = TF · IDF</div>
+  <p><b>تشبيه:</b> في جروب واتساب العيلة، كلمة «صباح الخير» في كل رسالة، فمبتقولش حاجة عن الرسالة. بس كلمة «خطوبة» ظهرت في رسالة واحدة، يبقى هي اللي بتعرّف الرسالة دي. كلمة موجودة في كل المستندات IDF بتاعها <span class="ltr">log(1) = 0</span>، يعني اتشالت عمليًا.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: TF-IDF بإيدك</h3>
+      <p>دي نفس الـ 5 أوصاف بتاعة البيوت اللي في الريبو. عدّل أي سطر أو ضيف سطور (كل سطر مستند)، واختار مستند تشوف الـ count قصاد الـ TF-IDF لكلماته.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>في المستند الأول: «house» و«pool» مش موجودين غير فيه، فواخدين أعلى وزن. «with» في 3 مستندات، فوزنها أقل.</li>
+        <li>ضيف كلمة «house» في كل السطور: الـ IDF بتاعها بيبقى صفر.</li>
+        <li>الـ count بيدي كل الكلمات نفس الوزن تقريبًا. الـ TF-IDF بيرتبهم حسب التميّز.</li>
+      </ul>
+      <textarea id="d30-docs" rows="6" style="font:inherit;font-family:var(--f-mono);font-size:13px;direction:ltr;width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)" aria-label="المستندات">large modern house with pool
+small cozy cottage near downtown
+spacious family home with large yard
+modern apartment downtown with view
+rustic cabin in rural area</textarea>
+    </div>
+    <div class="instrument">
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px">المستند <select id="d30-doc"></select></label>
+      <div class="tablewrap"><table id="d30-tfT" class="ltr" style="direction:ltr"></table></div>
+      <div class="readout">
+        <div><small>vocabulary</small><b id="d30-voc">–</b></div>
+        <div><small>docs</small><b id="d30-nd">–</b></div>
+        <div><small>top TF-IDF</small><b id="d30-top">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d30-miss">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Missing values والـ Interactions</h2></div>
+  <p>الداتا الحقيقية فيها خُرم. استراتيجيات:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الاستراتيجية</th><th>إمتى وإيه العيب</th></tr>
+    <tr><td><b>Drop rows</b></td><td>بس لما الناقص قليل وعشوائي</td></tr>
+    <tr><td><b>Mean / median</b></td><td>بسيطة وبتحافظ على مركز الـ feature (الـ median أقوى قصاد الـ outliers). العيب: بتقلل الـ variance وبتكوّم كل القيم المتعبّية في نقطة واحدة، فشكل التوزيع بيتغير</td></tr>
+    <tr><td><b>Mode</b></td><td>للـ categorical (أكتر قيمة متكررة)</td></tr>
+    <tr><td><b>Indicator column</b></td><td>ضيف عمود binary «كان ناقص؟» <b>قبل</b> ما تعبّي. إن الداتا ناقصة نفسه ممكن يبقى معلومة</td></tr>
+    <tr><td><b>Forward / backward fill</b></td><td>للـ time series (خد آخر قيمة معروفة)</td></tr>
+  </table></div>
+  <p><b>مثال للـ indicator:</b> في طلبات القروض، اللي سايب خانة «الدخل» فاضية غالبًا ده في حد ذاته بيقول حاجة. لو عبّيت بالمتوسط وخلاص، المعلومة دي ضاعت.</p>
+  <h3>Feature interaction</h3>
+  <p>ساعات العلاقة في التركيبة. الطول لوحده والوزن لوحده أضعف من <span class="ltr">BMI = weight / height²</span>. والـ interactions بتضاعف عدد الـ features، فاستخدم معرفة المجال تختار الصح. (في الـ output بتاع الدرس كمان: السعر لكل متر، والوقت بين حدثين.)</p>
+</section>
+
+<!-- STATION 6 -->
+<section id="d30-sel">
+  <div class="station-head"><span class="tag">06</span><h2>Feature Selection: أقل أحسن ساعات</h2></div>
+  <p>features مش مفيدة بتزوّد noise، وبتطوّل التدريب، وممكن تعمل overfitting. موديل بـ 10 features كويسة غالبًا هيكسب نفس الموديل بـ 10 كويسة + 90 noise، لأن الـ noise بيدي الموديل فرصة يحفظ أنماط في الـ train مش هتتكرر.</p>
+  <h3>Filter methods (قبل الموديل)</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>Variance threshold:</b> شيل الـ features اللي تقريبًا ما بتتغيرش (عمود كله نفس القيمة ملوش لازمة).</li>
+    <li><b>Correlation:</b> شيل الـ features اللي correlation بينها وبين بعض عالي (مكررة). اتنين r = 0.98 تقريبًا نفس المعلومة.</li>
+    <li><b>Mutual information:</b> قد إيه معرفة الـ feature بتقلل عدم اليقين عن الـ target.</li>
+  </ul>
+  <div class="formula">r(x, y) = cov(x, y) / (std_x · std_y)          MI(X; Y) = Σ p(x, y) · log( p(x, y) / (p(x) · p(y)) )</div>
+  <p>في الكود الـ MI بيتحسب بعد ما الـ feature تتقسم لـ 10 bins. لو X و Y مستقلين، <span class="ltr">p(x,y) = p(x)p(y)</span> فالـ log = 0 والـ MI = 0.</p>
+  <h3>Wrapper methods (بالموديل)</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>L1 regularization (Lasso):</b> بيزق أوزان الـ features اللي مالهاش لازمة لصفر بالظبط.</li>
+    <li><b>Recursive feature elimination:</b> درّب، شيل أضعف feature، كرر.</li>
+  </ul>
+</section>
+
+<!-- CODE -->
+<section id="d30-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من الـ root بتاع الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/08-feature-engineering/code/features.py</pre></div>
+  <details><summary>إيه اللي هتشوفه</summary><p>عينة من داتا البيوت، عدد الـ missing في sqft و age والقيم اللي اتعبّت بيها، بعدين الـ transforms (الـ sqft بعد standardize: <span class="ltr">mean=0.0000, std=1.0000</span> تقريبًا، والـ age بعد min-max: <span class="ltr">[0.00, 1.00]</span>)، والـ encodings (الـ one-hot categories متترتبة: <span class="ltr">['downtown', 'rural', 'suburbs']</span> والـ label map <span class="ltr">{'downtown': 0, 'rural': 1, 'suburbs': 2}</span>)، والـ target encoding (downtown أعلى واحدة لأن الداتا متولدة كده)، والنص (vocabulary = 21 كلمة، المستند الأول فيه 5 كلمات غير صفرية، وأعلى 3 TF-IDF فيه: <span class="ltr">['house', 'pool', 'large']</span>)، والـ polynomial، وفي الآخر الـ feature selection على 7 features، والـ MI والـ correlation لكل واحدة مع السعر. الأرقام اللي معتمدة على الـ random متختلفش عندك لأن الـ seed ثابت، بس أنا ما كتبتهاش هنا، قارن بنفسك.</p></details>
+  <p>اكتب في <code>my_features.py</code> بإيدك.</p>
+
+  <h3>خطوة ١: الـ numerical transforms</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+
+def min_max_scale(values):
+    lo, hi = min(values), max(values)
+    if hi == lo:                                  <span class="c"># عمود ثابت: رجّع أصفار</span>
+        return [0.0] * len(values)
+    return [(v - lo) / (hi - lo) for v in values]
+
+def standardize(values):
+    n = len(values)
+    mean = sum(values) / n
+    variance = sum((v - mean) ** 2 for v in values) / n
+    std = math.sqrt(variance) if variance &gt; 0 else 1.0
+    return [(v - mean) / std for v in values]
+
+def log_transform(values):
+    return [math.log(v + 1) for v in values]      <span class="c"># +1 عشان log(0)</span>
+
+def bin_values(values, n_bins=5):
+    lo, hi = min(values), max(values)
+    width = (hi - lo) / n_bins
+    if width == 0:
+        return [0] * len(values)
+    return [min(int((v - lo) / width), n_bins - 1) for v in values]   <span class="c"># الـ max يروح لآخر صندوق</span>
+
+def polynomial_features(row, degree=2):
+    n = len(row)
+    result = list(row)
+    if degree &gt;= 2:
+        for i in range(n):
+            result.append(row[i] ** 2)            <span class="c"># المربعات</span>
+        for i in range(n):
+            for j in range(i + 1, n):
+                result.append(row[i] * row[j])    <span class="c"># الـ interactions</span>
+    return result</pre></div>
+
+  <h3>خطوة ٢: الـ categorical encoding</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def one_hot_encode(values):
+    categories = sorted(set(values))
+    idx = {c: i for i, c in enumerate(categories)}
+    encoded = []
+    for v in values:
+        row = [0] * len(categories)
+        row[idx[v]] = 1                           <span class="c"># واحد بس = 1</span>
+        encoded.append(row)
+    return encoded, categories
+
+def label_encode(values):
+    categories = sorted(set(values))
+    m = {c: i for i, c in enumerate(categories)}
+    return [m[v] for v in values], m
+
+def target_encode(feature_values, target_values, smoothing=10):
+    global_mean = sum(target_values) / len(target_values)
+    stats = {}
+    for feat, t in zip(feature_values, target_values):
+        s = stats.setdefault(feat, {"sum": 0.0, "count": 0})
+        s["sum"] += t
+        s["count"] += 1
+    encoding = {}
+    for cat, s in stats.items():
+        cat_mean = s["sum"] / s["count"]
+        w = s["count"] / (s["count"] + smoothing)   <span class="c"># صفوف قليلة = ثقة قليلة</span>
+        encoding[cat] = w * cat_mean + (1 - w) * global_mean
+    return [encoding[v] for v in feature_values], encoding</pre></div>
+
+  <h3>خطوة ٣: النص</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def count_vectorize(documents):
+    vocab = {}
+    for doc in documents:
+        for word in doc.lower().split():
+            if word not in vocab:
+                vocab[word] = len(vocab)          <span class="c"># رقم لكل كلمة جديدة</span>
+    vectors = []
+    for doc in documents:
+        vec = [0] * len(vocab)
+        for word in doc.lower().split():
+            vec[vocab[word]] += 1
+        vectors.append(vec)
+    return vectors, vocab
+
+def tfidf(documents):
+    n_docs = len(documents)
+    vocab = {}
+    for doc in documents:
+        for word in doc.lower().split():
+            if word not in vocab:
+                vocab[word] = len(vocab)
+    doc_freq = {}                                 <span class="c"># الكلمة ظهرت في كام مستند</span>
+    for doc in documents:
+        for word in set(doc.lower().split()):
+            doc_freq[word] = doc_freq.get(word, 0) + 1
+    vectors = []
+    for doc in documents:
+        words = doc.lower().split()
+        tf_map = {}
+        for w in words:
+            tf_map[w] = tf_map.get(w, 0) + 1
+        vec = [0.0] * len(vocab)
+        for w, c in tf_map.items():
+            tf = c / len(words)
+            idf = math.log(n_docs / doc_freq[w])  <span class="c"># منتشرة = IDF قليل</span>
+            vec[vocab[w]] = tf * idf
+        vectors.append(vec)
+    return vectors, vocab</pre></div>
+  <p>ملحوظة: الريبو بيبني الـ doc_freq بـ loop و set اسمها <code>seen</code>، وأنا استخدمت <code>set(...)</code> مباشرة. نفس النتيجة.</p>
+
+  <h3>خطوة ٤: الـ missing values</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def impute_mean(values):
+    present = [v for v in values if v is not None]
+    if not present:
+        return [0.0] * len(values), 0.0
+    mean = sum(present) / len(present)
+    return [v if v is not None else mean for v in values], mean
+
+def impute_median(values):
+    present = sorted(v for v in values if v is not None)
+    if not present:
+        return [0.0] * len(values), 0.0
+    n = len(present)
+    median = (present[n // 2 - 1] + present[n // 2]) / 2 if n % 2 == 0 else present[n // 2]
+    return [v if v is not None else median for v in values], median
+
+def impute_mode(values):
+    present = [v for v in values if v is not None]
+    if not present:
+        return values, None
+    counts = {}
+    for v in present:
+        counts[v] = counts.get(v, 0) + 1
+    mode = max(counts, key=counts.get)            <span class="c"># أكتر قيمة متكررة</span>
+    return [v if v is not None else mode for v in values], mode
+
+def add_missing_indicator(values):
+    return [0 if v is not None else 1 for v in values]   <span class="c"># اعمله قبل التعبئة</span></pre></div>
+
+  <h3>خطوة ٥: الـ feature selection</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def correlation(x, y):
+    n = len(x)
+    mx, my = sum(x) / n, sum(y) / n
+    cov = sum((a - mx) * (b - my) for a, b in zip(x, y)) / n
+    sx = math.sqrt(sum((a - mx) ** 2 for a in x) / n)
+    sy = math.sqrt(sum((b - my) ** 2 for b in y) / n)
+    return 0.0 if sx == 0 or sy == 0 else cov / (sx * sy)
+
+def mutual_information(feature, target, n_bins=10):
+    lo, hi = min(feature), max(feature)
+    width = (hi - lo) / n_bins if hi != lo else 1.0
+    fb = [min(int((v - lo) / width), n_bins - 1) for v in feature]   <span class="c"># قسّم لـ bins</span>
+    n = len(feature)
+    p_feat = {b: fb.count(b) / n for b in set(fb)}
+    p_target = {t: target.count(t) / n for t in set(target)}
+    mi = 0.0
+    for b in p_feat:
+        for t in p_target:
+            p_joint = sum(1 for a, c in zip(fb, target) if a == b and c == t) / n
+            if p_joint &gt; 0:
+                mi += p_joint * math.log(p_joint / (p_feat[b] * p_target[t]))
+    return mi
+
+def variance_threshold(features, threshold=0.01):
+    n, d = len(features), len(features[0])
+    keep = []
+    for j in range(d):
+        col = [features[i][j] for i in range(n)]
+        m = sum(col) / n
+        if sum((v - m) ** 2 for v in col) / n &gt;= threshold:
+            keep.append(j)
+    return keep
+
+def remove_correlated(features, threshold=0.9):
+    n, d = len(features), len(features[0])
+    drop = set()
+    for i in range(d):
+        if i in drop:
+            continue
+        ci = [features[r][i] for r in range(n)]
+        for j in range(i + 1, d):
+            if j in drop:
+                continue
+            cj = [features[r][j] for r in range(n)]
+            if abs(correlation(ci, cj)) &gt;= threshold:   <span class="c"># مكررة: شيل التانية</span>
+                drop.add(j)
+    return [i for i in range(d) if i not in drop]</pre></div>
+
+  <h3>خطوة ٦: داتا البيوت والـ pipeline</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_housing_data(n=200, seed=42):
+    random.seed(seed)
+    data = []
+    for _ in range(n):
+        sqft = random.uniform(500, 5000)
+        bedrooms = random.choice([1, 2, 3, 4, 5])
+        age = random.uniform(0, 50)
+        neighborhood = random.choice(["downtown", "suburbs", "rural"])
+        has_pool = random.choice([True, False])
+        sqft_m = sqft if random.random() &gt; 0.05 else None   <span class="c"># ~5% ناقص</span>
+        age_m = age if random.random() &gt; 0.08 else None     <span class="c"># ~8% ناقص</span>
+        price = (50 * sqft + 20000 * bedrooms - 1000 * age
+                 + (50000 if neighborhood == "downtown" else 10000 if neighborhood == "suburbs" else 0)
+                 + (15000 if has_pool else 0) + random.gauss(0, 20000))
+        data.append({"sqft": sqft_m, "bedrooms": bedrooms, "age": age_m,
+                     "neighborhood": neighborhood, "has_pool": has_pool, "price": price})
+    return data
+
+if __name__ == "__main__":
+    data = make_housing_data(200)
+    sqft_raw = [d["sqft"] for d in data]
+    age_raw = [d["age"] for d in data]
+    prices = [d["price"] for d in data]
+
+    sqft_ind = add_missing_indicator(sqft_raw)    <span class="c"># الأول: علّم الناقص</span>
+    age_ind = add_missing_indicator(age_raw)
+    sqft_imp, _ = impute_median(sqft_raw)
+    age_imp, _ = impute_mean(age_raw)
+
+    sqft_s = standardize(sqft_imp)
+    age_s = min_max_scale(age_imp)
+    ohe, cats = one_hot_encode([d["neighborhood"] for d in data])
+
+    X = [[sqft_s[i], age_s[i], float(sqft_ind[i]), float(age_ind[i])] + ohe[i]
+         for i in range(len(data))]
+    names = ["sqft", "age", "sqft_missing", "age_missing"] + [f"neigh_{c}" for c in cats]
+    print("features:", len(X[0]))
+    print("variance kept:", len(variance_threshold(X, 0.01)))
+    print("corr kept:", len(remove_correlated(X, 0.9)))
+
+    y_bin = [1 if p &gt; sum(prices) / len(prices) else 0 for p in prices]   <span class="c"># MI محتاج target متقسم</span>
+    for j, name in enumerate(names):
+        col = [row[j] for row in X]
+        print(f"{name:14s} MI={mutual_information(col, y_bin):.4f}  r={correlation(col, prices):.4f}")</pre></div>
+  <p>الريبو بيطبع كمان عينة من الداتا، والـ TF-IDF على الأوصاف، والـ polynomial لأول صف. ضيفهم لنسختك وقارن.</p>
+
+  <h3>خطوة ٧: scikit-learn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.preprocessing import StandardScaler, OneHotEncoder, PolynomialFeatures
+from sklearn.impute import SimpleImputer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_selection import mutual_info_classif, VarianceThreshold
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+
+numeric_pipe = Pipeline([
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler()),
+])
+categorical_pipe = Pipeline([
+    ("encoder", OneHotEncoder(sparse_output=False)),
+])
+preprocessor = ColumnTransformer([
+    ("num", numeric_pipe, ["sqft", "age"]),
+    ("cat", categorical_pipe, ["neighborhood"]),
+])</pre></div>
+  <p>المكتبة بتضيف معالجة الـ edge cases، و sparse matrices، وتركيب الـ pipelines. والأهم: الـ Pipeline بيعمل <code>fit</code> على الـ train بس و <code>transform</code> على الـ test، فبيحميك من الـ leakage أوتوماتيك.</p>
+  <div class="note"><strong>Ship It:</strong> الدرس بيطلّع <code>outputs/prompt-feature-engineer.md</code>: prompt بتديله وصف الداتا فيمشي على checklist لكل عمود: الـ missing (نسبته وهل عشوائي)، الأرقام (skew؟ وحدات مختلفة؟ binning؟ ratios؟)، الـ categories حسب الـ cardinality (أقل من 10 one-hot، من 10 لـ 100 target encoding مع smoothing، أكتر من 100 hashing أو embeddings أو تجميع النادر)، النص (TF-IDF للقصير، embeddings للطويل، وطول النص كـ feature)، التواريخ (سنة/شهر/يوم في الأسبوع/ساعة/weekend، وcyclical encoding للحاجات الدورية)، الـ interactions، والـ selection (شيل zero-variance، شيل correlation فوق 0.95، رتّب بالـ MI). وبيطلّع لكل feature: اسمها، التحويل وليه، الاسم الجديد، والأثر المتوقع.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d30-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Robust scaling:</b> ضيف scaling بالـ median والـ IQR بدل الـ mean والـ std، وقارنه بالـ standard على داتا فيها outliers ضخمة.
+      <details><summary>تلميح</summary><span class="ltr">(x − median) / (Q3 − Q1)</span>. حط قيمة واحدة ×1000 في الداتا: الـ standardize هيكبس كل القيم العادية جنب بعض لأن الـ std انفجر، والـ robust هيسيبهم متوزعين لأن الـ median والـ IQR تقريبًا ما اتأثروش. (نفس اللي شفته في معمل ١ مع min-max.)</details></li>
+    <li><b>Leave-one-out target encoding:</b> لكل صف احسب متوسط الـ target للـ category من غير الـ target بتاع الصف ده. ورّي إنه بيقلل الـ overfitting عن الـ naive.
+      <details><summary>تلميح</summary><span class="ltr">enc_i = (sum_cat − y_i) / (count_cat − 1)</span>، ولو count_cat = 1 استخدم المتوسط العام. على الـ test استخدم الـ encoding العادي المحسوب من الـ train. جرّبها في معمل ٣ بالـ checkbox: الـ correlation على الـ train بتنزل لمستوى قريب من الـ test.</details></li>
+    <li><b>Pipeline selection أوتوماتيك:</b> اجمع variance threshold + correlation filter + ترتيب بالـ MI. طبّقه على داتا البيوت وقارن linear regression بكل الـ features قصاد المختارة.
+      <details><summary>تلميح</summary>استخدم الـ <code>SimpleLinearRegression</code> أو الـ gradient descent من Lesson 2، وقيس على test منفصل (اعمل الـ split <b>قبل</b> أي fit للـ scaling). وخد بالك إن السعر في الداتا معتمد على bedrooms و has_pool كمان، والـ feature matrix في الكود ما فيهاش الاتنين دول. ضيفهم وشوف الفرق.</details></li>
+    <li><b>إضافة مني · features لـ router بتاع LLM:</b> عندك log فيه 200 prompt من يوزرز، وكل واحد معاه: النص، الوقت، نوع اليوزر (free / pro / team)، وهل الموديل الصغير جاوب صح ولا اتصعّد للموديل الكبير (label). ابني features: طول الـ prompt بالكلمات، log الطول، عدد علامات الاستفهام، هل فيه كود (<code>```</code> أو <code>def </code>)، الساعة بـ cyclical encoding (<span class="ltr">sin/cos(2π·hour/24)</span>)، one-hot لنوع اليوزر، و TF-IDF لأهم 50 كلمة. رتّبهم بالـ MI مع الـ label. ده بالظبط إزاي بيتبني router رخيص يقرر يبعت الـ prompt لأنهي موديل.
+      <details><summary>تلميح</summary>لو مش معاك log حقيقي، اعمل 200 prompt صناعي بقاعدة بسيطة (مثلًا الطويل اللي فيه كود بيتصعّد أكتر) وشوف هل الـ MI بيلاقي القاعدة. الساعة 23 و 0 قريبين من بعض، والـ sin/cos بيعرف ده، الرقم الخام لأ.</details></li>
+  </ol>
+</section>
+
+<!-- MINE -->
+<section id="d30-mine">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالهوش</h2></div>
+  <h3>الحدس</h3>
+  <p>كل feature انت بتضيفها هي «تلميح» للموديل عن شكل الحل. الـ BMI بيقول للموديل «النسبة دي هي المهمة». لما تكون عارف المجال، انت بتوفر على الموديل إنه يكتشف ده من الداتا، وده بيفرق جدًا لما الداتا قليلة.</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>fit على الداتا كلها قبل الـ split:</b> الـ scaler أو الـ imputer أو الـ target encoder أو الـ IDF. كلهم لازم يتعلموا من الـ train بس. (هتشوفها رسمي بكرة كـ data leakage.)</li>
+    <li>الـ correlation بيقيس العلاقة <b>الخطية</b> بس. لو <span class="ltr">y = x²</span> و x متماثلة حوالين الصفر، الـ correlation تقريبًا صفر مع إن y متحددة بالكامل من x. الـ MI بيمسكها.</li>
+    <li>Label encoding لـ category من غير ترتيب مع موديل خطي أو KNN: الموديل هيصدق إن <span class="ltr">rural (1)</span> «في النص» بين downtown و suburbs.</li>
+    <li>One-hot لعمود فيه آلاف القيم (zip code مثلًا): الأعمدة بتنفجر وأغلبها شبه فاضي.</li>
+    <li>تنسى الـ missing indicator وتعبّي بالمتوسط، فتضيّع معلومة إن «الخانة كانت فاضية».</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <p>الـ deep learning بيتعلم الـ features لوحده (الـ embeddings)، بس الفكرة ما اختفتش: <b>BM25</b> اللي في الـ hybrid search جوه أنظمة RAG هو قريب جدًا من TF-IDF. الـ <b>metadata</b> اللي بتضيفها للـ chunks (التاريخ، المصدر، النوع) features بتستخدمها للفلترة والـ reranking. الـ <b>LLM routers</b> والـ guardrails الخفيفة بتشتغل على features زي اللي في تمرين ٤. والـ <b>tokenization</b> نفسها قرار representation. وحتى الـ prompt engineering في جزء منه feature engineering: انت بتختار تبيّن للموديل أنهي معلومة وبأي شكل.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d30-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d30-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d30-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d30-ck">
+    <li><label><input type="checkbox" data-ck="1"> أعرف إمتى أستخدم min-max و standardize و log و binning و polynomial</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أشرح one-hot و label و target encoding وخطر الـ leakage في الأخير</label></li>
+    <li><label><input type="checkbox" data-ck="3"> حسبت TF-IDF بإيدي وفاهم ليه أحسن من الـ counts</label></li>
+    <li><label><input type="checkbox" data-ck="4"> أعرف استراتيجيات الـ missing values وليه الـ indicator مهم</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت variance threshold و correlation filter و mutual information</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Standardization</td><td>قبل أي K-Means أو KNN أو SVM، وفكرته جوه الـ normalization layers في الشبكات</td></tr>
+    <tr><td>Log transform</td><td>أسعار، دخل، عدد كلمات، وأي توزيع بذيل طويل</td></tr>
+    <tr><td>One-hot</td><td>الـ categories القليلة، وهو نفسه شكل الـ token قبل ما يدخل الـ embedding layer</td></tr>
+    <tr><td>Target encoding</td><td>categories كتير في الـ tabular ML (ids، مدن)</td></tr>
+    <tr><td>TF-IDF</td><td>BM25 و keyword search، و baseline قوي لتصنيف النص</td></tr>
+    <tr><td>Feature selection / L1</td><td>تبسيط الموديلات وتسريعها، وتقليل الـ overfitting</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Model Evaluation. إزاي تقيس صح: train/val/test، cross-validation، precision و recall و AUC، وليه الـ 95% accuracy ممكن تبقى كذبة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F08-feature-engineering" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/08-feature-engineering</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+const rm=$('d30-roadmap');for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===8)s.className='now';rm.appendChild(s)}
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(R){let u=0,v=0;while(!u)u=R();v=R();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const mean=a=>a.reduce((s,v)=>s+v,0)/a.length;
+const sd=a=>{const m=mean(a);return Math.sqrt(a.reduce((s,v)=>s+(v-m)**2,0)/a.length)};
+function corr(x,y){const mx=mean(x),my=mean(y);let c=0,a=0,b=0;for(let i=0;i<x.length;i++){c+=(x[i]-mx)*(y[i]-my);a+=(x[i]-mx)**2;b+=(y[i]-my)**2}return a&&b?c/Math.sqrt(a*b):0}
+
+/* ---- Lab 1: transforms ---- */
+const hc=$('d30-histC'),hx=AI.setupCanvas(hc),HW=+hc.dataset.w,HH=+hc.dataset.h;
+const base=(()=>{const R=rng(42),A=[];for(let i=0;i<500;i++)A.push(Math.round(Math.exp(8.6+.75*gauss(R))));return A})();
+let tr='raw';
+function transform(){let v=base.slice();if($('d30-out').checked)v.push(2500000);const lo=Math.min(...v),hi=Math.max(...v),m=mean(v),s=sd(v)||1,nb=+$('d30-bins').value;
+  if(tr==='minmax')return v.map(x=>(x-lo)/(hi-lo));if(tr==='std')return v.map(x=>(x-m)/s);if(tr==='log')return v.map(x=>Math.log(x+1));
+  if(tr==='bin'){const w=(hi-lo)/nb;return v.map(x=>Math.min(Math.floor((x-lo)/w),nb-1))}return v}
+function skew(a){const m=mean(a),s=sd(a);return s?a.reduce((t,v)=>t+((v-m)/s)**3,0)/a.length:0}
+function drawHist(){const v=transform(),nb=+$('d30-bins').value;$('d30-bV').textContent=nb;
+  const lo=Math.min(...v),hi=Math.max(...v),bins=tr==='bin'?nb:30,H=new Array(bins).fill(0);
+  v.forEach(x=>{const i=tr==='bin'?x:Math.min(bins-1,Math.floor((x-lo)/((hi-lo)||1)*bins));H[i]++});
+  const L=14,R=HW-14,T=14,B=HH-34,bw=(R-L)/bins,hm=Math.max(...H);
+  hx.clearRect(0,0,HW,HH);hx.strokeStyle=css('--grid');hx.lineWidth=1;for(let k=0;k<=4;k++){const y=B-k/4*(B-T);hx.beginPath();hx.moveTo(L,y);hx.lineTo(R,y);hx.stroke()}
+  hx.fillStyle=tr==='raw'?css('--muted'):css('--vec-a');H.forEach((h,i)=>{const hh=h/hm*(B-T);hx.fillRect(L+i*bw+1,B-hh,Math.max(1,bw-2),hh)});
+  hx.fillStyle=css('--muted');hx.font='12px JetBrains Mono, monospace';hx.textAlign='left';hx.fillText(fmtN(lo),L,B+16);hx.textAlign='right';hx.fillText(fmtN(hi),R,B+16);hx.textAlign='center';hx.fillText(tr==='bin'?'bin index':tr,(L+R)/2,B+30);hx.textAlign='left';
+  $('d30-mean').textContent=fmtN(mean(v));$('d30-std').textContent=fmtN(sd(v));$('d30-mm').textContent=fmtN(lo)+' … '+fmtN(hi);$('d30-sk').textContent=f(skew(v),2)}
+function fmtN(x){return Math.abs(x)>=1000?Math.round(x).toLocaleString('en-US'):String(f(x,3))}
+$('d30-tr').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{tr=b.dataset.t;$('d30-tr').querySelectorAll('button').forEach(o=>o.classList.toggle('primary',o===b));drawHist()}));
+$('d30-bins').addEventListener('input',drawHist);$('d30-out').addEventListener('change',drawHist);drawHist();
+
+/* ---- Lab 2: TF-IDF ---- */
+const ta=$('d30-docs'),sel=$('d30-doc'),tbl=$('d30-tfT');
+function tfidfLab(){const docs=ta.value.split('\n').map(s=>s.trim().toLowerCase()).filter(Boolean);const N=docs.length;
+  const cur=Math.min(+sel.value||0,Math.max(0,N-1));sel.innerHTML='';docs.forEach((d,i)=>{const o=document.createElement('option');o.value=i;o.textContent=(i+1)+': '+d.slice(0,28);sel.appendChild(o)});sel.value=cur;
+  const vocab=new Map();docs.forEach(d=>d.split(/\s+/).forEach(w=>{if(!vocab.has(w))vocab.set(w,vocab.size)}));
+  const df={};docs.forEach(d=>new Set(d.split(/\s+/)).forEach(w=>df[w]=(df[w]||0)+1));
+  $('d30-voc').textContent=vocab.size;$('d30-nd').textContent=N;
+  if(!N){tbl.innerHTML='';$('d30-top').textContent='–';return}
+  const words=docs[cur].split(/\s+/),tf={};words.forEach(w=>tf[w]=(tf[w]||0)+1);
+  const rows=Object.keys(tf).map(w=>{const idf=Math.log(N/df[w]);return{w,c:tf[w],df:df[w],idf,v:tf[w]/words.length*idf}});
+  const order=rows.slice().sort((a,b)=>b.v-a.v||vocab.get(a.w)-vocab.get(b.w));const mx=Math.max(1e-9,...rows.map(r=>r.v));
+  $('d30-top').textContent=order.slice(0,3).map(r=>r.w).join(', ');
+  tbl.innerHTML='<tr><th style="text-align:left">word</th><th style="text-align:left">count</th><th style="text-align:left">df</th><th style="text-align:left">idf</th><th style="text-align:left">tf-idf</th></tr>';
+  order.forEach(r=>{const tr=document.createElement('tr');tr.innerHTML='<td style="text-align:left"></td><td style="text-align:left">'+r.c+'</td><td style="text-align:left">'+r.df+'</td><td style="text-align:left">'+f(r.idf,3)+'</td><td style="text-align:left"><div style="display:flex;gap:6px;align-items:center"><span class="bar" style="width:80px;display:inline-block"><i style="width:'+(r.v/mx*100)+'%"></i></span>'+f(r.v,3)+'</div></td>';tr.firstChild.textContent=r.w;tbl.appendChild(tr)})}
+ta.addEventListener('input',tfidfLab);sel.addEventListener('change',tfidfLab);tfidfLab();
+
+/* ---- Lab 3: target encoding leakage ---- */
+const tc=$('d30-teC'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;let seed=3;
+function teLab(){const sm=+$('d30-sm').value,K=+$('d30-nc').value,loo=$('d30-loo').checked;$('d30-smV').textContent=sm;$('d30-ncV').textContent=K;
+  const R=rng(seed),n=600,cat=[],y=[];for(let i=0;i<n;i++){cat.push(Math.floor(R()*K));y.push(R()<.5?1:0)}
+  const tri=[],tei=[];for(let i=0;i<n;i++)(i<400?tri:tei).push(i);
+  const g=mean(tri.map(i=>y[i])),S={},C={};tri.forEach(i=>{S[cat[i]]=(S[cat[i]]||0)+y[i];C[cat[i]]=(C[cat[i]]||0)+1});
+  const enc=(c,excl)=>{let s=S[c]||0,k=C[c]||0;if(excl!=null){s-=excl;k-=1}if(k<=0)return g;const w=k/(k+sm);return w*(s/k)+(1-w)*g};
+  const eTr=tri.map(i=>enc(cat[i],loo?y[i]:null)),eTe=tei.map(i=>enc(cat[i],null));
+  const ctr=corr(eTr,tri.map(i=>y[i])),cte=corr(eTe,tei.map(i=>y[i]));
+  $('d30-ctr').textContent=f(ctr,3);$('d30-cte').textContent=f(cte,3);$('d30-rpc').textContent=f(400/K,1);
+  tx.clearRect(0,0,TW,TH);const L=110,Rr=TW-20,mid=(L+Rr)/2,rows=[['train',ctr,css('--vec-b')],['test',cte,css('--vec-a')]];
+  tx.strokeStyle=css('--muted');tx.lineWidth=1;tx.beginPath();tx.moveTo(mid,20);tx.lineTo(mid,TH-40);tx.stroke();
+  tx.font='13px JetBrains Mono, monospace';
+  rows.forEach((r,k)=>{const y0=40+k*70,w=r[1]*(Rr-mid);tx.fillStyle=css('--ink');tx.textAlign='left';tx.fillText('corr '+r[0],8,y0+22);tx.fillStyle=r[2];tx.fillRect(Math.min(mid,mid+w),y0,Math.abs(w),36);tx.fillStyle=css('--ink');tx.textAlign=w>=0?'left':'right';tx.fillText(f(r[1],3),mid+w+(w>=0?6:-6),y0+22)});
+  tx.textAlign='center';tx.fillStyle=css('--muted');tx.font='12px JetBrains Mono, monospace';[-1,-.5,0,.5,1].forEach(v=>tx.fillText(v,mid+v*(Rr-mid),TH-22));tx.fillText('correlation(encoding, target)  · target is pure noise',mid-20,TH-6);tx.textAlign='left'}
+['d30-sm','d30-nc'].forEach(id=>$(id).addEventListener('input',teLab));$('d30-loo').addEventListener('change',teLab);$('d30-reseed').addEventListener('click',()=>{seed++;teLab()});teLab();
+
+/* ---- quiz ---- */
+const ck=document.querySelector('#d30-ck input[data-ck="6"]');
+AI.quiz($('d30-quizBox'),[
+ ['ليه الـ feature engineering غالبًا بيأثر أكتر من اختيار خوارزمية أشيك؟',['بيخلّي الكود يجري أسرع','بيلغي الحاجة لـ test set','الخوارزميات الشيك مش بتعرف تتعامل مع داتا خام','الـ features الكويسة بتبيّن للموديل أنماط الداتا الخام بتخبيها، فحتى الموديلات البسيطة تبقى فعالة'],3,'شكل الداتا أهم من الخوارزمية. feature زي BMI بتبيّن النمط مباشرة، فـ logistic regression يبقى منافس قوي.'],
+ ['إيه هو الـ one-hot encoding؟',['تبدل كل category بتكرارها في الداتا','عمود binary لكل category، وفي كل صف عمود واحد بس = 1','تحويل الـ target لاحتمال','تحويل كل الـ features لقيم بين 0 و 1'],1,'لكل قيمة مختلفة عمود binary. color بـ red/blue/green تبقى is_red و is_blue و is_green.'],
+ ['إيه خطر الـ data leakage في الـ target encoding؟',['بيخلّي التدريب بطيء جدًا','بيبدل الـ categories بمتوسط الـ target، فممكن يسرّب معلومات من الـ test لو ما اتحسبش على الـ train بس','بيشتغل مع binary targets بس','بيعمل features كتير أوي'],1,'لو اتحسب على الداتا كلها، labels الـ test بتدخل في الـ features والأداء يطلع متضخم. شفت في معمل ٣ إنه بيغش حتى على الـ train نفسه لما الـ categories صغيرة.'],
+ ['الـ TF-IDF بيوزن الكلمة بالـ inverse document frequency. النتيجة إيه؟',['كل الكلمات بتاخد نفس الوزن','الكلمات النادرة المميزة وزنها أعلى، والمنتشرة وزنها أقل','بيحتفظ بأكتر كلمة متكررة في كل مستند بس','الكلمات المنتشرة زي the وزنها عالي عشان بتتكرر كتير'],1,'IDF = log(total docs / docs containing word). المنتشرة IDF قليل، والنادرة IDF عالي. شفتها في معمل ٢.'],
+ ['عندك featureين الـ correlation بينهم 0.98. ليه ممكن تشيل واحدة؟',['الـ features المرتبطة دايمًا بتوقع الموديل','هما مكررين تقريبًا ونفس المعلومة، ووجود الاتنين بيزود خطر الـ overfitting من غير signal جديد','الـ correlation بيخلي الداتا non-stationary','correlation فوق 0.5 معناه إنهم بيقيسوا حاجات مختلفة'],1,'r = 0.98 تقريبًا نفس المعلومة. التانية بتزود الأبعاد والـ overfitting والـ multicollinearity من غير ما تضيف حاجة عن الـ target.'],
+ ['(سؤال إضافي) عملت standardize لعمود الدخل اللي توزيعه مايل جامد لليمين. إيه اللي اتغير؟',['التوزيع بقى normal','الـ skew اختفى','الـ mean بقى 0 والـ std بقى 1، بس شكل التوزيع المايل زي ما هو','اتشالت الـ outliers'],2,'الـ scaling تحويل خطي: بيزق ويمط المحور بس. عشان تصلح الـ skew محتاج تحويل غير خطي زي log.'],
+ ['(سؤال إضافي) y = x² و x متماثلة حوالين الصفر. أنهي مقياس هيكشف إن x مفيدة؟',['Pearson correlation','Mutual information','Variance threshold على y','ولا واحد'],1,'الـ correlation بيقيس الخطي بس فهيطلع قريب من صفر. الـ MI بيقيس أي اعتماد، فهيطلع عالي.']
+],5,()=>{if(ck){ck.checked=true;AI.store.set('aiefs-d30-6','1')}});
+AI.checklist(30,$('d30-ck'));
+
+AI.onTheme(()=>{if(!document.body.contains(hc))return false;drawHist();teLab()});
+})();
+</script>

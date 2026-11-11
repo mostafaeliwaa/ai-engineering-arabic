@@ -1,0 +1,761 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 67 · Query Rewriting: HyDE, Multi-Query, and Decomposition</span>
+  <h1>اليوم ٤٩٥: السؤال اللي المستخدم كتبه مش هو السؤال اللي الـ retriever محتاجه</h1>
+  <p class="lede">النهاردة هتبني ٣ <b>rewriters</b> بيشتغلوا <b>قبل</b> الـ retrieval: <b>HyDE</b> (اكتب إجابة مزيفة ودوّر بيها)، <b>Multi-Query</b> (اسأل نفس السؤال بكذا صيغة وادمج)، و<b>Decomposition</b> (كسّر السؤال المركّب لأسئلة صغيرة). وهتشغّلهم التلاتة على نفس الـ corpus وتشوف مين بيكسب إمتى.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>النوع: <b>Build</b> · <b>Python</b> (stdlib بس)</span>
+    <span>قبله: <b>Cross-Encoder Reranker</b></span>
+    <span>بعده: <b>RAG Evaluation</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Days 431 → 515</span>
+    <div class="roadmap" id="d495-roadmap" aria-label="أيام الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d495-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ reranker امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه الفرق في شكل الدخل بين الـ bi-encoder والـ cross-encoder؟
+      <details><summary>الإجابة</summary>الـ bi-encoder بيعمل embedding للسؤال لوحده وللمستند لوحده، ومبيشوفوش بعض أبدًا، والترتيب بالـ cosine. الـ cross-encoder بياخدهم مع بعض في sequence واحدة <span class="ltr">[CLS] query [SEP] document [SEP]</span>، والـ attention بيربط كل token في المستند بكل token في السؤال، وبيطلّع رقم relevance واحد.</details></li>
+    <li>ليه منقدرش نشغّل الـ cross-encoder على الـ corpus كله؟
+      <details><summary>الإجابة</summary>لأنه بيحتاج forward pass لكل زوج (سؤال، مستند). corpus فيه 10 مليون مستند = 10 مليون forward pass لكل سؤال. عشان كده بنعمل two-stage: retriever رخيص يجيب top-N (50 لـ 200)، والـ cross-encoder يرتبهم لـ top-K.</details></li>
+    <li>لو المستند الصح مش موجود في الـ top-N أصلًا، الـ reranker يقدر يعمل إيه؟
+      <details><summary>الإجابة</summary>ولا حاجة. الـ reranker مقدرش يرفع الـ recall فوق recall الـ retriever عند N. ودي بالظبط المشكلة اللي درس النهاردة بيحلها: نعيد صياغة السؤال <b>قبل</b> الـ retrieval عشان المستند الصح يوصل للـ top-N من الأول.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>المشكلة + HyDE + معمل ١</div>
+    <div><b>20 min</b>Multi-Query وDecomposition + معمل ٢</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>الـ failure modes + معمل ٣</div>
+    <div><b>10 min</b>الكويز والتمارين</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d495-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: السؤال والمستند مش بيتكلموا نفس اللغة</h2></div>
+  <p>المستخدم بيكتب: <span class="ltr">"what does our team do when uploads fail and the budget is gone?"</span>. وفي الـ corpus فيه مستند بيقول: <span class="ltr">"AbortMultipartOnFail aborts an in-flight S3 multipart upload and decrements the per-bucket retry budget when the upload fails"</span>.</p>
+  <p>السؤال والمستند مفيش بينهم ولا noun phrase مشتركة. الـ <b>BM25</b> بيفوّته. والـ <b>bi-encoder</b> بيحطه تالت أو رابع، لأن vector السؤال وقع في منطقة من الـ embedding space قريبة من مستند عن الـ "cancelled jobs" مش عن الـ "aborted uploads". الـ reranker بتاع امبارح ممكن ينقذ الموقف <b>لو</b> المستند وصل الـ top-N، بس لو موصلش، الـ reranker عمره ما هيشوفه.</p>
+  <div class="note"><strong>تشبيه:</strong> زي ما تروح مكتبة وتسأل أمين المكتبة «الكتاب بتاع لما الحاجة تقع وتتكسر». هو بيدوّر بالكلام اللي في الفهرس: «الجاذبية»، «ميكانيكا الأجسام». لو ترجمت سؤالك الأول لكلام الفهرس، هيلاقيه على طول. الـ query rewriting هو الترجمة دي.</div>
+  <p><b>الحل:</b> نعيد كتابة السؤال <b>قبل</b> ما يلمس الـ retriever. فيه ٣ تكنيكات بيكملوا بعض:</p>
+  <div class="tablewrap"><table>
+    <tr><th>التكنيك</th><th>بيعمل إيه</th><th>بيحل أنهي مشكلة</th></tr>
+    <tr><td><b>HyDE</b></td><td>الـ LLM يكتب المستند اللي <i>المفروض</i> يجاوب، ونعمل embedding ليه بدل السؤال</td><td>الفجوة بين كلام السؤال وكلام الـ corpus</td></tr>
+    <tr><td><b>Multi-Query</b></td><td>N صيغ مختلفة لنفس السؤال، retrieval بكل واحدة، دمج بالـ RRF</td><td>الصياغة بتاعة المستخدم مجرد واحدة من صيغ كتير</td></tr>
+    <tr><td><b>Decomposition</b></td><td>تكسير السؤال لأسئلة فرعية كل واحد يتجاوب لوحده</td><td>سؤال فيه أكتر من موضوع</td></tr>
+  </table></div>
+  <div class="formula">Query → {HyDE | Multi-Query | Decompose} → embed / search each → Hybrid Retriever → RRF merge → Top-K</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d495-hyde">
+  <div class="station-head"><span class="tag">02</span><h2>HyDE: دوّر بإجابة مزيفة</h2></div>
+  <p>الفكرة جت من ورقة <span class="ltr">"Precise Zero-Shot Dense Retrieval without Relevance Labels"</span> (Gao et al., 2023): اطلب من LLM يكتب المستند اللي هيجاوب على السؤال، اعمل embedding للمستند الافتراضي ده (<b>hypothetical document</b>)، واستخدمه هو كـ retrieval vector.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>You are a domain expert. Write a one-paragraph passage that answers the question
+below. Use the same vocabulary and phrasing the documentation in this domain would
+use. Do not refuse. Do not say you do not know.
+
+Question: {user_query}
+
+Passage:</pre></div>
+  <p><b>الحتة اللي بتلخبط:</b> الإجابة اللي الـ LLM كتبها غالبًا <b>غلط</b> كمعلومة، لأنه مايعرفش الـ corpus بتاعك. وده عادي جدًا! الـ retriever مش فارق معاه الصح من الغلط، فارق معاه <b>توزيع الكلمات</b> (token distribution). المقطع المزيف فيه كلمات زي <span class="ltr">abort, multipart, bucket, budget</span> لأن ده الكلام اللي أي documentation عن الموضوع ده هيقوله. فالـ vector بتاعه بيقع جنب المستند الحقيقي، في حين إن vector السؤال ماكانش بيقع هناك.</p>
+  <div class="note"><strong>تشبيه:</strong> عايز تلاقي شخص في حفلة كبيرة ومش عارف اسمه. بدل ما توصفه بكلامك («اللي كان بيتكلم عن الحاجات اللي بتقع»)، بتلبس زيه وتقف في الركن اللي ناس زيه بيقفوا فيه. مش لازم تبقى هو، كفاية تبقى «شبهه».</div>
+  <h3>طول المقطع المزيف</h3>
+  <p>في الـ production بنحدّه بـ ٢ أو ٣ جمل. أطول من كده بيلم <b>noise</b>، وأقصر بيخسر الـ <b>lexical signal</b> اللي HyDE محتاجها.</p>
+  <h3>تفصيلة مهمة في الكود</h3>
+  <p>في <code>search_vec</code>، لما بندي الـ retriever vector جاهز (حالة HyDE)، بيفضل يشغّل الـ BM25 على <b>نص السؤال الأصلي</b> عشان الإشارة الـ lexical ماتختفيش، والـ dense بس هو اللي بياخد vector المقطع المزيف. وبعدين RRF بيدمج الاتنين.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: شوف الـ vector وهو بيتنقل</h3>
+      <p>دي خريطة مبسطة (رسم توضيحي، مش أرقام حقيقية) لـ embedding space فيها مستندات الـ fixture. النقطة البرتقالي هي vector السؤال، واقعة جنب «Cancelling jobs» مع إن الإجابة في «AbortMultipartOnFail».</p>
+      <p>دوس «اكتب hypothetical» وشوف الـ vector الجديد بيروح فين. وبعدين حرّك عدد الجمل: جملة واحدة إشارتها ضعيفة، ٢–٣ أحسن حاجة، والطويل بيبعد بسبب الـ noise. وجرّب «اسم function متألف».</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ ranking على اليمين بيتحسب بالمسافة على الرسمة. أقرب مستند = الأول.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d495-hyCv" width="520" height="340" aria-label="خريطة embedding توضيحية لـ HyDE"></canvas>
+      <div class="mrow">
+        <label>جمل الـ hypothetical = <span id="d495-vlen">3</span><input type="range" id="d495-len" min="1" max="8" value="3"></label>
+        <label><span>&nbsp;</span><span><input type="checkbox" id="d495-hall"> اسم function متألف</span></label>
+      </div>
+      <div class="btns">
+        <button type="button" id="d495-hyGo" class="primary">اكتب hypothetical ▶</button>
+        <button type="button" id="d495-hyReset">رجّع للسؤال بس</button>
+      </div>
+      <div class="readout">
+        <div><small>الـ vector المستخدم</small><b id="d495-hyWho">query</b></div>
+        <div><small>ترتيب المستند الصح (dense)</small><b id="d495-hyRank">—</b></div>
+        <div><small>BM25 match للـ identifier</small><b id="d495-hyBm">—</b></div>
+      </div>
+      <ol class="rank-list" id="d495-hyList"></ol>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d495-mq">
+  <div class="station-head"><span class="tag">03</span><h2>Multi-Query وDecomposition</h2></div>
+  <h3>Multi-Query expansion</h3>
+  <p>ولّد N صيغة (paraphrase) للسؤال، هات top-k بكل صيغة، وادمج الـ N قوايم بالـ <b>RRF</b> (نفس الخوارزمية من درس 65). رخيص، بيشتغل parallel، وdeterministic.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>Rewrite the following question in {N} different ways. Each rewrite must preserve
+the original intent. Number them 1 to {N}. Do not add explanations.</pre></div>
+  <ul class="checklist">
+    <li><b>بيكسب</b> لما صياغة المستخدم واحدة من صيغ كتير صح، وأي صيغة تانية كانت هتسأل أحسن.</li>
+    <li><b>بيخسر</b> لما كل الصيغ وحشة بنفس الطريقة، لأن الأصل نفسه كان وحش بالشكل ده.</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> زي ما تسأل ٣ أصحاب يدوّروا على نفس الحاجة في جوجل، كل واحد بكلامه. اللي يظهر عند أكتر من واحد فيهم غالبًا هو الصح. ده بالظبط اللي الـ RRF بيكافئه.</div>
+
+  <h3>Decomposition</h3>
+  <p>retrieval واحد مايقدرش يغطي سؤال ليه كذا وش. بنطلب من الـ LLM يكسّر السؤال لـ <b>sub-questions</b>، ونعمل retrieval لكل واحد، وندمج. (اتعرفت باسم <span class="ltr">"subquery decomposition"</span> في شغل DSPy من Stanford.)</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>The following question may require information from multiple distinct topics.
+Decompose it into a list of sub-questions. Each sub-question must be answerable
+independently. If the question is already atomic, return it unchanged.
+
+Question: {user_query}</pre></div>
+  <p>هو الأداة الصح للأسئلة اللي فيها «و» (conjunctions)، أو مقارنات متعددة، أو موضوعين مالهمش علاقة ببعض. والأداة الغلط للسؤال الـ <b>atomic</b> (موضوع واحد): هنا شغلته يرجّع السؤال زي ما هو، ومايخترعش أسئلة فرعية وهمية.</p>
+  <div class="formula">"uploads fail AND budget is gone" → ["how is an in-flight multipart upload aborted", "what happens when the retry quota reaches zero"]</div>
+
+  <h3>ليه التلاتة موجودين؟</h3>
+  <p>بيكملوا بعض: HyDE بيقفل الفجوة بين كلام السؤال وكلام الـ corpus. Multi-Query بيغطي اختلاف الصياغات. Decomposition بيغطي الأسئلة متعددة المواضيع. سيستم الـ production بيشغّل التلاتة ويختار الاستراتيجية لكل سؤال (درس 69 فيه الـ selector).</p>
+
+  <h3>الـ Mock LLM: عشان كل حاجة تشتغل offline</h3>
+  <p>الدرس مفيهوش API calls. الـ <code>MockLLM</code> جدول lookup بالسؤال: لكل سؤال من الـ fixture فيه مقطع hypothetical مكتوب، و٣ paraphrases، وdecomposition. ولأي سؤال مش في الجدول فيه <b>fallback</b> deterministic: ياخد كلمات السؤال ويوسعها بـ synonym map (مثلًا <span class="ltr">abort → cancel, stop, terminate</span>)، والـ decompose بيقسم على كلمة <span class="ltr">" and "</span>. المهم هنا <b>شكل</b> الـ mock مش الداتا: في الـ production بتبدله بـ model call حقيقي، والـ retriever مش بيتغير خالص.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: شغّل الـ rewriters بنفسك</h3>
+      <p>ده نسخة JavaScript من نفس الكود بتاع الدرس: نفس الـ tokenizer، نفس الـ <code>mock_embed</code> بالـ hashing، نفس الـ BM25 (k1=1.5, b=0.75, العنوان متكرر ٣ مرات)، نفس الـ RRF (k=60)، ونفس جداول الـ MockLLM. يعني الحسبة حقيقية مش رسمة.</p>
+      <p>اختار سؤال من الـ GOLD واستراتيجية، وشوف الصيغ اللي اتولدت، وترتيب المستند الصح (gold). أو اكتب سؤالك انت وشوف الـ fallback بيعمل إيه.</p>
+      <div class="note ai"><strong>جرّب:</strong> سؤال الـ decompose مع «no-rewrite» وبعدين مع «decompose». وبعدين اكتب سؤال atomic زي <span class="ltr">where is the policy engine cached</span> وشوف إن الـ decompose بيرجّعه زي ما هو.</div>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:4px">السؤال
+        <select id="d495-q"></select></label>
+      <input type="search" id="d495-own" placeholder="أو اكتب سؤالك بالإنجليزي…" aria-label="سؤال خاص" style="font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);direction:ltr">
+      <div class="btns" id="d495-strat">
+        <button type="button" data-d495s="no-rewrite">no-rewrite</button>
+        <button type="button" data-d495s="hyde">hyde</button>
+        <button type="button" data-d495s="multiquery" class="primary">multiquery</button>
+        <button type="button" data-d495s="decompose">decompose</button>
+      </div>
+      <div id="d495-rw" style="display:grid;gap:6px;direction:ltr;font-family:var(--f-mono);font-size:13px"></div>
+      <div class="readout">
+        <div><small>gold doc</small><b id="d495-gold">—</b></div>
+        <div><small>gold-rank</small><b id="d495-grank">—</b></div>
+        <div><small>عدد الـ rankings المدموجة</small><b id="d495-nr">—</b></div>
+      </div>
+      <ol class="rank-list" id="d495-res"></ol>
+      <div class="tablewrap"><table id="d495-cmp"></table></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: CODE -->
+<section id="d495-code">
+  <div class="station-head"><span class="tag">04</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من فولدر الريبو (root) شغّل الأصل الأول عشان تشوف الناتج، وبعدين الـ tests:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/67-query-rewriting-hyde/code/main.py
+<span class="c"># الـ tests (unittest، مفيش pytest مطلوب)</span>
+python3 phases/19-capstone-projects/67-query-rewriting-hyde/code/tests/test_rewriters.py</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_rewriters.py</code> واكتب الخطوات بإيدك. الـ Copy بس لو اتزنقت وعايز تقارن. الكود كله stdlib، مفيش أي install.</p>
+
+  <h3>خطوة ١: tokenizer و embedding وهمي deterministic</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import math, re
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+
+_TOKEN = re.compile(r"[a-z0-9]+")
+
+def tokenize(text: str) -> list[str]:
+    return _TOKEN.findall(text.lower())
+
+def mock_embed(text: str, dim: int = 96) -> list[float]:
+    vec = [0.0] * dim
+    for tok in tokenize(text):
+        h = 0
+        for ch in tok:                         <span class="c"># hash ثابت لكل كلمة</span>
+            h = (h * 1315423911) ^ ord(ch)
+            h &amp;= 0xFFFFFFFF
+        vec[h % dim] += 1.0
+        vec[(h >> 7) % dim] += 0.5
+        for i in range(len(tok) - 1):          <span class="c"># bigrams حروف: كلمات شبه بعض تقرب</span>
+            bg = (ord(tok[i]) * 31 + ord(tok[i + 1])) &amp; 0xFFFFFFFF
+            vec[bg % dim] += 0.25
+    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+    return [v / norm for v in vec]             <span class="c"># normalized → الـ dot = cosine</span>
+
+def cosine(a, b):
+    return sum(x * y for x, y in zip(a, b))</pre></div>
+
+  <h3>خطوة ٢: الـ retriever (مبسط من درس 65)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class Doc:
+    doc_id: str
+    title: str
+    body: str
+    def field_text(self) -> str:
+        return f"{self.title}\n{self.body}"
+
+@dataclass
+class BM25Index:
+    k1: float = 1.5
+    b: float = 0.75
+    docs: list = field(default_factory=list)
+    doc_lens: list = field(default_factory=list)
+    df: Counter = field(default_factory=Counter)
+    tf: list = field(default_factory=list)
+    avgdl: float = 0.0
+
+    def add(self, doc: Doc) -> None:
+        toks = tokenize(doc.title) * 3 + tokenize(doc.body)   <span class="c"># العنوان وزنه ×3</span>
+        counts = Counter(toks)
+        self.docs.append(doc); self.doc_lens.append(len(toks)); self.tf.append(counts)
+        for term in counts:
+            self.df[term] += 1
+        self.avgdl = sum(self.doc_lens) / max(1, len(self.doc_lens))
+
+    def search(self, query: str, k: int):
+        n = len(self.docs)
+        if n == 0:
+            return []
+        scores = [0.0] * n
+        for term in tokenize(query):
+            df = self.df.get(term, 0)
+            if df == 0:
+                continue
+            idf = math.log((n - df + 0.5) / (df + 0.5) + 1.0)
+            for i, counts in enumerate(self.tf):
+                f = counts.get(term, 0)
+                if f == 0:
+                    continue
+                dl = self.doc_lens[i]
+                denom = f + self.k1 * (1 - self.b + self.b * dl / (self.avgdl or 1))
+                scores[i] += idf * f * (self.k1 + 1) / denom
+        return sorted(zip(self.docs, scores), key=lambda x: -x[1])[:k]
+
+@dataclass
+class DenseIndex:
+    vectors: list = field(default_factory=list)
+    def add(self, doc):
+        self.vectors.append((doc, mock_embed(doc.field_text())))
+    def search_vec(self, qv, k):
+        scored = [(d, cosine(qv, v)) for d, v in self.vectors]
+        scored.sort(key=lambda x: -x[1])
+        return scored[:k]
+    def search(self, query, k):
+        return self.search_vec(mock_embed(query), k)
+
+def rrf(rankings, k: int = 60):
+    score = defaultdict(float); by_id = {}
+    for ranks in rankings:
+        for rank, (doc, _) in enumerate(ranks):
+            score[doc.doc_id] += 1.0 / (k + rank + 1)   <span class="c"># بالترتيب مش بالـ score</span>
+            by_id[doc.doc_id] = doc
+    fused = sorted(score.items(), key=lambda x: -x[1])
+    return [(by_id[did], s) for did, s in fused]
+
+@dataclass
+class HybridRetriever:
+    bm25: BM25Index = field(default_factory=BM25Index)
+    dense: DenseIndex = field(default_factory=DenseIndex)
+    def add(self, doc):
+        self.bm25.add(doc); self.dense.add(doc)
+    def search(self, query, k_each=5, k_out=5):
+        return rrf([self.bm25.search(query, k_each), self.dense.search(query, k_each)])[:k_out]
+    def search_vec(self, qv, qtext, k_each=5, k_out=5):
+        <span class="c"># حالة HyDE: الـ dense بالـ vector المزيف، والـ BM25 على السؤال الأصلي</span>
+        b = self.bm25.search(qtext, k_each)
+        d = self.dense.search_vec(qv, k_each)
+        return rrf([b, d])[:k_out]</pre></div>
+
+  <h3>خطوة ٣: الـ MockLLM</h3>
+  <p>انسخ الجداول <code>_SYNONYMS</code> و<code>HYDE_TABLE</code> و<code>MQ_TABLE</code> و<code>DECOMP_TABLE</code> من الملف الأصلي (دي داتا مش منطق). المنطق هو ده:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class MockLLM:
+    def generate_hypothetical(self, query: str) -> str:
+        key = query.lower().strip().rstrip("?").strip()
+        if key in HYDE_TABLE:
+            return HYDE_TABLE[key]
+        toks = tokenize(query)                       <span class="c"># fallback: وسّع بالمرادفات</span>
+        expanded = []
+        for t in toks:
+            expanded.append(t)
+            expanded.extend(_SYNONYMS.get(t, []))
+        return " ".join(expanded)
+
+    def paraphrase(self, query: str, n: int = 3) -> list[str]:
+        key = query.lower().strip().rstrip("?").strip()
+        if key in MQ_TABLE:
+            return MQ_TABLE[key][:n]
+        toks = tokenize(query); out = []
+        for shift in range(n):                       <span class="c"># fallback: بدّل مرادفات بالتناوب</span>
+            swapped = []
+            for i, t in enumerate(toks):
+                opts = _SYNONYMS.get(t, [])
+                if opts and (i + shift) % 2 == 0:
+                    swapped.append(opts[shift % len(opts)])
+                else:
+                    swapped.append(t)
+            out.append(" ".join(swapped))
+        return out
+
+    def decompose(self, query: str) -> list[str]:
+        key = query.lower().strip().rstrip("?").strip()
+        if key in DECOMP_TABLE:
+            return DECOMP_TABLE[key]
+        if " and " in query.lower():                 <span class="c"># fallback: اقسم على and</span>
+            parts = re.split(r"\s+and\s+", query, flags=re.IGNORECASE)
+            return [p.strip().rstrip("?") for p in parts if p.strip()]
+        return [query]                               <span class="c"># atomic → رجّعه زي ما هو</span></pre></div>
+
+  <h3>خطوة ٤: الـ rewriters (interface صغير)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class RewriteResult:
+    strategy: str
+    rewrites: list[str]
+    hypothetical: str | None = None
+
+class Rewriter:
+    name: str
+    def rewrite(self, query: str) -> RewriteResult:
+        raise NotImplementedError
+
+@dataclass
+class HyDERewriter(Rewriter):
+    llm: MockLLM = field(default_factory=MockLLM)
+    name: str = "hyde"
+    def rewrite(self, query):
+        h = self.llm.generate_hypothetical(query)
+        return RewriteResult(self.name, rewrites=[query], hypothetical=h)
+
+@dataclass
+class MultiQueryRewriter(Rewriter):
+    llm: MockLLM = field(default_factory=MockLLM)
+    n: int = 3
+    name: str = "multiquery"
+    def rewrite(self, query):
+        return RewriteResult(self.name, rewrites=[query] + self.llm.paraphrase(query, n=self.n))
+
+@dataclass
+class DecomposeRewriter(Rewriter):
+    llm: MockLLM = field(default_factory=MockLLM)
+    name: str = "decompose"
+    def rewrite(self, query):
+        return RewriteResult(self.name, rewrites=self.llm.decompose(query))
+
+class _IdentityRewriter(Rewriter):                  <span class="c"># الـ baseline: من غير rewrite</span>
+    name = "no-rewrite"
+    def rewrite(self, query):
+        return RewriteResult(self.name, rewrites=[query])</pre></div>
+
+  <h3>خطوة ٥: الـ retrieval من خلال الـ rewriter</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def retrieve_with_rewriter(query, rewriter, retriever, k_each=5, k_out=5):
+    rw = rewriter.rewrite(query)
+    rankings = []
+    if rw.hypothetical is not None:                  <span class="c"># HyDE: ranking إضافية بالـ vector المزيف</span>
+        hv = mock_embed(rw.hypothetical)
+        rankings.append(retriever.search_vec(hv, qtext=query, k_each=k_each, k_out=k_each))
+    for r in rw.rewrites:                            <span class="c"># ranking لكل صيغة / sub-question</span>
+        rankings.append(retriever.search(r, k_each=k_each, k_out=k_each))
+    fused = rrf(rankings)[:k_out]                    <span class="c"># دمج الكل بالـ RRF</span>
+    return {"rewriter": rw.strategy, "rewrites": rw.rewrites,
+            "hypothetical": rw.hypothetical, "results": fused}</pre></div>
+  <p>لاحظ: في HyDE الـ <code>rewrites=[query]</code>، يعني بيتعمل ranking بالسؤال الأصلي <b>كمان</b> جنب ranking الـ hypothetical، والاتنين بيتدمجوا.</p>
+
+  <h3>خطوة ٦: الـ corpus والـ GOLD والـ demo</h3>
+  <p>انسخ <code>CORPUS</code> (٨ مستندات d1…d8) و<code>GOLD</code> من الملف. كل سؤال في GOLD متصمم عشان استراتيجية معينة تكسب فيه:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>GOLD = [
+    ("what do we do when a transfer breaks halfway", "d1", "multiquery"),
+    ("how does the search service merge two retrievers", "d6", "hyde"),
+    ("what happens when an upload fails and the retry budget is exhausted", "d1", "decompose"),
+]
+
+def main():
+    retriever = HybridRetriever()
+    for d in CORPUS:
+        retriever.add(d)
+    llm = MockLLM()
+    strategies = {"no-rewrite": _IdentityRewriter(), "hyde": HyDERewriter(llm=llm),
+                  "multiquery": MultiQueryRewriter(llm=llm, n=3),
+                  "decompose": DecomposeRewriter(llm=llm)}
+    print(f"{'strategy':&lt;12} | {'query':&lt;60} | gold@1? | gold-rank")
+    print("-" * 100)
+    for q, gold, expected_winner in GOLD:
+        for name, rw in strategies.items():
+            out = retrieve_with_rewriter(q, rw, retriever, k_each=8, k_out=8)
+            ranks = [d.doc_id for d, _ in out["results"]]
+            hit = "yes" if ranks and ranks[0] == gold else "no "
+            gold_rank = ranks.index(gold) + 1 if gold in ranks else -1
+            marker = "  &lt;- expected winner" if name == expected_winner else ""
+            print(f"{name:&lt;12} | {q[:58]:&lt;60} |  {hit}   |   {gold_rank}{marker}")
+        print()
+
+if __name__ == "__main__":
+    main()</pre></div>
+  <details><summary>شكل الناتج</summary>
+    <p>جدول فيه ١٢ سطر (٣ أسئلة × ٤ استراتيجيات) بالأعمدة <span class="ltr">strategy | query | gold@1? | gold-rank</span>، وعلامة <span class="ltr">&lt;- expected winner</span> جنب الاستراتيجية المتصممة للسؤال ده. جدول المقارنة تحت معمل ٢ بيحسب نفس الأرقام بنفس الخوارزمية في المتصفح، فقارن الرقمين: لو اختلفوا، دوّر على الفرق في الكود بتاعك.</p>
+    <p>الـ tests لازم تطلع <span class="ltr">OK</span>. أهمها: الـ decompose لسؤال atomic بيرجّعه زي ما هو، وHyDE بيغير الترتيب فعلًا، ولكل سؤال GOLD فيه rewriter واحد على الأقل مش أسوأ من الـ baseline.</p>
+  </details>
+</section>
+
+<!-- STATION 5 -->
+<section id="d495-fail">
+  <div class="station-head"><span class="tag">05</span><h2>الـ failure modes اللي الـ demo مخبيها</h2></div>
+  <ol class="ex">
+    <li><b>HyDE بيألّف identifiers غلط.</b> الموديل بيخترع اسم function. الاسم المتألف بيبقى token وزنه عالي في الـ BM25 ومش موجود في الـ index، فالـ BM25 score للمستند الصح بينهار. <b>الحل:</b> حدّد طول الـ hypothetical، وقلل وزن الـ BM25 في الـ fusion.</li>
+    <li><b>صيغ الـ Multi-Query كلها شبه بعض.</b> موديل ضعيف بيطلع ٣ paraphrases شبه متطابقة، فالـ N retrievals بيرجعوا نفس الـ top-k، والـ RRF مش أحسن من retrieval واحد. <b>الحل:</b> تعليمة صريحة للتنوع في الـ prompt، واكتشف التكرار بالـ <b>Jaccard</b>.</li>
+    <li><b>الـ Decomposition بيقسّم زيادة (over-split).</b> سؤال atomic بيتحول لقايمة، والـ retrievals كلها بترجع نفس المستند بس بترتيب أقل، فالدمج بيبقى أسوأ من الأصل. <b>الحل:</b> خطوة «هل الأسئلة الفرعية دي مختلفة كفاية؟» قبل الـ fan-out.</li>
+    <li><b>الـ latency بتتضاعف.</b> HyDE = LLM call واحد. Multi-Query = LLM call واحد يولّد N صيغة، وبعدين N retrievals. Decomposition = LLM call واحد، وبعدين M retrievals. الـ retrievals بتشتغل parallel، والـ <b>LLM call هو الأرضية</b> (floor).</li>
+  </ol>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: كاشف التكرار وحاسبة الـ latency</h3>
+      <p><b>فوق:</b> اكتب ٣ صيغ (أو sub-questions). المعمل بيحسب الـ Jaccard بين كل اتنين (عدد الكلمات المشتركة ÷ عدد الكلمات الكلية). لو أي زوج فوق الـ threshold، الصيغ دي مش هتضيف تنوع، أو الـ decomposition عمل over-split.</p>
+      <p><b>تحت:</b> حرّك زمن الـ LLM call وزمن الـ retrieval وعدد الصيغ، وبدّل بين parallel وserial، وشوف الأرضية بتيجي منين.</p>
+    </div>
+    <div class="instrument">
+      <div style="display:grid;gap:6px;direction:ltr">
+        <input type="text" id="d495-p1" value="how do multipart uploads behave on failure" aria-label="paraphrase 1" style="font:inherit;font-size:14px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)">
+        <input type="text" id="d495-p2" value="how do multipart uploads behave when they fail" aria-label="paraphrase 2" style="font:inherit;font-size:14px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)">
+        <input type="text" id="d495-p3" value="how is an in-flight multipart upload aborted on persistent failure" aria-label="paraphrase 3" style="font:inherit;font-size:14px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)">
+      </div>
+      <div class="mrow">
+        <label>Jaccard threshold = <span id="d495-vth">0.6</span><input type="range" id="d495-th" min="0.2" max="0.95" step="0.05" value="0.6"></label>
+      </div>
+      <div id="d495-jac" style="display:grid;gap:4px"></div>
+      <div class="verdict" id="d495-jv"></div>
+      <hr style="border:0;border-top:1px dashed var(--line);width:100%">
+      <div class="mrow">
+        <label>LLM call (ms) = <span id="d495-vllm">600</span><input type="range" id="d495-llm" min="100" max="2000" step="50" value="600"></label>
+        <label>retrieval (ms) = <span id="d495-vret">40</span><input type="range" id="d495-ret" min="5" max="300" step="5" value="40"></label>
+        <label>N paraphrases = <span id="d495-vn">3</span><input type="range" id="d495-n" min="1" max="8" value="3"></label>
+        <label><span>&nbsp;</span><button type="button" id="d495-par" class="primary">الـ retrievals: parallel</button></label>
+      </div>
+      <canvas id="d495-latCv" width="520" height="230" aria-label="مقارنة الـ latency بين الاستراتيجيات"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6 -->
+<section id="d495-use">
+  <div class="station-head"><span class="tag">06</span><h2>Use It و Ship It: إزاي بيتستخدم في الـ production</h2></div>
+  <ul class="checklist">
+    <li><b>اختيار الاستراتيجية حسب السؤال:</b> سؤال قصير atomic → Multi-Query. سؤال معقد فيه كذا clause → Decomposition. سؤال مليان jargon → HyDE.</li>
+    <li><b>Cache بالـ hash بتاع السؤال:</b> أسئلة كتير بتتكرر، فخزّن ناتج الـ rewriter.</li>
+    <li><b>شغّل التلاتة parallel وادمجهم بالـ RRF:</b> التكلفة ٣ LLM calls ودمج واحد، والجودة = اتحاد تغطية التلاتة.</li>
+    <li><b>ليه RRF مش score interpolation؟</b> نفس كلام درس 65: الـ interpolation محتاج calibration لكل corpus (ضبط alpha). الـ RRF بيشتغل على الترتيب، فمش محتاج calibration وبيفضل ثابت مهما كانت مخرجات الـ rewriters.</li>
+  </ul>
+  <p><b>Ship It:</b> درس 69 بيركّب مرحلة الـ rewriter دي قبل الـ retriever بتاع درس 65 والـ reranker بتاع درس 66. ودرس 68 (بكرة) بيقيس قد إيه الـ rewriter رفع الـ recall.</p>
+  <div class="formula">query → rewriter (L67) → hybrid retriever (L65) → cross-encoder rerank (L66) → answer · measured by L68</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d495-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>RAG-Fusion:</b> نفّذ النسخة دي من الـ multi-query (2024) اللي فيها الـ paraphrases متنوعة عن قصد، وبعدين خطوة الـ rerank (درس 66) هي اللي تختار القايمة النهائية.
+      <details><summary>تلميح</summary>عدّل الـ prompt (أو الـ mock) يطلب صيغ من زوايا مختلفة (سؤال عن السبب، عن الإجراء، عن الاسم التقني). اعمل retrieval لكل صيغة، ادمج بالـ RRF لـ top-N (مثلًا 8)، وبعدين ابعت الـ N دول للـ <code>rerank(query, candidates, top_k)</code> بتاع امبارح بالسؤال <b>الأصلي</b>. استخدم Jaccard (معمل ٣) عشان تتأكد إن الصيغ فعلًا متنوعة.</details></li>
+    <li><b>Step-back prompting:</b> ضيف استراتيجية رابعة: اسأل الـ LLM عن السؤال الأعم، اعمل retrieval بيه، وبعدين ضيّق. قارن على الـ fixture.
+      <details><summary>تلميح</summary>اعمل <code>StepBackRewriter</code> بيرجّع <code>rewrites=[general_q, query]</code>. في الـ mock ضيف جدول <code>STEPBACK_TABLE</code>، مثلًا <span class="ltr">"what do we do when a transfer breaks halfway" → "how does the storage service handle upload failures"</span>. «ضيّق» هنا معناها إن السؤال الأصلي بيفضل في الدمج، أو تعمل rerank بالسؤال الأصلي. ضيفه للـ dict بتاع <code>strategies</code> في <code>main()</code> وقارن الـ gold-rank.</details></li>
+    <li><b>كاشف الـ atomic:</b> درّب الـ decomposer يعرف الأسئلة الـ atomic بإضافة head «هل السؤال atomic؟». قيس الـ over-split rate قبل وبعد.
+      <details><summary>تلميح</summary>ابدأ بـ heuristic قبل التدريب: مفيش <span class="ltr">and / vs / compare</span>، أو عدد الكلمات المهمة قليل → atomic. اعمل مجموعة صغيرة أسئلة متعلّمة (atomic / multi). الـ over-split rate = عدد الأسئلة الـ atomic اللي اتقسمت ÷ عدد الأسئلة الـ atomic. لاحظ إن الـ fallback الحالي بيقسم على أي <span class="ltr">"and"</span>، يعني <span class="ltr">"search and replace"</span> هتتقسم غلط. ده مثال كويس تبدأ بيه.</details></li>
+    <li><b>Model حقيقي:</b> بدّل الـ MockLLM بـ model call حقيقي وقيس الـ latency لكل استراتيجية على الـ stack بتاعك.
+      <details><summary>تلميح</summary>اعمل class فيه نفس الـ ٣ methods (<code>generate_hypothetical</code>, <code>paraphrase</code>, <code>decompose</code>) بالـ prompts اللي في محطة ٢ و٣، ومرّره كـ <code>llm=</code>. الـ retriever مش هيتغير. قيس بـ <code>time.perf_counter()</code> حوالين الـ LLM call لوحده وحوالين الـ retrievals لوحدها. هتلاقي الـ LLM call مسيطر على الوقت زي ما معمل ٣ بيقول. وparse الأرقام في رد الـ paraphrase بحذر (<span class="ltr">"1. ..."</span>).</details></li>
+    <li><b>Confidence لكل rewrite:</b> ضيف confidence score لكل صيغة، واحذف اللي تحت الـ threshold. قيس تأثيره على الـ recall.
+      <details><summary>تلميح</summary>مصدر بسيط للـ confidence: الـ cosine بين <code>mock_embed(rewrite)</code> و<code>mock_embed(query)</code>. لو قليل أوي يبقى الصيغة بعدت عن المعنى. لو عالي أوي (قريب من 1) يبقى نسخة مكررة. خلي الـ threshold بين الاتنين، وقيس recall@k على الـ GOLD قبل وبعد. بكرة هتتعلم المقاييس دي بالظبط.</details></li>
+    <li><b>إضافة مني · Router + Cache زي الشغل الحقيقي:</b> اكتب <code>route(query) -> Rewriter</code>: لو فيه <span class="ltr">" and "</span> أو أكتر من 12 كلمة → decompose، لو فيه token شكله identifier (فيه <code>_</code> أو CamelCase) → hyde، غير كده → multiquery. وغلّفه بـ cache dict مفتاحه <code>hashlib.sha256(query.lower().strip().encode()).hexdigest()</code>. شغّله على أسئلة الـ GOLD واطبع كام مرة الـ cache اتلقط لما تكرر نفس الأسئلة.
+      <details><summary>الإجابة</summary>قواعد الـ routing دي تطبيق مباشر لفقرة «Use It» (الطول/التعقيد/الـ jargon). الـ cache لازم يخزّن <b>ناتج الـ rewriter</b> (<code>RewriteResult</code>) مش النتايج النهائية، عشان لو الـ index اتحدّث، الـ retrieval يتعمل من جديد بس من غير ما تدفع LLM call تاني. في الشغل الحقيقي حط TTL للـ cache وطبّع السؤال (lowercase, strip, شيل علامة الاستفهام) زي ما الـ mock بيعمل في الـ <code>key</code>.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d495-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: الحدس، الأخطاء الشائعة، وفين بيظهر في الـ LLMs والـ Agents</h2></div>
+  <ul class="checklist">
+    <li><b>الحدس في جملة:</b> الأسئلة والإجابات عايشين في «أحياء» مختلفة في الـ embedding space. الأسئلة قصيرة وفيها كلمات استفهام، والمستندات طويلة وفيها مصطلحات. HyDE بيحوّل السؤال لـ «ساكن» في حي الإجابات.</li>
+    <li><b>متعرضش الـ hypothetical للمستخدم:</b> ده نص ممكن يكون غلط تمامًا. استخدامه الوحيد هو الـ retrieval. لو ظهر في الإجابة النهائية أو في الـ context بتاع الـ generation، هتدخّل hallucination بإيدك.</li>
+    <li><b>متنساش السؤال الأصلي:</b> الكود بيحط السؤال الأصلي في <code>rewrites</code> في HyDE وفي Multi-Query. لو شلته، ممكن rewrite وحش يضيّع حالة كانت الـ baseline هتجيبها صح.</li>
+    <li><b>متقيسش بالإحساس:</b> «HyDE حلو» مش قرار. قيس الـ recall@k قبل وبعد على eval set من أسئلتك الحقيقية (ده درس بكرة). الـ fixture هنا متصمم عشان كل استراتيجية تكسب مرة، والداتا بتاعتك مش كده.</li>
+    <li><b>في الـ Agents:</b> الـ agent اللي بيعمل tool call لـ search بيعمل query rewriting ضمنيًا: الـ LLM نفسه بيكتب الـ search query من المحادثة. ونفس فكرة الـ decomposition هي الأساس بتاع الـ multi-hop / deep research agents: كسّر السؤال، دوّر لكل جزء، ادمج.</li>
+    <li><b>في المحادثات:</b> سؤال زي «طب وفي الحالة التانية؟» مالوش معنى لوحده. في RAG الشات بنعمل rewrite بالـ history الأول عشان يبقى سؤال مستقل (standalone)، وده بيحصل قبل أي استراتيجية من التلاتة.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d495-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d495-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d495-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d495-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه إجابة HyDE الغلط بتجيب المستند الصح</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أعرف الفرق بين Multi-Query (صيغ لنفس السؤال) وDecomposition (أسئلة فرعية)</label></li>
+    <li><label><input type="checkbox" data-ck="3"> جرّبت الاستراتيجيات الأربعة في معمل ٢ وشفت مين كسب في كل سؤال</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ rewriters و<code>retrieve_with_rewriter</code> بإيدي وشغّلت الـ demo والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="5"> أعرف الـ failure modes الأربعة وحل كل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>HyDE</td><td>RAG على documentation فيها مصطلحات داخلية، والأسئلة بلغة المستخدم العادية</td></tr>
+    <tr><td>Multi-Query + RRF</td><td>RAG-Fusion، query transformations في LlamaIndex، بحث الـ support tickets</td></tr>
+    <tr><td>Decomposition</td><td>الأسئلة الـ multi-hop، الـ deep research agents، أسئلة المقارنة</td></tr>
+    <tr><td>Strategy selection + cache</td><td>مرحلة الـ rewriter في أي RAG pipeline في الـ production (درس 69)</td></tr>
+    <tr><td>Jaccard dedup</td><td>اكتشاف الصيغ المكررة والـ over-split قبل الـ fan-out</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> RAG Evaluation. Precision وRecall وMRR وnDCG وFaithfulness وAnswer Relevance، وإزاي تقيس فعلًا الـ rewriter بتاع النهاردة رفع الـ recall قد إيه.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F67-query-rewriting-hyde" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/67-query-rewriting-hyde</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=495,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d495-roadmap').closest('.day');
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// roadmap
+const rm=$('d495-roadmap');
+for(let i=431;i<=515;i++){const s=document.createElement('span');s.textContent=i;s.style.width='38px';if(i===N)s.className='now';rm.appendChild(s)}
+setTimeout(()=>{const now=rm.querySelector('.now');if(now&&rm.scrollWidth>rm.clientWidth)rm.scrollLeft=now.offsetLeft-rm.clientWidth/2},50);
+
+// ---------- Lab 1: HyDE vector sketch (illustrative) ----------
+const hc=$('d495-hyCv'),hx=AI.setupCanvas(hc),HW=+hc.dataset.w,HH=+hc.dataset.h;
+const HD=[
+  {id:'d1',t:'AbortMultipartOnFail',x:400,y:90,gold:true},
+  {id:'d2',t:'Transfer manager',x:440,y:150},
+  {id:'d3',t:'Quota cooldown',x:350,y:150},
+  {id:'d8',t:'Cancelling jobs',x:150,y:110},
+  {id:'d4',t:'check_permission',x:110,y:270},
+  {id:'d5',t:'Policy engine',x:200,y:290},
+  {id:'d6',t:'Rank fusion',x:330,y:280},
+  {id:'d7',t:'Index sizing',x:450,y:290}
+];
+const Q={x:185,y:150};
+let hyOn=false,hyPos={x:Q.x,y:Q.y},hyAnim=null;
+function hyTarget(){
+  const L=+$('d495-len').value,hall=$('d495-hall').checked;
+  // 2-3 sentences land closest; 1 = weak signal, longer = drift from noise
+  const pull=L===1?0.55:L<=3?0.93:Math.max(0.45,0.93-(L-3)*0.11);
+  const g=HD[0];let x=Q.x+(g.x-Q.x)*pull,y=Q.y+(g.y-Q.y)*pull;
+  if(L>3){x+=0;y+=(L-3)*14}
+  return {x,y,hall};
+}
+function hyDraw(){
+  hx.clearRect(0,0,HW,HH);
+  hx.strokeStyle=css('--grid');hx.lineWidth=1;
+  for(let x=0;x<HW;x+=26){hx.beginPath();hx.moveTo(x,0);hx.lineTo(x,HH);hx.stroke()}
+  for(let y=0;y<HH;y+=26){hx.beginPath();hx.moveTo(0,y);hx.lineTo(HW,y);hx.stroke()}
+  // cluster halos
+  hx.fillStyle=css('--vec-a');hx.globalAlpha=.08;hx.beginPath();hx.ellipse(400,125,95,60,0,0,7);hx.fill();hx.globalAlpha=1;
+  hx.fillStyle=css('--muted');hx.font='11px JetBrains Mono, monospace';hx.textAlign='center';hx.fillText('uploads / quota region',400,60);
+  hx.font='12px JetBrains Mono, monospace';
+  HD.forEach(d=>{hx.fillStyle=d.gold?css('--ok'):css('--muted');hx.beginPath();hx.arc(d.x,d.y,d.gold?8:6,0,7);hx.fill();hx.fillStyle=css('--ink');hx.fillText(d.t,d.x,d.y+20)});
+  const p=hyOn?hyPos:Q;
+  // dashed line to nearest
+  const near=HD.map(d=>[d,Math.hypot(d.x-p.x,d.y-p.y)]).sort((a,b)=>a[1]-b[1])[0][0];
+  hx.setLineDash([4,4]);hx.strokeStyle=css('--muted');hx.beginPath();hx.moveTo(p.x,p.y);hx.lineTo(near.x,near.y);hx.stroke();hx.setLineDash([]);
+  hx.fillStyle=css('--vec-b');hx.beginPath();hx.arc(Q.x,Q.y,8,0,7);hx.fill();
+  hx.fillStyle=css('--ink');hx.fillText('query vector',Q.x,Q.y-14);
+  if(hyOn){
+    AI.arrow(hx,Q.x,Q.y,hyPos.x,hyPos.y,css('--vec-a'),2);
+    hx.fillStyle=css('--vec-a');hx.beginPath();hx.arc(hyPos.x,hyPos.y,8,0,7);hx.fill();
+    hx.fillStyle=css('--ink');hx.fillText('hypothetical',hyPos.x,hyPos.y-14);
+  }
+  hx.textAlign='left';
+  // ranking
+  const ranked=HD.map(d=>[d,Math.hypot(d.x-p.x,d.y-p.y)]).sort((a,b)=>a[1]-b[1]);
+  const maxD=ranked[ranked.length-1][1];
+  $('d495-hyList').innerHTML=ranked.slice(0,5).map(([d,dist],i)=>`<li><span class="mono" style="${d.gold?'color:var(--ok);font-weight:600':''}">${i+1}. ${d.id}</span><span class="bar"><i style="width:${(1-dist/maxD)*100}%;${d.gold?'background:var(--ok)':''}"></i></span><span class="num">${f(1-dist/maxD,2)}</span></li>`).join('');
+  $('d495-hyWho').textContent=hyOn?'hypothetical':'query';
+  $('d495-hyRank').textContent=ranked.findIndex(r=>r[0].gold)+1;
+  const hall=$('d495-hall').checked;
+  $('d495-hyBm').textContent=!hyOn?'low':hall?'collapsed':'high';
+  $('d495-hyBm').style.color=!hyOn?'':hall?css('--bad'):css('--ok');
+}
+function hyGo(){
+  hyOn=true;const from={x:hyPos.x,y:hyPos.y},to=hyTarget(),t0=performance.now(),rmm=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  cancelAnimationFrame(hyAnim);
+  const st=t=>{if(!document.body.contains(hc))return;const k=rmm?1:Math.min(1,(t-t0)/700),e=k<.5?2*k*k:1-Math.pow(-2*k+2,2)/2;
+    hyPos={x:from.x+(to.x-from.x)*e,y:from.y+(to.y-from.y)*e};hyDraw();if(k<1)hyAnim=requestAnimationFrame(st)};
+  hyAnim=requestAnimationFrame(st);
+}
+$('d495-hyGo').addEventListener('click',hyGo);
+$('d495-hyReset').addEventListener('click',()=>{hyOn=false;hyPos={x:Q.x,y:Q.y};hyDraw()});
+$('d495-len').addEventListener('input',e=>{$('d495-vlen').textContent=e.target.value;if(hyOn)hyGo();else hyDraw()});
+$('d495-hall').addEventListener('change',()=>{hyDraw()});
+hyDraw();
+
+// ---------- Lab 2: real port of main.py ----------
+const tokenize=t=>(t.toLowerCase().match(/[a-z0-9]+/g)||[]);
+function mockEmbed(text,dim=96){
+  const v=new Array(dim).fill(0);
+  for(const tok of tokenize(text)){
+    let h=0;for(const ch of tok){h=(Math.imul(h,1315423911)^ch.charCodeAt(0))>>>0}
+    v[h%dim]+=1;v[(h>>>7)%dim]+=0.5;
+    for(let i=0;i<tok.length-1;i++){const bg=(tok.charCodeAt(i)*31+tok.charCodeAt(i+1))>>>0;v[bg%dim]+=0.25}
+  }
+  const n=Math.sqrt(v.reduce((s,x)=>s+x*x,0))||1;return v.map(x=>x/n);
+}
+const cos=(a,b)=>a.reduce((s,x,i)=>s+x*b[i],0);
+const CORPUS=[
+ ['d1','AbortMultipartOnFail','AbortMultipartOnFail terminates an S3 multipart transfer and decrements the per-bucket retry quota on persistent failure.'],
+ ['d2','Transfer manager','The transfer manager breaks a file into parts and tracks each part. Aborted transfers release the reserved key.'],
+ ['d3','Quota cooldown','Each storage bucket carries a retry quota. When the quota reaches zero the bucket enters a cooldown window and rejects further attempts.'],
+ ['d4','check_permission','Authorization is centralized in check_permission which evaluates a policy against principal, resource, and action. Equally applied to user and service accounts.'],
+ ['d5','Policy engine','The policy engine wraps an OPA runtime and exposes evaluate. Cached for a configured TTL.'],
+ ['d6','Rank fusion','Production search engines combine lexical and semantic retrieval through reciprocal rank fusion. The fusion operates on ranks, not scores.'],
+ ['d7','Index sizing','The vector index sits in memory. Plan for 1 KB per vector at 256 dimensions.'],
+ ['d8','Cancelling jobs','Long-running jobs accept a cancellation signal that stops the worker and releases the queue slot.']
+].map(([id,title,body])=>({id,title,body}));
+// BM25
+const BM={docs:[],lens:[],tf:[],df:{},avgdl:0,k1:1.5,b:0.75};
+CORPUS.forEach(d=>{const toks=[].concat(tokenize(d.title),tokenize(d.title),tokenize(d.title),tokenize(d.body));const c={};toks.forEach(t=>c[t]=(c[t]||0)+1);
+  BM.docs.push(d);BM.lens.push(toks.length);BM.tf.push(c);Object.keys(c).forEach(t=>BM.df[t]=(BM.df[t]||0)+1)});
+BM.avgdl=BM.lens.reduce((a,b)=>a+b,0)/BM.lens.length;
+const sortDesc=arr=>arr.map((x,i)=>[x,i]).sort((a,b)=>(b[0][1]-a[0][1])||(a[1]-b[1])).map(x=>x[0]);
+function bm25(q,k){const n=BM.docs.length,sc=new Array(n).fill(0);
+  for(const term of tokenize(q)){const df=BM.df[term]||0;if(!df)continue;const idf=Math.log((n-df+0.5)/(df+0.5)+1);
+    BM.tf.forEach((c,i)=>{const fq=c[term]||0;if(!fq)return;const den=fq+BM.k1*(1-BM.b+BM.b*BM.lens[i]/(BM.avgdl||1));sc[i]+=idf*fq*(BM.k1+1)/den})}
+  return sortDesc(BM.docs.map((d,i)=>[d,sc[i]])).slice(0,k)}
+const DV=CORPUS.map(d=>[d,mockEmbed(d.title+'\n'+d.body)]);
+const denseVec=(qv,k)=>sortDesc(DV.map(([d,v])=>[d,cos(qv,v)])).slice(0,k);
+function rrf(rankings,k=60){const sc=new Map(),by={};
+  rankings.forEach(r=>r.forEach(([d],rank)=>{sc.set(d.id,(sc.get(d.id)||0)+1/(k+rank+1));by[d.id]=d}));
+  return sortDesc([...sc.entries()]).map(([id,s])=>[by[id],s])}
+const hySearch=(q,ke,ko)=>rrf([bm25(q,ke),denseVec(mockEmbed(q),ke)]).slice(0,ko);
+const hySearchVec=(qv,qt,ke,ko)=>rrf([bm25(qt,ke),denseVec(qv,ke)]).slice(0,ko);
+// MockLLM
+const SYN={abort:['cancel','stop','terminate'],cancel:['abort','stop'],upload:['transfer','ingest'],fail:['error','failure'],budget:['quota','limit'],retry:['attempt','resend'],permission:['authorization','authz'],service:['worker'],policy:['rule'],rank:['score','ordering'],fusion:['merge','combine']};
+const HYDE={
+ 'what do we do when a transfer breaks halfway':'AbortMultipartOnFail terminates an S3 multipart transfer and decrements the per-bucket retry quota when the transfer fails. The bucket then enters a cooldown window.',
+ 'how is access control handled across user types':'Authorization is centralized in check_permission which evaluates a policy against principal, resource, and action. The same function applies to user accounts and to service accounts equally.',
+ 'how does the search service merge two retrievers':'The search service merges lexical and semantic retrievers through reciprocal rank fusion. Rank fusion is the production technique for combining two ranked lists; the fusion operates on ranks, not on scores, so calibration is not required.'};
+const MQ={
+ 'what do we do when a transfer breaks halfway':['how do multipart uploads behave on failure','what action does the storage service take when a multipart upload fails','how is an in-flight multipart upload aborted on persistent failure'],
+ 'how is access control handled across user types':['how does the system perform authorization checks','where is the central permission check implemented','how are service accounts authorized for storage operations'],
+ 'how does the search service merge two retrievers':['how is lexical and semantic retrieval combined','what algorithm fuses BM25 and dense rankings','how does rank fusion work in production search']};
+const DEC={
+ 'what happens when an upload fails and the retry budget is exhausted':['how is an in-flight multipart upload aborted','what happens when the retry quota reaches zero'],
+ 'how is authorization handled and how do policies get evaluated':['how is authorization performed','how are policies evaluated']};
+const key=q=>q.toLowerCase().trim().replace(/\?+$/,'').trim();
+const llm={
+ hyp(q){const k=key(q);if(HYDE[k])return HYDE[k];const out=[];tokenize(q).forEach(t=>{out.push(t);(SYN[t]||[]).forEach(s=>out.push(s))});return out.join(' ')},
+ para(q,n=3){const k=key(q);if(MQ[k])return MQ[k].slice(0,n);const toks=tokenize(q),out=[];
+   for(let sh=0;sh<n;sh++)out.push(toks.map((t,i)=>{const o=SYN[t]||[];return o.length&&(i+sh)%2===0?o[sh%o.length]:t}).join(' '));return out},
+ dec(q){const k=key(q);if(DEC[k])return DEC[k];if(q.toLowerCase().includes(' and ')){return q.split(/\s+and\s+/i).map(p=>p.trim().replace(/\?+$/,'')).filter(p=>p)}return [q]}
+};
+function rewrite(q,s){
+  if(s==='hyde')return{rewrites:[q],hyp:llm.hyp(q)};
+  if(s==='multiquery')return{rewrites:[q].concat(llm.para(q,3)),hyp:null};
+  if(s==='decompose')return{rewrites:llm.dec(q),hyp:null};
+  return{rewrites:[q],hyp:null};
+}
+function retrieveWith(q,s,ke=8,ko=8){const rw=rewrite(q,s),R=[];
+  if(rw.hyp!==null)R.push(hySearchVec(mockEmbed(rw.hyp),q,ke,ke));
+  rw.rewrites.forEach(r=>R.push(hySearch(r,ke,ke)));
+  return{rw,n:R.length,res:rrf(R).slice(0,ko)}}
+const GOLD=[['what do we do when a transfer breaks halfway','d1','multiquery'],['how does the search service merge two retrievers','d6','hyde'],['what happens when an upload fails and the retry budget is exhausted','d1','decompose']];
+const STR=['no-rewrite','hyde','multiquery','decompose'];
+const qs=$('d495-q');GOLD.forEach((g,i)=>{const o=document.createElement('option');o.value=i;o.textContent=g[0]+'  (winner: '+g[2]+')';qs.appendChild(o)});
+let strat='multiquery';
+function lab2(){
+  const own=$('d495-own').value.trim(),g=GOLD[+qs.value],q=own||g[0],gold=own?null:g[1];
+  const out=retrieveWith(q,strat);
+  let h='';
+  if(out.rw.hyp!==null)h+=`<div><b>hypothetical:</b> ${esc(out.rw.hyp)}</div>`;
+  h+=out.rw.rewrites.map((r,i)=>`<div>${strat==='decompose'?'sub':'q'}${i}: ${esc(r)}</div>`).join('');
+  $('d495-rw').innerHTML=h;
+  const ids=out.res.map(r=>r[0].id),gr=gold?(ids.indexOf(gold)+1||-1):'—';
+  $('d495-gold').textContent=gold||'—';$('d495-grank').textContent=gr;$('d495-nr').textContent=out.n;
+  $('d495-grank').style.color=gr===1?css('--ok'):'';
+  const mx=out.res.length?out.res[0][1]:1;
+  $('d495-res').innerHTML=out.res.map(([d,s],i)=>`<li><span class="mono" style="${d.id===gold?'color:var(--ok);font-weight:600':''}">${i+1}. ${d.id}</span><span class="bar"><i style="width:${s/mx*100}%;${d.id===gold?'background:var(--ok)':''}"></i></span><span class="num">${f(s,4)}</span></li>`).join('');
+  // comparison table across all GOLD
+  let t='<tr><th>query</th>'+STR.map(s=>`<th class="mono">${s}</th>`).join('')+'</tr>';
+  GOLD.forEach(([gq,gd,w])=>{t+=`<tr><td class="mono" style="direction:ltr;text-align:left;font-size:12px">${esc(gq.slice(0,38))}…</td>`+STR.map(s=>{const r=retrieveWith(gq,s).res.map(x=>x[0].id);const k=r.indexOf(gd)+1||-1;return `<td class="mono" style="${s===w?'font-weight:700;color:var(--vec-a)':''}">${k}${k===1?' ✓':''}</td>`}).join('')+'</tr>'});
+  $('d495-cmp').innerHTML=t;
+}
+document.querySelectorAll('[data-d495s]').forEach(b=>b.addEventListener('click',()=>{strat=b.dataset.d495s;document.querySelectorAll('[data-d495s]').forEach(x=>x.classList.toggle('primary',x===b));lab2()}));
+qs.addEventListener('change',()=>{$('d495-own').value='';lab2()});
+$('d495-own').addEventListener('input',lab2);
+lab2();
+
+// ---------- Lab 3: Jaccard + latency ----------
+function jac(a,b){const A=new Set(tokenize(a)),B=new Set(tokenize(b));let i=0;A.forEach(x=>{if(B.has(x))i++});const u=A.size+B.size-i;return u?i/u:0}
+function lab3a(){
+  const th=+$('d495-th').value;$('d495-vth').textContent=th;
+  const P=['d495-p1','d495-p2','d495-p3'].map(id=>$(id).value),pairs=[[0,1],[0,2],[1,2]];let dup=0;
+  $('d495-jac').innerHTML='<ul class="rank-list">'+pairs.map(([i,j])=>{const v=jac(P[i],P[j]);if(v>=th)dup++;return `<li><span class="mono">p${i+1} · p${j+1}</span><span class="bar"><i style="width:${v*100}%;background:${v>=th?'var(--bad)':'var(--vec-a)'}"></i></span><span class="num">${f(v,2)}</span></li>`}).join('')+'</ul>';
+  const v=$('d495-jv');
+  v.textContent=dup?`${dup} زوج فوق الـ threshold: صيغ مكررة. الـ RRF مش هيكسب منهم حاجة، أو الـ decomposition عمل over-split.`:'الصيغ متنوعة كفاية: كل واحدة ممكن تجيب مستندات مختلفة.';
+  v.style.color=dup?css('--bad'):css('--ok');
+}
+['d495-p1','d495-p2','d495-p3','d495-th'].forEach(id=>$(id).addEventListener('input',lab3a));lab3a();
+
+const lc=$('d495-latCv'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;let par=true;
+function lab3b(){
+  const L=+$('d495-llm').value,R=+$('d495-ret').value,n=+$('d495-n').value;
+  $('d495-vllm').textContent=L;$('d495-vret').textContent=R;$('d495-vn').textContent=n;
+  const M=2; // decomposition sub-questions
+  const rows=[
+    ['no-rewrite',0,1],
+    ['hyde',L,2],             // hypothetical ranking + original
+    ['multiquery',L,n+1],     // original + n paraphrases
+    ['decompose',L,M],
+    ['all 3 (parallel LLM)',L,2+(n+1)+M]
+  ];
+  const tot=r=>r[1]+(r[2]?(par?R:R*r[2]):0);
+  const mx=Math.max(...rows.map(tot)),x0=150,w=LW-x0-70;
+  lx.clearRect(0,0,LW,LH);lx.font='12px JetBrains Mono, monospace';
+  rows.forEach((r,i)=>{const y=18+i*40;
+    lx.fillStyle=css('--ink');lx.textAlign='left';lx.fillText(r[0],6,y+15);
+    const lw=r[1]/mx*w,rw=(tot(r)-r[1])/mx*w;
+    lx.fillStyle=css('--vec-b');lx.fillRect(x0,y,lw,20);
+    lx.fillStyle=css('--vec-a');lx.fillRect(x0+lw,y,rw,20);
+    lx.fillStyle=css('--muted');lx.fillText(Math.round(tot(r))+' ms · '+r[2]+' ret',x0+lw+rw+6,y+15);
+  });
+  lx.fillStyle=css('--vec-b');lx.fillRect(x0,LH-16,12,10);lx.fillStyle=css('--ink');lx.fillText('LLM call',x0+16,LH-7);
+  lx.fillStyle=css('--vec-a');lx.fillRect(x0+100,LH-16,12,10);lx.fillStyle=css('--ink');lx.fillText('retrievals ('+(par?'parallel':'serial')+')',x0+116,LH-7);
+}
+['d495-llm','d495-ret','d495-n'].forEach(id=>$(id).addEventListener('input',lab3b));
+$('d495-par').addEventListener('click',e=>{par=!par;e.target.textContent='الـ retrievals: '+(par?'parallel':'serial');e.target.classList.toggle('primary',par);lab3b()});
+lab3b();
+
+// ---------- quiz ----------
+AI.quiz($('d495-quizBox'),[
+ ['إيه الفكرة الأساسية في HyDE (Hypothetical Document Embeddings)؟',['نعمل embedding للسؤال بموديل أكبر','نعمل hash للسؤال وندوّر عليه في cache','نشغّل السؤال على كذا retriever وناخد أحسن واحد','LLM يكتب إجابة مزيفة، نعمل embedding للمستند الافتراضي ده، وندوّر بالـ vector بتاعه بدل vector السؤال'],3,'HyDE بيكتب مقطع شكله شكل المستندات وبكلام الـ corpus، ويدوّر بالـ embedding بتاعه. vector السؤال بيتشال.'],
+ ['ليه عادي إن المستند الافتراضي في HyDE يبقى غلط كمعلومة؟',['الـ reranker بيصلح الأخطاء','الـ LLM call بيترجع لو غلط','الـ retriever فارق معاه توزيع الكلمات مش صحة المعلومة؛ الـ vector بيقع جنب المستند الحقيقي','المستخدم مش بيشوف الـ hypothetical'],2,'الـ retrieval تشابه في الـ embedding space. لو كلمات الـ hypothetical شبه كلام الـ corpus، الـ vector بيقع في المنطقة الصح.'],
+ ['إيه الفرق بين Multi-Query expansion والـ Query decomposition؟',['Multi-Query بيطلع N صيغة لنفس السؤال؛ الـ decomposition بيطلع أسئلة فرعية بتغطي مع بعض سؤال متعدد المواضيع','الـ decomposition بيشتغل local والـ multi-query محتاج موديل remote','هما نفس الحاجة','Multi-Query بيستخدم cosine والـ decomposition بيستخدم BM25'],0,'الصيغ بتحافظ على نفس القصد؛ الأسئلة الفرعية بتقسم سؤال متعدد المواضيع لأجزاء كل واحد يتجاوب لوحده.'],
+ ['إمتى الـ decomposition بيقسّم زيادة ويضر الـ retrieval؟',['لما الـ BM25 مقفول','لما الـ corpus صغير أوي','لما السؤال atomic (موضوع واحد): الـ decomposer بيخترع أسئلة فرعية وهمية، والـ retrievals كلها بترجع نفس المستند بترتيب أقل','لما السؤال طويل على الـ LLM'],2,'تقسيم سؤال atomic بيعمل أسئلة فرعية وهمية، والـ retrievals بتاعتها بتخفف الدمج فالمستند الصح بينزل.'],
+ ['ليه التلات استراتيجيات بيندمجوا بالـ RRF مش بالـ score interpolation؟',['الـ interpolation محتاج calibration لكل corpus؛ الـ RRF بيدمج مساهمات مبنية على الترتيب من غير calibration، وده مطلوب لما بندمج N retrievals من rewrites مختلفة','الـ interpolation مايقدرش يتعامل مع أكتر من قايمتين','الـ RRF بيشتغل على GPU والـ interpolation لأ','الـ RRF هو العملية الوحيدة اللي Python بيدعمها'],0,'نفس حجة درس 65: الدمج بالترتيب مش محتاج ضبط alpha لكل corpus وبيفضل ثابت مع مخرجات الـ rewriters.'],
+ ['إيه أرضية الـ latency لما نشغّل التلات rewriters parallel؟',['٣ LLM calls ورا بعض','أبطأ retrieval واحد','LLM call واحد (الـ rewriters والـ retrievals parallel؛ الـ LLM call هو الأرضية)','صفر، لأن الـ rewriters بتعمل cache لكل حاجة'],2,'التلاتة بيعملوا model call؛ لو parallel الأرضية = latency call واحد، وبعدين الـ retrievals parallel بعدها.'],
+ ['(سؤال مني) في الكود، لما HyDE بيدّي الـ retriever الـ vector المزيف عن طريق search_vec، الـ BM25 بيشتغل على إيه؟',['على نص الـ hypothetical','على السؤال الأصلي، عشان الإشارة الـ lexical ماتختفيش','الـ BM25 مش بيشتغل خالص في حالة HyDE','على كل الـ paraphrases'],1,'search_vec بياخد qtext=query: الـ dense بالـ vector المزيف، والـ BM25 بالنص الأصلي، والـ RRF بيدمجهم. وده كمان بيحمي من الـ identifiers المتألفة في الـ hypothetical.'],
+ ['(سؤال مني) MockLLM.decompose بيعمل إيه لسؤال زي "where is the policy engine cached"؟',['بيقسمه لـ ٣ أسئلة','بيرجّع قايمة فاضية','بيرجّعه زي ما هو في قايمة فيها عنصر واحد، لأنه atomic ومفيهوش " and "','بيرمي exception'],2,'مش في DECOMP_TABLE ومفيهوش " and "، فبيرجع [query]. ده بالظبط اللي التيست test_decompose_atomic_returns_self بيتأكد منه.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(hc))return false;hyDraw();lab2();lab3a();lab3b()});
+})();
+</script>

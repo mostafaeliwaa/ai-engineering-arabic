@@ -1,0 +1,580 @@
+<div class="day" id="d51-root">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 08 · Weight Initialization and Training Stability</span>
+  <h1>اليوم ٥١: البداية الغلط بتموّت الشبكة قبل ما تتدرب</h1>
+  <p class="lede">النهاردة هتشوف إزاي <b>الأرقام اللي بتبدأ بيها الـ weights</b> بتحدد هل الشبكة هتتعلم أصلًا ولا لأ. هتعدّي إشارة في ٥٠ layer بإيدك، وتشوفها بتنفجر أو بتختفي أو بتفضل ثابتة، وتفهم ليه Xavier و Kaiming معادلاتهم كده بالظبط.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Regularization</b></span>
+    <span>بعده: <b>Learning Rate Schedules and Warmup</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d51-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d51-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح اتكلمنا عن الـ Regularization: إزاي نمنع الموديل إنه يحفظ الداتا بدل ما يفهمها. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه في الـ dropout بنقسم على (1 − p) وقت التدريب؟</summary>ده اسمه <b>inverted dropout</b>: لما بنقفل نسبة p من النيورونز، المجموع بيقل، فبنكبّر الباقي عشان القيمة المتوقعة تفضل زي ما هي. كده وقت الـ inference مش محتاجين نعمل أي حاجة، بنشغّل الشبكة كلها عادي.</details>
+  <details><summary>٢. ليه الـ Transformers بتستخدم LayerNorm مش BatchNorm؟</summary>الـ BatchNorm بيحسب المتوسط على الـ batch، فبيعتمد على حجمه وبيحتاج running averages وقت الـ inference. الـ LayerNorm بيحسب على الـ features بتاعة كل مثال لوحده، فمش فارق معاه حجم الـ batch ولا طول الجملة.</details>
+  <details><summary>٣. الـ RMSNorm بيفرق إيه عن الـ LayerNorm، ومين بيستخدمه؟</summary>بيشيل خطوة طرح المتوسط ويقسم على الـ root mean square بس، فأرخص في الحساب وبيدي دقة قريبة. موديلات زي LLaMA و Mistral بتستخدمه.</details>
+  <div class="note ai"><strong>ربط بالنهاردة:</strong> الـ normalization بيصلّح حجم الإشارة <i>أثناء</i> التدريب. الـ initialization بيضبط حجمها <i>من أول لحظة</i>. الاتنين بيحاربوا نفس العدو: إشارة بتنفجر أو بتختفي.</div>
+</section>
+
+<section id="d51-plan">
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ Regularization</div>
+    <div><b>15 min</b>مشكلة التماثل (symmetry) + المعمل ٠١</div>
+    <div><b>20 min</b>انتشار الـ variance و Xavier و Kaiming + المعمل ٠٢</div>
+    <div><b>10 min</b>الـ Transformers والـ residual scaling + المعمل ٠٣</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1: symmetry -->
+<section id="d51-sym">
+  <div class="station-head"><span class="tag">01</span><h2>مشكلة التماثل: ٥١٢ نيورون بيشتغلوا كأنهم واحد</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>كل نيورون في الـ layer ليه نفس الشكل: يضرب الـ inputs في weights، يزوّد bias، ويعدّي على activation. لو كل الـ weights بدأت بنفس القيمة (والصفر هو أبسط مثال)، كل النيورونز هتطلّع <b>نفس الناتج</b>.</p>
+      <p>وقت الـ backpropagation كل واحد هياخد <b>نفس الـ gradient</b>، فيتعدّل <b>بنفس المقدار</b>. يعني هيفضلوا توأم للأبد. بعد ١٠٬٠٠٠ epoch، الـ hidden layer اللي فيها ٥١٢ نيورون لسه ٥١٢ نسخة من نفس النيورون. دفعت تمن ٥١٢ وخدت واحد.</p>
+      <p>ده اسمه <b>symmetry</b>، والحل البدائي هو <b>symmetry breaking</b>: نبدأ عشوائي، فكل نيورون يبتدي من نقطة مختلفة ويتعلم feature مختلفة.</p>
+      <div class="note"><strong>تشبيه:</strong> تخيل ٤ طلبة بيحلّوا نفس المسألة، بنفس الكراسة، وبيصححلهم نفس المدرس بنفس الملاحظة. عمرهم ما هيطلعوا بأفكار مختلفة. لازم كل واحد يبدأ من زاوية مختلفة.</div>
+      <div class="note"><strong>جرب بإيدك:</strong> شغّل التدريب بـ «كله صفر» وشوف الـ ٤ خطوط (weights النيورونز) فوق بعض طول الوقت. بعدين جرب «عشوائي» وشوفهم بيتفرقوا وكل واحد بيروح لحتة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d51-symCanvas" width="520" height="300" aria-label="أوزان ٤ نيورونز أثناء التدريب"></canvas>
+      <div class="readout">
+        <div><small>الـ epoch</small><b id="d51-symEp">0</b></div>
+        <div><small>أكبر فرق بين النيورونز</small><b id="d51-symDiff">0</b></div>
+        <div><small>نيورونز مختلفة فعليًا</small><b id="d51-symEff">1</b></div>
+      </div>
+      <div class="verdict" id="d51-symVerdict">—</div>
+      <div class="btns">
+        <button type="button" class="primary" id="d51-symZero">كله صفر</button>
+        <button type="button" id="d51-symConst">كله 0.5</button>
+        <button type="button" id="d51-symRand">عشوائي</button>
+      </div>
+      <small style="color:var(--muted)">شبكة 2→4→1 بـ sigmoid بتتعلم داتا دايرة (زي اللي في كود الدرس). كل خط = weight أول input لنيورون من الـ ٤.</small>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2: variance -->
+<section id="d51-var">
+  <div class="station-head"><span class="tag">02</span><h2>العشوائية مش كفاية: الـ scale هو اللي بيحكم</h2></div>
+  <p>خد layer واحدة فيها fan_in input:</p>
+  <div class="formula">z = w₁x₁ + w₂x₂ + … + wₙxₙ</div>
+  <p>لو كل weight ليها variance <span class="ltr">Var(w)</span> وكل input ليه <span class="ltr">Var(x)</span>، فالـ variance بتاعة الناتج:</p>
+  <div class="formula">Var(z) = fan_in · Var(w) · Var(x)</div>
+  <p>يعني كل layer بتضرب الإشارة في رقم ثابت = <span class="ltr">fan_in · Var(w)</span>. ومع ٥٠ layer بنضرب في نفس الرقم ٥٠ مرة:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>المضاعف لكل layer</th><th>بعد ١٠ layers</th></tr>
+    <tr><td class="ltr">Var(w)=1, fan_in=512</td><td class="ltr">512</td><td class="ltr">512¹⁰ ≈ 1.2×10²⁷ → انفجار</td></tr>
+    <tr><td class="ltr">Var(w)=0.001, fan_in=512</td><td class="ltr">0.512</td><td class="ltr">0.512¹⁰ ≈ 0.00013 → اختفاء</td></tr>
+    <tr><td>الهدف</td><td class="ltr">1</td><td class="ltr">1¹⁰ = 1 → ثابتة</td></tr>
+  </table></div>
+  <p>الهدف إذن: نختار <span class="ltr">Var(w)</span> بحيث <span class="ltr">Var(z) = Var(x)</span>. الإشارة تفضل نفس الحجم في كل layer. والمسافة بين «شغال» و«بايظ» رفيعة جدًا: <span class="ltr">N(0,1)</span> ممكن تشتغل في ٣ layers، لكن في ٥٠ يا بتنفجر يا بتموت.</p>
+  <div class="note"><strong>تشبيه:</strong> لعبة التليفون المكسور بين ٥٠ واحد. لو كل واحد بيعلّي صوته شوية عن اللي قبله، الأخير هيزعق. لو كل واحد بيوطّي شوية، الأخير مش هيسمع حاجة. لازم كل واحد يقول بنفس الصوت بالظبط.</div>
+
+  <h3>Xavier / Glorot (2010): للـ sigmoid والـ tanh</h3>
+  <p>Glorot و Bengio عايزين الـ variance تفضل ثابتة في الاتجاهين: الـ forward (بيعتمد على fan_in) والـ backward (الـ gradients بتعتمد على fan_out). فخدوا حل وسط:</p>
+  <div class="formula">Var(w) = 2 / (fan_in + fan_out)</div>
+  <p>وفي التطبيق بنسحب الأرقام من واحد من التوزيعين دول:</p>
+  <div class="formula">Uniform(−limit, limit),  limit = √(6 / (fan_in + fan_out))<br>Normal(0, std = √(2 / (fan_in + fan_out)))</div>
+  <p>ليه بيشتغل مع sigmoid و tanh؟ لأنهم تقريبًا <b>خطيين جنب الصفر</b>، وده بالظبط المكان اللي الـ activations بتعيش فيه لو الـ init مظبوط.</p>
+  <details><summary>منين جه الـ 6 في الـ Uniform؟</summary>الـ variance بتاعة <span class="ltr">Uniform(−a, a)</span> هي <span class="ltr">a²/3</span>. عايزينها تساوي <span class="ltr">2/(fan_in+fan_out)</span>، يبقى <span class="ltr">a² = 6/(fan_in+fan_out)</span>.</details>
+
+  <h3>Kaiming / He (2015): للـ ReLU والـ GELU</h3>
+  <p>الـ ReLU بيصفّر كل حاجة سالبة، يعني في المتوسط <b>نص</b> الـ inputs بتبقى صفر. كأن الـ fan_in الفعلي اتقسم على ٢. Xavier مش واخد باله من ده، فبيدي variance أقل من اللازم والإشارة بتنكمش للنص تقريبًا كل layer. مع ٥٠ layer: <span class="ltr">0.5⁵⁰ ≈ 8.8×10⁻¹⁶</span>.</p>
+  <div class="formula">Var(w) = 2 / fan_in      w ~ Normal(0, √(2 / fan_in))</div>
+  <p>الـ 2 دي بالظبط بتعوّض النص اللي الـ ReLU بيرميه. ونفس الكلام بيتطبق على GELU و Swish.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: عدّي إشارة في ٥٠ layer</h3>
+      <p>ده نفس تجربة الكود: داتا عشوائية <span class="ltr">N(0,1)</span> بتعدّي في شبكة عميقة، وبنقيس متوسط <span class="ltr">|activation|</span> في كل layer. المحور الرأسي <b>log scale</b>، والشريط الأخضر هو المنطقة الصحية (0.5 لـ 2) اللي الدرس بيقول تتأكد إن الإشارة جواها.</p>
+      <p>جرب كده:</p>
+      <ol class="ex">
+        <li><span class="ltr">N(0,1) + ReLU</span> → شوفها بتطير.</li>
+        <li><span class="ltr">N(0,0.01) + ReLU</span> → شوفها بتموت.</li>
+        <li><span class="ltr">Xavier + ReLU</span> → بتنكمش ببطء (الـ 2 ناقصة).</li>
+        <li><span class="ltr">Kaiming + ReLU</span> و <span class="ltr">Xavier + Tanh</span> → ثابتة.</li>
+      </ol>
+      <p>غيّر العرض (width) وشوف إن الـ random مش بيتأقلم مع fan_in لكن Xavier و Kaiming بيتأقلموا.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d51-deepCanvas" width="520" height="340" aria-label="حجم الإشارة عبر ٥٠ layer"></canvas>
+      <div class="mrow">
+        <label>Init<select id="d51-init">
+          <option value="zero">Zero</option>
+          <option value="r1">Random N(0,1)</option>
+          <option value="r001">Random N(0,0.01)</option>
+          <option value="lecun">LeCun 1/fan_in</option>
+          <option value="xavier">Xavier</option>
+          <option value="kaiming" selected>Kaiming</option>
+        </select></label>
+        <label>Activation<select id="d51-act">
+          <option value="sigmoid">Sigmoid</option>
+          <option value="tanh">Tanh</option>
+          <option value="relu" selected>ReLU</option>
+        </select></label>
+        <label>width (fan_in) <span id="d51-wv">64</span><input type="range" id="d51-width" min="0" max="3" step="1" value="2"></label>
+        <label>layers <span id="d51-lv">50</span><input type="range" id="d51-layers" min="5" max="50" step="5" value="50"></label>
+      </div>
+      <div class="readout">
+        <div><small>std(w)</small><b id="d51-std">—</b></div>
+        <div><small>fan_in·Var(w)</small><b id="d51-gain">—</b></div>
+        <div><small>Layer 1</small><b id="d51-m1">—</b></div>
+        <div><small>آخر layer</small><b id="d51-mL">—</b></div>
+      </div>
+      <div class="verdict" id="d51-deepVerdict">—</div>
+      <div class="btns">
+        <button type="button" id="d51-keep">ثبّت الخط ده للمقارنة</button>
+        <button type="button" id="d51-clear">امسح المقارنة</button>
+      </div>
+    </div>
+  </div>
+  <div class="note ai"><strong>ملحوظة على zero + sigmoid:</strong> الخط هيفضل ثابت عند 0.5! ده مش معناه إنه صحي. ده معناه إن كل نيورون بيطلّع <span class="ltr">sigmoid(0) = 0.5</span> مهما كان الـ input. الشبكة ميتة بس شكلها هادي. عشان كده «الإشارة ثابتة» شرط لازم بس مش كافي، ولازم كمان العشوائية تكسر التماثل.</div>
+</section>
+
+<!-- STATION 3: transformers -->
+<section id="d51-res">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Transformers: كل جمعة بتكبّر الـ variance</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ Transformer فيه <b>residual connections</b>: ناتج كل sub-layer بيتجمع على الـ input بتاعه:</p>
+      <div class="formula">x = x + sublayer(x)</div>
+      <p>كل جمعة بتزوّد الـ variance. مع N residual layer الـ variance بتكبر بشكل متناسب مع N. الـ GPT-2 حل ده إنه بيضرب weights الـ residual layers في <span class="ltr">1/√(2N)</span> (N = عدد الـ layers)، فالإشارة المتراكمة تفضل مستقرة.</p>
+      <p>Llama 3 (405B parameter و 126 layer) بيستخدم فكرة شبيهة. من غير الـ scaling ده، الـ residual stream كان هيكبر من غير حد عبر ١٢٦ layer من attention و feedforward.</p>
+      <div class="note"><strong>تشبيه:</strong> حصّالة كل يوم بتحط فيها فلوس. بعد ١٢٦ يوم هتبقى مليانة على الآخر. الـ <span class="ltr">1/√(2N)</span> كأنك بتقول: كل يوم حط فكة صغيرة بحيث المجموع في الآخر يبقى معقول.</div>
+      <div class="note"><strong>جرب:</strong> كبّر عدد الـ layers وقارن الخطين. المعمل بيعمل pre-LayerNorm زي GPT-2: كل sublayer بتاخد <span class="ltr">LN(x)</span> وتطلّع حاجة variance بتاعتها ثابتة، فالـ std بتاع الـ stream بيزيد مع الجذر التربيعي لعدد الجمعات.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d51-resCanvas" width="520" height="300" aria-label="حجم الـ residual stream"></canvas>
+      <label style="display:grid;gap:2px">عدد الـ blocks N = <b class="mono" id="d51-nv">24</b><input type="range" id="d51-n" min="2" max="128" step="2" value="24"></label>
+      <div class="readout">
+        <div><small>std من غير scaling</small><b id="d51-r0">—</b></div>
+        <div><small>std مع 1/√(2N)</small><b id="d51-r1">—</b></div>
+        <div><small>معامل الـ scaling</small><b id="d51-rs">—</b></div>
+      </div>
+      <button type="button" id="d51-resRun">عيد السحب العشوائي</button>
+    </div>
+  </div>
+  <p><b>ليه 2N مش N؟</b> لأن كل block في الـ Transformer فيه جمعتين على الـ residual: واحدة من الـ attention وواحدة من الـ MLP. فعدد الجمعات الكلي 2N.</p>
+</section>
+
+<!-- STATION 4: decision -->
+<section id="d51-choose">
+  <div class="station-head"><span class="tag">04</span><h2>تختار إيه؟ خريطة القرار</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الـ activation</th><th>الـ init</th><th>المعادلة</th></tr>
+    <tr><td>Sigmoid / Tanh</td><td>Xavier / Glorot</td><td class="ltr">Var = 2/(fan_in + fan_out)</td></tr>
+    <tr><td>ReLU / Leaky ReLU</td><td>Kaiming / He</td><td class="ltr">Var = 2/fan_in</td></tr>
+    <tr><td>GELU / Swish</td><td>Kaiming / He (زي ReLU)</td><td class="ltr">Var = 2/fan_in</td></tr>
+    <tr><td>Transformer residual</td><td>scale الـ residual weights</td><td class="ltr">× 1/√(2N)</td></tr>
+  </table></div>
+  <p>وبعد ما تختار، <b>اتأكد</b>: متوسط حجم الـ activations لازم يفضل بين 0.5 و 2.0 في كل الـ layers.</p>
+  <h3>في PyTorch</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+
+layer = nn.Linear(512, 256)
+
+nn.init.xavier_uniform_(layer.weight)                         <span class="c"># Xavier بتوزيع uniform</span>
+nn.init.xavier_normal_(layer.weight)                          <span class="c"># Xavier بتوزيع normal</span>
+
+nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')   <span class="c"># Kaiming للـ ReLU</span>
+nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
+
+nn.init.zeros_(layer.bias)                                    <span class="c"># الـ bias صفر عادي</span></pre></div>
+  <p>لما تكتب <code>nn.Linear(512, 256)</code> الـ PyTorch بيستخدم Kaiming uniform افتراضيًا، وعشان كده الشبكات البسيطة «بتشتغل وخلاص». بس لما تبني architecture مخصوصة أو تعدّي ٢٠ layer لازم تفهم اللي بيحصل وممكن تغيّر الافتراضي. وفي HuggingFace، الموديلات بتظبط الـ init في دالة <code>_init_weights</code>، والـ GPT-2 فيها بيعمل scaling للـ residual projections. لو بتبني Transformer من الصفر، لازم تضيف ده بنفسك.</p>
+</section>
+
+<!-- CODE -->
+<section id="d51-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو شغّل الملف الأصلي الأول عشان تشوف الناتج كله:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/03-deep-learning-core/08-weight-initialization/code/main.py</pre></div>
+  <p>الكود Python خالص من غير NumPy، فالتجربة بتاعة ٥٠ layer ممكن تاخد شوية وقت. بعدين <b>اقفل الملف</b> واكتب الخطوات دي بنفسك في <code>my_init.py</code>. بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الـ ٤ استراتيجيات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+
+<span class="c"># كل دالة بترجع مصفوفة: fan_out صف × fan_in عمود</span>
+def zero_init(fan_in, fan_out):
+    return [[0.0 for _ in range(fan_in)] for _ in range(fan_out)]
+
+def random_init(fan_in, fan_out, scale=1.0):          <span class="c"># scale ثابت مش بيبص على fan_in</span>
+    return [[random.gauss(0, scale) for _ in range(fan_in)] for _ in range(fan_out)]
+
+def xavier_init(fan_in, fan_out):
+    std = math.sqrt(2.0 / (fan_in + fan_out))          <span class="c"># Var = 2/(in+out)</span>
+    return [[random.gauss(0, std) for _ in range(fan_in)] for _ in range(fan_out)]
+
+def kaiming_init(fan_in, fan_out):
+    std = math.sqrt(2.0 / fan_in)                      <span class="c"># Var = 2/in  (الـ 2 عشان ReLU)</span>
+    return [[random.gauss(0, std) for _ in range(fan_in)] for _ in range(fan_out)]</pre></div>
+
+  <h3>خطوة ٢: الـ activations</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sigmoid(x):
+    x = max(-500, min(500, x))      <span class="c"># نمنع overflow في exp</span>
+    return 1.0 / (1.0 + math.exp(-x))
+
+def tanh_act(x):
+    return math.tanh(x)
+
+def relu(x):
+    return max(0.0, x)</pre></div>
+
+  <h3>خطوة ٣: الـ forward في ٥٠ layer وقياس الحجم</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def forward_deep(init_fn, activation_fn, n_layers=50, width=64, n_samples=100):
+    random.seed(42)
+    layer_magnitudes = []
+    inputs = [[random.gauss(0, 1) for _ in range(width)] for _ in range(n_samples)]
+
+    for layer_idx in range(n_layers):
+        weights = init_fn(width, width)            <span class="c"># layer جديدة بـ init جديد</span>
+        biases = [0.0] * width
+        new_inputs = []
+        for sample in inputs:
+            output = []
+            for neuron_idx in range(width):
+                z = sum(weights[neuron_idx][j] * sample[j] for j in range(width)) + biases[neuron_idx]
+                output.append(activation_fn(z))
+            new_inputs.append(output)
+        inputs = new_inputs
+
+        <span class="c"># متوسط |activation| على كل العينات</span>
+        magnitudes = [sum(abs(v) for v in s) / width for s in inputs]
+        layer_magnitudes.append(sum(magnitudes) / len(magnitudes))
+
+    return layer_magnitudes</pre></div>
+
+  <h3>خطوة ٤: التجربة الكبيرة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def run_experiment():
+    configs = [
+        ("Zero + Sigmoid", lambda fi, fo: zero_init(fi, fo), sigmoid),
+        ("Random N(0,1) + ReLU", lambda fi, fo: random_init(fi, fo, 1.0), relu),
+        ("Random N(0,0.01) + ReLU", lambda fi, fo: random_init(fi, fo, 0.01), relu),
+        ("Xavier + Sigmoid", xavier_init, sigmoid),
+        ("Xavier + Tanh", xavier_init, tanh_act),
+        ("Kaiming + ReLU", kaiming_init, relu),
+    ]
+    print(f"\n{'Strategy':&lt;30} {'L1':&gt;10} {'L5':&gt;10} {'L10':&gt;10} {'L25':&gt;10} {'L50':&gt;10}")
+    print("-" * 80)
+    all_results = {}
+    for name, init_fn, act_fn in configs:
+        mags = forward_deep(init_fn, act_fn)
+        all_results[name] = mags
+        row = f"{name:&lt;30}"
+        for idx in [0, 4, 9, 24, 49]:              <span class="c"># layers 1, 5, 10, 25, 50</span>
+            val = mags[idx]
+            if val &gt; 1e6:
+                row += f" {'EXPLODED':&gt;10}"
+            elif val &lt; 1e-6:
+                row += f" {'VANISHED':&gt;10}"
+            else:
+                row += f" {val:&gt;10.4f}"
+        print(row)
+    return all_results</pre></div>
+
+  <h3>خطوة ٥: إثبات التماثل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def symmetry_demo():
+    weights = zero_init(2, 4)       <span class="c"># ٤ نيورونز، كل واحد ليه ٢ inputs</span>
+    biases = [0.0] * 4
+    inputs = [0.5, -0.3]
+    outputs = []
+    for neuron_idx in range(4):
+        z = sum(weights[neuron_idx][j] * inputs[j] for j in range(2)) + biases[neuron_idx]
+        outputs.append(sigmoid(z))
+
+    print("Symmetry Demo (4 neurons, zero init):")
+    for i, out in enumerate(outputs):
+        print(f"  Neuron {i}: output = {out:.6f}")
+    all_same = all(abs(outputs[i] - outputs[0]) &lt; 1e-10 for i in range(len(outputs)))
+    print(f"  All identical: {all_same}")
+    print(f"  Effective parameters: 1 (not {len(weights) * len(weights[0])})")</pre></div>
+  <details><summary>الناتج المتوقع للجزء ده</summary><pre class="term">Symmetry Demo (4 neurons, zero init):
+  Neuron 0: output = 0.500000
+  Neuron 1: output = 0.500000
+  Neuron 2: output = 0.500000
+  Neuron 3: output = 0.500000
+  All identical: True
+  Effective parameters: 1 (not 8)</pre></details>
+
+  <h3>خطوة ٦: تحليل الـ variance لـ layer واحدة</h3>
+  <p>الملف الأصلي فيه <code>variance_analysis()</code>: بتعمل ١٠٬٠٠٠ تجربة بـ fan_in=64، وتحسب متوسط <span class="ltr">z²</span> لكل استراتيجية. المتوقع من المعادلة: <span class="ltr">Var(z) ≈ 64 · Var(w)</span>، يعني حوالي 64 لـ N(0,1)، وحوالي 0.0064 لـ N(0,0.01)، وحوالي 1 لـ Xavier (لأن fan_in = fan_out)، وحوالي 2 لـ Kaiming. قارن الأرقام اللي هتطلعلك بالتوقع ده.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def variance_analysis():
+    fan_in, n_trials = 64, 10000
+    configs = [
+        ("Random N(0,1)", 1.0),
+        ("Random N(0,0.01)", 0.01),
+        ("Xavier std", math.sqrt(2.0 / (fan_in + fan_in))),
+        ("Kaiming std", math.sqrt(2.0 / fan_in)),
+    ]
+    for name, std in configs:
+        random.seed(42)
+        output_vars = []
+        for _ in range(n_trials):
+            inputs = [random.gauss(0, 1) for _ in range(fan_in)]     <span class="c"># Var(x)=1</span>
+            weights = [random.gauss(0, std) for _ in range(fan_in)]
+            z = sum(w * x for w, x in zip(weights, inputs))
+            output_vars.append(z * z)                                 <span class="c"># المتوسط صفر، فـ E[z²] = Var(z)</span>
+        print(f"  {name:&lt;25} {std*std:&gt;12.6f} {sum(output_vars)/n_trials:&gt;12.4f}")</pre></div>
+
+  <h3>خطوة ٧: رسم بالـ # لكل layer</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def magnitude_report(name, magnitudes):
+    print(f"\n{name}:")
+    for i, mag in enumerate(magnitudes):
+        if i % 5 == 0 or i == len(magnitudes) - 1:     <span class="c"># كل ٥ layers + الأخيرة</span>
+            if mag &gt; 1e6:
+                bar = "X" * 50 + " EXPLODED"
+            elif mag &lt; 1e-6:
+                bar = "." + " VANISHED"
+            else:
+                bar = "#" * min(50, max(1, int(mag * 10)))
+            print(f"  Layer {i+1:3d}: {bar} ({mag:.6f})")</pre></div>
+
+  <h3>خطوة ٨: هل الشبكة بتتعلم فعلًا؟</h3>
+  <p>آخر جزء في الملف <code>training_comparison()</code> بيدرّب شبكة صغيرة <span class="ltr">2→8→1</span> لمدة ٣٠٠ epoch على داتا دايرة (النقطة جوه الدايرة لو <span class="ltr">x² + y² &lt; 1.5</span>)، ويقارن الـ loss في الأول والآخر لـ ٦ تركيبات: <span class="ltr">Random(0.01)</span> و <span class="ltr">Random(1.0)</span> و Xavier مع sigmoid، ونفس الكلام مع ReLU و Kaiming. ركّز في عمود <b>Improvement</b> وقارن الـ init الصح بالغلط. اكتب الدالة دي بنفسك كتمرين على الـ backprop اللي اتعلمته في Day 46.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>if __name__ == "__main__":
+    symmetry_demo()
+    variance_analysis()
+    all_results = run_experiment()
+    for name, mags in all_results.items():
+        magnitude_report(name, mags)
+    training_comparison()        <span class="c"># اكتبها انت</span></pre></div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d51-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة، والباقي في التسخين بكرة.</p>
+  <ol class="ex">
+    <li><b>LeCun init:</b> ضيف <span class="ltr">Var = 1/fan_in</span> (اتعملت للـ SELU). شغّل تجربة الـ ٥٠ layer بـ LeCun + tanh وقارن بـ Xavier + tanh.
+      <details><summary>تلميح</summary><code>std = math.sqrt(1.0 / fan_in)</code>. لما fan_in = fan_out (زي التجربة، width=64) الاتنين بيطلعوا نفس الـ variance بالظبط: <span class="ltr">2/(64+64) = 1/64</span>. فالفرق هيبان بس لو الـ layers مش مربعة. جربها في المعمل ٠٢ (اختار LeCun).</details></li>
+    <li><b>GPT-2 residual scaling:</b> اضرب ناتج كل layer في <span class="ltr">1/√(2N)</span> قبل ما تجمعه على الـ residual stream. شغّل ٥٠ layer بالـ scaling ومن غيره وقيس سرعة كبر الحجم.
+      <details><summary>تلميح</summary><code>x = [xi + s * oi for xi, oi in zip(x, layer_out)]</code> و <code>s = 1/math.sqrt(2*N)</code> أو <code>s = 1</code>. اطبع std الـ stream كل ٥ layers. المعمل ٠٣ هيوريك الشكل المتوقع.</details></li>
+    <li><b>Init health check:</b> دالة بتاخد أبعاد الـ layers ونوع الـ activation، وترشّح الـ init الصح، وتحذّر لو الـ init الحالي هيعمل مشكلة.
+      <details><summary>تلميح</summary>احسب لكل layer <span class="ltr">gain = fan_in · Var(w)</span> (واضرب في 0.5 لو ReLU). لو <span class="ltr">gain^عدد_الـlayers</span> بره <span class="ltr">[0.5, 2]</span> اطبع تحذير. والترشيح من جدول المحطة ٠٤.</details></li>
+    <li><b>fan_in = 16 مقابل 1024:</b> شغّل التجربة بالحجمين. Xavier و Kaiming بيتأقلموا مع fan_in، الـ random لأ. ورّي إن الفجوة بين «شغال» و«بايظ» بتوسع مع الـ layers الأكبر.
+      <details><summary>تلميح</summary>مع <span class="ltr">N(0,1)</span> المضاعف لكل layer = fan_in، يعني 16 مقابل 1024. جرب في المعمل ٠٢ بين width=16 و width=128 وشوف الانفجار بيبدأ إمتى. (1024 بـ pure Python هتبقى بطيئة، قلّل n_samples.)</details></li>
+    <li><b>Orthogonal init:</b> اعمل مصفوفة عشوائية، خد الـ SVD بتاعها، واستخدم المصفوفة الـ orthogonal U. قارنها بـ Kaiming في شبكة ReLU بـ ٥٠ layer.
+      <details><summary>تلميح</summary>بـ NumPy: <code>U, _, _ = np.linalg.svd(np.random.randn(n, n))</code>. المصفوفة الـ orthogonal بتحافظ على طول المتجه بالظبط. بس مع ReLU هتلاقي نفس مشكلة النص، فجرب تضربها في <span class="ltr">√2</span> وقارن.</details></li>
+    <li><b>إضافة مني · فحص init حقيقي بالـ hooks:</b> اعمل في PyTorch شبكة <span class="ltr">nn.Sequential</span> فيها ٣٠ <span class="ltr">Linear(256,256)</span> + ReLU. سجّل <code>register_forward_hook</code> على كل Linear يطبع std الناتج لـ batch عشوائي. جرب الـ init الافتراضي، وبعدين <code>kaiming_normal_</code>، وبعدين <code>xavier_normal_</code>. ده نفس الفحص اللي بتعمله قبل ما تصرف ساعات GPU على تدريب.
+      <details><summary>تلميح</summary><code>h = lambda m, i, o: stds.append(o.std().item())</code> ثم <code>for m in net: if isinstance(m, nn.Linear): m.register_forward_hook(h)</code>. شغّل <code>with torch.no_grad(): net(torch.randn(512, 256))</code> وارسم <code>stds</code>.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d51-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ماقالوش صريح</h2></div>
+  <h3>الـ intuition في سطر</h3>
+  <p>كل layer عبارة عن «مكبّر صوت» معامله <span class="ltr">fan_in · Var(w)</span> (ونص ده لو ReLU). الشبكة العميقة = مكبّرات ورا بعض. أي معامل مختلف عن 1 حتى بشوية، بيتضرب في نفسه ٥٠ مرة. <span class="ltr">1.1⁵⁰ ≈ 117</span> و <span class="ltr">0.9⁵⁰ ≈ 0.005</span>. عشان كده الـ init «الصح» مش رفاهية.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li>• تستخدم Xavier مع ReLU: الإشارة بتنكمش ببطء، ومش هتاخد بالك في ٣ layers بس هتلاحظ في ٣٠.</li>
+    <li>• تصفّر الـ weights وتقول «الـ bias هيكسر التماثل»: لأ، لو الـ biases كمان متساوية الـ gradients هتفضل متساوية.</li>
+    <li>• تفتكر إن الإشارة الثابتة = شبكة صحية: zero + sigmoid ثابتة عند 0.5 وهي ميتة (شفتها في المعمل ٠٢).</li>
+    <li>• تبني Transformer من الصفر وتنسى الـ residual scaling: الـ loss بيبقى غريب أو بينفجر في أول التدريب.</li>
+    <li>• تفتكر إن الـ PyTorch default دايمًا كفاية: هو Kaiming uniform بس بمعامل خاص (<code>a=√5</code>) بيخلّي الحد <span class="ltr">1/√fan_in</span>، يعني أصغر من Kaiming الكامل للـ ReLU. للشبكات العميقة اختار بنفسك صراحة.</li>
+  </ul>
+  <h3>فين بيظهر في الـ LLMs والـ Agents؟</h3>
+  <p>لما تعمل fine-tuning بـ LoRA (Day 1)، مصفوفة B بتبدأ <b>صفر</b> و A عشوائية. ده مش غلط تماثل: الهدف إن <span class="ltr">ΔW = B·A = 0</span> في البداية، فالموديل يبدأ بالظبط زي الأصلي، والعشوائية في A كفاية تكسر التماثل لما B تبدأ تتحرك. ده مثال إن «الصفر» أحيانًا اختيار مقصود لما في layer تانية عشوائية.</p>
+  <p>ولما بتضيف head جديدة (classifier أو reward head) فوق موديل متدرب، الـ init بتاعها بيحدد هل أول خطوات التدريب هتبوّظ الـ features المتعلمة ولا لأ. فبنبدأها بأرقام صغيرة عشان التأثير يبقى هادي في الأول.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d51-quizSec">
+  <div class="station-head"><span class="tag">08</span><h2>كويز</h2></div>
+  <div class="quiz" id="d51-quiz"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d51-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1" id="d51-ck1"> أقدر أشرح ليه zero init بيدي نيورون واحد فعلي</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم <span class="ltr">Var(z) = fan_in · Var(w) · Var(x)</span> وإزاي بيتضرب عبر الـ layers</label></li>
+    <li><label><input type="checkbox" data-ck="3"> حافظ Xavier = <span class="ltr">2/(in+out)</span> و Kaiming = <span class="ltr">2/in</span> وعارف كل واحد لأنهي activation</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم ليه GPT-2 بيضرب في <span class="ltr">1/√(2N)</span></label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود بإيدي وشغّلته</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7" id="d51-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Symmetry breaking</td><td>أي شبكة، وسبب إن LoRA بتخلي A عشوائية حتى لو B صفر</td></tr>
+    <tr><td>Variance propagation</td><td>تشخيص الـ exploding / vanishing activations والـ NaN في أول التدريب</td></tr>
+    <tr><td>Xavier / Glorot</td><td>شبكات sigmoid و tanh، و <code>nn.init.xavier_*</code></td></tr>
+    <tr><td>Kaiming / He</td><td>CNNs و MLPs بـ ReLU/GELU، و <code>nn.init.kaiming_*</code></td></tr>
+    <tr><td>Residual scaling</td><td>GPT-2 و Llama، و <code>_init_weights</code> في HuggingFace</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Learning Rate Schedules and Warmup. الـ init بيحدد نقطة البداية، والـ learning rate بيحدد إزاي هتمشي منها. هنبدأ بتسخين على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F08-weight-initialization" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/08-weight-initialization</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d51-root');
+
+// roadmap
+const rm=$('d51-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===8)s.className='now';rm.appendChild(s)}
+
+// seeded RNG
+function rng(seed){let s=seed>>>0||1;return()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296}}
+function gaussF(r){return()=>{let u=0,v=0;while(!u)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}}
+const sig=x=>1/(1+Math.exp(-Math.max(-500,Math.min(500,x))));
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// ---------- Lab 1: symmetry ----------
+const sc=$('d51-symCanvas'),sctx=AI.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+const dg=gaussF(rng(7)),data=[];
+for(let i=0;i<80;i++){const x=dg()*1.1,y=dg()*1.1;data.push([[x,y],x*x+y*y<1.5?1:0])}
+let net,hist,ep,timer=null,mode='zero';
+function initNet(m){mode=m;const g=gaussF(rng(3));
+  const v=()=>m==='zero'?0:m==='const'?0.5:g()*1;
+  net={w1:[0,1,2,3].map(()=>[v(),v()]),b1:[0,0,0,0],w2:[0,1,2,3].map(()=>m==='rand'?g()*0.7:v()),b2:0};
+  hist=[net.w1.map(w=>w[0])];ep=0}
+function epoch(){const lr=0.5;
+  for(const [x,t] of data){const z=net.w1.map((w,i)=>w[0]*x[0]+w[1]*x[1]+net.b1[i]),h=z.map(sig);
+    const out=sig(h.reduce((a,hi,i)=>a+hi*net.w2[i],0)+net.b2),dOut=(out-t)*out*(1-out);
+    for(let i=0;i<4;i++){const dh=dOut*net.w2[i]*h[i]*(1-h[i]);net.w2[i]-=lr*dOut*h[i];net.w1[i][0]-=lr*dh*x[0];net.w1[i][1]-=lr*dh*x[1];net.b1[i]-=lr*dh}
+    net.b2-=lr*dOut}
+  ep++;hist.push(net.w1.map(w=>w[0]))}
+function drawSym(){
+  sctx.clearRect(0,0,SW,SH);
+  let lo=-1,hi=1;hist.forEach(r=>r.forEach(v=>{lo=Math.min(lo,v);hi=Math.max(hi,v)}));
+  const pad=30,X=i=>pad+i/150*(SW-pad-10),Y=v=>SH-20-(v-lo)/(hi-lo)*(SH-40);
+  sctx.strokeStyle=css('--grid');sctx.lineWidth=1;
+  for(let k=0;k<=4;k++){const y=20+k*(SH-40)/4;sctx.beginPath();sctx.moveTo(pad,y);sctx.lineTo(SW,y);sctx.stroke()}
+  sctx.strokeStyle=css('--muted');sctx.beginPath();sctx.moveTo(pad,Y(0));sctx.lineTo(SW,Y(0));sctx.stroke();
+  const cols=[css('--vec-a'),css('--vec-b'),css('--ok'),css('--bad')];
+  for(let n=0;n<4;n++){sctx.strokeStyle=cols[n];sctx.lineWidth=n===0?4:2;sctx.globalAlpha=.9;sctx.beginPath();
+    hist.forEach((r,i)=>{i?sctx.lineTo(X(i),Y(r[n])):sctx.moveTo(X(i),Y(r[n]))});sctx.stroke()}
+  sctx.globalAlpha=1;sctx.fillStyle=css('--muted');sctx.font='12px JetBrains Mono, monospace';
+  sctx.fillText(f(hi,1),2,24);sctx.fillText(f(lo,1),2,SH-22);sctx.fillText('epoch →',SW-70,SH-5);
+  const last=hist[hist.length-1],diff=Math.max(...last)-Math.min(...last);
+  const uniq=new Set(last.map(v=>v.toFixed(4))).size;
+  $('d51-symEp').textContent=ep;$('d51-symDiff').textContent=f(diff,4);$('d51-symEff').textContent=uniq;
+  const vd=$('d51-symVerdict');
+  if(uniq===1){vd.textContent='الـ ٤ نيورونز توأم: نفس الـ weight بالظبط. شبكة ٤ نيورونز = نيورون واحد';vd.style.color=css('--bad')}
+  else{vd.textContent='كل نيورون ماشي في طريق مختلف: التماثل اتكسر';vd.style.color=css('--ok')}
+}
+function runSym(m){clearInterval(timer);initNet(m);drawSym();
+  ['d51-symZero','d51-symConst','d51-symRand'].forEach(id=>$(id).classList.remove('primary'));
+  $({zero:'d51-symZero',const:'d51-symConst',rand:'d51-symRand'}[m]).classList.add('primary');
+  if(reduce){for(let i=0;i<150;i++)epoch();drawSym();return}
+  timer=setInterval(()=>{if(!document.body.contains(sc)){clearInterval(timer);return}
+    for(let k=0;k<3;k++)if(ep<150)epoch();drawSym();if(ep>=150)clearInterval(timer)},40)}
+$('d51-symZero').addEventListener('click',()=>runSym('zero'));
+$('d51-symConst').addEventListener('click',()=>runSym('const'));
+$('d51-symRand').addEventListener('click',()=>runSym('rand'));
+runSym('zero');
+
+// ---------- Lab 2: 50 layers ----------
+const dc=$('d51-deepCanvas'),dctx=AI.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+const widths=[16,32,64,128];let kept=[];
+const acts={sigmoid:sig,tanh:Math.tanh,relu:x=>x>0?x:0};
+function stdFor(init,fi,fo){return {zero:0,r1:1,r001:0.01,lecun:Math.sqrt(1/fi),xavier:Math.sqrt(2/(fi+fo)),kaiming:Math.sqrt(2/fi)}[init]}
+function simulate(init,act,width,L){
+  const g=gaussF(rng(42)),A=acts[act],std=stdFor(init,width,width),ns=24;
+  let X=[];for(let s=0;s<ns;s++){const r=new Float64Array(width);for(let j=0;j<width;j++)r[j]=g();X.push(r)}
+  const mags=[];
+  for(let l=0;l<L;l++){const W=new Float64Array(width*width);for(let k=0;k<W.length;k++)W[k]=g()*std;
+    let tot=0;const NX=[];
+    for(const x of X){const o=new Float64Array(width);
+      for(let i=0;i<width;i++){let z=0;const off=i*width;for(let j=0;j<width;j++)z+=W[off+j]*x[j];
+        let v=A(z);if(!isFinite(v))v=v>0?1e300:-1e300;o[i]=v;tot+=Math.abs(v)}
+      NX.push(o)}
+    X=NX;mags.push(tot/(ns*width))}
+  return mags}
+const LO=-16,HI=16;
+function drawDeep(){
+  const init=$('d51-init').value,act=$('d51-act').value,width=widths[+$('d51-width').value],L=+$('d51-layers').value;
+  $('d51-wv').textContent=width;$('d51-lv').textContent=L;
+  const mags=simulate(init,act,width,L),std=stdFor(init,width,width);
+  dctx.clearRect(0,0,DW,DH);
+  const pl=44,pr=10,pt=10,pb=26,X=i=>pl+i/49*(DW-pl-pr),Y=v=>{const lv=Math.log10(Math.max(1e-300,v));const c=Math.max(LO,Math.min(HI,lv));return pt+(HI-c)/(HI-LO)*(DH-pt-pb)};
+  // healthy band
+  dctx.fillStyle=css('--ok');dctx.globalAlpha=.15;dctx.fillRect(pl,Y(2),DW-pl-pr,Y(0.5)-Y(2));dctx.globalAlpha=1;
+  dctx.font='11px JetBrains Mono, monospace';
+  for(let e=LO;e<=HI;e+=4){const y=pt+(HI-e)/(HI-LO)*(DH-pt-pb);dctx.strokeStyle=css('--grid');dctx.lineWidth=1;dctx.beginPath();dctx.moveTo(pl,y);dctx.lineTo(DW-pr,y);dctx.stroke();
+    dctx.fillStyle=css('--muted');dctx.fillText('1e'+e,2,y+4)}
+  [1,10,20,30,40,50].forEach(l=>{dctx.fillStyle=css('--muted');dctx.fillText('L'+l,X(l-1)-8,DH-8)});
+  const line=(m,c,w,dash)=>{dctx.strokeStyle=c;dctx.lineWidth=w;dctx.setLineDash(dash||[]);dctx.beginPath();m.forEach((v,i)=>{i?dctx.lineTo(X(i),Y(v)):dctx.moveTo(X(i),Y(v))});dctx.stroke();dctx.setLineDash([])};
+  kept.forEach(k=>{line(k.m,css('--muted'),1.5,[5,4]);const lv=k.m[k.m.length-1];dctx.fillStyle=css('--muted');dctx.fillText(k.n,X(k.m.length-1)-110,Y(lv)-5)});
+  line(mags,css('--vec-a'),3);
+  const gain=width*std*std*(act==='relu'?0.5:1);
+  $('d51-std').textContent=f(std,4);$('d51-gain').textContent=f(width*std*std,3)+(act==='relu'?' (×½ ReLU)':'');
+  const show=v=>v>1e6?'EXPLODED':v<1e-6?'VANISHED':f(v,4);
+  $('d51-m1').textContent=show(mags[0]);$('d51-mL').textContent=show(mags[mags.length-1]);
+  const last=mags[mags.length-1],vd=$('d51-deepVerdict');
+  if(init==='zero'){vd.textContent=act==='sigmoid'?'ثابتة عند 0.5 بس ميتة: كل النيورونز بتطلّع sigmoid(0)':'كله صفر: مفيش إشارة خالص';vd.style.color=css('--bad')}
+  else if(last>1e6){vd.textContent='انفجرت: المضاعف لكل layer أكبر من 1';vd.style.color=css('--bad')}
+  else if(last<1e-6){vd.textContent='اختفت: المضاعف لكل layer أصغر من 1';vd.style.color=css('--bad')}
+  else if(last<0.05||last>20){vd.textContent='بتنحرف تدريجيًا: المعادلة مش مناسبة للـ activation دي';vd.style.color=css('--vec-b')}
+  else{vd.textContent='مستقرة: الـ init مناسب للـ activation';vd.style.color=css('--ok')}
+  drawDeep.last={m:mags,n:$('d51-init').selectedOptions[0].text.split(' ')[0]+'+'+act};
+}
+['d51-init','d51-act','d51-width','d51-layers'].forEach(id=>$(id).addEventListener('input',drawDeep));
+$('d51-keep').addEventListener('click',()=>{if(drawDeep.last){kept.push(drawDeep.last);if(kept.length>4)kept.shift();drawDeep()}});
+$('d51-clear').addEventListener('click',()=>{kept=[];drawDeep()});
+drawDeep();
+
+// ---------- Lab 3: residual ----------
+const rc=$('d51-resCanvas'),rctx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;let rseed=11;
+function resSim(N,scale,seed){const d=48,g=gaussF(rng(seed));let x=new Float64Array(d);for(let j=0;j<d;j++)x[j]=g();
+  const out=[std(x)];
+  for(let k=0;k<2*N;k++){const m=x.reduce((a,b)=>a+b,0)/d,s=std(x)||1,ln=x.map(v=>(v-m)/s);
+    const W=1/Math.sqrt(d),y=new Float64Array(d);
+    for(let i=0;i<d;i++){let z=0;for(let j=0;j<d;j++)z+=g()*W*ln[j];y[i]=z}
+    for(let i=0;i<d;i++)x[i]+=scale*y[i];if(k%2===1)out.push(std(x))}
+  return out}
+function std(a){const m=a.reduce((p,q)=>p+q,0)/a.length;return Math.sqrt(a.reduce((p,q)=>p+(q-m)*(q-m),0)/a.length)}
+function drawRes(){const N=+$('d51-n').value,s=1/Math.sqrt(2*N);$('d51-nv').textContent=N;
+  const a=resSim(N,1,rseed),b=resSim(N,s,rseed);
+  rctx.clearRect(0,0,RW,RH);const pl=36,pb=24,top=Math.max(4,...a)*1.1,X=i=>pl+i/N*(RW-pl-10),Y=v=>RH-pb-v/top*(RH-pb-10);
+  rctx.font='11px JetBrains Mono, monospace';
+  for(let k=0;k<=4;k++){const v=top*k/4,y=Y(v);rctx.strokeStyle=css('--grid');rctx.lineWidth=1;rctx.beginPath();rctx.moveTo(pl,y);rctx.lineTo(RW,y);rctx.stroke();rctx.fillStyle=css('--muted');rctx.fillText(f(v,1),2,y+4)}
+  rctx.fillText('block 0',pl,RH-6);rctx.fillText('block '+N,RW-60,RH-6);
+  const line=(m,c)=>{rctx.strokeStyle=c;rctx.lineWidth=3;rctx.beginPath();m.forEach((v,i)=>{i?rctx.lineTo(X(i),Y(v)):rctx.moveTo(X(i),Y(v))});rctx.stroke()};
+  line(a,css('--bad'));line(b,css('--ok'));
+  rctx.fillStyle=css('--bad');rctx.fillText('no scaling',X(N)-80,Y(a[N])-8);
+  rctx.fillStyle=css('--ok');rctx.fillText('1/√(2N)',X(N)-60,Y(b[N])-8);
+  $('d51-r0').textContent=f(a[N]);$('d51-r1').textContent=f(b[N]);$('d51-rs').textContent=f(s,4)}
+$('d51-n').addEventListener('input',drawRes);
+$('d51-resRun').addEventListener('click',()=>{rseed++;drawRes()});
+drawRes();
+
+// ---------- quiz ----------
+AI.quiz($('d51-quiz'),[
+ ['إيه اللي بيحصل لو صفّرت كل الـ weights في الشبكة؟',['الشبكة بتنفجر (diverge)','الـ zero init هو الافتراضي المنصوح بيه','الشبكة بتتدرب عادي بس ببطء','كل النيورونز بتطلّع نفس الناتج وتاخد نفس الـ gradient، فكل layer فيها نيورون واحد فعلي'],3,'بالـ weights الصفر كل نيورون في الـ layer بيحسب نفس الدالة وياخد نفس الـ gradient ويتعدل نفس التعديل. التماثل ده بيخلّي مئات الـ parameters تتصرف كأنها واحد.'],
+ ['ليه الـ scale بتاع الـ random init مهم؟',['الـ scale مهم للـ output layer بس','لو الـ variance كبيرة الـ activations بتنفجر، ولو صغيرة بتختفي، والاتنين بيمنعوا التدريب','الـ weights الكبيرة بتتدرب أسرع','مش مهم طالما الـ weights مش صفر'],1,'كل layer بتضرب الـ variance في fan_in × Var(w). لو أكبر من 1 الإشارة بتنفجر أُسّيًا، ولو أصغر بتختفي. الـ init الصح بيخلي الرقم ده 1 بالظبط.'],
+ ['معادلة الـ variance في Kaiming/He init؟',['Var(w) = 1/fan_in','Var(w) = 2/fan_in','Var(w) = 1/(fan_in + fan_out)','Var(w) = 2/(fan_in + fan_out)'],1,'Kaiming بيستخدم 2/fan_in. الـ 2 بتعوّض إن الـ ReLU بيصفّر نص الـ activations (السالب بيبقى صفر)، فكأن الـ fan_in اتقسم على ٢.'],
+ ['إمتى تستخدم Xavier/Glorot بدل Kaiming/He؟',['لما تستخدم Adam','لما الداتا صغيرة','لما الـ activation يبقى sigmoid أو tanh، اللي مش بيصفّروا نص الناتج زي ReLU','دايمًا، Xavier أحسن في كل الحالات'],2,'Xavier = 2/(fan_in + fan_out) ومعمول للـ activations اللي تقريبًا خطية جنب الصفر (sigmoid و tanh). الـ 2 الزيادة في Kaiming بتعوّض تصفير الـ ReLU، و Xavier مش محتاجها.'],
+ ['ليه GPT-2 بيعمل scale لـ weights الـ residual layers بـ 1/√(2N)؟',['عشان يحسّن الـ tokenization','عشان يسرّع التدريب','لأن كل جمعة residual بتزوّد الـ variance، فالـ scaling بيمنع الإشارة المتراكمة إنها تكبر من غير حد عبر N layer','عشان يقلل عدد الـ parameters'],2,'x = x + sublayer(x): كل جمعة بتزوّد الـ variance، ومع N layer بتكبر بشكل متناسب مع N. الـ scaling بـ 1/√(2N) بيخلي الإشارة مستقرة.'],
+ ['(سؤال مني) layer فيها fan_in = 256 بعدها ReLU. الـ std بتاع Kaiming normal كام تقريبًا؟',['0.0625','0.088','0.5','1.0'],1,'std = √(2/256) = √0.0078 ≈ 0.088. لو كتبت 1/256 = 0.0039 ده الـ Var مش الـ std: خلّي بالك من الفرق.'],
+ ['(سؤال مني) في المعمل، zero init + sigmoid خلّت الحجم ثابت عند 0.5 في كل الـ layers. ده معناه؟',['الـ init ممتاز لأن الإشارة مستقرة','الشبكة ميتة: كل نيورون بيطلّع sigmoid(0) مهما كان الـ input، فمفيش معلومة بتعدّي','الـ sigmoid محتاج Kaiming','الـ learning rate صغير'],1,'الحجم الثابت شرط لازم بس مش كافي. هنا الناتج مش معتمد على الـ input خالص، والتماثل مكسرش.']
+],5,()=>{const c=$('d51-ckq');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(51,root);
+
+AI.onTheme(()=>{if(!document.body.contains(dc))return false;drawSym();drawDeep();drawRes()});
+})();
+</script>

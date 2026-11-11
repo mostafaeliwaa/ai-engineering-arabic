@@ -1,0 +1,649 @@
+<div class="day" id="d10-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 10 · Dimensionality Reduction</span>
+  <h1>اليوم ١٠: الداتا ليها شكل مستخبي، وانت محتاج تبص عليها من الزاوية الصح</h1>
+  <p class="lede">عندك صورة رقم مكتوب بخط الإيد فيها <b>784</b> رقم. مستحيل تتخيلها أو ترسمها. بس معظم الأرقام دي مكررة، والمعلومة الحقيقية عايشة على سطح أصغر بكتير. النهاردة هنبني <b>PCA</b> من الصفر، ونفهم <b>t-SNE</b> و<b>UMAP</b> بيعملوا إيه، ونفصل دايرتين جوه بعض بالـ <b>Kernel PCA</b>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (NumPy + scikit-learn)</b></span>
+    <span>بعده: <b>Singular Value Decomposition</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d10-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d10-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كان عن الـ Information Theory. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ entropy بتاعة عملة عادلة (50/50) كام bit؟ وعملة بتجيب صورة دايمًا؟</summary>العادلة = <b>1 bit</b> (أقصى مفاجأة لحاجة ليها نتيجتين). اللي بتجيب صورة دايمًا = <b>0</b>، مفيش أي مفاجأة.</details>
+  <details><summary>٢. إيه العلاقة بين الـ cross-entropy والـ KL divergence؟</summary><span class="ltr">H(p, q) = H(p) + KL(p ‖ q)</span>. وبما إن <span class="ltr">H(p)</span> ثابتة بالنسبة للموديل، تقليل الـ cross-entropy loss هو نفسه تقليل الـ KL بين توزيع الداتا وتوزيع الموديل.</details>
+  <details><summary>٣. الـ KL divergence متماثلة؟ يعني KL(p‖q) = KL(q‖p)؟</summary>لأ. مش متماثلة، وعشان كده مش «مسافة» بالمعنى الرياضي. خلّي الفكرة دي في دماغك: النهاردة الـ t-SNE بيستخدم KL عشان يقارن توزيع الجيران في الفضاء الكبير والصغير.</details>
+</section>
+
+<section>
+  <h2>خطة الساعة ونص</h2>
+  <div class="plan">
+    <div><b>10 min</b>لعنة الأبعاد: ليه الأبعاد الكتير بتبوّظ كل حاجة</div>
+    <div><b>20 min</b>PCA: الفكرة + معمل ٠١ + معمل ٠٢</div>
+    <div><b>10 min</b>t-SNE و UMAP: إمتى نستخدم مين</div>
+    <div><b>10 min</b>Kernel PCA + معمل ٠٣</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1: curse -->
+<section id="d10-curse">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: لعنة الأبعاد (Curse of Dimensionality)</h2></div>
+  <p>تخيل إنك بتدور على صاحبك في شارع (بُعد واحد): سهل. في ميدان (بُعدين): أصعب شوية. في عمارة ١٠٠ دور فيها أوض (٣ أبعاد): بقت مرهقة. دلوقتي تخيل ٧٨٤ بُعد. الفضاء بيكبر بسرعة رهيبة، والداتا اللي عندك بتبقى «متناثرة» فيه زي حبة رمل في صحرا. تلات حاجات بتبوظ:</p>
+  <h3>١. المسافة بتفقد معناها</h3>
+  <p>في الأبعاد الكبيرة، المسافة بين أي نقطتين عشوائيتين بتقرب من نفس القيمة. لو كل نقطة بعيدة عن كل النقط التانية بنفس المسافة تقريبًا، يبقى «أقرب جار» (nearest neighbor) ملوش لازمة.</p>
+  <div class="tablewrap"><table>
+    <tr><th>عدد الأبعاد</th><th>متوسط نسبة (أبعد مسافة / أقرب مسافة) بين نقط عشوائية</th></tr>
+    <tr><td class="ltr">2</td><td class="ltr">~5.0</td></tr>
+    <tr><td class="ltr">10</td><td class="ltr">~1.8</td></tr>
+    <tr><td class="ltr">100</td><td class="ltr">~1.2</td></tr>
+    <tr><td class="ltr">1000</td><td class="ltr">~1.02</td></tr>
+  </table></div>
+  <p>النسبة لما توصل ١ تقريبًا يعني «الأقرب» و«الأبعد» تقريبًا نفس المسافة. البحث بالتشابه بيتعمي.</p>
+  <h3>٢. الحجم بيتركز في الأركان</h3>
+  <p>مكعب الوحدة في <span class="ltr">d</span> بُعد ليه <span class="ltr">2<sup>d</sup></span> ركن. في ١٠٠ بُعد تقريبًا كل الحجم بيبقى في الأركان، بعيد عن النص. الداتا بتتزق للأطراف، والموديل بيبقى «جعان» داتا في المنطقة اللي في النص.</p>
+  <h3>٣. محتاج داتا أكتر بشكل أُسّي</h3>
+  <p>عشان تحافظ على نفس كثافة العينات، لو رحت من بُعدين لـ ٢٠ بُعد محتاج داتا أكتر بـ <span class="ltr">10<sup>18</sup></span> مرة. عمرك ما هيبقى عندك كفاية. تقليل الأبعاد بيرجّع الكثافة لحاجة تقدر تشتغل بيها.</p>
+  <div class="note"><strong>الفكرة المريحة:</strong> صورة رقم «7» مش محتاجة ٧٨٤ رقم مستقل عشان توصفها. محتاجة كام حاجة: زاوية الخط، طول الشرطة اللي فوق، قد إيه مايل. الباقي noise. الـ dimensionality reduction بيدور على «السطح الصغير» ده ويضغط الداتا لـ 2 أو 10 أو 50 بُعد وهو محافظ على الشكل المهم.</div>
+</section>
+
+<!-- STATION 2: PCA -->
+<section id="d10-pca">
+  <div class="station-head"><span class="tag">02</span><h2>PCA: لاقي الاتجاهات اللي فارقة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p><b>Principal Component Analysis</b> بيدوّر على المحاور اللي الداتا بتتفرد عليها أكتر حاجة. بيلف نظام الإحداثيات بحيث أول محور ياخد أكبر variance، والتاني ياخد اللي بعده، وهكذا.</p>
+      <p><b>تشبيه:</b> عندك طابور عربيات مركونة على كورنيش مايل. لو بصيت عليهم من فوق بمحور x وy العادي، الاتنين فيهم تغيير. بس لو لفّيت راسك ناحية الكورنيش، هتلاقي كل الاختلاف تقريبًا في اتجاه واحد (على طول الكورنيش)، والاتجاه التاني (عرضه) تقريبًا ثابت. PCA بيلف راسك للزاوية دي.</p>
+      <ol class="ex">
+        <li><b>Center:</b> اطرح المتوسط من كل feature.</li>
+        <li><b>Covariance:</b> احسب مصفوفة الـ covariance (الـ features بتتحرك مع بعض إزاي).</li>
+        <li><b>Eigendecomposition:</b> لاقي الاتجاهات الأساسية (eigenvectors).</li>
+        <li><b>Sort:</b> رتبهم بالـ eigenvalue، الأكبر variance الأول.</li>
+        <li><b>Project:</b> خلّي أول k eigenvectors وارمي الباقي.</li>
+      </ol>
+      <p><b>ليه eigendecomposition بالذات؟</b> مصفوفة الـ covariance متماثلة (symmetric) وpositive semi-definite. الـ eigenvectors بتوعها اتجاهات متعامدة على بعض، والـ eigenvalue بتقولك كل اتجاه شايل قد إيه variance. أكبر eigenvalue = اتجاه أقصى انتشار.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> اسحب النقطة البرتقالية عشان تلف المحور. النقط الصغيرة على الخط هي «الضل» (الإسقاط). حاول تلاقي الزاوية اللي الـ variance فيها أكبر حاجة، وبعدين دوس «اقفل على PC1» وقارن.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d10-pcaC" width="520" height="420" aria-label="سحابة نقط ومحور تقدر تلفه"></canvas>
+      <div class="mrow">
+        <label>زاوية الداتا <span id="d10-angV">30°</span><input type="range" id="d10-ang" min="-90" max="90" step="1" value="30"></label>
+        <label>نسبة العرض للطول <span id="d10-ratV">0.35</span><input type="range" id="d10-rat" min="0.05" max="1" step="0.05" value="0.35"></label>
+      </div>
+      <div class="readout">
+        <div><small>variance على محورك</small><b id="d10-vMine">0</b></div>
+        <div><small>variance على PC1</small><b id="d10-vPc1">0</b></div>
+        <div><small>explained ratio لـ PC1</small><b id="d10-ratio">0</b></div>
+        <div><small>eigenvalues</small><b id="d10-eigs">[0, 0]</b></div>
+      </div>
+      <div class="verdict" id="d10-pcaVerdict"></div>
+      <div class="btns">
+        <button type="button" id="d10-snap">اقفل على PC1</button>
+        <button type="button" id="d10-snap2">PC2</button>
+        <button type="button" id="d10-resample">داتا جديدة</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d10-showRes" checked> ورّيني خطوط الإسقاط</label>
+      </div>
+    </div>
+  </div>
+  <p>لاحظ: لما المحور بتاعك يبقى على PC1، الخطوط المتقطعة (المسافة اللي ضاعت لما رميت PC2) بتبقى أقصر ما يمكن. ده نفس المعنى من زاويتين: <b>أكبر variance على المحور = أقل خطأ لما ترجّع الداتا</b>.</p>
+</section>
+
+<!-- STATION 3: explained variance -->
+<section id="d10-ev">
+  <div class="station-head"><span class="tag">03</span><h2>Explained Variance: هتحتفظ بكام component؟</h2></div>
+  <p>كل principal component شايل جزء من الـ variance الكلية. النسبة دي اسمها <b>explained variance ratio</b>:</p>
+  <div class="formula">explained_ratio_k = eigenvalue_k / Σ all eigenvalues</div>
+  <div class="tablewrap"><table>
+    <tr><th>Component</th><th>Eigenvalue</th><th>Explained ratio</th><th>Cumulative</th></tr>
+    <tr><td>PC1</td><td class="ltr">4.73</td><td class="ltr">0.473</td><td class="ltr">0.473</td></tr>
+    <tr><td>PC2</td><td class="ltr">2.51</td><td class="ltr">0.251</td><td class="ltr">0.724</td></tr>
+    <tr><td>PC3</td><td class="ltr">1.12</td><td class="ltr">0.112</td><td class="ltr">0.836</td></tr>
+    <tr><td>PC4</td><td class="ltr">0.89</td><td class="ltr">0.089</td><td class="ltr">0.925</td></tr>
+  </table></div>
+  <p>لما الـ cumulative يوصل <span class="ltr">0.95</span> يبقى العدد ده من الـ components شايل ٩٥٪ من المعلومة، والباقي غالبًا noise.</p>
+  <h3>تلات طرق تختار بيها k</h3>
+  <ol class="ex">
+    <li><b>Threshold:</b> خد components لحد ما تفسر ٩٠–٩٥٪ من الـ variance.</li>
+    <li><b>Elbow:</b> ارسم الـ variance لكل component ودوّر على «الكوع»، المكان اللي فيه نزول حاد وبعده الخط بيفرد.</li>
+    <li><b>الأداء في المهمة:</b> استخدم PCA كـ preprocessing، جرّب k مختلفة وقيس دقة الموديل. أحسن k هي اللي الدقة عندها بتبطّل تزيد (plateau).</li>
+  </ol>
+  <h3>Reconstruction Error: إيه اللي ضاع؟</h3>
+  <p>ضغطت 784 لـ 50. ضاع إيه؟ ارجع بالعكس وقيس:</p>
+  <div class="formula">X_reduced = X·W_k  →  X̂ = X_reduced·W_kᵀ  →  MSE = mean((X − X̂)²)</div>
+  <p>وفي الـ PCA العلاقة نضيفة جدًا: الخطأ = مجموع الـ eigenvalues اللي <b>رميتها</b>. والنسبة اللي ضاعت = مجموع المرمي ÷ مجموع الكل.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: داتا 20 بُعد، بس الحقيقة 5</h3>
+      <p>دي نفس الداتا اللي في <code>demo_reconstruction_error</code>: 300 عينة، 20 feature، بس معمولة من 5 مصادر حقيقية بس (<span class="ltr">base @ mixing</span>) + noise صغير 0.1. اتولّدت هنا في المتصفح بـ seed، فالأرقام مش هتطابق NumPy بالظبط، بس الشكل هو هو.</p>
+      <p>حرّك k وشوف: الأعمدة الملونة هي اللي محتفظ بيها، والخط هو الـ cumulative. بعد k = 5 الخطأ بيقع لمستوى الـ noise، وكل component زيادة بياكل noise بس.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d10-screeC" width="520" height="300" aria-label="رسم الـ eigenvalues والـ cumulative variance"></canvas>
+      <label style="display:grid;gap:2px">عدد الـ components k = <b class="mono" id="d10-kV">3</b><input type="range" style="direction:ltr" id="d10-k" min="1" max="20" step="1" value="3"></label>
+      <div class="readout">
+        <div><small>cumulative variance</small><b id="d10-cum">0</b></div>
+        <div><small>reconstruction MSE</small><b id="d10-mse">0</b></div>
+        <div><small>نسبة اللي ضاع</small><b id="d10-lost">0</b></div>
+      </div>
+      <div class="verdict" id="d10-screeVerdict"></div>
+    </div>
+  </div>
+  <div class="note ai"><strong>استخدام حقيقي:</strong> الـ reconstruction error مش بس لاختيار k. العينة اللي الخطأ بتاعها عالي يعني «مش راكبة» على الـ subspace اللي اتعلمته، يعني غالبًا <b>outlier</b>. ده أساس الـ PCA-based anomaly detection في أنظمة production.</div>
+</section>
+
+<!-- STATION 4: t-SNE & UMAP -->
+<section id="d10-tsne">
+  <div class="station-head"><span class="tag">04</span><h2>t-SNE و UMAP: احفظ الجيران</h2></div>
+  <h3>t-SNE (t-Distributed Stochastic Neighbor Embedding)</h3>
+  <p>معمول للرسم (visualization). بياخد الداتا من فضاء كبير ويحطها في 2D (أو 3D) وهو محافظ على <b>مين جنب مين</b>.</p>
+  <p><b>الفكرة:</b> في الفضاء الأصلي بيحسب توزيع احتمالات على كل زوج نقط حسب المسافة: القريبين احتمالهم عالي، البعاد احتمالهم قليل. بعدين يدور على ترتيب في 2D فيه نفس التوزيع. فاللي كانوا جيران في 784 بُعد يفضلوا جيران في 2D.</p>
+  <p><b>تشبيه:</b> كأنك بتعمل خريطة قعدة فرح من غير مقاسات القاعة. اللي كانوا قاعدين على نفس الترابيزة لازم يفضلوا جنب بعض في الخريطة، بس المسافة بين ترابيزة العريس وترابيزة الأكل في الخريطة ملهاش أي معنى.</p>
+  <ul class="checklist">
+    <li>• <b>Non-linear:</b> يقدر يفرد أشكال ملفوفة (manifolds) مش هيقدر عليها PCA.</li>
+    <li>• <b>Stochastic:</b> كل run بيطلع شكل مختلف.</li>
+    <li>• <b>Perplexity:</b> بتتحكم كل نقطة بتبص على كام جار تقريبًا (المدى المعتاد 5–50).</li>
+    <li>• <b>المسافات بين الـ clusters في الرسمة ملهاش معنى.</b> الـ clusters نفسها بس هي اللي ليها معنى.</li>
+    <li>• <b>بطيء</b> على الداتا الكبيرة: <span class="ltr">O(n²)</span> افتراضيًا.</li>
+  </ul>
+  <h3>UMAP (Uniform Manifold Approximation and Projection)</h3>
+  <p>شبه t-SNE بس بميزتين: <b>أسرع</b> لأنه بيستخدم approximate nearest-neighbor graphs بدل ما يحسب كل المسافات، و<b>بيحافظ على الشكل العام أحسن</b>: أماكن الـ clusters بالنسبة لبعض بتبقى ليها معنى أكتر من t-SNE.</p>
+  <p>UMAP بيبني graph بأوزان في الفضاء الكبير (اسمها «fuzzy topological representation») وبعدين يدور على ترتيب في الأبعاد القليلة يحافظ على الـ graph ده.</p>
+  <ul class="checklist">
+    <li>• <code>n_neighbors</code>: كام جار بيعرّف «المحلي» (شبه الـ perplexity). أكبر = بيحافظ على شكل عام أكتر.</li>
+    <li>• <code>min_dist</code>: النقط بتتلم جنب بعض قد إيه في الناتج. أقل = clusters أكثف.</li>
+  </ul>
+  <h3>تستخدم مين إمتى؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>الاستخدام</th><th>بتحافظ على</th><th>السرعة</th></tr>
+    <tr><td>PCA</td><td>preprocessing قبل التدريب</td><td>الـ variance العامة</td><td>سريع، يشتغل على ملايين العينات</td></tr>
+    <tr><td>PCA</td><td>نظرة استكشافية سريعة</td><td>الشكل الخطي</td><td>سريع</td></tr>
+    <tr><td>t-SNE</td><td>رسومات 2D للنشر</td><td>الجيران المحليين</td><td>بطيء (أقل من 10k عينة أحسن)</td></tr>
+    <tr><td>UMAP</td><td>رسم 2D على داتا كبيرة</td><td>المحلي + جزء من العام</td><td>متوسط (يستحمل ملايين)</td></tr>
+    <tr><td>PCA</td><td>تقليل features للموديل</td><td>features مترتبة بالـ variance</td><td>سريع</td></tr>
+    <tr><td>t-SNE / UMAP</td><td>فهم شكل الـ clusters</td><td>فصل الـ clusters</td><td>متوسط لبطيء</td></tr>
+  </table></div>
+  <div class="note"><strong>القاعدة:</strong> PCA للـ preprocessing والضغط. t-SNE أو UMAP لما تحب تشوف الشكل في 2D.</div>
+  <p><b>المانيفولد (Manifold):</b> سطح أبعاده قليلة مستخبي جوه فضاء أبعاده أكتر. ورقة A4 متكرمشة في 3D هي manifold بُعدين: النملة الماشية عليها شايفاها مسطحة.</p>
+</section>
+
+<!-- STATION 5: Kernel PCA -->
+<section id="d10-kpca">
+  <div class="station-head"><span class="tag">05</span><h2>Kernel PCA: لما الداتا مش على خط مستقيم</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ PCA العادي بيلاقي subspaces <b>خطية</b> بس: يلف ويرمي محاور. طب لو الداتا دايرة جوه دايرة؟ مفيش خط مستقيم يفصلهم، والـ PCA العادي هيسقط الاتنين على نفس الخط.</p>
+      <p>الـ Kernel PCA بيعمل PCA في فضاء features أبعاده كتير جدًا بيعمله الـ kernel، <b>من غير ما يحسب الإحداثيات في الفضاء ده أصلًا</b>. ده الـ <b>kernel trick</b>، نفس الفكرة اللي ورا الـ SVMs.</p>
+      <ol class="ex">
+        <li>احسب مصفوفة الـ kernel: <span class="ltr">K_ij = k(x_i, x_j)</span></li>
+        <li>اعمل centering للـ kernel matrix في فضاء الـ features</li>
+        <li>eigendecomposition للمصفوفة بعد الـ centering</li>
+        <li>أكبر eigenvectors (متقسمين على <span class="ltr">√eigenvalue</span>) هما الإسقاطات</li>
+      </ol>
+      <div class="note"><strong>جرب:</strong> الرسمة الشمال الدايرتين الأصليين. الشريط تحت هو PCA عادي بـ component واحد: اللونين راكبين على بعض. الرسمة اليمين ناتج Kernel PCA بـ RBF. غيّر الـ γ وشوف الحلقة الجوانية والبرانية بيتفصلوا على PC1.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d10-kC" width="520" height="330" aria-label="دايرتين قبل وبعد kernel PCA"></canvas>
+      <label style="display:grid;gap:2px">γ (gamma) = <b class="mono" id="d10-gV">0.5</b><input type="range" style="direction:ltr" id="d10-g" min="0" max="5" step="1" value="1"></label>
+      <div class="readout">
+        <div><small>Linear PCA: متداخلين؟</small><b id="d10-ov">-</b></div>
+        <div><small>Kernel PC1 mean (جوه)</small><b id="d10-mi">0</b></div>
+        <div><small>Kernel PC1 mean (برا)</small><b id="d10-mo">0</b></div>
+        <div><small>separation</small><b id="d10-sep">0</b></div>
+      </div>
+    </div>
+  </div>
+  <p>الـ kernels المشهورة:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Kernel</th><th>المعادلة</th><th>كويس لـ</th></tr>
+    <tr><td>RBF (Gaussian)</td><td class="ltr">exp(−γ‖x − y‖²)</td><td>معظم الداتا اللاخطية، الأسطح الناعمة</td></tr>
+    <tr><td>Polynomial</td><td class="ltr">(x·y + c)^d</td><td>علاقات كثيرة الحدود</td></tr>
+    <tr><td>Sigmoid</td><td class="ltr">tanh(αx·y + c)</td><td>تحويلات شبه الـ neural networks</td></tr>
+  </table></div>
+  <div class="tablewrap"><table>
+    <tr><th>المعيار</th><th>PCA العادي</th><th>Kernel PCA</th></tr>
+    <tr><td>شكل الداتا</td><td>subspace خطي</td><td>manifold مش خطي</td></tr>
+    <tr><td>السرعة</td><td class="ltr">O(min(n²d, d²n))</td><td class="ltr">O(n²d + n³)</td></tr>
+    <tr><td>التفسير</td><td>الـ components تركيبات خطية من الـ features</td><td>ملهاش تفسير مباشر بالـ features</td></tr>
+    <tr><td>الحجم</td><td>ملايين العينات</td><td>المصفوفة <span class="ltr">n×n</span>، محدودة بالميموري</td></tr>
+    <tr><td>الرجوع (reconstruction)</td><td>inverse transform مباشر</td><td>محتاج تقريب «pre-image»</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 6: own addition -->
+<section id="d10-extra">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>غلطات بتحصل كتير</h3>
+  <ol class="ex">
+    <li><b>نسيت الـ scaling:</b> لو feature بالجنيه (آلاف) وفيتشر تاني بالسنين (عشرات)، الـ PCA هيشوف الجنيه بس لأن الـ variance بتاعته أكبر بالأرقام مش بالأهمية. لما الوحدات مختلفة، اعمل standardize الأول.</li>
+    <li><b>عملت fit على الـ test:</b> الـ PCA بيتعلم (المتوسط والمحاور). اعمل <code>fit</code> على الـ train بس و<code>transform</code> على الـ test، زي ما الكود في «Use It» عامل بالظبط. غير كده يبقى data leakage.</li>
+    <li><b>الإشارة بتتقلب:</b> الـ eigenvector و سالبه الاتنين صح. عشان كده الكود بيقارن <code>np.abs</code> مع sklearn. لو شفت محور «مقلوب» متقلقش.</li>
+    <li><b>قريت المسافات في رسمة t-SNE:</b> «الـ cluster ده بعيد عن ده يبقى مختلفين جدًا» استنتاج غلط في t-SNE.</li>
+  </ol>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li>• <b>رسم الـ embeddings:</b> لما تحب تشوف الـ documents بتاعة الـ RAG متجمعة إزاي، بتعمل UMAP للـ embeddings (مئات أو آلاف الأبعاد) لـ 2D. نفس قاعدة النهاردة: الشكل للفهم، مش للحسابات.</li>
+    <li>• <b>ضغط الـ embeddings:</b> لو الـ vector DB تقيل، PCA على الـ embeddings لعدد أبعاد أقل بيقلل الميموري وبيسرّع البحث، وتقيس على retrieval eval قد إيه الجودة نزلت (نفس فكرة «downstream performance»).</li>
+    <li>• <b>لعنة الأبعاد والـ cosine:</b> ده سبب إننا بنقارن embeddings بالـ cosine/الترتيب النسبي مش بالقيمة المطلقة للمسافة.</li>
+    <li>• <b>بكرة (SVD):</b> الـ PCA اللي بنيناه بالـ covariance هو نفسه SVD متنكر. والـ LoRA اللي شفناها في يوم ١ قريبة جدًا من نفس الفكرة: التغيير المهم عايش في أبعاد قليلة.</li>
+  </ul>
+</section>
+
+<!-- CODE -->
+<section id="d10-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو (اللي عملتله clone في يوم ١). هتحتاج <code>numpy</code> و<code>scikit-learn</code>، و<code>umap-learn</code> اختياري. أول مرة الكود هينزل MNIST من الإنترنت فهياخد وقت.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>pip install numpy scikit-learn umap-learn
+python3 phases/01-math-foundations/10-dimensionality-reduction/code/dim_reduction.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. اكتب كل خطوة بنفسك في <code>my_pca.py</code> وشغّلها، وبص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: PCA من الصفر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+class PCA:
+    def __init__(self, n_components):
+        self.n_components = n_components
+        self.components = None
+        self.mean = None
+        self.eigenvalues = None
+        self.explained_variance_ratio_ = None
+
+    def fit(self, X):
+        self.mean = np.mean(X, axis=0)              <span class="c"># 1) المتوسط لكل feature</span>
+        X_centered = X - self.mean                  <span class="c">#    وطرحه (centering)</span>
+
+        cov_matrix = np.cov(X_centered, rowvar=False)   <span class="c"># 2) covariance: كل عمود = feature</span>
+
+        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)  <span class="c"># 3) eigh لأنها symmetric</span>
+
+        sorted_idx = np.argsort(eigenvalues)[::-1]   <span class="c"># 4) رتب من الأكبر للأصغر</span>
+        eigenvalues = eigenvalues[sorted_idx]
+        eigenvectors = eigenvectors[:, sorted_idx]
+
+        self.components = eigenvectors[:, :self.n_components].T   <span class="c"># كل صف = محور</span>
+        self.eigenvalues = eigenvalues[:self.n_components]
+        total_var = np.sum(eigenvalues)
+        self.explained_variance_ratio_ = self.eigenvalues / total_var
+        return self
+
+    def transform(self, X):                          <span class="c"># 5) الإسقاط</span>
+        X_centered = X - self.mean
+        return X_centered @ self.components.T
+
+    def fit_transform(self, X):
+        self.fit(X)
+        return self.transform(X)
+
+    def inverse_transform(self, X_reduced):          <span class="c"># ارجع للفضاء الأصلي</span>
+        return X_reduced @ self.components + self.mean</pre></div>
+
+  <h3>خطوة ٢: جرّبه على داتا صناعية 3D</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>np.random.seed(42)
+n_samples = 500
+t = np.random.uniform(0, 2 * np.pi, n_samples)
+x1 = 3 * np.cos(t) + np.random.normal(0, 0.2, n_samples)
+x2 = 3 * np.sin(t) + np.random.normal(0, 0.2, n_samples)
+x3 = 0.5 * x1 + 0.3 * x2 + np.random.normal(0, 0.1, n_samples)  <span class="c"># x3 تقريبًا مكرر من x1 و x2</span>
+X = np.column_stack([x1, x2, x3])
+
+pca = PCA(n_components=2)
+X_reduced = pca.fit_transform(X)
+print(f"Original shape: {X.shape}")
+print(f"Reduced shape:  {X_reduced.shape}")
+print(f"Explained variance ratios: {pca.explained_variance_ratio_}")
+print(f"Total variance captured: {sum(pca.explained_variance_ratio_):.4f}")
+
+X_rec = pca.inverse_transform(X_reduced)
+print(f"Reconstruction MSE: {np.mean((X - X_rec) ** 2):.6f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Original shape: (500, 3)
+Reduced shape:  (500, 2)</pre><p>الـ Total variance هيطلع قريب جدًا من 1، لأن x3 مبني تقريبًا من x1 و x2 فالداتا فعليًا بُعدين. والـ MSE هيبقى صغير.</p><p><b>قارن باللي طلعلك:</b> سجّل الـ variance والـ MSE اللي ظهروا عندك واتأكد إنهم ماشيين مع الوصف ده.</p></details>
+
+  <h3>خطوة ٣: Kernel PCA على دايرتين</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def kernel_pca(X, n_components, kernel="rbf", gamma=1.0):
+    n = X.shape[0]
+    if kernel == "rbf":
+        <span class="c"># ‖x−y‖² = ‖x‖² + ‖y‖² − 2x·y لكل الأزواج مرة واحدة</span>
+        sq_dists = np.sum(X ** 2, axis=1).reshape(-1, 1) + np.sum(X ** 2, axis=1).reshape(1, -1) - 2 * X @ X.T
+        K = np.exp(-gamma * sq_dists)
+    elif kernel == "poly":
+        K = (X @ X.T + 1) ** gamma
+    else:
+        K = X @ X.T
+
+    one_n = np.ones((n, n)) / n                       <span class="c"># centering في فضاء الـ features</span>
+    K_centered = K - one_n @ K - K @ one_n + one_n @ K @ one_n
+
+    eigenvalues, eigenvectors = np.linalg.eigh(K_centered)
+    sorted_idx = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[sorted_idx]
+    eigenvectors = eigenvectors[:, sorted_idx]
+
+    top_vals = eigenvalues[:n_components]
+    top_vecs = eigenvectors[:, :n_components]
+    for i in range(n_components):
+        if top_vals[i] &gt; 1e-10:
+            top_vecs[:, i] = top_vecs[:, i] / np.sqrt(top_vals[i])
+    return top_vecs * top_vals[:n_components]
+
+<span class="c"># دايرتين: نص قطر 1 و 3، 200 نقطة لكل واحدة</span>
+np.random.seed(42)
+n_per_ring = 200
+th_in = np.random.uniform(0, 2 * np.pi, n_per_ring)
+r_in = 1.0 + np.random.normal(0, 0.1, n_per_ring)
+inner = np.column_stack([r_in * np.cos(th_in), r_in * np.sin(th_in)])
+th_out = np.random.uniform(0, 2 * np.pi, n_per_ring)
+r_out = 3.0 + np.random.normal(0, 0.1, n_per_ring)
+outer = np.column_stack([r_out * np.cos(th_out), r_out * np.sin(th_out)])
+X_circles = np.vstack([inner, outer])
+labels = np.array([0] * n_per_ring + [1] * n_per_ring)
+
+X_kpca = kernel_pca(X_circles, n_components=2, kernel="rbf", gamma=0.5)
+print(X_kpca[labels == 0, 0].mean(), X_kpca[labels == 1, 0].mean())</pre></div>
+  <p>في سكريبت الريبو، الجزء ده بيطبع إن الـ Linear PCA <span class="ltr">Overlapping: True</span> (مش قادر يفصل)، وبعدين الـ separation على PC1 لكل γ من <span class="ltr">0.1, 0.5, 1.0, 5.0</span>. قارن بالمعمل ٠٣.</p>
+
+  <h3>خطوة ٤: MNIST ومقارنة بـ sklearn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.datasets import fetch_openml
+from sklearn.decomposition import PCA as SklearnPCA
+
+mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
+X_mnist = mnist.data[:5000].astype(float)      <span class="c"># 5000 صورة × 784 بيكسل</span>
+y_mnist = mnist.target[:5000].astype(int)
+
+pca_2d = PCA(n_components=2)
+X_pca2d = pca_2d.fit_transform(X_mnist)
+print(f"2 components capture {sum(pca_2d.explained_variance_ratio_):.2%} of variance")
+
+for k in [10, 50, 200]:                          <span class="c"># الخطأ لازم يقل كل ما k تزيد</span>
+    p = PCA(n_components=k)
+    X_rec = p.inverse_transform(p.fit_transform(X_mnist))
+    print(f"k={k:&gt;3d}  variance={sum(p.explained_variance_ratio_):.4f}  mse={np.mean((X_mnist - X_rec) ** 2):.2f}")
+
+sk = SklearnPCA(n_components=2)
+X_sk = sk.fit_transform(X_mnist)
+diff = np.abs(np.abs(X_pca2d) - np.abs(X_sk))   <span class="c"># abs عشان الإشارة ممكن تتقلب</span>
+print(f"Max absolute difference (sign-invariant): {diff.max():.10f}")</pre></div>
+  <p>الفرق مع sklearn المفروض يطلع رقم صغير جدًا. لو طلع كبير، غالبًا نسيت الـ centering.</p>
+
+  <h3>خطوة ٥: t-SNE و UMAP (بعد PCA لـ 50)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.manifold import TSNE
+
+X_pca50 = PCA(n_components=50).fit_transform(X_mnist)   <span class="c"># الأول PCA يقلل الـ noise ويسرّع</span>
+X_tsne = TSNE(n_components=2, perplexity=30, random_state=42).fit_transform(X_pca50)
+print(f"t-SNE output shape: {X_tsne.shape}")
+
+try:
+    from umap import UMAP
+    X_umap = UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=42).fit_transform(X_pca50)
+    print(f"UMAP output shape: {X_umap.shape}")
+except ImportError:
+    print("Install umap-learn to run this demo: pip install umap-learn")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">t-SNE output shape: (5000, 2)
+UMAP output shape: (5000, 2)</pre></details>
+
+  <h3>خطوة ٦: PCA كـ preprocessing لـ classifier</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+
+X_train, X_test, y_train, y_test = train_test_split(X_mnist, y_mnist, test_size=0.2, random_state=42)
+
+for k in [10, 30, 50, 100, 200]:
+    pca_k = SklearnPCA(n_components=k)
+    X_tr = pca_k.fit_transform(X_train)     <span class="c"># fit على الـ train بس</span>
+    X_te = pca_k.transform(X_test)          <span class="c"># transform بس على الـ test</span>
+    clf = LogisticRegression(max_iter=1000, random_state=42).fit(X_tr, y_train)
+    acc = accuracy_score(y_test, clf.predict(X_te))
+    print(f"k={k:&gt;3d}  accuracy={acc:.4f}  variance={sum(pca_k.explained_variance_ratio_):.4f}")</pre></div>
+  <p>هتلاقي الدقة بتعمل plateau قبل 784 بكتير. المكان ده هو الـ operating point بتاعك.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d10-exercises">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>inverse_transform وخطأ الرجوع:</b> زوّد <code>inverse_transform</code> للكلاس (لو مش عاملها)، ورجّع صور MNIST من 10 و50 و200 component، واطبع الـ reconstruction error لكل واحد.
+      <details><summary>تلميح</summary>اعمل موديل منفصل لكل k. <span class="ltr">X_rec = X_reduced @ components + mean</span>، وبعدين <span class="ltr">np.mean((X - X_rec)**2)</span>. لازم الخطأ يقل كل ما k تزيد. لو مقلّش، اتأكد إنك رجّعت الـ mean.</details></li>
+    <li><b>Perplexity:</b> شغّل t-SNE على نفس الـ subset بـ perplexity = 5 و30 و100. الشكل بيتغير إزاي؟ وليه الـ perplexity بتأثر على تماسك الـ clusters؟
+      <details><summary>تلميح</summary>نفس الـ <code>random_state</code> في التلاتة وغيّر الـ perplexity بس. perplexity قليلة = بتبص على جيران قليلين، فتوقع جروبات صغيرة متلمة. عالية = جيران أكتر، فتوقع جروبات أكبر وأنعم.</details></li>
+    <li><b>هل الـ PCA يعرف إن الداتا فعليًا 5 أبعاد؟</b> اعمل داتا بـ 50 feature منهم 5 بس informative بـ <code>make_classification</code>، وشوف منحنى الـ explained variance.
+      <details><summary>تلميح</summary><span class="ltr">make_classification(n_features=50, n_informative=5, n_redundant=45)</span> واطبع الـ cumulative. الـ redundant عبارة عن تركيبات خطية من الـ informative، فالمنحنى هيوصل تقريبًا 1.0 عند 5. جرّب بعدها <span class="ltr">n_redundant=0</span>: الـ 45 الباقيين noise مستقل، والمنحنى مش هيفرد. (ده نفس اللي شفته في المعمل ٠٢.)</details></li>
+    <li><b>إضافة مني · كاشف شذوذ في logs:</b> عندك embeddings لرسايل اليوزرز (أو أي vectors، ممكن تستخدم MNIST كبديل). اعمل <code>fit</code> لـ PCA بـ k يفسر ~٩٠٪ على داتا «عادية» (مثلًا صور الرقم 1 بس)، وبعدين احسب الـ reconstruction error لكل عينة في داتا مخلوطة (1 مع شوية 8). رتّب واطبع أعلى ١٠. كام واحد منهم 8؟
+      <details><summary>تلميح</summary><span class="ltr">err = np.mean((X - pca.inverse_transform(pca.transform(X)))**2, axis=1)</span> (لاحظ <code>axis=1</code>: خطأ لكل صف). الحد (threshold) خده مثلًا الـ percentile 99 من أخطاء الداتا العادية. ده بالظبط فكرة الـ PCA-based anomaly detection، وبتستخدم في مراقبة الـ inputs اللي داخلة على موديل في production (input drift).</details></li>
+  </ol>
+</section>
+
+<!-- QUIZ -->
+<section id="d10-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d10-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d10-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d10-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح التلات مشاكل بتوع لعنة الأبعاد</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> أعرف الخطوات الخمسة للـ PCA وليه بنستخدم eigendecomposition</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> لعبت في المعامل التلاتة وشفت الكوع عند k = 5</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت كلاس PCA بإيدي وقارنته بـ sklearn</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> أعرف إمتى PCA وإمتى t-SNE/UMAP وإمتى Kernel PCA</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت تمرينين على الأقل وجبت ٥ من ٧ في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Curse of dimensionality</td><td>الـ nearest-neighbor search، ليه الداتا عمرها ما بتكفي</td></tr>
+    <tr><td>PCA</td><td>preprocessing، ضغط الـ embeddings، تقليل الـ noise قبل t-SNE</td></tr>
+    <tr><td>Explained variance / elbow</td><td>اختيار عدد الأبعاد اللي تحتفظ بيها</td></tr>
+    <tr><td>Reconstruction error</td><td>anomaly detection في production</td></tr>
+    <tr><td>t-SNE / UMAP</td><td>رسم الـ embeddings وفهم الـ clusters</td></tr>
+    <tr><td>Kernel PCA / kernel trick</td><td>داتا لا خطية، الـ SVMs</td></tr>
+    <tr><td>Manifold</td><td>فكرة إن الداتا الحقيقية عايشة على سطح أبعاده قليلة</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Singular Value Decomposition. هنشوف إن الـ PCA اللي عملناه النهاردة طلع حالة خاصة من أداة أعم، وهنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F10-dimensionality-reduction" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/10-dimensionality-reduction</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI,css=A.css,F=A.fmt,$=id=>document.getElementById(id);
+const root=$('d10-root');
+
+// roadmap
+const rm=$('d10-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===10)s.className='now';rm.appendChild(s)}
+
+// seeded RNG + gaussian
+function rng(seed){let a=seed>>>0;return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+// Jacobi eigen for symmetric matrix (array of arrays). returns {vals, vecs(columns)} sorted desc
+function eigSym(S){
+  const n=S.length,a=S.map(r=>r.slice()),V=[];
+  for(let i=0;i<n;i++){V.push(new Float64Array(n));V[i][i]=1}
+  for(let sweep=0;sweep<60;sweep++){
+    let off=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)off+=a[i][j]*a[i][j];
+    if(off<1e-18)break;
+    for(let p=0;p<n;p++)for(let q=p+1;q<n;q++){
+      const apq=a[p][q];if(Math.abs(apq)<1e-15)continue;
+      const th=(a[q][q]-a[p][p])/(2*apq),t=Math.sign(th||1)/(Math.abs(th)+Math.sqrt(th*th+1)),c=1/Math.sqrt(t*t+1),s=t*c;
+      for(let k=0;k<n;k++){const akp=a[k][p],akq=a[k][q];a[k][p]=c*akp-s*akq;a[k][q]=s*akp+c*akq}
+      for(let k=0;k<n;k++){const apk=a[p][k],aqk=a[q][k];a[p][k]=c*apk-s*aqk;a[q][k]=s*apk+c*aqk}
+      for(let k=0;k<n;k++){const vkp=V[k][p],vkq=V[k][q];V[k][p]=c*vkp-s*vkq;V[k][q]=s*vkp+c*vkq}
+    }
+  }
+  const idx=[...Array(n).keys()].sort((i,j)=>a[j][j]-a[i][i]);
+  return {vals:idx.map(i=>a[i][i]),vecs:idx.map(i=>V.map(r=>r[i]))};
+}
+
+// ---------- Lab 1: PCA in 2D ----------
+const pc=$('d10-pcaC'),px=A.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h,PS=34,pox=PW/2,poy=PH/2;
+let seed1=7,pts=[],axAng=0,pc1Ang=0,ev=[1,0],drag1=false;
+function genPts(){
+  const r=rng(seed1),th=+$('d10-ang').value*Math.PI/180,rat=+$('d10-rat').value;pts=[];
+  for(let i=0;i<150;i++){const u=gauss(r)*2.6,v=gauss(r)*2.6*rat;pts.push([u*Math.cos(th)-v*Math.sin(th)+0.4,u*Math.sin(th)+v*Math.cos(th)-0.3])}
+  // covariance
+  const n=pts.length,m=[0,0];pts.forEach(p=>{m[0]+=p[0]/n;m[1]+=p[1]/n});
+  let sxx=0,syy=0,sxy=0;pts.forEach(p=>{const a=p[0]-m[0],b=p[1]-m[1];sxx+=a*a;syy+=b*b;sxy+=a*b});
+  sxx/=n-1;syy/=n-1;sxy/=n-1;
+  const tr=sxx+syy,det=sxx*syy-sxy*sxy,d=Math.sqrt(Math.max(0,tr*tr/4-det));ev=[tr/2+d,tr/2-d];
+  pc1Ang=Math.atan2(ev[0]-sxx,sxy||1e-12);if(Math.abs(sxy)<1e-12)pc1Ang=sxx>=syy?0:Math.PI/2;
+  genPts.mean=m;genPts.cov=[sxx,syy,sxy];
+}
+function varAlong(a){const [sxx,syy,sxy]=genPts.cov,c=Math.cos(a),s=Math.sin(a);return c*c*sxx+2*c*s*sxy+s*s*syy}
+function drawPCA(){
+  px.clearRect(0,0,PW,PH);A.grid(px,PW,PH,PS,pox,poy);
+  const m=genPts.mean,c=Math.cos(axAng),s=Math.sin(axAng),T=(x,y)=>[pox+x*PS,poy-y*PS];
+  // PC1 faint guide
+  px.setLineDash([2,6]);px.strokeStyle=css('--muted');px.lineWidth=1;px.beginPath();
+  px.moveTo(...T(m[0]-9*Math.cos(pc1Ang),m[1]-9*Math.sin(pc1Ang)));px.lineTo(...T(m[0]+9*Math.cos(pc1Ang),m[1]+9*Math.sin(pc1Ang)));px.stroke();px.setLineDash([]);
+  // axis line
+  px.strokeStyle=css('--vec-b');px.lineWidth=2.5;px.beginPath();px.moveTo(...T(m[0]-9*c,m[1]-9*s));px.lineTo(...T(m[0]+9*c,m[1]+9*s));px.stroke();
+  const showRes=$('d10-showRes').checked;
+  pts.forEach(p=>{const d=(p[0]-m[0])*c+(p[1]-m[1])*s,q=[m[0]+d*c,m[1]+d*s];
+    if(showRes){px.strokeStyle=css('--muted');px.globalAlpha=.45;px.lineWidth=1;px.beginPath();px.moveTo(...T(...p));px.lineTo(...T(...q));px.stroke();px.globalAlpha=1}
+    px.fillStyle=css('--vec-a');px.beginPath();px.arc(...T(...p),3,0,7);px.fill();
+    px.fillStyle=css('--vec-b');px.beginPath();px.arc(...T(...q),2,0,7);px.fill()});
+  // handle
+  const h=T(m[0]+4*c,m[1]+4*s);px.fillStyle=css('--vec-b');px.beginPath();px.arc(h[0],h[1],10,0,7);px.fill();
+  px.fillStyle=css('--paper');px.font='bold 11px JetBrains Mono, monospace';px.textAlign='center';px.fillText('↻',h[0],h[1]+4);px.textAlign='left';
+  px.fillStyle=css('--muted');px.font='12px JetBrains Mono, monospace';const g=T(m[0]+8.4*Math.cos(pc1Ang),m[1]+8.4*Math.sin(pc1Ang));px.fillText('PC1',g[0]+4,g[1]-4);
+  const vm=varAlong(axAng),tot=ev[0]+ev[1];
+  $('d10-vMine').textContent=F(vm);$('d10-vPc1').textContent=F(ev[0]);$('d10-ratio').textContent=F(ev[0]/tot*100,1)+'%';
+  $('d10-eigs').textContent='['+F(ev[0])+', '+F(ev[1])+']';
+  const v=$('d10-pcaVerdict'),pct=vm/ev[0];
+  if(pct>0.995){v.textContent='انت على PC1: أكبر variance وأقصر خطوط ضايعة';v.style.color=css('--ok')}
+  else if(vm/tot<0.5&&ev[0]>ev[1]*1.2){v.textContent='محورك ماسك الاتجاه الضيق: معلومات كتير بتضيع';v.style.color=css('--bad')}
+  else{v.textContent='محورك ماسك '+F(vm/tot*100,0)+'% من الـ variance. لفّ أكتر';v.style.color=css('--ink')}
+}
+function syncPCA(){$('d10-angV').textContent=$('d10-ang').value+'°';$('d10-ratV').textContent=$('d10-rat').value;genPts();drawPCA()}
+['d10-ang','d10-rat'].forEach(id=>$(id).addEventListener('input',syncPCA));
+$('d10-showRes').addEventListener('change',drawPCA);
+$('d10-snap').addEventListener('click',()=>{axAng=pc1Ang;drawPCA()});
+$('d10-snap2').addEventListener('click',()=>{axAng=pc1Ang+Math.PI/2;drawPCA()});
+$('d10-resample').addEventListener('click',()=>{seed1++;genPts();drawPCA()});
+pc.addEventListener('pointerdown',e=>{drag1=true;pc.setPointerCapture(e.pointerId);mv1(e)});
+function mv1(e){if(!drag1)return;const [x,y]=A.evPos(pc,e),m=genPts.mean;axAng=Math.atan2((poy-y)/PS-m[1],(x-pox)/PS-m[0]);drawPCA()}
+pc.addEventListener('pointermove',mv1);pc.addEventListener('pointerup',()=>drag1=false);
+syncPCA();
+
+// ---------- Lab 2: scree / reconstruction ----------
+const sc=$('d10-screeC'),sx=A.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+const scree=(function(){
+  const r=rng(42),n=300,p=20,q=5,base=[],mix=[];
+  for(let i=0;i<n;i++){base.push([]);for(let j=0;j<q;j++)base[i].push(gauss(r))}
+  for(let j=0;j<q;j++){mix.push([]);for(let k=0;k<p;k++)mix[j].push(gauss(r))}
+  const X=[];for(let i=0;i<n;i++){const row=[];for(let k=0;k<p;k++){let s=0;for(let j=0;j<q;j++)s+=base[i][j]*mix[j][k];row.push(s+gauss(r)*0.1)}X.push(row)}
+  const mu=Array(p).fill(0);X.forEach(r=>r.forEach((v,k)=>mu[k]+=v/n));
+  const C=[];for(let a=0;a<p;a++){C.push(Array(p).fill(0))}
+  X.forEach(row=>{for(let a=0;a<p;a++){const da=row[a]-mu[a];for(let b=a;b<p;b++)C[a][b]+=da*(row[b]-mu[b])}});
+  for(let a=0;a<p;a++)for(let b=a;b<p;b++){C[a][b]/=n-1;C[b][a]=C[a][b]}
+  const vals=eigSym(C).vals.map(v=>Math.max(0,v));return {vals,n,p,tot:vals.reduce((a,b)=>a+b,0)};
+})();
+function drawScree(){
+  const k=+$('d10-k').value,{vals,n,p,tot}=scree;$('d10-kV').textContent=k;
+  sx.clearRect(0,0,SW,SH);
+  const L=40,R=SW-40,Tp=16,B=SH-34,bw=(R-L)/p,mx=vals[0];
+  // axes
+  sx.strokeStyle=css('--muted');sx.lineWidth=1;sx.beginPath();sx.moveTo(L,Tp);sx.lineTo(L,B);sx.lineTo(R,B);sx.stroke();
+  vals.forEach((v,i)=>{const h=(B-Tp)*v/mx;sx.fillStyle=i<k?css('--vec-a'):css('--grid');sx.fillRect(L+i*bw+2,B-h,bw-4,h)});
+  // cumulative line (right axis 0..1)
+  let c=0;sx.strokeStyle=css('--vec-b');sx.lineWidth=2.5;sx.beginPath();
+  vals.forEach((v,i)=>{c+=v/tot;const x=L+i*bw+bw/2,y=B-(B-Tp)*c;i?sx.lineTo(x,y):sx.moveTo(x,y)});sx.stroke();
+  c=0;vals.forEach((v,i)=>{c+=v/tot;const x=L+i*bw+bw/2,y=B-(B-Tp)*c;sx.fillStyle=css('--vec-b');sx.beginPath();sx.arc(x,y,i===k-1?5:2.5,0,7);sx.fill()});
+  // 0.95 line
+  const y95=B-(B-Tp)*0.95;sx.setLineDash([4,4]);sx.strokeStyle=css('--ok');sx.lineWidth=1;sx.beginPath();sx.moveTo(L,y95);sx.lineTo(R,y95);sx.stroke();sx.setLineDash([]);
+  sx.fillStyle=css('--ink');sx.font='11px JetBrains Mono, monospace';sx.textAlign='center';
+  for(let i=0;i<p;i+=1)if(i%2===0||i===p-1)sx.fillText(i+1,L+i*bw+bw/2,B+14);
+  sx.fillText('component',SW/2,SH-4);sx.textAlign='left';sx.fillStyle=css('--ok');sx.fillText('0.95',R+4,y95+4);
+  sx.fillStyle=css('--vec-b');sx.fillText('cum',R+4,Tp+8);sx.fillStyle=css('--vec-a');sx.fillText('λ',6,Tp+8);
+  const kept=vals.slice(0,k).reduce((a,b)=>a+b,0),dropped=tot-kept,mse=dropped*(n-1)/n/p;
+  $('d10-cum').textContent=F(kept/tot,4);$('d10-mse').textContent=F(mse,4);$('d10-lost').textContent=F(dropped/tot*100,2)+'%';
+  const v=$('d10-screeVerdict');
+  if(k<5){v.textContent='لسه بترمي إشارة حقيقية: الخطأ عالي';v.style.color=css('--bad')}
+  else if(k===5){v.textContent='هنا الكوع: الـ 5 أبعاد الحقيقية كلها جوه، والباقي noise';v.style.color=css('--ok')}
+  else{v.textContent='كل component زيادة بياكل noise بس، مكسب صغير جدًا';v.style.color=css('--muted')}
+}
+$('d10-k').addEventListener('input',drawScree);drawScree();
+
+// ---------- Lab 3: kernel PCA on circles ----------
+const kc=$('d10-kC'),kx=A.setupCanvas(kc),KW=+kc.dataset.w,KH=+kc.dataset.h;
+const gammas=[0.1,0.5,1.0,2.0,3.0,5.0];
+const ring=(function(){const r=rng(42),P=[],lab=[],m=60;
+  for(let i=0;i<m;i++){const t=r()*2*Math.PI,rr=1+gauss(r)*0.1;P.push([rr*Math.cos(t),rr*Math.sin(t)]);lab.push(0)}
+  for(let i=0;i<m;i++){const t=r()*2*Math.PI,rr=3+gauss(r)*0.1;P.push([rr*Math.cos(t),rr*Math.sin(t)]);lab.push(1)}
+  // linear PCA 1 component
+  const n=P.length,mu=[0,0];P.forEach(p=>{mu[0]+=p[0]/n;mu[1]+=p[1]/n});
+  const C=[[0,0],[0,0]];P.forEach(p=>{const a=p[0]-mu[0],b=p[1]-mu[1];C[0][0]+=a*a;C[1][1]+=b*b;C[0][1]+=a*b});C[1][0]=C[0][1];
+  const e=eigSym(C),w=e.vecs[0],lin=P.map(p=>(p[0]-mu[0])*w[0]+(p[1]-mu[1])*w[1]);
+  return {P,lab,lin,n};})();
+const kCache={};
+function kpca(g){
+  if(kCache[g])return kCache[g];
+  const {P,n}=ring,K=[];for(let i=0;i<n;i++){K.push(new Array(n));for(let j=0;j<n;j++){const dx=P[i][0]-P[j][0],dy=P[i][1]-P[j][1];K[i][j]=Math.exp(-g*(dx*dx+dy*dy))}}
+  const rm=K.map(r=>r.reduce((a,b)=>a+b,0)/n),am=rm.reduce((a,b)=>a+b,0)/n;
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++)K[i][j]=K[i][j]-rm[i]-rm[j]+am;
+  const e=eigSym(K),out=P.map((_,i)=>[0,1].map(c=>e.vals[c]>1e-10?e.vecs[c][i]*Math.sqrt(e.vals[c]):0));
+  return kCache[g]=out;
+}
+function drawK(){
+  const g=gammas[+$('d10-g').value];$('d10-gV').textContent=g;
+  const {P,lab,lin}=ring,Z=kpca(g);
+  kx.clearRect(0,0,KW,KH);
+  const col=l=>l?css('--vec-b'):css('--vec-a');
+  // left: original
+  const half=KW/2,top=24,boxH=KH-110;
+  kx.fillStyle=css('--ink');kx.font='12px JetBrains Mono, monospace';kx.fillText('original 2D',8,14);kx.fillText('kernel PCA (RBF)',half+8,14);
+  const s1=boxH/7.4,cx=half/2,cy=top+boxH/2;
+  P.forEach((p,i)=>{kx.fillStyle=col(lab[i]);kx.beginPath();kx.arc(cx+p[0]*s1,cy-p[1]*s1,3,0,7);kx.fill()});
+  // right: kernel 2D
+  let mnx=1e9,mxx=-1e9,mny=1e9,mxy=-1e9;Z.forEach(z=>{mnx=Math.min(mnx,z[0]);mxx=Math.max(mxx,z[0]);mny=Math.min(mny,z[1]);mxy=Math.max(mxy,z[1])});
+  const sxr=(half-30)/((mxx-mnx)||1),syr=(boxH-10)/((mxy-mny)||1);
+  kx.strokeStyle=css('--line');kx.strokeRect(half+6,top,half-14,boxH);
+  Z.forEach((z,i)=>{kx.fillStyle=col(lab[i]);kx.beginPath();kx.arc(half+15+(z[0]-mnx)*sxr,top+5+(mxy-z[1])*syr,3,0,7);kx.fill()});
+  kx.fillStyle=css('--muted');kx.fillText('PC1 →',KW-56,top+boxH-6);
+  // strips: linear PCA 1D and kernel PC1 1D
+  const strip=(vals,y,label)=>{let a=Math.min(...vals),b=Math.max(...vals);kx.strokeStyle=css('--muted');kx.lineWidth=1;kx.beginPath();kx.moveTo(20,y);kx.lineTo(KW-20,y);kx.stroke();
+    vals.forEach((v,i)=>{kx.fillStyle=col(lab[i]);kx.globalAlpha=.7;kx.beginPath();kx.arc(20+(v-a)/((b-a)||1)*(KW-40),y+(lab[i]?6:-6),3,0,7);kx.fill()});kx.globalAlpha=1;
+    kx.fillStyle=css('--ink');kx.fillText(label,20,y-12)};
+  strip(lin,KH-62,'linear PCA, 1 component');
+  strip(Z.map(z=>z[0]),KH-18,'kernel PC1');
+  // readouts
+  const rng0=lin.filter((_,i)=>!lab[i]),rng1=lin.filter((_,i)=>lab[i]);
+  const ov=Math.max(...rng0)>Math.min(...rng1)&&Math.max(...rng1)>Math.min(...rng0);
+  const ovEl=$('d10-ov');ovEl.textContent=ov?'True':'False';ovEl.style.color=ov?css('--bad'):css('--ok');
+  const mi=Z.filter((_,i)=>!lab[i]).reduce((a,z)=>a+z[0],0)/rng0.length,mo=Z.filter((_,i)=>lab[i]).reduce((a,z)=>a+z[0],0)/rng1.length;
+  $('d10-mi').textContent=F(mi,4);$('d10-mo').textContent=F(mo,4);$('d10-sep').textContent=F(Math.abs(mo-mi),4);
+}
+$('d10-g').addEventListener('input',drawK);drawK();
+
+// ---------- quiz ----------
+A.quiz($('d10-quizBox'),[
+ ['يعني إيه «لعنة الأبعاد»؟',['كل ما الأبعاد تزيد، المسافات تفقد معناها، والحجم يتركز في الأركان، ومحتاج داتا أكتر بشكل أُسّي','الـ neural networks مش بتقدر تتعامل مع أكتر من 100 feature','الداتا اللي أبعادها كتير دايمًا فيها noise','الداتا اللي أبعادها كتير بتاخد وقت طويل تتحمّل'],0,'في الأبعاد الكبيرة كل المسافات بتقرب من بعض، النقط بتتزق للأركان، والحفاظ على كثافة العينات محتاج داتا أكتر أُسّيًا. تقليل الأبعاد بيعاكس ده.'],
+ ['الـ PCA بيلاقي إيه؟',['clusters من نقط شبه بعض','أهم features بأساميها','الاتجاهات المتعامدة اللي فيها أكبر variance في الداتا','العدد الأمثل من الـ features اللي تحتفظ بيه'],2,'بيحسب eigenvectors مصفوفة الـ covariance: اتجاهات متعامدة مترتبة بالـ variance اللي شايلاها. PC1 على اتجاه أقصى انتشار.'],
+ ['عملت PCA على MNIST (784 بُعد) بـ k = 50 ولقيت 95% من الـ variance اتمسكت. ده معناه إيه؟',['95% من الصور من نفس الـ class','الداتا فعليًا عايشة في subspace حوالي 50 بُعد، والـ 734 الباقيين غالبًا noise أو تكرار','الموديل هيجيب 95% accuracy','50 بيكسل بس هما اللي فارقين في كل صورة'],1,'50 اتجاه مسكوا الشكل الأساسي لداتا 784 بُعد. الباقي شايل 5% بس من التغيير، ومعظمه noise. ولاحظ: الاتجاهات دي مش بيكسلز، دي تركيبات من كل البيكسلز.'],
+ ['ليه ما تستخدمش t-SNE كـ preprocessing قبل ما تدرب classifier؟',['t-SNE معمول للرسم بس: بيشوّه المسافات العامة، stochastic، والإحداثيات ملهاش معنى ثابت بين run والتاني','t-SNE محتاج الـ labels الأول','t-SNE بطيء على الداتا الكبيرة','t-SNE بيقلل لـ 2 أبعاد بالظبط ودول قليل'],0,'بيحافظ على الجيران المحليين بس بيشوّه الشكل العام، والمسافات بين الـ clusters ملهاش معنى، وكل run شكل مختلف. PCA للـ preprocessing، و t-SNE/UMAP للرسم بس.'],
+ ['إمتى تختار Kernel PCA بدل PCA العادي؟',['لما تحتاج أسرع حساب ممكن','لما تحب components تتفسر بالـ features','لما عدد العينات أكبر من عدد الـ features','لما الداتا على manifold مش خطي PCA العادي مش هيفصله، زي دايرتين جوه بعض'],3,'PCA العادي بيلاقي subspaces خطية، فبيسقط الدايرتين على نفس الخط. الـ Kernel PCA بيشتغل في فضاء أبعاده أكتر الشكل فيه بيبقى خطي.'],
+ ['عندك eigenvalues = [6, 3, 1]. لو احتفظت بأول 2 components، نسبة الـ variance اللي ضاعت كام؟',['30%','10%','1%','0% لأن الـ PCA مش بيضيّع حاجة'],1,'اللي ضاع = مجموع المرمي ÷ الكل = 1 ÷ 10 = 10%. وده بالظبط اللي بيحدد الـ reconstruction error.'],
+ ['عملت fit لـ PCA على داتا عادية، وعينة جديدة طلع الـ reconstruction error بتاعها أعلى بكتير من الباقي. غالبًا ده معناه إيه؟',['العينة دي أهم عينة في الداتا','لازم تزود k لحد ما الخطأ يبقى صفر','العينة مش راكبة على الـ subspace اللي اتعلمته، يعني غالبًا outlier أو anomaly','الـ PCA اتدرب غلط'],2,'ده أساس الـ PCA-based anomaly detection: اللي مش شبه الداتا العادية مش بيترجع كويس.']
+],5,()=>{const c=root.querySelector('input[data-ck="c6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(10,root);
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(pc))return false;drawPCA();drawScree();drawK()});
+})();
+</script>

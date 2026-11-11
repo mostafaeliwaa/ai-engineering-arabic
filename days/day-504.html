@@ -1,0 +1,596 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 76 · Collective Ops From Scratch</span>
+  <h1>اليوم ٥٠٤: الأربع عمليات اللي شايلين الـ distributed training كله</h1>
+  <p class="lede">النهاردة بنبدأ track جديد: التدريب على أكتر من جهاز. وأول حاجة هنبنيها هي <b>الـ collectives</b> الأربعة: <code>allreduce</code> و <code>broadcast</code> و <code>allgather</code> و <code>reduce_scatter</code>. كل حاجة في DDP و ZeRO و FSDP مبنية فوقهم. هتبنيهم بنفسك فوق <code>multiprocessing.Queue</code>، وهتتأكد إنهم بيطلّعوا نفس نتيجة <code>torch.distributed</code> بالظبط.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> + PyTorch (gloo)</span>
+    <span>قبله: <b>End-to-End Eval Runner</b></span>
+    <span>بعده: <b>Data Parallel DDP From Scratch</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d504-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d504-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح ركّبت الـ eval runner اللي بيلم دروس ٧٠ لـ ٧٤ في pipeline واحد. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>أصغر شكل ممكن للـ <code>ModelAdapter</code> كان إيه؟
+      <details><summary>الإجابة</summary>حاجة واحدة: <code>model_id</code> ودالة <code>generate(prompt, task)</code> بترجع <code>Generation</code> (فيها <code>text</code> و <code>confidence</code> واختياري <code>token_nll</code> و <code>token_count</code>). أي موديل (mock أو local أو API) يقدر يلبس الواجهة دي.</details></li>
+    <li>ليه الـ runner بياخد flag اسمه <code>parallel</code> بدل ما يشتغل parallel على طول؟
+      <details><summary>الإجابة</summary>عشان الـ tests تقدر تثبّت ترتيب التنفيذ وتطلع نتيجة deterministic. في الشغل الحقيقي الـ <code>ThreadPoolExecutor</code> كفاية لأن عنق الزجاجة هو network I/O مع الـ API.</details></li>
+    <li>الـ runner بيحدد «صح ولا غلط» للـ calibration إزاي؟
+      <details><summary>الإجابة</summary>من <code>_correct_from_score</code>: للـ metrics اللي يا صح يا غلط (<code>exact_match</code>، <code>accuracy</code>، <code>code_exec</code>) لازم <span class="ltr">score ≥ 1.0</span>، وللـ metrics المتدرجة (F1، BLEU، ROUGE) <span class="ltr">score ≥ 0.5</span>.</details></li>
+  </ol>
+  <div class="note ai"><strong>الربط بالنهاردة:</strong> امبارح وزّعنا <b>tasks</b> على threads، وكل task مستقل عن التاني. النهاردة الشغل مختلف: الأجهزة لازم <b>تتكلم مع بعض</b> وتجمّع أرقام. وده اللي بيحتاج قواعد مرور صارمة اسمها collectives.</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>10 min</b>المشكلة: ليه الـ naive allreduce بطيء</div>
+    <div><b>25 min</b>الـ ring allreduce خطوة بخطوة (معمل ١)</div>
+    <div><b>15 min</b>ring ولا tree؟ والـ broadcast (معمل ٢ و ٣)</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 PROBLEM -->
+<section id="d504-problem">
+  <div class="station-head"><span class="tag">01</span><h2>الأربع عمليات، والمشكلة اللي بيحلّوها</h2></div>
+  <p>تخيل ٤ GPUs، كل واحد شايل tensor (مثلًا الـ gradients بتاعته). اسم كل جهاز في الكلام ده <b>rank</b> (rank 0 لحد rank N−1)، وعددهم <b>world_size = N</b>. فيه ٤ عمليات بس محتاجينها:</p>
+  <div class="tablewrap"><table>
+    <tr><th>العملية</th><th>قبل</th><th>بعد</th><th>تشبيه</th></tr>
+    <tr><td><b>allreduce</b></td><td>كل rank عنده tensor مختلف</td><td>كل rank عنده <b>نفس المجموع</b></td><td>كل واحد في الفصل عدّ فلوسه، وفي الآخر الكل عارف المجموع الكلي</td></tr>
+    <tr><td><b>broadcast</b></td><td>rank واحد (src) عنده القيمة</td><td>الكل عنده نسخة منها</td><td>المدرس بيقول رقم والفصل كله يكتبه</td></tr>
+    <tr><td><b>allgather</b></td><td>كل rank عنده shard</td><td>الكل عنده كل الـ shards ورا بعض</td><td>كل واحد كتب صفحة، وفي الآخر كل واحد معاه الكتاب كامل</td></tr>
+    <tr><td><b>reduce_scatter</b></td><td>كل rank عنده tensor كامل</td><td>كل rank عنده <b>مجموع جزء واحد بس</b></td><td>كل واحد مسؤول يجمع عمود واحد في الجدول</td></tr>
+  </table></div>
+  <h3>الطريقة الساذجة: كله يبعت لواحد</h3>
+  <p>أسهل allreduce: كل الـ ranks تبعت الـ tensor لـ rank 0، هو يجمع، ويرجّع النتيجة لكل واحد. المشكلة إن rank 0 بيستقبل <span class="ltr">(N−1)·T</span> ويبعت <span class="ltr">(N−1)·T</span>. يعني الشغل على واحد بيكبر <span class="ltr">O(N)</span>، وبيبقى عنق زجاجة، والوقت = أبطأ link مضروب في N. زي فصل فيه ١٠٠ طالب وكلهم بيسلّموا ورقهم لنفس المدرس في نفس اللحظة.</p>
+  <h3>الحل: الدايرة (ring)</h3>
+  <p>بدل ما الكل يكلّم واحد، نقعدهم في <b>دايرة</b>: كل rank بيبعت للي جنبه بس (<span class="ltr">r → r+1</span>) ويستقبل من اللي قبله. ونقطّع الـ tensor لـ N حتة صغيرة (chunks) حجم كل واحدة <span class="ltr">T/N</span>. كل خطوة كل واحد بيبعت حتة واحدة بس، فكل الـ links شغالة في نفس الوقت ومحدش فاضي.</p>
+  <div class="formula">per-rank bytes (ring allreduce) = 2 · T · (N−1) / N   →   أقل من 2T دايمًا مهما كبر N</div>
+  <p>ده أهم رقم في الدرس: الـ bytes اللي كل rank بيبعتها <b>ما بتكبرش مع حجم الـ cluster</b>. عند N=4 هي <span class="ltr">1.5T</span>، وعند N=1000 هي حوالي <span class="ltr">2T</span>.</p>
+</section>
+
+<!-- 02 RING LAB -->
+<section id="d504-ringsec">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Ring Allreduce في مرحلتين</h2></div>
+  <p><b>المرحلة ١: reduce-scatter</b> (N−1 خطوة). في الخطوة s، الـ rank r بيبعت chunk رقم <span class="ltr">(r − s) mod N</span> للي بعده، ويستقبل chunk رقم <span class="ltr">(r − s − 1) mod N</span> من اللي قبله و<b>يجمعه</b> على النسخة اللي عنده. كل chunk بتلف الدايرة وهي بتلم مساهمة كل rank تعدّي عليه.</p>
+  <p><b>المرحلة ٢: allgather</b> (N−1 خطوة كمان). دلوقتي كل rank عنده chunk واحدة <b>مكتملة</b> (فيها مجموع الكل). بنلفّ الـ chunks المكتملة دي في الدايرة، والمستقبل <b>بيستبدل</b> النسخة القديمة (مش بيجمع). في الآخر الكل عنده كل الـ chunks مكتملة.</p>
+  <div class="formula">total steps = 2(N−1)   ·   each step: every rank sends one chunk of size T/N</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: لفّ الـ chunks بإيدك</h3>
+      <p>كل صف = rank، وكل عمود = chunk. الرقم في الخانة = القيمة الحالية، واللون بيتملي كل ما الخانة تلم مساهمات أكتر (مليانة = فيها مجموع الـ N ranks). الإطار البرتقالي = الـ chunk اللي بتتبعت دلوقتي، والأخضر = اللي اتستقبلت.</p>
+      <div class="note"><strong>جرب:</strong> (١) دوس «خطوة» لحد آخر reduce-scatter، ولاحظ إن كل rank بقى عنده خانة واحدة مليانة بس. أنهي chunk؟ (٢) كمّل الـ allgather وشوف الكل بقى نفس الصف. (٣) غيّر N وتابع إن «المبعوت لكل rank» في الآخر بيساوي المعادلة.</div>
+      <p style="color:var(--muted);font-size:15px">ملاحظة مهمة للكود: بعد الـ reduce-scatter في كود الدرس، الـ rank r بيبقى ماسك المجموع الكامل لـ chunk <span class="ltr">(r+1) mod N</span> مش chunk r. شوفها بعينك في المعمل. ده بالظبط السبب إن دالة <code>reduce_scatter</code> بتعمل «لفّة» للـ input الأول.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d504-ring" width="520" height="300" aria-label="جدول الـ ranks والـ chunks أثناء الـ ring allreduce"></canvas>
+      <div class="mrow">
+        <label>N ranks = <span id="d504-nv">4</span><input type="range" id="d504-n" min="2" max="6" value="4"></label>
+        <label>T bytes = <span id="d504-tv">256</span><input type="range" id="d504-t" min="0" max="4" value="0"></label>
+      </div>
+      <div class="readout">
+        <div><small>المرحلة</small><b id="d504-ph">start</b></div>
+        <div><small>الخطوة</small><b id="d504-st">0 / 6</b></div>
+        <div><small>المبعوت لكل rank</small><b id="d504-sent">0</b></div>
+        <div><small>المعادلة 2T(N−1)/N</small><b id="d504-form">384</b></div>
+      </div>
+      <div class="verdict" id="d504-rv">جاهز: دوس خطوة</div>
+      <div class="btns"><button type="button" class="primary" id="d504-step">خطوة</button><button type="button" id="d504-auto">شغّل لوحده</button><button type="button" id="d504-reset">من الأول</button></div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th>العملية</th><th>Bytes لكل rank</th><th>عدد الخطوات</th><th>تستخدمها إمتى</th></tr>
+    <tr><td>Ring allreduce</td><td class="ltr">2T(N−1)/N</td><td class="ltr">2(N−1)</td><td>T كبير، و cluster متجانس بـ links سريعة</td></tr>
+    <tr><td>Tree allreduce</td><td class="ltr">T·log2(N)</td><td class="ltr">2·log2(N)</td><td>T صغير أو links الـ latency فيها عالية</td></tr>
+    <tr><td>Broadcast</td><td class="ltr">T</td><td class="ltr">log2(N) (tree)</td><td>تهيئة الـ parameters، config صغيرة</td></tr>
+    <tr><td>Allgather</td><td class="ltr">T(N−1)/N</td><td class="ltr">N−1</td><td>forward متقسم، تجميع الـ shards في ZeRO</td></tr>
+    <tr><td>Reduce_scatter</td><td class="ltr">T(N−1)/N</td><td class="ltr">N−1</td><td>تقسيم الـ gradients في ZeRO</td></tr>
+  </table></div>
+  <p>لاحظ: <b>allreduce = reduce_scatter + allgather</b>. الجملة دي هتشوفها تاني في درس ZeRO بعد بكرة.</p>
+</section>
+
+<!-- 03 RING vs TREE LAB -->
+<section id="d504-tree">
+  <div class="station-head"><span class="tag">03</span><h2>Ring ولا Tree؟ الـ latency ضد الـ bandwidth</h2></div>
+  <p>كل رسالة على الشبكة ليها تمنين: <b>latency</b> (وقت ثابت عشان الرسالة تبدأ، زي وقت ما الأسانسير ييجي) و <b>bandwidth</b> (قد إيه بيانات بتعدّي في الثانية، زي سعة الأسانسير). الـ ring فيه <span class="ltr">2(N−1)</span> خطوة، فبيدفع الـ latency كتير، بس بيستغل الـ bandwidth أحسن استغلال. الـ tree عمقه <span class="ltr">log2(N)</span> بس، فبيدفع latency أقل، بس بيبعت bytes أكتر.</p>
+  <ul>
+    <li><b>رسايل كبيرة</b> (فوق حوالي 1 MB حسب الدرس): الـ bandwidth هو اللي بيحكم، والـ ring بيكسب.</li>
+    <li><b>رسايل صغيرة</b> أو links بطيئة في الاستجابة: عدد الـ hops هو اللي بيحكم، والـ tree بيكسب.</li>
+  </ul>
+  <p>عشان كده NCCL فيه topology detector بيختار ring للرسايل الكبيرة و tree للصغيرة. لو ثبّتّ واحد بس، هتخسر throughput على الحجم التاني. «اختار بالحجم، مش بالعقيدة».</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: لاقي نقطة التقاطع</h3>
+      <p>نموذج بسيط: <span class="ltr">time = steps × α + bytes / B</span>. المحور الأفقي حجم الرسالة (log scale من 1KB لـ 1GB)، والرأسي الوقت (log). الخط المنقط العمودي = نقطة ما الـ ring يبدأ يكسب.</p>
+      <div class="note"><strong>جرب:</strong> زوّد الـ latency α وشوف التقاطع بيروح يمين (الـ tree بيكسب في رسايل أكبر). زوّد N وشوف الـ naive بيبعد. ده نموذج توضيحي، الأرقام الحقيقية بتتقاس على الـ cluster بتاعك (تمرين ٥).</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d504-cost" width="520" height="280" aria-label="منحنى الوقت مقابل حجم الرسالة للـ ring والـ tree والـ naive"></canvas>
+      <div class="mrow">
+        <label>N = <span id="d504-cnv">8</span><input type="range" id="d504-cn" min="2" max="64" value="8"></label>
+        <label>α latency = <span id="d504-cav">10</span> µs<input type="range" id="d504-ca" min="1" max="100" value="10"></label>
+        <label>B = <span id="d504-cbv">25</span> GB/s<input type="range" id="d504-cb" min="1" max="200" value="25"></label>
+        <label>T = <span id="d504-ctv">1 MB</span><input type="range" id="d504-ct" min="0" max="20" value="10"></label>
+      </div>
+      <div class="readout">
+        <div><small>ring</small><b id="d504-r1">—</b></div>
+        <div><small>tree</small><b id="d504-r2">—</b></div>
+        <div><small>naive (root)</small><b id="d504-r3">—</b></div>
+        <div><small>التقاطع ring/tree</small><b id="d504-r4">—</b></div>
+      </div>
+      <div class="verdict" id="d504-cv"></div>
+    </div>
+  </div>
+
+  <h3>الـ Tree Broadcast: اللي عنده القيمة بيتضاعفوا كل جولة</h3>
+  <p>عايز rank واحد يوصّل قيمة لـ N rank. لو بعتها لكل واحد بنفسه = <span class="ltr">N−1</span> إرسال ورا بعض، وبتدفع الـ latency N مرة. الـ tree أذكى: في الجولة الأولى المصدر يبعت لواحد، فبقوا اتنين. في التانية الاتنين يبعتوا لاتنين، فبقوا ٤. وهكذا. عدد الجولات = <span class="ltr">⌈log2(N)⌉</span>. زي الإشاعة: كل واحد سمعها بيقولها لواحد جديد.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: وزّع القيمة، واكتشف bug</h3>
+      <p>دوس «جولة» وشوف الـ holders بيتضاعفوا. كود الدرس بيقول: في الجولة k، كل holder h بيبعت لـ <span class="ltr">h + 2ᵏ</span> لو أقل من N.</p>
+      <div class="note"><strong>جرب:</strong> خلّي src = 0 الأول. بعدين غيّر src لـ 2 واختار «كود الدرس كما هو». هتلاقي الـ ranks اللي قبل الـ src ما بيوصلهاش حاجة أبدًا، والـ loop بيلف من غير نهاية. بعدين اختار «بالـ relative rank» وشوف الحل.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d504-bc" width="520" height="200" aria-label="جولات الـ tree broadcast"></canvas>
+      <p style="color:var(--muted);font-size:14px;margin:0">برتقالي = src · أزرق = استلم · <span class="ltr">rN</span> = الجولة اللي استلم فيها</p>
+      <div class="mrow">
+        <label>N = <span id="d504-bnv">8</span><input type="range" id="d504-bn" min="2" max="16" value="8"></label>
+        <label>src = <span id="d504-bsv">0</span><input type="range" id="d504-bs" min="0" max="7" value="0"></label>
+      </div>
+      <div class="btns">
+        <select id="d504-bmode" aria-label="طريقة الـ broadcast"><option value="rel">بالـ relative rank (r − src)</option><option value="raw">كود الدرس كما هو</option></select>
+        <button type="button" class="primary" id="d504-bstep">جولة</button><button type="button" id="d504-breset">من الأول</button>
+      </div>
+      <div class="readout">
+        <div><small>جولات</small><b id="d504-brd">0</b></div>
+        <div><small>⌈log2 N⌉</small><b id="d504-blog">3</b></div>
+        <div><small>direct sends</small><b id="d504-bdir">7</b></div>
+      </div>
+      <div class="verdict" id="d504-bv"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 QUEUE MESH + GLOO -->
+<section id="d504-mesh">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Queue Mesh بديل لـ NCCL، و gloo كمرجع</h2>
+  </div>
+  <p><b>NCCL</b> هي المكتبة اللي بتشغّل الـ collectives على GPUs فوق PCIe و NVLink، والجمع فيها بيتعمل في الـ hardware. على الـ CPU ما عندناش ده. فالدرس بيعمل <b>queue لكل اتجاه بين كل اتنين ranks</b> (<code>multiprocessing.Queue</code>). الـ queue بيوصّل الرسايل بالترتيب، من بعّات واحد لمستقبل واحد.</p>
+  <p>الجمع هنا بيحصل في Python، فهو أبطأ. بس <b>شكل الرسايل على السلك نفسه</b> زي NCCL ring allreduce بالظبط: مين بيبعت لمين، أنهي chunk، وفي أنهي خطوة. فلو الخوارزمية صح على الـ queues، هتبقى صح على الـ cluster. زي ما بتتعلم السواقة في جراج فاضي: العربية أبطأ والطريق أقصر، بس القواعد هي هي.</p>
+  <h3>التحقق ضد gloo: مش اختياري</h3>
+  <p>كل عملية ليها test بيشغّل نفس الـ input على نفس الـ world_size مرتين: مرة بالكود بتاعك، ومرة بـ <code>torch.distributed</code> بالـ backend اللي اسمه <b>gloo</b> (الـ backend بتاع الـ CPU). لو الفرق أكبر من float32 epsilon (في الكود: <span class="ltr">1e-5</span>)، الـ test يفشل. من غير مرجع، الـ primitive بيبان صح لحد الـ step رقم 10000 في تدريب حقيقي، وبعدين تلاقي الـ loss بقى NaN ومش عارف ليه.</p>
+  <h3>٣ حاجات بتخلّي الـ primitives دي تنفع في الـ production</h3>
+  <ol class="ex">
+    <li><b>Bucketing:</b> موديل 1B parameter فيه عشرات الآلاف من الـ gradient tensors. allreduce لكل tensor = تدفع الـ latency عشرات الآلاف من المرات. DDP بيلم الـ gradients في buckets حوالي 25 MB ويعمل allreduce واحد لكل bucket. الـ tensors الصغيرة بتركب على ضهر الكبيرة.</li>
+    <li><b>Overlap:</b> الـ backward بيحسب الـ gradients layer layer من الآخر للأول. أول ما gradient آخر layer يخلص، ابدأ الـ allreduce بتاعه والـ layer اللي قبلها لسه بتحسب. PyTorch DDP بيعمل ده بـ hooks لما الـ bucket يبقى جاهز، وده بيقلل وقت الـ communication الظاهر للنص لما الشبكة فيها مساحة.</li>
+    <li><b>Ring ولا tree بالحجم:</b> زي ما شفت في معمل ٢.</li>
+  </ol>
+  <div class="tablewrap"><table>
+    <tr><th>الأداة</th><th>بتستخدم إيه من دول</th></tr>
+    <tr><td>PyTorch DDP</td><td><code>dist.all_reduce</code> على buckets الـ gradients بعد الـ backward. حجم الـ bucket قابل للتعديل، والـ 25 MB الافتراضي معقول على 100Gbit Ethernet.</td></tr>
+    <tr><td>DeepSpeed ZeRO</td><td>reduce_scatter عشان يقسّم الـ gradients، و allgather عشان يرجّع الـ parameters كاملة قبل الـ forward.</td></tr>
+    <tr><td>FSDP</td><td>الـ forward يبدأ بـ allgather للـ layer، يحسب، وبعدين reduce_scatter ويرمي النسخة الكاملة.</td></tr>
+  </table></div>
+  <p><b>هتستخدمهم في الدروس الجاية:</b> ٧٧ (DDP بـ allreduce)، ٧٨ (ZeRO بـ reduce_scatter)، ٧٩ (pipeline بـ send/recv نقطة لنقطة مش collective)، و٨١ اللي بيركّب الأربعة في demo واحد.</p>
+</section>
+
+<!-- 05 CODE -->
+<section id="d504-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: الكود خطوة بخطوة</h2></div>
+  <p>من جذر الريبو (محتاج <code>torch</code> متسطّب):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/76-collective-ops-from-scratch/code/main.py</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_collectives.py</code> واكتب الخطوات دي بنفسك. بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الـ Mesh (send/recv فوق queues)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import multiprocessing as mp
+from dataclasses import dataclass
+import torch
+
+PRIMITIVES = ("allreduce", "broadcast", "allgather", "reduce_scatter")
+RECV_TIMEOUT_S = 30.0
+
+@dataclass
+class Mesh:
+    rank: int
+    world_size: int
+    out_queues: list        <span class="c"># out_queues[dst]: الطابور اللي بيروح لـ dst</span>
+    in_queues: list         <span class="c"># in_queues[src]: الطابور اللي جاي من src</span>
+    byte_counter: object = None
+
+    def send(self, dst, tensor):
+        if dst == self.rank:
+            raise ValueError("rank cannot send to itself")
+        payload = tensor.detach().clone().contiguous()
+        nbytes = payload.numel() * payload.element_size()
+        if self.byte_counter is not None:          <span class="c"># عدّاد مشترك بين الـ processes</span>
+            with self.byte_counter.get_lock():
+                self.byte_counter.value += nbytes
+        self.out_queues[dst].put(payload)
+
+    def recv(self, src):
+        if src == self.rank:
+            raise ValueError("rank cannot recv from itself")
+        return self.in_queues[src].get(timeout=RECV_TIMEOUT_S)
+
+def build_queue_grid(ctx, world_size):
+    <span class="c"># grid[src][dst] = queue لكل اتجاه (full mesh)</span>
+    grid = [[None] * world_size for _ in range(world_size)]
+    for src in range(world_size):
+        for dst in range(world_size):
+            if src != dst:
+                grid[src][dst] = ctx.Queue()
+    return grid
+
+def mesh_from_grid(rank, world_size, grid, byte_counter):
+    out_qs = [grid[rank][d] for d in range(world_size)]
+    in_qs = [grid[s][rank] for s in range(world_size)]
+    return Mesh(rank, world_size, out_qs, in_qs, byte_counter)</pre></div>
+  <p>الـ mesh كامل (كل rank يقدر يكلّم أي rank)، بس خوارزميات الـ ring بتستخدم الجيران بس. ده بيخلّي الـ API عام عشان تجرّب topologies تانية بعدين.</p>
+
+  <h3>خطوة ٢: ring_allreduce (المرحلتين)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def ring_allreduce(mesh, tensor):
+    w, r = mesh.world_size, mesh.rank
+    if w == 1:
+        return tensor.clone()
+    n = tensor.numel()
+    pad = (-n) % w                         <span class="c"># كمّل بأصفار عشان يتقسم على w</span>
+    flat = torch.zeros(n + pad, dtype=tensor.dtype)
+    flat[:n] = tensor.flatten()
+    chunks = [c.clone() for c in flat.chunk(w)]
+    next_rank, prev_rank = (r + 1) % w, (r - 1) % w
+    <span class="c"># المرحلة 1: reduce-scatter (جمع)</span>
+    for step in range(w - 1):
+        send_idx = (r - step) % w
+        recv_idx = (r - step - 1) % w
+        mesh.send(next_rank, chunks[send_idx])
+        incoming = mesh.recv(prev_rank)
+        chunks[recv_idx] = chunks[recv_idx] + incoming
+    <span class="c"># المرحلة 2: allgather (استبدال)</span>
+    for step in range(w - 1):
+        send_idx = (r - step + 1) % w
+        recv_idx = (r - step) % w
+        mesh.send(next_rank, chunks[send_idx])
+        incoming = mesh.recv(prev_rank)
+        chunks[recv_idx] = incoming
+    return torch.cat(chunks)[:n].reshape(tensor.shape)   <span class="c"># شيل الـ padding ورجّع الشكل</span></pre></div>
+  <p>ليه مفيش deadlock هنا رغم إن الكل بيعمل send الأول؟ لأن <code>Queue.put</code> مش بيستنى حد يستقبل: الرسالة بتتحط في الطابور وخلاص. (في درس الـ pipeline هتشوف send متزامن، وهناك الترتيب بيفرق.)</p>
+
+  <h3>خطوة ٣: broadcast بالـ tree</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def broadcast(mesh, tensor, src):
+    w, r = mesh.world_size, mesh.rank
+    if w == 1:
+        return tensor.clone()
+    has_value = {src}
+    out = tensor.clone() if r == src else torch.zeros_like(tensor)
+    round_idx = 0
+    while len(has_value) &lt; w:
+        new_holders = set()
+        for h in sorted(has_value):
+            partner = h + (1 &lt;&lt; round_idx)            <span class="c"># h + 2^round</span>
+            if partner &lt; w and partner not in has_value:
+                if r == h:
+                    mesh.send(partner, out)
+                elif r == partner:
+                    out = mesh.recv(h)
+                new_holders.add(partner)
+        has_value |= new_holders                    <span class="c"># عدد الـ holders بيتضاعف</span>
+        round_idx += 1
+    return out</pre></div>
+  <p>كل rank بيشغّل نفس الـ loop وبيحسب نفس <code>has_value</code>، فالكل متفق مين يبعت لمين من غير ما حد يقول لحد. (وافتكر الـ bug اللي شفته في معمل ٣ لما src مش صفر.)</p>
+
+  <h3>خطوة ٤: allgather و reduce_scatter</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def allgather(mesh, tensor):
+    w, r = mesh.world_size, mesh.rank
+    if w == 1:
+        return tensor.clone()
+    shards = [torch.zeros_like(tensor) for _ in range(w)]
+    shards[r] = tensor.clone()                       <span class="c"># الـ shard بتاعي في مكاني</span>
+    next_rank, prev_rank = (r + 1) % w, (r - 1) % w
+    for step in range(w - 1):
+        send_idx = (r - step) % w
+        recv_idx = (r - step - 1) % w
+        mesh.send(next_rank, shards[send_idx])
+        shards[recv_idx] = mesh.recv(prev_rank)
+    return torch.cat(shards)                         <span class="c"># الطول = T × w بترتيب الـ ranks</span>
+
+def reduce_scatter(mesh, tensor):
+    w, r = mesh.world_size, mesh.rank
+    n = tensor.numel()
+    if n % w != 0:
+        raise ValueError(f"reduce_scatter needs numel divisible by world_size, got {n} / {w}")
+    if w == 1:
+        return tensor.clone()
+    <span class="c"># الـ ring بيركن المجموع الكامل عند index (r+1) % w</span>
+    <span class="c"># فنلفّ الـ chunks خطوة الأول عشان rank r ياخد chunk r زي torch.distributed</span>
+    rotated = list(tensor.chunk(w))
+    chunks = [rotated[(i - 1) % w].clone() for i in range(w)]
+    next_rank, prev_rank = (r + 1) % w, (r - 1) % w
+    for step in range(w - 1):
+        send_idx = (r - step) % w
+        recv_idx = (r - step - 1) % w
+        mesh.send(next_rank, chunks[send_idx])
+        incoming = mesh.recv(prev_rank)
+        chunks[recv_idx] = chunks[recv_idx] + incoming
+    return chunks[(r + 1) % w]</pre></div>
+  <p>الـ reduce_scatter هو حرفيًا المرحلة الأولى من الـ allreduce. اللعبة الوحيدة هي اللفّة: في المكان <span class="ltr">(r+1)</span> حطّينا chunk r الأصلي، فلما المجموع يتركن هناك يبقى هو مجموع chunk r.</p>
+
+  <h3>خطوة ٥: تشغيل الـ ranks كـ processes، والمقارنة بـ gloo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def run_mesh(op, world_size, per_rank_tensors, src=0):
+    ctx = mp.get_context("fork")             <span class="c"># fork: الأولاد بيورثوا الـ queues من غير pickling</span>
+    grid = build_queue_grid(ctx, world_size)
+    byte_counter = ctx.Value("q", 0)         <span class="c"># int64 مشترك</span>
+    out_queue = ctx.Queue()
+    <span class="c"># ... process لكل rank بيشغّل _mesh_worker ويحط (rank, result) في out_queue</span>
+    <span class="c"># ... نجمع النتايج ونرجّع (results, byte_counter.value)</span>
+
+<span class="c"># gloo_reference: نفس الـ input بس بـ torch.distributed</span>
+<span class="c">#   ctx = mp.get_context("spawn")         ← torch.distributed محتاج process نضيف</span>
+<span class="c">#   dist.init_process_group(backend="gloo", init_method=f"file://{init_file}", ...)</span>
+<span class="c">#   file:// بدل TCP عشان مشاكل libuv على macOS</span>
+<span class="c">#   GLOO_SOCKET_IFNAME = "lo0" على macOS و "lo" على Linux</span>
+
+def verify_against_gloo(op, world_size, per_rank_tensors):
+    mesh_out, _ = run_mesh(op, world_size, per_rank_tensors)
+    gloo_out = gloo_reference(op, world_size, per_rank_tensors)
+    max_diff = max((m - g).abs().max().item() for m, g in zip(mesh_out, gloo_out))
+    return max_diff &lt; 1e-5, max_diff
+
+def main():
+    world_size, n = 4, 64
+    torch.manual_seed(7)
+    per_rank = [torch.randn(n) for _ in range(world_size)]
+    for op in PRIMITIVES:
+        if op == "broadcast":           <span class="c"># rank 0 بس عنده القيمة</span>
+            inputs = [per_rank[0].clone() if r == 0 else torch.zeros(n) for r in range(world_size)]
+        elif op == "reduce_scatter":    <span class="c"># محتاج طول = n × world_size</span>
+            inputs = [torch.randn(n * world_size) for _ in range(world_size)]
+        else:
+            inputs = per_rank
+        match, diff = verify_against_gloo(op, world_size, inputs)
+        print(f"{op:&lt;16} {str(match):&lt;12} {diff:&lt;14.3e}")
+    expected = 2 * (world_size - 1) * (n // world_size) * 4
+    _, total_bytes = run_mesh("allreduce", world_size, per_rank)
+    print(f"allreduce per-rank bytes: measured={total_bytes / world_size:.0f} expected={expected}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">world_size=4, tensor_len=64, dtype=float32
+op               gloo_match   max_abs_diff
+allreduce        True         ...
+broadcast        True         ...
+allgather        True         ...
+reduce_scatter   True         ...
+
+allreduce per-rank bytes: measured=384 expected=384 formula=2T(N-1)/N with T=256 bytes</pre><p>الـ 384 محسوبة: T = 64 × 4 bytes = 256، و <span class="ltr">2 × 256 × 3 / 4 = 384</span>. قيم الـ max_abs_diff صغيرة جدًا (أو صفر) وبتعتمد على ترتيب الجمع ونسخة torch، فما حطّتهاش.</p></details>
+  <p>وشغّل الـ tests:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/76-collective-ops-from-scratch/tests/test_collectives.py</pre></div>
+  <p>الـ tests بتقارن كل عملية بـ gloo، وبتتأكد إن عدّاد الـ bytes = المعادلة بالظبط، وإن world_size=2 بيجمع صح، وإن قايمة <code>PRIMITIVES</code> هي العقد اللي الدروس الجاية معتمدة عليه.</p>
+</section>
+
+<!-- 06 EXERCISES -->
+<section id="d504-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Tree allreduce</b> واختيار ring أو tree حسب حجم الرسالة. قيس نقطة التقاطع.
+      <details><summary>تلميح</summary>أبسط tree: reduce لفوق (في الجولة k، الـ rank اللي <span class="ltr">r mod 2ᵏ⁺¹ = 2ᵏ</span> يبعت لـ <span class="ltr">r − 2ᵏ</span> اللي بيجمع)، وبعدين broadcast لتحت بنفس الـ tree معكوسة. اعمل <code>allreduce(mesh, t, threshold_bytes)</code> تختار حسب <code>t.numel()*t.element_size()</code>.</details></li>
+    <li><b><code>recv_timeout_ms</code></b> عشان الـ rank اللي وقف يطلّع error بموعد بدل ما يعلّق للأبد.
+      <details><summary>تلميح</summary><code>Queue.get(timeout=...)</code> بيرمي <code>queue.Empty</code>. امسكه وارمي error فيه اسم الـ rank والـ src والعملية، مثلًا <code>TimeoutError(f"rank {r} waited {ms}ms for {src} in allreduce")</code>. الكود الأصلي بيستخدم 30 ثانية ثابتة.</details></li>
+    <li><b>استبدل الـ Queue بـ TCP sockets</b> للأربع عمليات. نفس الـ tests، سلك حقيقي.
+      <details><summary>تلميح</summary>الـ socket بيبعت bytes مش tensors، فلازم framing: ابعت الطول الأول (8 bytes) وبعدين <code>tensor.numpy().tobytes()</code>. في الاستقبال اقرا لحد ما الطول يكمل (<code>recv</code> ممكن يرجّع أقل من المطلوب). خلّي الـ <code>Mesh</code> نفس الواجهة وغيّر بس <code>send</code>/<code>recv</code>.</details></li>
+    <li><b>Hook للـ bandwidth</b> يسجّل عدّاد الـ bytes لكل rank في JSONL.
+      <details><summary>تلميح</summary>في <code>send</code> اكتب سطر <code>{"rank":..,"dst":..,"bytes":..,"op":..,"t":time.time()}</code> في ملف لكل rank (<code>bytes_rank{r}.jsonl</code>) عشان الـ processes ما تكتبش على نفس الملف في نفس الوقت.</details></li>
+    <li><b>قارن الوقت</b> ring ضد tree على ٤ ranks لـ 1KB و 1MB و 16MB، ودافع عن نقطة التقاطع بالأرقام.
+      <details><summary>تلميح</summary>اعمل warmup الأول، وكرر كل قياس كام مرة وخد الـ median بـ <code>time.perf_counter()</code>. على الـ queues الـ Python overhead كبير، فالتقاطع هيبقى في مكان مختلف عن NCCL. ده عادي، المهم إنك تشرح السبب.</details></li>
+    <li><b>إضافة مني · صلّح الـ broadcast لأي src:</b> عدّل <code>broadcast</code> بحيث يشتغل لما <span class="ltr">src ≠ 0</span>، وضيف test بـ src=2 و world_size=4.
+      <details><summary>الحل</summary>اشتغل بالـ relative rank: <code>rel = (r - src) % w</code>. شغّل نفس الـ loop على الـ rel (المصدر rel=0)، ولما تيجي تبعت أو تستقبل حوّل لرقم حقيقي: <code>real = (rel_partner + src) % w</code>. ده نفس اللي معمل ٣ بيعمله في وضع «relative rank».</details></li>
+  </ol>
+</section>
+
+<!-- 07 EXTRA -->
+<section id="d504-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> الـ ring بيحوّل «كله يكلّم واحد» لـ «كل واحد يكلّم جاره». كل الـ links بتشتغل في نفس الوقت، فالسلك ما بيبقاش فاضي، وكل rank بيبعت تقريبًا 2T مهما كان عدد الأجهزة.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>الـ broadcast في كود الدرس بيفترض src = 0.</b> الـ partner بيتحسب <span class="ltr">h + 2ᵏ</span>، فالـ ranks اللي رقمها أقل من الـ src ما بيوصلهاش حاجة، والـ <code>while</code> بيلف من غير نهاية. الـ main والـ tests بيستخدموا src=0 بس فما بيبانش. التمرين ٦ بيصلّحه.</li>
+    <li><b>إنك تنسى الـ padding.</b> لو طول الـ tensor مش بيتقسم على N، الـ chunks مش هتبقى متساوية. الـ allreduce بيكمّل بأصفار ويشيلهم في الآخر، والـ reduce_scatter بيرفض بـ <code>ValueError</code>.</li>
+    <li><b>إنك تجمع في المرحلة التانية.</b> في الـ allgather الخانة اللي بتوصل <b>مكتملة</b>، فلازم تستبدل. لو جمعت هتعدّ نفس المساهمات مرتين.</li>
+    <li><b>إن الـ float sum مش associative.</b> ترتيب الجمع في الـ ring غير ترتيب gloo، فممكن تلاقي فرق صغير جدًا. عشان كده الـ test بيستخدم tolerance (<span class="ltr">1e-5</span>) مش مساواة حرفية.</li>
+    <li><b>إن الـ ring بطيء قد أبطأ link.</b> الدايرة كلها ماشية بسرعة أبطأ جار. GPU واحد بطيء أو كابل مضروب بيبطّأ الـ step كله.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs</h3>
+  <p>أي تدريب LLM على أكتر من GPU بيستخدم دول: DDP بيعمل allreduce للـ gradients، و FSDP/ZeRO بيعملوا allgather و reduce_scatter في كل layer. وفي الـ inference كمان: الـ tensor parallel في مكتبات زي vLLM بيقسّم الـ matmul على GPUs، وكل layer بتخلص بـ allreduce عشان يجمعوا النتيجة. عشان كده «كام GB/s بين الـ GPUs» سؤال مهم في أي سيرفر inference كبير.</p>
+</section>
+
+<!-- 08 QUIZ -->
+<section id="d504-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d504-quizBox"></div>
+</section>
+
+<!-- 09 DONE -->
+<section id="d504-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الأربع collectives وأفرّق بين allgather و reduce_scatter</label></li>
+    <li><label><input type="checkbox" data-ck="2"> مشيت الـ ring allreduce خطوة بخطوة وفاهم ليه الـ bytes = <span class="ltr">2T(N−1)/N</span></label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم إمتى الـ tree بيكسب الـ ring (معمل ٢)</label></li>
+    <li><label><input type="checkbox" data-ck="4"> شفت الـ bug بتاع الـ broadcast لما src ≠ 0 (معمل ٣)</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود بإيدي وشغّلت الـ main والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Ring allreduce</td><td>مزامنة الـ gradients في DDP و Horovod</td></tr>
+    <tr><td>Tree / اختيار بالحجم</td><td>الـ topology detector في NCCL</td></tr>
+    <tr><td>Broadcast</td><td>تهيئة الـ parameters من rank 0 في أول التدريب</td></tr>
+    <tr><td>Allgather</td><td>ZeRO-3 و FSDP قبل كل forward</td></tr>
+    <tr><td>Reduce_scatter</td><td>تقسيم الـ gradients في ZeRO</td></tr>
+    <tr><td>التحقق ضد مرجع</td><td>أي كود distributed قبل ما يتشغّل على cluster</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Data Parallel DDP From Scratch. هنلبس الـ allreduce والـ broadcast اللي بنيتهم النهاردة في wrapper حوالين الموديل، ونثبت إن ٤ ranks بيتدربوا كإنهم موديل واحد.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F76-collective-ops-from-scratch" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/76-collective-ops-from-scratch</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N0=504,LESSON=76,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d504-roadmap').closest('.day');
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// roadmap
+const rm=$('d504-roadmap');for(let i=1;i<=87;i++){if(i===18||i===19)continue;const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)}
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+// ---------- Lab 1: ring allreduce ----------
+const TS=[256,1024,4096,65536,1048576];
+const fmtB=b=>b>=1048576?f(b/1048576)+' MB':b>=1024?f(b/1024)+' KB':f(b,1)+' B';
+const rc=$('d504-ring'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+let N=4,val=[],mask=[],step=0,sentCh=0,hiS=[],hiR=[],timer=null;
+function initRing(){
+  N=+$('d504-n').value;$('d504-nv').textContent=N;const T=TS[+$('d504-t').value];$('d504-tv').textContent=fmtB(T);
+  val=[];mask=[];let seed=7;const rnd=()=>{seed=(seed*16807)%2147483647;return 1+seed%9};
+  for(let r=0;r<N;r++){val.push([]);mask.push([]);for(let c=0;c<N;c++){val[r].push(rnd());mask[r].push(1<<r)}}
+  step=0;sentCh=0;hiS=[];hiR=[];$('d504-form').textContent=fmtB(2*T*(N-1)/N);
+  $('d504-rv').textContent='جاهز: دوس خطوة';$('d504-rv').style.color='';updRing();
+}
+const pop=m=>{let c=0;while(m){c+=m&1;m>>=1}return c};
+function stepRing(){
+  const total=2*(N-1);if(step>=total)return false;
+  const s=step<N-1?step:step-(N-1),phase1=step<N-1;
+  const nv=val.map(r=>r.slice()),nm=mask.map(r=>r.slice());hiS=[];hiR=[];
+  for(let r=0;r<N;r++){const nx=(r+1)%N;
+    const si=phase1?((r-s)%N+N)%N:((r-s+1)%N+N)%N;
+    const ri=phase1?((nx-s-1)%N+N)%N:((nx-s)%N+N)%N;
+    hiS.push([r,si]);hiR.push([nx,ri]);
+    if(phase1){nv[nx][ri]=val[nx][ri]+val[r][si];nm[nx][ri]=mask[nx][ri]|mask[r][si]}
+    else{nv[nx][ri]=val[r][si];nm[nx][ri]=mask[r][si]}}
+  val=nv;mask=nm;step++;sentCh++;
+  const v=$('d504-rv');
+  if(step===N-1){const own=[];for(let r=0;r<N;r++)for(let c=0;c<N;c++)if(pop(mask[r][c])===N)own.push('rank '+r+'→chunk '+c);
+    v.textContent='خلص الـ reduce-scatter: '+own.join(' · ');v.style.color=css('--vec-a')}
+  else if(step===total){v.textContent='خلص الـ allreduce: كل الـ ranks معاهم نفس المجموع ✓';v.style.color=css('--ok')}
+  else{v.textContent=(phase1?'reduce-scatter: كل rank بيبعت chunk وجاره بيجمعها':'allgather: الـ chunks المكتملة بتلف وبتستبدل');v.style.color=''}
+  updRing();return step<total}
+function updRing(){
+  const T=TS[+$('d504-t').value],total=2*(N-1);
+  $('d504-ph').textContent=step===0?'start':step<N-1?'reduce-scatter':step===N-1?'RS done':step<total?'allgather':'done';
+  $('d504-st').textContent=step+' / '+total;$('d504-sent').textContent=fmtB(sentCh*T/N);drawRing()}
+function drawRing(){
+  rx.clearRect(0,0,RW,RH);const LX=64,top=30,cw=(RW-LX-10)/N,rh=Math.min(42,(RH-top-10)/N);
+  rx.font='12px JetBrains Mono, monospace';rx.textBaseline='middle';rx.textAlign='center';
+  for(let c=0;c<N;c++){rx.fillStyle=css('--muted');rx.fillText('chunk '+c,LX+c*cw+cw/2,14)}
+  for(let r=0;r<N;r++){rx.textAlign='left';rx.fillStyle=css('--ink');rx.fillText('rank '+r,6,top+r*rh+rh/2);rx.textAlign='center';
+    for(let c=0;c<N;c++){const x=LX+c*cw+2,y=top+r*rh+2,w=cw-4,h=rh-4,k=pop(mask[r][c])/N;
+      rx.fillStyle=css('--soft');rx.fillRect(x,y,w,h);
+      rx.globalAlpha=.25+.75*k;rx.fillStyle=k===1?css('--ok'):css('--vec-a');rx.fillRect(x,y+h*(1-k),w,h*k);rx.globalAlpha=1;
+      rx.fillStyle=css('--ink');rx.font='bold 13px JetBrains Mono, monospace';rx.fillText(val[r][c],x+w/2,y+h/2);rx.font='12px JetBrains Mono, monospace'}}
+  rx.lineWidth=3;
+  hiS.forEach(([r,c])=>{rx.strokeStyle=css('--vec-b');rx.strokeRect(LX+c*cw+3,top+r*rh+3,cw-6,rh-6)});
+  hiR.forEach(([r,c])=>{rx.strokeStyle=css('--ok');rx.setLineDash([5,3]);rx.strokeRect(LX+c*cw+6,top+r*rh+6,cw-12,rh-12);rx.setLineDash([])});
+}
+$('d504-step').addEventListener('click',()=>{clearInterval(timer);stepRing()});
+$('d504-auto').addEventListener('click',()=>{clearInterval(timer);if(step>=2*(N-1))initRing();
+  timer=setInterval(()=>{if(!document.body.contains(rc)){clearInterval(timer);return}if(!stepRing())clearInterval(timer)},reduce?50:900)});
+$('d504-reset').addEventListener('click',()=>{clearInterval(timer);initRing()});
+['d504-n','d504-t'].forEach(id=>$(id).addEventListener('input',()=>{clearInterval(timer);initRing()}));
+initRing();
+
+// ---------- Lab 2: cost model ----------
+const cc=$('d504-cost'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+const tAt=i=>1024*Math.pow(2,i); // 1KB..1GB
+function costs(T,n,a,B){const L=Math.ceil(Math.log2(n)),bps=B*1e9;
+  return{ring:2*(n-1)*a+2*T*(n-1)/n/bps,tree:2*L*a+T*L/bps,naive:2*(n-1)*a+2*(n-1)*T/bps}}
+const fmtT=s=>s>=1?f(s,2)+' s':s>=1e-3?f(s*1e3,2)+' ms':f(s*1e6,1)+' µs';
+function drawCost(){
+  const n=+$('d504-cn').value,a=+$('d504-ca').value*1e-6,B=+$('d504-cb').value,ti=+$('d504-ct').value,T=tAt(ti);
+  $('d504-cnv').textContent=n;$('d504-cav').textContent=$('d504-ca').value;$('d504-cbv').textContent=B;$('d504-ctv').textContent=fmtB(T);
+  const LX=46,BY=CH-28,TY=10,PW=CW-LX-10,PH=BY-TY;
+  const xs=[];for(let k=0;k<=200;k++)xs.push(10+20*k/200);
+  const series={ring:[],tree:[],naive:[]};xs.forEach(lx=>{const c=costs(Math.pow(2,lx),n,a,B);for(const k in series)series[k].push(c[k])});
+  const all=[].concat(series.ring,series.tree,series.naive),ymin=Math.log10(Math.min(...all)),ymax=Math.log10(Math.max(...all));
+  const X=lx=>LX+(lx-10)/20*PW,Y=v=>BY-(Math.log10(v)-ymin)/(ymax-ymin||1)*PH;
+  cx.clearRect(0,0,CW,CH);cx.strokeStyle=css('--line');cx.lineWidth=1;cx.strokeRect(LX,TY,PW,PH);
+  cx.font='11px JetBrains Mono, monospace';cx.fillStyle=css('--muted');cx.textAlign='center';cx.textBaseline='top';
+  [[10,'1KB'],[20,'1MB'],[30,'1GB']].forEach(([lx,t])=>{cx.fillText(t,X(lx),BY+6);cx.beginPath();cx.moveTo(X(lx),TY);cx.lineTo(X(lx),BY);cx.stroke()});
+  cx.textAlign='right';cx.textBaseline='middle';cx.fillText(fmtT(Math.pow(10,ymax)),LX-4,TY+6);cx.fillText(fmtT(Math.pow(10,ymin)),LX-4,BY-6);
+  const col={ring:css('--vec-a'),tree:css('--vec-b'),naive:css('--bad')};
+  for(const k in series){cx.strokeStyle=col[k];cx.lineWidth=k==='naive'?1.5:2.5;if(k==='naive')cx.setLineDash([6,4]);cx.beginPath();
+    series[k].forEach((v,i)=>{const p=[X(xs[i]),Y(v)];i?cx.lineTo(...p):cx.moveTo(...p)});cx.stroke();cx.setLineDash([])}
+  // crossover
+  let cross=null;for(let i=1;i<xs.length;i++){const d0=series.ring[i-1]-series.tree[i-1],d1=series.ring[i]-series.tree[i];if(d0>0&&d1<=0){cross=xs[i];break}}
+  if(cross!==null){cx.strokeStyle=css('--ink');cx.setLineDash([3,3]);cx.beginPath();cx.moveTo(X(cross),TY);cx.lineTo(X(cross),BY);cx.stroke();cx.setLineDash([])}
+  // marker at T
+  const c=costs(T,n,a,B),lx=Math.log2(T);
+  [['ring',c.ring],['tree',c.tree],['naive',c.naive]].forEach(([k,v])=>{cx.fillStyle=col[k];cx.beginPath();cx.arc(X(lx),Y(v),5,0,7);cx.fill()});
+  cx.textAlign='left';cx.textBaseline='top';cx.font='12px JetBrains Mono, monospace';
+  [['ring','ring'],['tree','tree'],['naive','naive']].forEach(([k,t],i)=>{cx.fillStyle=col[k];cx.fillText(t,LX+8,TY+6+i*15)});
+  $('d504-r1').textContent=fmtT(c.ring);$('d504-r2').textContent=fmtT(c.tree);$('d504-r3').textContent=fmtT(c.naive);
+  const eq=Math.abs(series.ring[0]-series.tree[0])<1e-12&&Math.abs(series.ring[200]-series.tree[200])<1e-9;
+  $('d504-r4').textContent=eq?'متساويين':cross===null?(series.ring[0]<=series.tree[0]?'ring دايمًا':'tree دايمًا'):fmtB(Math.pow(2,cross));
+  const v=$('d504-cv');const best=c.ring<=c.tree?'ring':'tree';v.textContent='عند '+fmtB(T)+': الأسرع '+best+(n<=2?' (عند N=2 الاتنين تقريبًا واحد)':'');v.style.color=best==='ring'?css('--vec-a'):css('--vec-b');
+}
+['d504-cn','d504-ca','d504-cb','d504-ct'].forEach(id=>$(id).addEventListener('input',drawCost));drawCost();
+
+// ---------- Lab 3: tree broadcast ----------
+const bcv=$('d504-bc'),bx=AI.setupCanvas(bcv),BW=+bcv.dataset.w,BH=+bcv.dataset.h;
+let BN=8,src=0,holders=new Set([0]),rnd=0,lastE=[],stuck=false,recvRound={};
+function resetBC(){BN=+$('d504-bn').value;const bs=$('d504-bs');bs.max=BN-1;if(+bs.value>BN-1)bs.value=BN-1;src=+bs.value;
+  $('d504-bnv').textContent=BN;$('d504-bsv').textContent=src;holders=new Set([src]);rnd=0;lastE=[];stuck=false;recvRound={};recvRound[src]=0;
+  $('d504-blog').textContent=Math.ceil(Math.log2(BN));$('d504-bdir').textContent=BN-1;$('d504-brd').textContent=0;
+  $('d504-bv').textContent='rank '+src+' معاه القيمة. دوس جولة';$('d504-bv').style.color='';drawBC()}
+function stepBC(){if(holders.size>=BN||stuck)return;const mode=$('d504-bmode').value,add=[];lastE=[];
+  [...holders].sort((a,b)=>a-b).forEach(h=>{
+    if(mode==='raw'){const p=h+(1<<rnd);if(p<BN&&!holders.has(p)){add.push(p);lastE.push([h,p])}}
+    else{const rel=(h-src+BN)%BN,pr=rel+(1<<rnd);if(pr<BN){const p=(pr+src)%BN;if(!holders.has(p)){add.push(p);lastE.push([h,p])}}}});
+  rnd++;add.forEach(p=>{holders.add(p);recvRound[p]=rnd});$('d504-brd').textContent=rnd;
+  const v=$('d504-bv');
+  if(holders.size>=BN){v.textContent='وصلت للكل في '+rnd+' جولة (بدل '+(BN-1)+' إرسال ورا بعض) ✓';v.style.color=css('--ok')}
+  else if(!add.length&&mode==='raw'&&(1<<rnd)>=BN){stuck=true;v.textContent='عالق: الـ ranks اللي قبل src ما بيوصلهاش حاجة، والـ while هيلف للأبد';v.style.color=css('--bad')}
+  else{v.textContent='جولة '+rnd+': '+(add.length?add.length+' rank جديد استلم':'مفيش حد جديد استلم');v.style.color=''}
+  drawBC()}
+function drawBC(){bx.clearRect(0,0,BW,BH);const cw=(BW-20)/BN,y=BH/2+30,R=Math.min(16,cw/2-3);
+  bx.font='11px JetBrains Mono, monospace';bx.textAlign='center';bx.textBaseline='middle';
+  const px=i=>10+i*cw+cw/2;
+  lastE.forEach(([a,b])=>{const x1=px(a),x2=px(b),mid=(x1+x2)/2,hgt=Math.min(90,20+Math.abs(x2-x1)/3);
+    bx.strokeStyle=css('--ok');bx.lineWidth=2.5;bx.beginPath();bx.moveTo(x1,y-R);bx.quadraticCurveTo(mid,y-R-hgt*2,x2,y-R-2);bx.stroke();
+    bx.fillStyle=css('--ok');bx.beginPath();bx.arc(x2,y-R-2,4,0,7);bx.fill()});
+  for(let i=0;i<BN;i++){const has=holders.has(i);bx.fillStyle=has?(i===src?css('--vec-b'):css('--vec-a')):css('--soft');
+    bx.beginPath();bx.arc(px(i),y,R,0,7);bx.fill();bx.strokeStyle=css('--line');bx.lineWidth=1;bx.stroke();
+    bx.fillStyle=has?css('--paper'):css('--muted');bx.fillText(i,px(i),y);
+    if(recvRound[i]!==undefined&&i!==src){bx.fillStyle=css('--muted');bx.fillText('r'+recvRound[i],px(i),y+R+12)}}
+}
+$('d504-bstep').addEventListener('click',stepBC);$('d504-breset').addEventListener('click',resetBC);
+['d504-bn','d504-bs','d504-bmode'].forEach(id=>$(id).addEventListener('input',resetBC));
+resetBC();
+
+// ---------- quiz ----------
+AI.quiz($('d504-quizBox'),[
+ ['الـ bandwidth اللي كل rank بيدفعه في الـ ring allreduce لـ tensor حجمه T bytes على N rank قد إيه؟',['N × T bytes','T·log2(N) bytes','T bytes','2T(N−1)/N bytes'],3,'الـ ring بيحرّك N−1 chunk حجمها T/N مرتين (reduce-scatter وبعدين allgather)، فالمجموع لكل rank = 2T(N−1)/N، ومش بيعتمد على حجم الـ cluster.'],
+ ['ليه الـ queue mesh في الدرس ده بديل أمين لـ NCCL على cluster حقيقي؟',['بيعمل الجمع في الـ hardware','بيشتغل على CUDA cores','بيطبّق نفس شكل الرسايل على السلك (send نقطة لنقطة بالترتيب حوالين دايرة)، والوسيط بس هو اللي مختلف','بيضغط الرسايل'],2,'صحة الخوارزمية بتعتمد على شكل الرسايل مش على الوسيط. الـ ring بتاع الـ queues فيه نفس جدول الـ chunks ونفس أشكال الـ race زي NCCL.'],
+ ['بعد مرحلة الـ reduce-scatter في الـ ring allreduce، الـ rank r ماسك إيه؟',['المجموع الكامل لـ chunk واحدة (جزء من N من الـ tensor)','المجموع الكامل لـ chunkتين','الـ tensor كامل من غير جمع','ولا حاجة'],0,'الـ reduce-scatter بيركن مجموع chunk واحدة عند كل rank، وبعدين الـ allgather بيلفّ الـ chunks المكتملة دي على الدايرة.'],
+ ['ليه نستخدم tree broadcast بدل N−1 إرسال مباشر من المصدر؟',['الـ trees إجبارية في PyTorch','الإرسال المباشر بيضيّع packets','الـ tree بيضاعف عدد اللي معاهم القيمة كل جولة، فالعمق log2(N) والـ latency بتكبر زي log مش زي N','الـ trees بتستهلك ذاكرة أقل'],2,'لما الـ latency لكل hop هي عنق الزجاجة، log2(N) hop أحسن بكتير من N−1 إرسال ورا بعض بيدفعوا الـ latency N مرة.'],
+ ['ليه بنتحقق ضد torch.distributed gloo على نفس الـ input؟',['gloo أسرع','gloo هو المرجع لمعنى الـ collective؛ لو الناتج طابق يبقى الخوارزمية متفقة مع المواصفات قبل ما تتشغّل على cluster حقيقي','gloo مش محتاج setup','gloo بيكتب JSONL لوحده'],1,'من غير مرجع، الـ primitive بيبان صح لحد الـ step رقم 10000 في تدريب حقيقي. gloo بيدّيك الحقيقة على الـ CPU.'],
+ ['إمتى الـ tree allreduce بيكسب الـ ring allreduce؟',['دايمًا','لما الرسايل كبيرة','الرسايل الصغيرة أو الـ links اللي الـ latency فيها عالية؛ عدد الـ hops log2(N) بيكسب قبل نقطة التقاطع','أبدًا'],2,'NCCL بيختار ring فوق حوالي 1 MB و tree تحته (حسب الدرس). التقاطع هو صراع bandwidth ضد latency على الـ cluster بتاعك.'],
+ ['(سؤال مني) N=8 و T=800 MB. كل rank هيبعت قد إيه في الـ ring allreduce؟',['1600 MB','1400 MB','800 MB','6400 MB'],1,'2 × 800 × 7 / 8 = 1400 MB. قارنها بالـ naive: الـ root لوحده هيستقبل 7 × 800 = 5600 MB ويبعت نفسهم.'],
+ ['(سؤال مني) في كود الدرس، ليه الـ ring_allreduce ما بيعملش deadlock مع إن كل الـ ranks بتعمل send الأول؟',['عشان الـ timeout 30 ثانية','عشان Queue.put مش بيستنى حد يستقبل؛ الرسالة بتتحط في الطابور والـ rank يكمّل على recv','عشان gloo بيرتّبهم','عشان world_size زوجي'],1,'الـ send هنا مش متزامن (buffered). مع send متزامن (زي dist.send في درس الـ pipeline) لازم ترتّب مين يبعت الأول.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N0,root);
+AI.onTheme(()=>{if(!document.body.contains(rc))return false;drawRing();drawCost();drawBC()});
+})();
+</script>

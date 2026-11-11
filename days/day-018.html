@@ -1,0 +1,742 @@
+<div class="day" id="d18-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 18 · Convex Optimization</span>
+  <h1>اليوم ١٨: وادي واحد ولا ألف وادي؟ الـ Convex Optimization</h1>
+  <p class="lede">في Day 8 اتعلمت تنزل من على أي جبل بالـ gradient descent، بس من غير أي ضمان. النهاردة هتعرف إمتى المسألة <b>سهلة ومضمونة</b> (convex)، وإزاي <b>Newton's method</b> بيوصل في خطوة واحدة، وإزاي الـ <b>Lagrange multipliers</b> بتحل مسائل فيها شروط، وليه الـ L1 بيصفّر أوزان والـ L2 لأ، وليه الـ deep learning شغال رغم إنه مش convex خالص.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Linear Systems</b></span>
+    <span>بعده: <b>Complex Numbers for AI</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d18-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d18-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر Linear Systems؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ Cholesky decomposition بتشتغل على أنهي نوع من المصفوفات؟</summary>
+    <p>مصفوفات symmetric و<b>positive definite</b>. خلي الكلمة دي في دماغك: النهاردة هنشوف إن «الـ Hessian يكون positive semidefinite» هو بالظبط شرط إن الدالة تبقى convex.</p></details>
+  <details><summary>٢. يعني إيه الـ condition number كبير؟</summary>
+    <p>إن المصفوفة قريبة من إنها تبقى singular، فأي غلطة صغيرة في الداخل بتتكبر جامد في الحل. النهاردة هتشوفه من زاوية تانية: الـ condition number الكبير للـ Hessian = وادي متطاول، والـ gradient descent بيتعب فيه.</p></details>
+  <details><summary>٣. الـ normal equations علاقتها إيه بالـ linear regression؟</summary>
+    <p>حل <span class="ltr">AᵀA x = Aᵀb</span> هو نفسه حل الـ least squares، يعني أوزان الـ linear regression. والـ MSE ده دالة <b>convex</b>، وعشان كده ليها حل واحد بس، ودي أول حاجة هنثبتها النهاردة.</p></details>
+</section>
+
+<section>
+  <h2>خطة الجلسة (٩٠ دقيقة)</h2>
+  <div class="plan">
+    <div><b>10 min</b>التسخين + المجموعات والدوال الـ convex</div>
+    <div><b>15 min</b>معمل الوتر + اختبارات الـ convexity والـ Hessian</div>
+    <div><b>15 min</b>Newton ضد GD في سباق</div>
+    <div><b>15 min</b>Lagrange و KKT والـ L1/L2 + المعمل</div>
+    <div><b>10 min</b>Duality وليه الـ deep learning شغال</div>
+    <div><b>25 min</b>الكود + التمارين + الكويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d18-sets">
+  <div class="station-head"><span class="tag">01</span><h2>المجموعة الـ convex: مفيش «تجويف»</h2></div>
+  <p>المجموعة <span class="ltr">S</span> تبقى convex لو خدت أي نقطتين جواها ووصلت بينهم بخط مستقيم، الخط كله يفضل جوه. تخيل أوضة مستطيلة: من أي حتة لأي حتة تمشي على طول من غير ما تخبط في حيطة. أما أوضة على شكل حرف L أو دونات، فيه نقط لو مشيت بينهم في خط مستقيم هتطلع برا.</p>
+  <div class="formula">x, y ∈ S  و  t ∈ [0,1]   ⇒   t·x + (1−t)·y ∈ S</div>
+  <div class="tablewrap"><table>
+    <tr><th>Convex</th><th>مش Convex</th></tr>
+    <tr><td>مستطيل، مثلث، دايرة/كورة (ball)</td><td>نجمة، هلال</td></tr>
+    <tr><td>خط، مستوى، كل <span class="ltr">ℝⁿ</span></td><td>دونات (annulus) عشان الخرم</td></tr>
+    <tr><td>نص فضاء <span class="ltr">{x : aᵀx ≤ b}</span></td><td>اتحاد دايرتين منفصلين</td></tr>
+    <tr><td>تقاطع أي عدد من المجموعات الـ convex</td><td>أي شكل فيه «دخلة» أو خرم</td></tr>
+  </table></div>
+  <div class="note"><strong>ليه التقاطع مهم؟</strong> كل شرط من نوع <span class="ltr">aᵀx ≤ b</span> هو نص فضاء. لو عندك عشر شروط زي دي، المنطقة اللي بتحققهم كلهم (التقاطع) لسه convex. ده اللي بيخلي مسائل كتير بشروط تفضل «سهلة».</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d18-func">
+  <div class="station-head"><span class="tag">02</span><h2>الدالة الـ convex: الوتر دايمًا فوق المنحنى</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الدالة <span class="ltr">f</span> تبقى convex لو الـ domain بتاعها مجموعة convex، ولأي نقطتين <span class="ltr">x, y</span> وأي <span class="ltr">t</span> بين ٠ و١:</p>
+      <div class="formula">f(t·x + (1−t)·y) ≤ t·f(x) + (1−t)·f(y)</div>
+      <p>بالبلدي: هات أي نقطتين على الرسمة ووصّل بينهم بخيط مشدود (الوتر). لو الخيط عمره ما نزل تحت المنحنى، يبقى الدالة convex. شكلها طبق أو وادي واحد بيلف لفوق.</p>
+      <p>أمثلة convex: <span class="ltr">x²</span>، <span class="ltr">|x|</span>، <span class="ltr">eˣ</span>، <span class="ltr">max(0, x)</span> (الـ ReLU، piecewise linear)، <span class="ltr">−log(x)</span> لما <span class="ltr">x &gt; 0</span>، وأي دالة linear <span class="ltr">aᵀx + b</span> (دي convex و concave في نفس الوقت).</p>
+      <div class="note"><strong>جرب بإيدك:</strong> اختار دالة واسحب النقطتين الزرقا والبرتقانية على المنحنى. لو حتة من الوتر نزلت تحت المنحنى هتتلون أحمر، ده «violation» للتعريف.</div>
+    </div>
+    <div class="instrument">
+      <label style="display:flex;gap:8px;align-items:center">الدالة: <select id="d18-fsel"></select></label>
+      <canvas id="d18-chord" width="520" height="380" aria-label="منحنى دالة ووتر بين نقطتين"></canvas>
+      <label style="display:grid;gap:2px">t = <b class="mono" id="d18-tv">0.50</b><input type="range" id="d18-t" min="0" max="1" step="0.01" value="0.5"></label>
+      <div class="readout">
+        <div><small>f(tx+(1−t)y)</small><b id="d18-lhs">0</b></div>
+        <div><small>t·f(x)+(1−t)·f(y)</small><b id="d18-rhs">0</b></div>
+        <div><small>f'' عند النص</small><b id="d18-f2">0</b></div>
+      </div>
+      <div class="verdict" id="d18-cverdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d18-tests">
+  <div class="station-head"><span class="tag">03</span><h2>إزاي تختبر الـ convexity؟ ٣ اختبارات</h2></div>
+  <h3>اختبار ١: المشتقة التانية (بُعد واحد)</h3>
+  <p>لو <span class="ltr">f''(x) ≥ 0</span> لكل <span class="ltr">x</span> يبقى convex. المشتقة التانية = «الانحناء». موجبة يعني المنحنى بيضحك (∪).</p>
+  <div class="tablewrap"><table>
+    <tr><th>الدالة</th><th>f''</th><th>النتيجة</th></tr>
+    <tr><td class="ltr">x²</td><td class="ltr">2 ≥ 0</td><td>Convex</td></tr>
+    <tr><td class="ltr">x³</td><td class="ltr">6x</td><td>سالبة لما x &lt; 0 → مش convex</td></tr>
+    <tr><td class="ltr">eˣ</td><td class="ltr">eˣ &gt; 0</td><td>Convex</td></tr>
+  </table></div>
+  <h3>اختبار ٢: الـ Hessian (أكتر من بُعد)</h3>
+  <p>الـ Hessian هو مصفوفة كل المشتقات الجزئية التانية: <span class="ltr">Hᵢⱼ = ∂²f / ∂xᵢ∂xⱼ</span>. لو الـ Hessian <b>positive semidefinite</b> (كل الـ eigenvalues ≥ 0) في <b>كل</b> النقط، الدالة convex. مش كفاية نقطة واحدة.</p>
+  <p>مثال الدرس: <span class="ltr">f(x,y) = x² + 3xy + y²</span></p>
+  <div class="formula">∂f/∂x = 2x + 3y   ∂f/∂y = 3x + 2y   ⇒   H = [[2, 3], [3, 2]]</div>
+  <p>الـ eigenvalues هنا <span class="ltr">5</span> و<span class="ltr">−1</span>. فيه واحدة سالبة، يعني الدالة <b>مش</b> convex (المصفوفة indefinite). الـ 3xy «لوت» الطبق وعملته سرج.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الـ eigenvalues</th><th>شكل الانحناء</th></tr>
+    <tr><td>كلهم موجبين</td><td>بيلف لفوق في كل اتجاه (convex عند النقطة دي)</td></tr>
+    <tr><td>كلهم سالبين</td><td>بيلف لتحت في كل اتجاه (concave، local max)</td></tr>
+    <tr><td>إشارات مختلطة</td><td>saddle point: طالع في اتجاه ونازل في اتجاه</td></tr>
+    <tr><td>فيه صفر</td><td>مسطح في الاتجاه ده (degenerate)</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:10px;min-width:0">
+      <h3>حاسبة Hessian صغيرة</h3>
+      <p>غيّر أرقام <span class="ltr">H = [[a, b], [b, d]]</span> وشوف الـ eigenvalues ونوع النقطة والكونتور بتاعها. جرب <span class="ltr">a=2, b=3, d=2</span>.</p>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>a <span id="d18-ha-v">2</span><input type="range" id="d18-ha" min="-5" max="10" step="0.5" value="2"></label>
+        <label>d <span id="d18-hd-v">2</span><input type="range" id="d18-hd" min="-5" max="10" step="0.5" value="2"></label>
+        <label>b <span id="d18-hb-v">3</span><input type="range" id="d18-hb" min="-5" max="5" step="0.5" value="3"></label>
+      </div>
+      <canvas id="d18-hess" width="520" height="260" aria-label="كونتور الشكل التربيعي"></canvas>
+      <div class="readout">
+        <div><small>λ₁</small><b id="d18-he1">0</b></div>
+        <div><small>λ₂</small><b id="d18-he2">0</b></div>
+        <div><small>condition number</small><b id="d18-hcn">0</b></div>
+      </div>
+      <div class="verdict" id="d18-hverdict"></div>
+    </div>
+  </div>
+  <h3>اختبار ٣: التعريف نفسه</h3>
+  <p>اختبر المتباينة مباشرة على نقط كتير عشوائية. مفيد لما المشتقات صعبة. ده بالظبط اللي الـ <code>check_convexity</code> في الكود بيعمله: يجرب آلاف الأزواج ويعد المرات اللي الوتر نزل فيها تحت المنحنى.</p>
+</section>
+
+<!-- STATION 4 -->
+<section id="d18-why">
+  <div class="station-head"><span class="tag">04</span><h2>ليه الـ convexity كنز؟</h2></div>
+  <p class="lede">النظرية الأهم: <b>في الدالة الـ convex، أي local minimum هو global minimum.</b></p>
+  <p>تخيل إنك واقف في الضلمة في وادي واحد شكله طبق. أي حتة تحس إنها «أوطى من اللي حواليها» هي القاع الحقيقي. مفيش وادي تاني مستخبي أوطى. فالـ gradient descent مستحيل يتحبس في قاع وحش، ولو الدالة smooth وليها minimum وخطوتك مناسبة، هيوصل للقيمة المثلى.</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>مش محتاج random restarts</li>
+    <li>مش محتاج learning rate schedules معقدة</li>
+    <li>تقدر تثبت الـ convergence رياضيًا (السرعة بتعتمد على خواص الدالة)</li>
+    <li>الحل وحيد (إلا لو فيه مناطق مسطحة)</li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المسألة</th><th>Convex؟</th><th>ليه</th></tr>
+    <tr><td>Linear regression (MSE)</td><td>أيوه</td><td>الـ loss تربيعي في الأوزان</td></tr>
+    <tr><td>Logistic regression</td><td>أيوه</td><td>الـ log-loss convex في الأوزان</td></tr>
+    <tr><td>SVM (hinge loss)</td><td>أيوه</td><td>maximum لدوال linear</td></tr>
+    <tr><td>LASSO (L1)</td><td>أيوه</td><td>مجموع دوال convex = convex</td></tr>
+    <tr><td>Ridge (L2)</td><td>أيوه</td><td>تربيعي + تربيعي</td></tr>
+    <tr><td>Neural network (أي loss)</td><td>لأ</td><td>الـ activations اللاخطية</td></tr>
+    <tr><td>k-means</td><td>لأ</td><td>خطوة التعيين discrete</td></tr>
+    <tr><td>Matrix factorization</td><td>لأ</td><td>حاصل ضرب مجهولين</td></tr>
+  </table></div>
+  <div class="note ai"><strong>القاعدة:</strong> موديل linear + loss convex = convex. أول ما تحط hidden layer فيها nonlinearity، الـ convexity بتبوظ.</div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d18-newton">
+  <div class="station-head"><span class="tag">05</span><h2>Newton's method: استخدم الانحناء</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ GD بيستخدم الميل بس (first-order). Newton بيستخدم كمان الانحناء (الـ Hessian، second-order): بيرسم «طبق تربيعي» يقرّب الدالة عند مكانك، ويقفز لقاع الطبق ده على طول.</p>
+      <div class="formula">Newton:  x_new = x − H⁻¹ · ∇f<br>GD:      x_new = x − lr · ∇f</div>
+      <p>يعني Newton بيبدّل الـ learning rate الثابت بـ <span class="ltr">H⁻¹</span>، فبيظبط طول الخطوة واتجاهها حسب الانحناء في كل اتجاه. لو الدالة نفسها تربيعية، التقريب مظبوط 100%، فبيوصل في <b>خطوة واحدة</b> من أي مكان.</p>
+      <p><b>المميزات:</b> convergence تربيعي قرب الحل (الغلطة بتتربع كل خطوة)، مفيش learning rate، ومش بيتأثر بطريقة scaling المتغيرات.</p>
+      <p><b>العيوب:</b> الـ Hessian محتاج <span class="ltr">O(n²)</span> memory و<span class="ltr">O(n³)</span> عشان تعكسه. شبكة فيها مليون وزن = <span class="ltr">10¹²</span> خانة و<span class="ltr">10¹⁸</span> عملية. مستحيل في الـ deep learning.</p>
+      <div class="note"><strong>جرب:</strong> الدالة <span class="ltr">c·x² + y²</span>. الـ condition number = <span class="ltr">c</span> (نسبة أكبر eigenvalue لأصغر واحدة). كبّر <span class="ltr">c</span> وشوف الـ GD بيتزجزج في الوادي المتطاول، و Newton بيقفز في خطوة. اضغط على الكانفاس عشان تغيّر نقطة البداية.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d18-race" width="520" height="400" aria-label="سباق Newton ضد gradient descent على كونتور"></canvas>
+      <div class="mrow">
+        <label>c (condition #) <span id="d18-cv">10</span><input type="range" id="d18-c" min="1" max="100" step="1" value="10"></label>
+        <label>lr × 2c <span id="d18-kv">0.90</span><input type="range" id="d18-k" min="0.1" max="1.05" step="0.01" value="0.9"></label>
+      </div>
+      <div class="readout">
+        <div><small>GD steps → f&lt;1e-10</small><b id="d18-gds">0</b></div>
+        <div><small>Newton steps</small><b id="d18-nts">1</b></div>
+        <div><small>lr</small><b id="d18-lr">0</b></div>
+      </div>
+      <div class="btns"><button type="button" class="primary" id="d18-go">شغّل السباق</button><button type="button" id="d18-reset">رجّع البداية (10, 10)</button></div>
+      <div class="verdict" id="d18-rverdict"></div>
+    </div>
+  </div>
+  <div class="note ai"><strong>لاحظ:</strong> لو <span class="ltr">lr × 2c</span> عدّى 1، الـ GD بيبدأ يتطوّح في اتجاه x، ولو عدّى 2 بيفرقع. ده نفس الـ «learning rate كبير» من Day 8، بس دلوقتي فاهم السبب: الحد الأقصى للـ lr بيحدده أكبر eigenvalue، وسرعة الوصول بيحددها أصغر واحدة. وعشان كده الـ condition number الكبير بيبطّأ الـ GD.</div>
+</section>
+
+<!-- STATION 6 -->
+<section id="d18-lagrange">
+  <div class="station-head"><span class="tag">06</span><h2>مسائل بشروط: Lagrange multipliers و KKT</h2></div>
+  <p>في الحقيقة دايمًا فيه قيود: عايز أقل تكلفة بس الميزانية محدودة، أو أقل error بس تعقيد الموديل محدود. Unconstrained يعني دوّر في أي حتة؛ constrained يعني دوّر جوه «المنطقة المسموحة» بس.</p>
+  <h3>Lagrange: شرط بـ «=»</h3>
+  <p>المسألة: قلّل <span class="ltr">f(x)</span> بشرط <span class="ltr">g(x) = 0</span>. الحيلة: ضيف متغير جديد <span class="ltr">λ</span> (الـ Lagrange multiplier) وحوّلها لمسألة من غير شروط:</p>
+  <div class="formula">L(x, λ) = f(x) + λ·g(x)     ∂L/∂x = ∇f + λ∇g = 0     ∂L/∂λ = g(x) = 0</div>
+  <p><b>الصورة الهندسية:</b> انت ماشي على طريق (الشرط) وعايز توصل لأوطى نقطة في الوادي. عند الحل، الميل بتاع <span class="ltr">f</span> لازم يبقى <b>موازي</b> للميل بتاع الطريق. لو مش موازي، يبقى فيه مركّبة من الميل ماشية «على الطريق»، فتقدر تتحرك عليه وتنزل أكتر.</p>
+  <p><b>مثال الدرس:</b> قلّل <span class="ltr">x² + y²</span> بشرط <span class="ltr">x + y = 1</span>.</p>
+  <div class="formula">2x + λ = 0,  2y + λ = 0  ⇒  x = y   ⇒  2x = 1  ⇒  x = y = 0.5,  λ = −1</div>
+  <p>يعني أقرب نقطة على الخط <span class="ltr">x + y = 1</span> لنقطة الصفر هي <span class="ltr">(0.5, 0.5)</span>.</p>
+
+  <h3>KKT: شروط بـ «≤»</h3>
+  <p>المسألة: قلّل <span class="ltr">f(x)</span> بشرط <span class="ltr">gᵢ(x) ≤ 0</span>. شروط Karush-Kuhn-Tucker (لازمة عند الحل الأمثل):</p>
+  <ol class="ex">
+    <li><b>Stationarity:</b> <span class="ltr">∇f + Σ λᵢ ∇gᵢ = 0</span></li>
+    <li><b>Primal feasibility:</b> <span class="ltr">gᵢ(x) ≤ 0</span> لكل الشروط</li>
+    <li><b>Dual feasibility:</b> <span class="ltr">λᵢ ≥ 0</span></li>
+    <li><b>Complementary slackness:</b> <span class="ltr">λᵢ · gᵢ(x) = 0</span></li>
+  </ol>
+  <div class="note"><strong>الـ complementary slackness بالبلدي:</strong> كل شرط يا إما «شغّال» (الحل واقف على الحيطة بتاعته، <span class="ltr">g = 0</span>)، يا إما ملوش لازمة (<span class="ltr">λ = 0</span>). زي سور حوالين جنينة: لو انت واقف في النص، السور مش فارق معاك. أهم مثال: في الـ SVM، الـ <b>support vectors</b> هي النقط اللي شرطها شغّال (<span class="ltr">λ &gt; 0</span>)، وكل النقط التانية <span class="ltr">λ = 0</span> ومش بتأثر على الحدود خالص.</div>
+</section>
+
+<!-- STATION 7 -->
+<section id="d18-reg">
+  <div class="station-head"><span class="tag">07</span><h2>الـ Regularization = مسألة بشرط متنكرة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ L1 والـ L2 مش حيل عشوائية. هما مسائل constrained:</p>
+      <div class="formula">L2 (Ridge):  min Loss(w)  s.t. ‖w‖² ≤ t   ⇔  min Loss(w) + λ‖w‖²<br>L1 (LASSO): min Loss(w)  s.t. ‖w‖₁ ≤ t   ⇔  min Loss(w) + λ‖w‖₁</div>
+      <p>شرط الـ L2 شكله <b>دايرة</b> (كورة في أبعاد أكتر)، وشرط الـ L1 شكله <b>معيّن</b> (مربع ملفوف). الحل هو أول نقطة كونتورات الـ loss «تلمس» فيها الشكل ده.</p>
+      <p>المعيّن ليه <b>زوايا</b> واقفة على المحاور. الكونتورات بتلمس الزاوية في الغالب، والزاوية معناها إن وزن واحد أو أكتر = <b>صفر بالظبط</b>. عشان كده L1 = sparsity و feature selection، و L2 = تصغير الأوزان من غير ما يصفّرها.</p>
+      <div class="note"><strong>جرب:</strong> اسحب النقطة السودا (أقل loss من غير شروط). بدّل بين L1 و L2 وغيّر حجم الشرط <span class="ltr">t</span>. عد كام وزن بقى صفر.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d18-reg-c" width="520" height="420" aria-label="كونتورات الـ loss ودايرة L2 أو معين L1"></canvas>
+      <div class="btns">
+        <button type="button" id="d18-l1" class="primary">L1 (معيّن)</button>
+        <button type="button" id="d18-l2">L2 (دايرة)</button>
+        <button type="button" id="d18-ex">مثال الدرس (3, 2)</button>
+      </div>
+      <label style="display:grid;gap:2px">حجم الشرط t = <b class="mono" id="d18-tr">1.0</b><input type="range" id="d18-rt" min="0.3" max="3" step="0.1" value="1"></label>
+      <div class="readout">
+        <div><small>أقل loss حر</small><b id="d18-rc">[3, 2]</b></div>
+        <div><small>الحل بالشرط</small><b id="d18-rw">[0, 0]</b></div>
+        <div><small>أوزان = 0</small><b id="d18-rz">0</b></div>
+      </div>
+      <div class="verdict" id="d18-rverd"></div>
+    </div>
+  </div>
+  <p>في كود الدرس: الحد الأدنى الحر لـ <span class="ltr">(x−3)² + (y−2)²</span> هو <span class="ltr">(3, 2)</span>. بشرط L2 (دايرة الوحدة) الحل هو <span class="ltr">(3/√13, 2/√13) ≈ (0.832050, 0.554700)</span>، الاتنين مش صفر. بشرط L1 (المعيّن) الحل على الزاوية <span class="ltr">(1, 0)</span> وقيمة الـ objective = <span class="ltr">8</span>، والوزن التاني صفر.</p>
+</section>
+
+<!-- STATION 8 -->
+<section id="d18-dual">
+  <div class="station-head"><span class="tag">08</span><h2>الـ Duality: نفس المسألة من الناحية التانية</h2></div>
+  <p>كل مسألة بشروط (الـ <b>primal</b>) ليها مسألة توأم (الـ <b>dual</b>). في المسائل الـ convex (اللي بتحقق Slater's condition) الاتنين ليهم نفس القيمة المثلى: ده اسمه <b>strong duality</b>.</p>
+  <div class="formula">Primal: min f(x) s.t. g(x) ≤ 0<br>L(x,λ) = f(x) + λ·g(x)<br>d(λ) = min_x L(x,λ)<br>Dual: max d(λ) s.t. λ ≥ 0</div>
+  <p>تشبيه: الـ primal هو «أرخص طريقة أبني بيها بيت بالمواصفات دي». الـ dual هو «أعلى سعر ممكن أحطه على المواصفات نفسها». أي حل للـ dual بيديك <b>حد أدنى</b> (lower bound) للـ primal، فتقدر تعرف حلك قريب من الأمثل قد إيه.</p>
+  <h3>مثال الكود خطوة بخطوة</h3>
+  <p>قلّل <span class="ltr">x² + y²</span> بشرط <span class="ltr">x + y ≥ 1</span>، يعني <span class="ltr">1 − x − y ≤ 0</span>:</p>
+  <div class="formula">L = x² + y² + λ(1 − x − y)  ⇒  x = y = λ/2<br>d(λ) = λ − λ²/2   ⇒   d'(λ) = 1 − λ = 0   ⇒   λ* = 1<br>x = y = 0.5,  primal = dual = 0.5,  λ·(1−x−y) = 0</div>
+  <p>الشرط شغّال (<span class="ltr">x + y = 1</span>) و <span class="ltr">λ = 1 &gt; 0</span>، والـ complementary slackness متحققة.</p>
+  <div class="note ai"><strong>في الـ SVM:</strong> الـ dual بيعتمد بس على <span class="ltr">xᵢᵀxⱼ</span> (dot products بين النقط). بدّل الـ dot product بـ <span class="ltr">K(xᵢ, xⱼ)</span> تاخد الـ <b>kernel trick</b> ببلاش. عشان كده الـ SVM بيتحل في صورته الـ dual.</div>
+  <pre>Primal: maximize margin 2/||w||  s.t.  y_i(w^T x_i + b) &gt;= 1
+Dual:   maximize sum(alpha_i) - 0.5 * sum_ij(alpha_i alpha_j y_i y_j x_i^T x_j)
+        s.t. alpha_i &gt;= 0,  sum(alpha_i y_i) = 0</pre>
+</section>
+
+<!-- STATION 9 -->
+<section id="d18-deep">
+  <div class="station-head"><span class="tag">09</span><h2>ليه الـ deep learning شغال وهو مش convex؟</h2></div>
+  <p>الـ loss بتاع أي neural network مش convex خالص. نظريًا المفروض الـ SGD يفشل. عمليًا بيلاقي حلول كويسة. الدرس بيدي ٤ أسباب:</p>
+  <ol class="ex">
+    <li><b>أغلب الـ local minima كويسين كفاية.</b> في الأبعاد العالية، النقط الحرجة العشوائية أغلبها saddle points مش minima، والـ minima القليلة قيمتها قريبة من الـ global.</li>
+    <li><b>العدو الحقيقي هو الـ saddle points.</b> عشان نقطة تبقى minimum لازم كل الـ <span class="ltr">n</span> eigenvalues يبقوا موجبين، واحتمال ده تقريبًا <span class="ltr">2⁻ⁿ</span>. مع ملايين الأبعاد، تقريبًا كل النقط الحرجة saddles، والـ noise بتاع الـ SGD بيساعد يهرب منها.</li>
+    <li><b>الـ overparameterization بتنعّم السطح.</b> لما البارامترز أكتر من الأمثلة، السطح بيبقى أنعم ووديانه متوصلة ببعض، والشبكات الأعرض فيها minima وحشة أقل.</li>
+    <li><b>الـ noise = regularization ضمني.</b> الـ mini-batch noise بيمنع الاستقرار في minima حادة (sharp) اللي بتعمل overfit، وبيميل للـ minima المسطحة (flat) اللي بتعمم أحسن.</li>
+  </ol>
+  <div class="tablewrap"><table>
+    <tr><th>الخاصية</th><th>أبعاد قليلة</th><th>أبعاد كتير</th></tr>
+    <tr><td>شكل السطح</td><td>قمم ووديان معزولة</td><td>وديان متوصلة بنعومة</td></tr>
+    <tr><td>الـ minima</td><td>كتير ومعزولة</td><td>قليل منهم وحش، أغلبهم قريب من الأمثل</td></tr>
+    <tr><td>النقط الحرجة</td><td>خليط</td><td>تقريبًا كلها saddle points</td></tr>
+  </table></div>
+
+  <h3>الـ second-order في الواقع</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>Memory</th><th>تكلفة الخطوة</th><th>إمتى</th></tr>
+    <tr><td>Gradient descent</td><td class="ltr">O(n)</td><td class="ltr">O(n)</td><td>baseline، موديلات كبيرة</td></tr>
+    <tr><td>Newton</td><td class="ltr">O(n²)</td><td class="ltr">O(n³)</td><td>مسائل convex صغيرة</td></tr>
+    <tr><td>L-BFGS</td><td class="ltr">O(mn)</td><td class="ltr">O(mn)</td><td>مسائل convex متوسطة (لحد ~10,000 بارامتر)</td></tr>
+    <tr><td>Adam</td><td class="ltr">O(n)</td><td class="ltr">O(n)</td><td>الافتراضي في الـ deep learning</td></tr>
+    <tr><td>K-FAC</td><td class="ltr">O(n)</td><td class="ltr">O(n) لكل layer</td><td>أبحاث، large-batch training</td></tr>
+  </table></div>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>L-BFGS:</b> بيقرّب الـ inverse Hessian من آخر <span class="ltr">m</span> فروق gradients. مستخدم في logistic regression و CRFs، مش في الـ deep learning.</li>
+    <li><b>Natural gradient:</b> بيستخدم الـ Fisher information matrix بدل الـ Hessian. الـ K-FAC بيقرّبها كـ Kronecker product فتبقى عملية للشبكات.</li>
+    <li><b>Hessian-free:</b> conjugate gradient (فاكره من Day 17؟) يحل <span class="ltr">Hx = g</span> من غير ما يبني H، محتاج بس Hessian-vector products بـ <span class="ltr">O(n)</span> عن طريق autodiff.</li>
+    <li><b>Diagonal:</b> الـ second moment بتاع Adam تقريب قطري للانحناء، و AdaHessian بيستخدم قطر الـ Hessian الحقيقي عن طريق Hutchinson's estimator.</li>
+  </ul>
+</section>
+
+<!-- CODE -->
+<section id="d18-code">
+  <div class="station-head"><span class="tag">10</span><h2>طبّق بإيدك: الكود</h2></div>
+  <p>من جوه فولدر الريبو شغّل الملف الأصلي الأول وشوف الصورة الكاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/01-math-foundations/18-convex-optimization/code/convex.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. اكتب كل خطوة بنفسك في ملف <code>my_convex.py</code> وبص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الـ Convexity checker (اختبار التعريف)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random, math
+
+def check_convexity(f, dim, bounds=(-5, 5), samples=2000, label=""):
+    violations = 0
+    worst_violation = 0.0
+    for _ in range(samples):
+        x = [random.uniform(*bounds) for _ in range(dim)]   <span class="c"># نقطة عشوائية</span>
+        y = [random.uniform(*bounds) for _ in range(dim)]   <span class="c"># ونقطة تانية</span>
+        t = random.uniform(0, 1)
+        mid = [t * xi + (1 - t) * yi for xi, yi in zip(x, y)]
+        lhs = f(mid)                          <span class="c"># الدالة عند النص</span>
+        rhs = t * f(x) + (1 - t) * f(y)       <span class="c"># الوتر عند النص</span>
+        gap = lhs - rhs
+        if gap &gt; 1e-10:                       <span class="c"># الوتر نزل تحت = violation</span>
+            violations += 1
+            worst_violation = max(worst_violation, gap)
+    is_convex = violations == 0
+    if label:
+        status = "CONVEX" if is_convex else "NOT CONVEX"
+        print(f"  {label:30s}  {status:10s}  violations: {violations}/{samples}")
+    return is_convex, violations
+
+random.seed(42)
+check_convexity(lambda x: x[0] ** 2, 1, label="f(x) = x^2")
+check_convexity(lambda x: math.sin(x[0]), 1, label="f(x) = sin(x)")
+check_convexity(lambda x: x[0] ** 2 - x[1] ** 2, 2, label="f(x,y) = x^2 - y^2 [saddle]")</pre></div>
+  <details><summary>الناتج المتوقع</summary><p>الـ <span class="ltr">x²</span> تطلع <code>CONVEX</code> و violations = 0. الـ <span class="ltr">sin(x)</span> والـ saddle يطلعوا <code>NOT CONVEX</code> بعدد violations أكبر من صفر. العدد نفسه بيعتمد على الأرقام العشوائية، فقارن الشكل باللي يطلعلك مش الرقم بالظبط. في الملف الأصلي المجموعة اللي فوق (<span class="ltr">x², |x|, eˣ, x²+y², ReLU</span>) كلها convex، واللي تحت (<span class="ltr">sin, x³, −x², sin·cos, x²−y²</span>) كلها لأ.</p></details>
+
+  <h3>خطوة ٢: الـ eigenvalues لمصفوفة 2×2</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def hessian_eigenvalues_2d(H):
+    a, b = H[0][0], H[0][1]
+    c, d = H[1][0], H[1][1]
+    trace = a + d                 <span class="c"># مجموع الـ eigenvalues</span>
+    det = a * d - b * c           <span class="c"># حاصل ضربهم</span>
+    disc = trace ** 2 - 4 * det
+    if disc &lt; 0:
+        return None, None
+    s = math.sqrt(disc)
+    return (trace + s) / 2, (trace - s) / 2
+
+def is_positive_semidefinite_2d(H):
+    e1, e2 = hessian_eigenvalues_2d(H)
+    if e1 is None:
+        return False
+    return e1 &gt;= -1e-10 and e2 &gt;= -1e-10   <span class="c"># كلهم ≥ 0 = convex</span>
+
+for H in ([[10, 0], [0, 2]], [[2, 0], [0, -2]], [[2, 3], [3, 2]]):
+    print(H, hessian_eigenvalues_2d(H), is_positive_semidefinite_2d(H))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">[[10, 0], [0, 2]] (10.0, 2.0) True
+[[2, 0], [0, -2]] (2.0, -2.0) False
+[[2, 3], [3, 2]] (5.0, -1.0) False</pre><p>الأولى طبق متطاول (condition number = 5)، التانية saddle، التالتة indefinite.</p></details>
+
+  <h3>خطوة ٣: GD و Newton</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def optimize_gd(grad_f, x0, lr=0.01, steps=1000, tol=1e-12):
+    x = list(x0); history = [x[:]]
+    for _ in range(steps):
+        g = grad_f(x)
+        if sum(gi ** 2 for gi in g) &lt; tol:     <span class="c"># الميل خلاص صفر تقريبًا</span>
+            break
+        x = [xi - lr * gi for xi, gi in zip(x, g)]
+        if any(math.isnan(xi) or math.isinf(xi) for xi in x):
+            break                               <span class="c"># فرقع</span>
+        history.append(x[:])
+    return history
+
+def invert_2x2(H):
+    det = H[0][0] * H[1][1] - H[0][1] * H[1][0]
+    if abs(det) &lt; 1e-15:
+        return None
+    return [[H[1][1] / det, -H[0][1] / det],
+            [-H[1][0] / det, H[0][0] / det]]
+
+def newtons_method(grad_f, hessian_f, x0, steps=100, tol=1e-12):
+    x = list(x0); history = [x[:]]
+    for _ in range(steps):
+        g = grad_f(x)
+        if sum(gi ** 2 for gi in g) &lt; tol:
+            break
+        H_inv = invert_2x2(hessian_f(x))
+        if H_inv is None:
+            break
+        dx = [H_inv[0][0] * g[0] + H_inv[0][1] * g[1],     <span class="c"># H⁻¹ · ∇f</span>
+              H_inv[1][0] * g[0] + H_inv[1][1] * g[1]]
+        x = [x[0] - dx[0], x[1] - dx[1]]
+        history.append(x[:])
+    return history
+
+f = lambda x: 50 * x[0] ** 2 + x[1] ** 2
+grad = lambda x: [100 * x[0], 2 * x[1]]
+hess = lambda x: [[100, 0], [0, 2]]
+nh = newtons_method(grad, hess, [10.0, 10.0], steps=50)
+gh = optimize_gd(grad, [10.0, 10.0], lr=0.015, steps=500)
+print("Newton steps:", len(nh) - 1)
+print("GD first step with f &lt; 1e-10:", next(i for i, p in enumerate(gh) if f(p) &lt; 1e-10))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Newton steps: 1
+GD first step with f &lt; 1e-10: 454</pre><p>الحسبة دي ثابتة (مفيهاش random). Newton وصل <span class="ltr">(0, 0)</span> في خطوة. الـ GD مع <span class="ltr">lr = 0.015</span>: مركّبة x بتتضرب في <span class="ltr">1 − 1.5 = −0.5</span> كل خطوة (بتتطوّح بس بتصغر)، ومركّبة y بتتضرب في <span class="ltr">0.97</span> بس، وهي اللي بتأخر كل حاجة.</p></details>
+
+  <h3>خطوة ٤: أثر الـ condition number</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>for c in [1, 5, 10, 50, 100]:
+    g = lambda x, c=c: [2 * c * x[0], 2 * x[1]]
+    h = lambda x, c=c: [[2 * c, 0], [0, 2]]
+    gd = optimize_gd(g, [10.0, 10.0], lr=0.9 / (2 * c), steps=2000)   <span class="c"># أكبر lr آمن تقريبًا</span>
+    nt = newtons_method(g, h, [10.0, 10.0], steps=50)
+    print(c, len(gd) - 1, len(nt) - 1)</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">1 8 1
+5 85 1
+10 179 1
+50 926 1
+100 1860 1</pre><p>عدد خطوات الـ GD بيكبر تقريبًا مع الـ condition number، و Newton ثابت على خطوة واحدة. لو طلعلك فرق خطوة واحدة في رقم، ده من التقريب العشري.</p></details>
+
+  <h3>خطوة ٥: Lagrange بالـ gradient</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def lagrange_solve(f_grad, g_val, g_grad, x0, lr=0.01, lr_lambda=0.01, steps=5000):
+    x = list(x0); lam = 0.0; history = []
+    for _ in range(steps):
+        fg, gv, gg = f_grad(x), g_val(x), g_grad(x)
+        x = [xi - lr * (fgi + lam * ggi) for xi, fgi, ggi in zip(x, fg, gg)]  <span class="c"># انزل في x</span>
+        lam = lam + lr_lambda * gv                                          <span class="c"># اطلع في λ</span>
+        history.append((x[:], lam, gv))
+    return history
+
+h = lagrange_solve(lambda x: [2 * x[0], 2 * x[1]],
+                   lambda x: x[0] + x[1] - 1,
+                   lambda x: [1.0, 1.0], [2.0, 2.0])
+x, lam, gv = h[-1]
+print(round(x[0], 6), round(x[1], 6), round(lam, 6))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">0.5 0.5 -1.0</pre><p>نفس الحل التحليلي: <span class="ltr">x = y = 0.5, λ = −1</span>. لاحظ إن الـ x بتنزل والـ λ بتطلع: ده «saddle point» للـ Lagrangian، بندوّر على min في x و max في λ. (ممكن يطلعلك <code>-0.0</code> أو آخر رقم مختلف من التقريب.)</p></details>
+
+  <h3>خطوة ٦: النسخة اللي هتستخدمها فعلًا</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+from scipy.optimize import minimize
+
+rng = np.random.default_rng(0)
+X = rng.normal(size=(100, 3)); d = 3
+y = X @ np.array([1.0, -2.0, 0.5]) + 0.1 * rng.normal(size=100)
+
+result = minimize(                                   <span class="c"># Ridge regression = convex</span>
+    fun=lambda w: sum((y - X @ w) ** 2) + 0.1 * sum(w ** 2),
+    x0=np.zeros(d),
+    method='L-BFGS-B',                               <span class="c"># second-order تقريبي</span>
+    jac=lambda w: -2 * X.T @ (y - X @ w) + 0.2 * w,
+)
+print(result.x)</pre></div>
+  <details><summary>الناتج المتوقع</summary><p>تلات أرقام قريبين من <span class="ltr">[1, −2, 0.5]</span> (الأوزان اللي عملنا بيها الداتا). قارن باللي يطلعلك. وللـ SVM: <code>SVC(kernel='rbf', C=1.0).fit(X_train, y_train)</code> و <code>svm.n_support_</code> بيقولك عدد الـ support vectors في كل class.</p></details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d18-exercises">
+  <div class="station-head"><span class="tag">11</span><h2>التمارين</h2></div>
+  <p>اعمل ٣ على الأقل النهاردة، والباقي في تسخين بكرة.</p>
+  <ol class="ex">
+    <li><b>معرض الـ convexity:</b> اختبر <span class="ltr">x⁴</span>، <span class="ltr">sin(x)</span>، <span class="ltr">x² + y²</span>، <span class="ltr">xy</span>، <span class="ltr">max(x, 0)</span> بالـ checker، وفسّر كل نتيجة.
+      <details><summary>تلميح وإجابة</summary>توقّع قبل ما تشغّل: في بُعد واحد بص على إشارة <span class="ltr">f''</span>، وفي بُعدين على eigenvalues الـ Hessian. <span class="ltr">x⁴</span>: <span class="ltr">f'' = 12x² ≥ 0</span> → convex. <span class="ltr">sin</span>: <span class="ltr">f'' = −sin x</span> بتغير إشارتها → لأ. <span class="ltr">x²+y²</span>: Hessian <span class="ltr">[[2,0],[0,2]]</span> → convex. <span class="ltr">xy</span>: Hessian <span class="ltr">[[0,1],[1,0]]</span> eigenvalues <span class="ltr">1, −1</span> → لأ (سرج). <span class="ltr">max(x,0)</span>: convex (maximum لدالتين linear).</details></li>
+    <li><b>سباق Newton ضد GD:</b> على <span class="ltr">50x² + y²</span> من <span class="ltr">(10, 10)</span>، كام خطوة لحد <span class="ltr">loss &lt; 1e-10</span>؟ وإيه اللي بيحصل للـ GD لما الـ condition number يكبر؟
+      <details><summary>تلميح</summary>Newton بيحل التربيعي في خطوة. للـ GD لازم <span class="ltr">lr &lt; 2/100</span> بسبب الـ <span class="ltr">50x²</span>، فاتجاه y بيمشي ببطء. جرب <span class="ltr">100x²</span> وعد تاني. استخدم المعمل ٠٥ عشان تشوفها قبل ما تكتبها.</details></li>
+    <li><b>هندسة Lagrange:</b> قلّل <span class="ltr">(x−3)² + (y−3)²</span> بشرط <span class="ltr">x + 2y = 4</span>، واتأكد إن <span class="ltr">∇f</span> موازي لـ <span class="ltr">∇g</span> عند الحل.
+      <details><summary>الإجابة</summary>الحل التحليلي في الكود: <span class="ltr">x = 2, y = 1, λ = 2</span>. عند الحل <span class="ltr">∇f = (2(2−3), 2(1−3)) = (−2, −4) = −2·(1, 2) = −2·∇g</span>، فموازيين فعلًا، وبتتحقق <span class="ltr">∇f + λ∇g = 0</span> بـ <span class="ltr">λ = 2</span>. استخدم <code>lagrange_solve</code> بـ <span class="ltr">lr=0.002</span> و <span class="ltr">steps=20000</span> زي الكود.</details></li>
+    <li><b>شرط L1:</b> قلّل <span class="ltr">(x−3)² + (y−2)²</span> بشرط <span class="ltr">|x| + |y| ≤ 1</span>، ووضّح إن إحداثي واحد بيطلع صفر.
+      <details><summary>تلميح وإجابة</summary>الـ minimum الحر <span class="ltr">(3, 2)</span> برا المعيّن، فالحل على الحدود. استخدم projected gradient descent: خطوة gradient وبعدين ارجع للمعيّن. على الضلع <span class="ltr">x + y = 1</span>: عوّض <span class="ltr">y = 1 − x</span> تطلع <span class="ltr">(x−3)² + (x+1)²</span> وأقلها عند <span class="ltr">x = 1</span>، يعني <span class="ltr">(1, 0)</span> و objective = 8. جربها في المعمل ٠٧.</details></li>
+    <li><b>eigenvalues الـ Rosenbrock:</b> احسب الـ Hessian عند <span class="ltr">(1,1)</span> وعند <span class="ltr">(−1,1)</span> وقارن الـ eigenvalues.
+      <details><summary>الإجابة</summary>الـ Hessian = <span class="ltr">[[2 − 400y + 1200x², −400x], [−400x, 200]]</span>. عند <span class="ltr">(1,1)</span>: <span class="ltr">[[802, −400], [−400, 200]]</span>. عند <span class="ltr">(−1,1)</span>: <span class="ltr">[[802, 400], [400, 200]]</span>. ليهم نفس الـ trace (1002) ونفس الـ det (400)، فنفس الـ eigenvalues: تقريبًا <span class="ltr">1001.60</span> و<span class="ltr">0.40</span>، والنسبة حوالي 2508. الاتنين موجبين، بس النسبة الكبيرة معناها وادي ضيق جدًا في اتجاه ومسطح في التاني، وده سبب إن الـ GD بيزحف على الـ Rosenbrock. (الدرس بيقولك قارن النسبتين: هتلاقيهم متساويين بالظبط عند النقطتين دول.)</details></li>
+    <li><b>إضافة مني · اختار الـ solver صح:</b> عندك مشكلة تصنيف spam بـ ٥٠٠٠ feature و ١٠٠ ألف إيميل. جرّب <code>LogisticRegression(solver='lbfgs')</code> مرة و <code>penalty='l1', solver='liblinear'</code> مرة على أي dataset نصوص صغير (مثلًا TF-IDF لـ 20newsgroups قسمين). اعدّ الأوزان اللي بقت صفر بالظبط في كل حالة.
+      <details><summary>تلميح</summary><code>(model.coef_ == 0).sum()</code>. المتوقع من الدرس: الـ L1 يصفّر أوزان كتير (feature selection)، والـ L2 تقريبًا مايصفّرش حاجة. ولأن المسألة convex، لو شغّلت تاني من أي بداية هتوصل لنفس الحل.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d18-extra">
+  <div class="station-head"><span class="tag">12</span><h2>إضافة مني: اللي الدرس ماقالوش صريح</h2></div>
+  <h3>حدس سريع</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>الـ convex = «مفيش مفاجآت».</b> لو الـ loss عندك convex والتدريب مش بيتقارب، المشكلة في الـ learning rate أو الأرقام (Day 13)، مش في «وادي غلط».</li>
+    <li><b>Newton = GD بـ learning rate مختلف لكل اتجاه.</b> لو الـ Hessian قطري، <span class="ltr">H⁻¹</span> بيدي كل اتجاه <span class="ltr">lr = 1/انحناؤه</span>. ده بالظبط اللي Adam بيحاول يقلده بالـ second moment.</li>
+    <li><b>λ = «سعر» الشرط.</b> قيمة الـ Lagrange multiplier بتقولك الـ objective هيتحسن قد إيه لو خففت الشرط سنة صغيرة. λ = 0 يعني الشرط مش فارق.</li>
+  </ul>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>إنك تختبر الـ Hessian عند <b>نقطة واحدة</b> وتقول الدالة convex. الشرط لازم يتحقق في كل مكان. الـ Rosenbrock مثلًا الـ Hessian بتاعه PSD عند <span class="ltr">(1,1)</span> بس الدالة نفسها مش convex.</li>
+    <li>إنك تفتكر الـ checker العشوائي «بيثبت» الـ convexity. هو بيقدر يثبت إنها <b>مش</b> convex (لو لقى violation)، بس صفر violations معناه «مالقيتش مشكلة في العينة دي» مش برهان.</li>
+    <li>تستخدم Newton على دالة مش convex: لو الـ Hessian فيه eigenvalue سالبة، Newton ممكن يقفز ناحية saddle أو maximum بدل الـ minimum.</li>
+    <li>إنك تحط L1 وتستغرب إن الـ optimizer العادي مش بيطلع أصفار بالظبط. الـ <span class="ltr">|w|</span> مش smooth عند الصفر، فالـ solvers المخصصة (coordinate descent، proximal) هي اللي بتطلع أصفار حقيقية.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents؟</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>Logistic regression فوق embeddings:</b> لما تعمل classifier سريع (intent routing لـ agent، أو probe على hidden states) فوق embeddings متجمدة، المسألة convex والنتيجة ثابتة كل مرة.</li>
+    <li><b>Weight decay في تدريب الـ LLMs</b> هو L2 regularization (في AdamW بيتطبق decoupled)، يعني نفس فكرة «الدايرة» بس على مليارات الأوزان.</li>
+    <li><b>RLHF / PPO:</b> الـ KL penalty اللي بيمنع الموديل يبعد عن الـ reference هو نسخة «unconstrained» من شرط <span class="ltr">KL ≤ ε</span>، ومعامله بيلعب دور λ.</li>
+    <li><b>الـ fine-tuning نفسه</b> non-convex: عشان كده الـ seed والـ warmup والـ schedule بيفرقوا، بالظبط زي ما الدرس قال.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d18-quiz">
+  <div class="station-head"><span class="tag">13</span><h2>كويز</h2></div>
+  <div class="quiz" id="d18-quizbox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d18-done">
+  <div class="station-head"><span class="tag">14</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d18-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح تعريف الدالة الـ convex بالوتر، وجربته في المعمل ٠٢</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أعرف أختبر الـ convexity بـ f'' وبالـ Hessian وبالتعريف</label></li>
+    <li><label><input type="checkbox" data-ck="3"> شفت Newton بيوصل في خطوة والـ GD بيتعب مع الـ condition number</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم Lagrange و KKT والـ complementary slackness وعلاقتها بالـ support vectors</label></li>
+    <li><label><input type="checkbox" data-ck="5"> أقدر أشرح ليه L1 بيصفّر أوزان و L2 لأ</label></li>
+    <li><label><input type="checkbox" data-ck="6"> كتبت الكود بإيدي وشغّلت convex.py</label></li>
+    <li><label><input type="checkbox" data-ck="7"> حليت ٣ تمارين على الأقل وجبت ٥ من ٧ في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Convex loss</td><td>linear/logistic regression، SVM، LASSO، Ridge، classifiers فوق embeddings</td></tr>
+    <tr><td>Hessian و condition number</td><td>ليه الـ GD بطيء في الوديان المتطاولة، وليه الـ normalization بيساعد</td></tr>
+    <tr><td>Newton / L-BFGS</td><td><code>scipy.optimize</code>، solvers الـ logistic regression في scikit-learn</td></tr>
+    <tr><td>Lagrange / KKT</td><td>الـ SVM والـ support vectors، أي مسألة بميزانية أو قيود</td></tr>
+    <tr><td>L1 / L2 كشروط</td><td>feature selection، weight decay في تدريب الـ LLMs</td></tr>
+    <tr><td>Duality</td><td>الـ kernel trick، lower bounds لجودة الحل</td></tr>
+    <tr><td>Saddle points و overparameterization</td><td>ليه SGD/Adam بيدربوا الشبكات العميقة بنجاح</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Complex Numbers for AI. هنبدأ بتسخين ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F18-convex-optimization" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/18-convex-optimization</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, fmt=A.fmt, root=document.getElementById('d18-root');
+const $=id=>document.getElementById(id);
+
+// roadmap
+const rm=$('d18-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===18)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: chord ----------
+const FN={
+  'x²':{f:x=>x*x,f2:x=>2,xr:[-3,3]},
+  '|x|':{f:x=>Math.abs(x),f2:x=>0,xr:[-3,3]},
+  'eˣ':{f:x=>Math.exp(x),f2:x=>Math.exp(x),xr:[-2.5,2]},
+  'max(0, x)':{f:x=>Math.max(0,x),f2:x=>0,xr:[-3,3]},
+  'x⁴':{f:x=>x**4,f2:x=>12*x*x,xr:[-1.6,1.6]},
+  'sin(x)':{f:x=>Math.sin(x),f2:x=>-Math.sin(x),xr:[-5,5]},
+  'x³':{f:x=>x**3,f2:x=>6*x,xr:[-2,2]},
+  '−x²':{f:x=>-x*x,f2:x=>-2,xr:[-3,3]},
+  'sin(3x) + 0.1x²':{f:x=>Math.sin(3*x)+0.1*x*x,f2:x=>-9*Math.sin(3*x)+0.2,xr:[-5,5]}
+};
+const fsel=$('d18-fsel');Object.keys(FN).forEach(k=>{const o=document.createElement('option');o.textContent=k;fsel.appendChild(o)});
+const cc=$('d18-chord'),cx=A.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h,PAD=24;
+let P=[0.2,0.8],cdrag=-1; // positions as fraction of x-range
+function chordGeom(){
+  const F=FN[fsel.value],[x0,x1]=F.xr;let lo=Infinity,hi=-Infinity;
+  for(let i=0;i<=300;i++){const v=F.f(x0+(x1-x0)*i/300);lo=Math.min(lo,v);hi=Math.max(hi,v)}
+  const m=(hi-lo)*0.1||1;lo-=m;hi+=m;
+  const X=x=>PAD+(x-x0)/(x1-x0)*(CW-2*PAD),Y=y=>CH-PAD-(y-lo)/(hi-lo)*(CH-2*PAD);
+  return{F,x0,x1,X,Y,lo,hi};
+}
+function drawChord(){
+  const G=chordGeom(),{F,x0,x1,X,Y}=G;
+  cx.clearRect(0,0,CW,CH);
+  // axes
+  cx.strokeStyle=css('--grid');cx.lineWidth=1;
+  for(let i=0;i<=10;i++){const gx=PAD+i*(CW-2*PAD)/10;cx.beginPath();cx.moveTo(gx,PAD);cx.lineTo(gx,CH-PAD);cx.stroke()}
+  if(G.lo<0&&G.hi>0){cx.strokeStyle=css('--muted');cx.beginPath();cx.moveTo(PAD,Y(0));cx.lineTo(CW-PAD,Y(0));cx.stroke()}
+  if(x0<0&&x1>0){cx.strokeStyle=css('--muted');cx.beginPath();cx.moveTo(X(0),PAD);cx.lineTo(X(0),CH-PAD);cx.stroke()}
+  // curve
+  cx.strokeStyle=css('--ink');cx.lineWidth=2.5;cx.beginPath();
+  for(let i=0;i<=400;i++){const x=x0+(x1-x0)*i/400,px=X(x),py=Y(F.f(x));i?cx.lineTo(px,py):cx.moveTo(px,py)}cx.stroke();
+  // chord
+  const xa=x0+(x1-x0)*P[0],xb=x0+(x1-x0)*P[1],fa=F.f(xa),fb=F.f(xb);
+  let bad=false;
+  for(let i=0;i<=120;i++){const t=i/120,x=xa+(xb-xa)*t,ch=fa+(fb-fa)*t,fv=F.f(x);
+    const isBad=fv>ch+1e-9;if(isBad)bad=true;
+    if(i>0){const tp=(i-1)/120,xp=xa+(xb-xa)*tp,chp=fa+(fb-fa)*tp;
+      cx.strokeStyle=isBad?css('--bad'):css('--ok');cx.lineWidth=isBad?4:3;cx.beginPath();cx.moveTo(X(xp),Y(chp));cx.lineTo(X(x),Y(ch));cx.stroke()}}
+  // t point
+  const t=+$('d18-t').value,xm=t*xa+(1-t)*xb,lhs=F.f(xm),rhs=t*fa+(1-t)*fb;
+  cx.setLineDash([4,4]);cx.strokeStyle=css('--muted');cx.lineWidth=1.2;cx.beginPath();cx.moveTo(X(xm),Y(lhs));cx.lineTo(X(xm),Y(rhs));cx.stroke();cx.setLineDash([]);
+  cx.fillStyle=css('--ink');cx.beginPath();cx.arc(X(xm),Y(lhs),4,0,7);cx.fill();
+  cx.fillStyle=lhs>rhs+1e-9?css('--bad'):css('--ok');cx.beginPath();cx.arc(X(xm),Y(rhs),4,0,7);cx.fill();
+  [[xa,fa,css('--vec-a'),'x'],[xb,fb,css('--vec-b'),'y']].forEach(([x,v,c,l])=>{cx.fillStyle=c;cx.beginPath();cx.arc(X(x),Y(v),9,0,7);cx.fill();
+    cx.fillStyle=css('--paper');cx.font='bold 12px JetBrains Mono, monospace';cx.textAlign='center';cx.fillText(l,X(x),Y(v)+4);cx.textAlign='left'});
+  $('d18-tv').textContent=t.toFixed(2);
+  $('d18-lhs').textContent=fmt(lhs,3);$('d18-rhs').textContent=fmt(rhs,3);$('d18-f2').textContent=fmt(F.f2(xm),2);
+  const v=$('d18-cverdict');
+  if(bad){v.textContent='الوتر نزل تحت المنحنى في الحتة الحمرا: violation، الدالة مش convex';v.style.color=css('--bad')}
+  else{v.textContent='الوتر فوق المنحنى أو عليه للنقطتين دول. حرّك النقط في أماكن تانية واتأكد';v.style.color=css('--ok')}
+}
+cc.addEventListener('pointerdown',e=>{const G=chordGeom(),[x]=A.evPos(cc,e);
+  const pa=G.X(G.x0+(G.x1-G.x0)*P[0]),pb=G.X(G.x0+(G.x1-G.x0)*P[1]);cdrag=Math.abs(x-pa)<Math.abs(x-pb)?0:1;cc.setPointerCapture(e.pointerId);cmove(e)});
+function cmove(e){if(cdrag<0)return;const [x]=A.evPos(cc,e);P[cdrag]=Math.max(0,Math.min(1,(x-PAD)/(CW-2*PAD)));drawChord()}
+cc.addEventListener('pointermove',cmove);cc.addEventListener('pointerup',()=>cdrag=-1);cc.addEventListener('pointercancel',()=>cdrag=-1);
+fsel.addEventListener('change',()=>{P=[0.2,0.8];drawChord()});$('d18-t').addEventListener('input',drawChord);
+drawChord();
+
+// ---------- Hessian calculator ----------
+const hc=$('d18-hess'),hx=A.setupCanvas(hc),HW=+hc.dataset.w,HH=+hc.dataset.h;
+function eig2(a,b,d){const tr=a+d,det=a*d-b*b,s=Math.sqrt(Math.max(0,tr*tr-4*det));return[(tr+s)/2,(tr-s)/2]}
+function drawHess(){
+  const a=+$('d18-ha').value,b=+$('d18-hb').value,d=+$('d18-hd').value;
+  ['ha','hb','hd'].forEach(k=>$('d18-'+k+'-v').textContent=$('d18-'+k).value);
+  const [e1,e2]=eig2(a,b,d);
+  $('d18-he1').textContent=fmt(e1,2);$('d18-he2').textContent=fmt(e2,2);
+  $('d18-hcn').textContent=(e2>1e-9)?fmt(e1/e2,2):'∞';
+  // heatmap of q(x,y)=0.5*(a x^2 + 2b x y + d y^2)
+  const S=60,ox=HW/2,oy=HH/2,step=6;let mx=1e-9;
+  const q=(x,y)=>0.5*(a*x*x+2*b*x*y+d*y*y);
+  for(let px=0;px<HW;px+=step)for(let py=0;py<HH;py+=step)mx=Math.max(mx,Math.abs(q((px-ox)/S,(oy-py)/S)));
+  hx.clearRect(0,0,HW,HH);
+  const ca=css('--vec-a'),cb=css('--vec-b');
+  for(let px=0;px<HW;px+=step)for(let py=0;py<HH;py+=step){const v=q((px+step/2-ox)/S,(oy-py-step/2)/S)/mx;
+    hx.globalAlpha=Math.min(1,Math.abs(v))*0.75;hx.fillStyle=v>=0?ca:cb;hx.fillRect(px,py,step,step)}
+  hx.globalAlpha=1;
+  // contour lines via marching (approx: draw level sets by sampling)
+  hx.fillStyle=css('--ink');
+  for(let px=0;px<HW;px+=2)for(let py=0;py<HH;py+=2){const v=q((px-ox)/S,(oy-py)/S)/mx*6;const fr=v-Math.round(v);if(Math.abs(fr)<0.04&&Math.round(v)!==0)hx.fillRect(px,py,1.5,1.5)}
+  hx.strokeStyle=css('--muted');hx.lineWidth=1;hx.beginPath();hx.moveTo(0,oy);hx.lineTo(HW,oy);hx.moveTo(ox,0);hx.lineTo(ox,HH);hx.stroke();
+  hx.font='12px JetBrains Mono, monospace';hx.fillStyle=css('--ink');hx.fillText('blue = up, orange = down',8,16);
+  const v=$('d18-hverdict');
+  if(e2>1e-9){v.textContent='كل الـ eigenvalues موجبة: طبق (bowl)، convex';v.style.color=css('--ok')}
+  else if(e1<-1e-9){v.textContent='كلهم سالبين: قبة (concave)، local max';v.style.color=css('--bad')}
+  else if(e1>1e-9&&e2<-1e-9){v.textContent='إشارات مختلطة: saddle point، مش convex';v.style.color=css('--bad')}
+  else{v.textContent='فيه eigenvalue = 0: مسطح في اتجاه (degenerate)';v.style.color=css('--muted')}
+}
+['d18-ha','d18-hb','d18-hd'].forEach(id=>$(id).addEventListener('input',drawHess));drawHess();
+
+// ---------- Lab 2: race ----------
+const rc=$('d18-race'),rx=A.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h,RS=18,rox=RW/2,roy=RH/2;
+let start=[10,10],paths=null,animF=null,shown=0;
+const getC=()=>+$('d18-c').value,getK=()=>+$('d18-k').value;
+function simulate(){
+  const c=getC(),lr=getK()/(2*c),f=p=>c*p[0]*p[0]+p[1]*p[1];
+  let x=start.slice(),gd=[x.slice()],hit=-1;
+  if(f(x)<1e-10)hit=0;
+  for(let i=1;i<=3000;i++){const g=[2*c*x[0],2*x[1]];if(g[0]*g[0]+g[1]*g[1]<1e-12)break;x=[x[0]-lr*g[0],x[1]-lr*g[1]];
+    if(!isFinite(x[0])||!isFinite(x[1])||Math.abs(x[0])>1e6)break;gd.push(x.slice());if(hit<0&&f(x)<1e-10)hit=i}
+  const nt=[start.slice(),[0,0]];
+  return{c,lr,gd,nt,hit,f};
+}
+function drawRace(k){
+  const c=getC();rx.clearRect(0,0,RW,RH);A.grid(rx,RW,RH,RS,rox,roy);
+  rx.strokeStyle=css('--muted');rx.globalAlpha=.5;rx.lineWidth=1;
+  for(const L of [1,4,9,16,25,49,100,200,400]){const a=Math.sqrt(L/c),b=Math.sqrt(L);rx.beginPath();rx.ellipse(rox,roy,a*RS,b*RS,0,0,7);rx.stroke()}
+  rx.globalAlpha=1;
+  const T=p=>[rox+p[0]*RS,roy-p[1]*RS];
+  if(paths){
+    const n=Math.min(k,paths.gd.length);
+    rx.strokeStyle=css('--vec-b');rx.lineWidth=2;rx.beginPath();
+    for(let i=0;i<n;i++){const [px,py]=T(paths.gd[i]);i?rx.lineTo(px,py):rx.moveTo(px,py)}rx.stroke();
+    if(n>0){const [px,py]=T(paths.gd[n-1]);rx.fillStyle=css('--vec-b');rx.beginPath();rx.arc(px,py,5,0,7);rx.fill()}
+    if(k>=1)A.arrow(rx,...T(paths.nt[0]),...T(paths.nt[1]),css('--vec-a'),3);
+  }
+  const [sx,sy]=T(start);rx.fillStyle=css('--ink');rx.beginPath();rx.arc(sx,sy,6,0,7);rx.fill();
+  rx.font='12px JetBrains Mono, monospace';rx.fillStyle=css('--vec-a');rx.fillText('Newton',8,16);rx.fillStyle=css('--vec-b');rx.fillText('GD',8,32);
+}
+function updRace(){
+  const c=getC(),k=getK();$('d18-cv').textContent=c;$('d18-kv').textContent=k.toFixed(2);
+  const s=simulate();$('d18-lr').textContent=fmt(s.lr,5);
+  const blew=s.gd.length<=3000&&!isFinite(s.f(s.gd[s.gd.length-1]))||s.f(s.gd[s.gd.length-1])>s.f(start)*10;
+  $('d18-gds').textContent=s.hit>=0?s.hit:(blew?'فرقع':'> '+(s.gd.length-1));
+  $('d18-nts').textContent=1;
+  const v=$('d18-rverdict');
+  if(k>1){v.textContent='lr × 2c > 1: الـ GD بيتطوّح في اتجاه x'+(blew?' وفرقع':'');v.style.color=css('--bad')}
+  else if(s.hit>=0){v.textContent='Newton: خطوة واحدة. GD: '+s.hit+' خطوة. السبب: اتجاه y انحناؤه صغير (2) والـ lr محدود بالانحناء الكبير ('+2*c+').';v.style.color=css('--ink')}
+  else{v.textContent='الـ GD لسه ماوصلش. كبّر الـ lr أو صغّر c.';v.style.color=css('--muted')}
+  return s;
+}
+function runRace(){
+  cancelAnimationFrame(animF);paths=updRace();shown=0;
+  const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches,total=Math.min(paths.gd.length,400);
+  if(reduce){drawRace(paths.gd.length);return}
+  const tick=()=>{if(!document.body.contains(rc))return;shown+=Math.max(1,Math.ceil(total/120));drawRace(shown);if(shown<paths.gd.length&&shown<total)animF=requestAnimationFrame(tick);else drawRace(paths.gd.length)};
+  animF=requestAnimationFrame(tick);
+}
+rc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(rc,e);start=[Math.max(-13,Math.min(13,(x-rox)/RS)),Math.max(-10.5,Math.min(10.5,(roy-y)/RS))];paths=null;updRace();drawRace(0)});
+['d18-c','d18-k'].forEach(id=>$(id).addEventListener('input',()=>{paths=null;updRace();drawRace(0)}));
+$('d18-go').addEventListener('click',runRace);
+$('d18-reset').addEventListener('click',()=>{start=[10,10];paths=null;updRace();drawRace(0)});
+updRace();drawRace(0);
+
+// ---------- Lab 3: L1 / L2 ----------
+const gc=$('d18-reg-c'),gx=A.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h,GS=60,gox=GW/2-40,goy=GH/2+30;
+let C=[3,2],mode='L1',gdrag=false;
+function projL2(c,t){const n=Math.hypot(c[0],c[1]);return n<=t?c.slice():[c[0]*t/n,c[1]*t/n]}
+function projL1(c,t){
+  if(Math.abs(c[0])+Math.abs(c[1])<=t)return c.slice();
+  const u=[Math.abs(c[0]),Math.abs(c[1])].sort((a,b)=>b-a);let cs=0,th=0;
+  for(let j=0;j<u.length;j++){cs+=u[j];const tt=(cs-t)/(j+1);if(u[j]-tt>0)th=tt}
+  return c.map(v=>Math.sign(v)*Math.max(0,Math.abs(v)-th));
+}
+function drawReg(){
+  const t=+$('d18-rt').value;$('d18-tr').textContent=t.toFixed(1);
+  gx.clearRect(0,0,GW,GH);A.grid(gx,GW,GH,GS,gox,goy);
+  const T=p=>[gox+p[0]*GS,goy-p[1]*GS];
+  const w=mode==='L1'?projL1(C,t):projL2(C,t),r=Math.hypot(w[0]-C[0],w[1]-C[1]);
+  // loss contours: circles around C
+  gx.strokeStyle=css('--vec-b');gx.lineWidth=1;gx.globalAlpha=.45;
+  for(let k=1;k<=9;k++){gx.beginPath();gx.arc(...T(C),k*0.5*GS,0,7);gx.stroke()}
+  gx.globalAlpha=1;
+  if(r>1e-6){gx.strokeStyle=css('--vec-b');gx.lineWidth=2.5;gx.beginPath();gx.arc(...T(C),r*GS,0,7);gx.stroke()}
+  // constraint region
+  gx.fillStyle=css('--vec-a');gx.globalAlpha=.18;gx.strokeStyle=css('--vec-a');gx.beginPath();
+  if(mode==='L1'){[[t,0],[0,t],[-t,0],[0,-t]].forEach((p,i)=>i?gx.lineTo(...T(p)):gx.moveTo(...T(p)));gx.closePath()}
+  else gx.arc(...T([0,0]),t*GS,0,7);
+  gx.fill();gx.globalAlpha=1;gx.lineWidth=2.5;gx.stroke();
+  // points
+  gx.fillStyle=css('--ink');gx.beginPath();gx.arc(...T(C),7,0,7);gx.fill();
+  gx.fillStyle=css('--ok');gx.beginPath();gx.arc(...T(w),7,0,7);gx.fill();
+  gx.font='12px JetBrains Mono, monospace';gx.fillStyle=css('--ink');gx.fillText('min loss',T(C)[0]+10,T(C)[1]-8);
+  gx.fillStyle=css('--ok');gx.fillText('w*',T(w)[0]+10,T(w)[1]+16);
+  const zeros=w.filter(v=>Math.abs(v)<1e-9).length;
+  $('d18-rc').textContent='['+fmt(C[0],2)+', '+fmt(C[1],2)+']';
+  $('d18-rw').textContent='['+fmt(w[0],3)+', '+fmt(w[1],3)+']';
+  $('d18-rz').textContent=zeros;
+  const v=$('d18-rverd');
+  if(r<1e-6){v.textContent='أقل loss جوه المنطقة المسموحة أصلًا: الشرط مش شغّال (λ = 0)';v.style.color=css('--muted')}
+  else if(zeros>0){v.textContent='الكونتور لمس زاوية: وزن بقى صفر بالظبط (sparsity)';v.style.color=css('--ok')}
+  else{v.textContent=mode==='L2'?'الدايرة ملهاش زوايا: الأوزان صغرت بس مش صفر':'لمس ضلع مش زاوية: الاتنين لسه مش صفر. حرّك النقطة';v.style.color=css('--ink')}
+  ['d18-l1','d18-l2'].forEach(id=>$(id).classList.toggle('primary',(id==='d18-l1')===(mode==='L1')));
+}
+gc.addEventListener('pointerdown',e=>{gdrag=true;gc.setPointerCapture(e.pointerId);gmove(e)});
+function gmove(e){if(!gdrag)return;const [x,y]=A.evPos(gc,e);C=[Math.round((x-gox)/GS*10)/10,Math.round((goy-y)/GS*10)/10];drawReg()}
+gc.addEventListener('pointermove',gmove);gc.addEventListener('pointerup',()=>gdrag=false);gc.addEventListener('pointercancel',()=>gdrag=false);
+$('d18-l1').addEventListener('click',()=>{mode='L1';drawReg()});
+$('d18-l2').addEventListener('click',()=>{mode='L2';drawReg()});
+$('d18-ex').addEventListener('click',()=>{C=[3,2];$('d18-rt').value=1;drawReg()});
+$('d18-rt').addEventListener('input',drawReg);
+drawReg();
+
+// ---------- quiz ----------
+A.quiz($('d18-quizbox'),[
+ ['إيه الخاصية اللي بتعرّف الدالة الـ convex؟',['ليها نقطة حرجة واحدة بالظبط','الوتر بين أي نقطتين على الرسمة بيبقى فوق المنحنى أو عليه','مشتقتها دايمًا موجبة','متعرّفة على الأرقام الموجبة بس'],1,'التعريف: f(tx + (1−t)y) ≤ t·f(x) + (1−t)·f(y) لأي x, y وأي t بين ٠ و١. يعني الوتر عمره ما ينزل تحت الرسمة.'],
+ ['أنهي مسألة ML من دول الـ loss بتاعها convex؟',['تدريب neural network بـ ٣ layers و ReLU','Matrix factorization للـ recommendation','k-means clustering','Logistic regression بالـ cross-entropy'],3,'الـ log-loss convex في الأوزان. الشبكات و k-means والـ matrix factorization كلهم non-convex. وفي المسائل الـ convex أي local minimum هو global.'],
+ ['Newton\'s method يوصل لأقل قيمة لـ f(x) = 5x² + 3x + 1 في كام خطوة؟',['حوالي ١٠٠ خطوة','خطوة واحدة (مظبوط للدوال التربيعية)','حوالي ١٠ خطوات','حسب الـ learning rate'],1,'Newton بيعمل تقريب تربيعي ويقفز لقاعه. لو الدالة نفسها تربيعية، التقريب مظبوط، فبيوصل في خطوة من أي بداية.'],
+ ['في شروط KKT، الـ complementary slackness (λᵢ·gᵢ(x) = 0) معناها إيه؟',['كل الشروط لازم تبقى شغّالة عند الحل','يا إما الشرط شغّال (gᵢ = 0) يا إما الـ multiplier = 0، والشرط اللي مش شغّال ملوش تأثير','الـ gradients بتاعة الشروط لازم تبقى متعامدة','الـ Lagrangian دايمًا صفر عند الحل'],1,'كل شرط يا إما واقف عليه الحل يا إما مالوش لازمة. في الـ SVM ده سبب إن الـ support vectors بس (λ > 0) هي اللي بتحدد الحدود.'],
+ ['ليه الـ SGD بيلاقي حلول كويسة في الشبكات رغم إنها مش convex؟',['الـ SGD دايمًا بيلاقي الـ global minimum','الـ loss مالوش علاقة بأداء الموديل','في الأبعاد العالية أغلب النقط الحرجة saddle points مش minima وحشة، والـ noise بتاع الـ SGD بيساعد يهرب منها','الشبكات في الحقيقة convex في الأبعاد العالية'],2,'الـ minima القليلة قيمتها قريبة من الـ global، والـ noise بيهرب من الـ saddles، والـ overparameterization بينعّم السطح.'],
+ ['(سؤال مني) الـ Hessian عند نقطة = [[2, 3], [3, 2]]. النقطة دي إيه؟',['minimum (طبق)','maximum (قبة)','saddle point','مسطحة تمامًا'],2,'الـ eigenvalues هي 5 و −1. إشارات مختلطة = saddle: طالع في اتجاه ونازل في اتجاه.'],
+ ['(سؤال مني) ليه الـ L1 بيطلع أوزان = صفر بالظبط والـ L2 لأ؟',['لأن الـ L1 أسرع في الحساب','لأن شكل شرط الـ L1 معيّن ليه زوايا على المحاور، والكونتورات غالبًا بتلمس زاوية','لأن الـ L2 مش convex','لأن الـ L1 بيستخدم Newton\'s method'],1,'الزاوية على المحور معناها إن أحد الإحداثيات صفر. الدايرة ناعمة ملهاش زوايا، فالحل بيصغر من غير ما يصفّر.']
+],5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(18,$('d18-checklist'));
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(cc))return false;drawChord();drawHess();drawRace(paths?paths.gd.length:0);drawReg()});
+})();
+</script>

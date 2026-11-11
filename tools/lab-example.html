@@ -1,0 +1,22 @@
+<!-- AI.lab reference for day builders. Each widget fills a container div; put it in the .bench right column.
+plot(el,{x:[a,b], y:[a,b]|'auto', params:[{k,label,min,max,step,v}], curves:[{f:(x,p)=>y,label,color:'a'|'b'|'ok'|'bad'|'muted',dash:1}], points:p=>[[x,y,color]], marks:p=>[{x,y,label,color}], readout:p=>[[k,v]], note:p=>str, buttons:[[text,{k:v}]], height})
+bars(el,{labels|(p)=>labels, values:p=>[..] or [[..],[..]], names:[series], colors:['a','b'], params, max, highlight:p=>i, readout, note})
+heatmap(el,{rows,cols,values:p=>2D, params, fmt:digits, diverging:true, readout, note})
+scatter(el,{x:[a,b],y:[a,b], points:[[x,y,cls]], classes:{0:'a',1:'b'}, add:true, params, overlay:(ctx,F,pts,p)=>{ use F.X(x),F.Y(y), AI.css('--ok') }, readout:(pts,p)=>[[k,v]], note:(pts,p)=>str})
+vectors(el,{vecs:[{v:[x,y],label,color,fixed}], range:6, derived:vs=>[{v,from,label,color,dash}], readout:vs=>[[k,v]], note:vs=>str})
+stepper(el,{steps:[{title,text(html)}], draw:(ctx,W,H,i,step)=>{}, height, auto:ms})   // algorithm walkthroughs
+flow(el,{nodes:[{id,label,x:0..1,y:0..1}], edges:[[from,to,label]], steps:[{active:[ids],edges:[[from,to]],text}], height})  // agents, RAG, MCP, systems
+calc(el,{params, compute:p=>[[k,v]], note:p=>str})   // numbers only (costs, sizes, memory)
+Pick the widget that shows the idea; write custom canvas code only when no widget fits. -->
+<div class="day"><section><h2>lab test</h2>
+<div id="t-plot"></div><div id="t-bars"></div><div id="t-heat"></div><div id="t-sc"></div><div id="t-vec"></div><div id="t-step"></div><div id="t-flow"></div><div id="t-calc"></div></section>
+<script>(function(){const L=AI.lab,$=id=>document.getElementById(id);
+L.plot($('t-plot'),{x:[-4,4],y:'auto',params:[{k:'lr',label:'learning rate',min:0.01,max:1,step:0.01,v:0.3}],curves:[{f:x=>x*x,label:'loss',color:'a'},{f:(x,p)=>2*x*p.lr,label:'step',color:'b',dash:1}],marks:p=>[{x:1,y:1,label:'w'}],readout:p=>[['lr',p.lr]],note:p=>p.lr>0.9?'كبير':'تمام'});
+L.bars($('t-bars'),{labels:['a','b','c','d'],params:[{k:'T',label:'temperature',min:0.1,max:3,v:1}],values:p=>{const z=[2,1,0.5,-1].map(v=>Math.exp(v/p.T));const s=z.reduce((a,b)=>a+b);return z.map(v=>v/s)},max:1,highlight:p=>0});
+L.heatmap($('t-heat'),{rows:['the','cat','sat'],cols:['the','cat','sat'],values:p=>[[.7,.2,.1],[.1,.8,.1],[.2,.3,.5]]});
+L.scatter($('t-sc'),{x:[0,10],y:[0,10],points:[[1,2,0],[3,4,0],[6,7,1]],classes:{0:'a',1:'b'},overlay:(ctx,F,pts)=>{ctx.strokeStyle=AI.css('--ok');ctx.beginPath();ctx.moveTo(F.X(0),F.Y(0));ctx.lineTo(F.X(10),F.Y(10));ctx.stroke()},readout:pts=>[['n',pts.length]]});
+L.vectors($('t-vec'),{vecs:[{v:[3,2],label:'a',color:'a'},{v:[1,3],label:'b',color:'b'}],derived:vs=>[{v:[vs[0][0]+vs[1][0],vs[0][1]+vs[1][1]],label:'a+b',dash:1}],readout:vs=>[['a·b',vs[0][0]*vs[1][0]+vs[0][1]*vs[1][1]]]});
+L.stepper($('t-step'),{steps:[{title:'1',text:'أول'},{title:'2',text:'تاني'}],draw:(ctx,W,H,i)=>{ctx.fillStyle=AI.css('--vec-a');ctx.fillRect(20+i*60,40,50,50)}});
+L.flow($('t-flow'),{nodes:[{id:'u',label:'User',x:0,y:.5},{id:'l',label:'LLM',x:.5,y:.2},{id:'t',label:'Tool',x:1,y:.8}],edges:[['u','l','prompt'],['l','t','call'],['t','l','result']],steps:[{active:['u'],text:'step 1'},{active:['l','t'],edges:[['l','t']],text:'step 2'}]});
+L.calc($('t-calc'),{params:[{k:'d',min:512,max:8192,step:512,v:4096},{k:'r',min:1,max:64,step:1,v:16}],compute:p=>[['full',p.d*p.d],['lora',2*p.d*p.r]]});
+})();</script></div>

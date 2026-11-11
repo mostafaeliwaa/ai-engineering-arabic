@@ -1,0 +1,574 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 68 · RAG Evaluation: Precision, Recall, MRR, nDCG, Faithfulness, Answer Relevance</span>
+  <h1>اليوم ٤٩٦: إزاي تعرف الـ RAG بتاعك بايظ فين بالظبط</h1>
+  <p class="lede">مستخدم اشتكى إن الإجابة غلط. العيب في الـ chunker؟ ولا الـ retriever؟ ولا الـ reranker؟ ولا الـ generator اللي ألّف من دماغه؟ من الإجابة لوحدها مش هتعرف. النهاردة هتبني <b>٦ مقاييس</b>: أربعة للـ retrieval والترتيب (<b>precision@k</b>، <b>recall@k</b>، <b>MRR</b>، <b>nDCG@k</b>) واتنين للإجابة (<b>faithfulness</b> و<b>answer relevance</b>)، وكلهم بيقروا من ملف <b>qrels</b> واحد.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>النوع: <b>Build</b> · Python صافي</span>
+    <span>قبله: <b>Query Rewriting: HyDE</b></span>
+    <span>بعده: <b>End-to-End RAG System</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Days 431–515</span>
+    <div class="roadmap" id="d496-roadmap" aria-label="أيام فيز مشاريع التخرج"></div>
+  </div>
+</header>
+
+<section id="d496-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح عملنا query rewriting. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>الـ HyDE بيعمل embedding لإيه بالظبط بدل سؤال المستخدم؟
+      <details><summary>الإجابة</summary>لـ «مستند وهمي»: بنطلب من الـ LLM يكتب فقرة كأنها الإجابة، وبنعمل embedding للفقرة دي ونـ retrieve بيها. الفقرة ممكن تكون غلط كمعلومة، بس كلماتها شبه كلمات الـ docs الحقيقية، وده اللي الـ retriever محتاجه.</details></li>
+    <li>ليه الـ hypothetical document بنخليه جملتين أو تلاتة بس؟
+      <details><summary>الإجابة</summary>الأطول بيلم noise، والأقصر بيضيّع الإشارة اللفظية (الكلمات) اللي الـ HyDE معتمد عليها.</details></li>
+    <li>في الـ multi-query والـ decomposition، بنجمع نتايج كذا retrieval إزاي؟
+      <details><summary>الإجابة</summary>بالـ reciprocal rank fusion (RRF): كل مستند بياخد مجموع <span class="ltr">1/(k+rank)</span> من كل قايمة ظهر فيها. والنهاردة هنعرف إزاي <b>نقيس</b> إن الـ rewriting ده حسّن حاجة فعلًا.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة ونص</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>25 min</b>مقاييس الـ retrieval والترتيب + المعامل</div>
+    <div><b>15 min</b>faithfulness و answer relevance</div>
+    <div><b>30 min</b>اكتب الكود وشغّل المقارنة</div>
+    <div><b>15 min</b>التشخيص + الكويز + التمارين</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d496-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: ٤ أجزاء، وأي واحد فيهم ممكن يكون الجاني</h2></div>
+  <p>أي RAG فيه على الأقل: <b>chunker</b> بيقطّع المستندات، <b>retriever</b> بيجيب top-k، <b>reranker</b> بيرتبهم، و<b>generator</b> بيكتب الإجابة. لو الإجابة غلط فيه ٤ احتمالات:</p>
+  <ol class="ex">
+    <li>الـ chunker قطع الجملة اللي فيها الإجابة نصين.</li>
+    <li>الـ retriever ماجابش الـ chunk الصح في الـ top-k أصلًا.</li>
+    <li>الـ reranker جاب الـ chunk الصح بس نزّله تحت.</li>
+    <li>الـ generator تجاهل الـ chunk وألّف.</li>
+  </ol>
+  <div class="note"><strong>تشبيه:</strong> زي دكتور بيقولك «انت تعبان» وخلاص. محتاج تحاليل منفصلة: دم، ضغط، أشعة. كل مقياس النهاردة «تحليل» لمرحلة واحدة. <b>Retrieval metrics</b> بتحلل اللي طلع من الـ retriever، <b>ranking metrics</b> بتحلل الترتيب، <b>faithfulness</b> بتحلل هل الـ generator فضل جوه الـ context، و<b>answer relevance</b> بتحلل هل الإجابة ردت على السؤال أصلًا.</div>
+  <div class="formula">Qrels ──► Retriever ──► Top-K ──► Precision / Recall / MRR / nDCG
+Qrels + Top-K ──► Generator ──► Answer ──► Faithfulness (vs Top-K)
+                                       └─► Answer Relevance (vs question)</div>
+  <h3>الـ qrels: ورقة الإجابات النموذجية</h3>
+  <p><b>Qrels</b> (اختصار query relevance judgments) هي الـ «gold labels»: لكل سؤال بتكتب إيه المستندات الصح، ودرجة أهمية كل واحد، وجزء من الإجابة الصح.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>{
+  "qid": "q1",
+  "query": "what is the abort threshold for multipart uploads",
+  "gold_doc_ids": ["d1", "d3"],              <span class="c"># للـ precision / recall / MRR</span>
+  "gold_answer_substring": "three failed parts",   <span class="c"># مرجع بس</span>
+  "graded_relevance": {"d1": 3, "d3": 2},    <span class="c"># للـ nDCG</span>
+}</pre></div>
+  <p>ملاحظة مهمة من الدرس: الـ <code>gold_answer_substring</code> متخزن كـ metadata مرجعية بس. الـ faithfulness هنا مش بتتحسب ضده، بتتحسب بمقارنة claims الإجابة بالـ context اللي اترجع. في الشغل الحقيقي انت اللي بتعمل label للـ qrels دي؛ الدرس جايب fixture جاهز عشان الـ eval يشتغل على طول.</p>
+</section>
+
+<!-- STATION 2 -->
+<section id="d496-ret">
+  <div class="station-head"><span class="tag">02</span><h2>Precision@k و Recall@k: نفس الأرقام، سؤالين مختلفين</h2></div>
+  <p><b>Precision@k:</b> من الـ k اللي الـ retriever رجّعهم، كام واحد صح؟ لو الـ gold فيه ٣ مستندات والـ top-3 فيه ٢ صح وواحد غلط، يبقى <span class="ltr">precision@3 = 2/3</span>. استخدمها لما الـ chunk الغلط مكلف (بيضيّع tokens أو «بيسمم» الإجابة).</p>
+  <p><b>Recall@k:</b> من الـ gold كله، كام واحد ظهر في الـ top-k؟ لو الـ gold ٣ والـ top-5 فيه التلاتة، يبقى <span class="ltr">recall@5 = 1.0</span>. استخدمها لما ضياع الإجابة مكلف (أحسن تشوف chunk زيادة غلط من إنك تفوّت الـ chunk الصح).</p>
+  <div class="formula">precision@k = |top_k ∩ gold| / k        recall@k = |top_k ∩ gold| / |gold|</div>
+  <div class="note ai"><strong>ليه recall@k هو الرقم اللي الناس بتقوله في الـ production؟</strong> الـ generator يقدر يتجاهل chunk مالوش لازمة بسهولة، لكن مستحيل يطلّع إجابة من chunk ما شافهوش. الغلطة اللي ملهاش علاج تحت هي إن الـ retriever يفوّت الصح.</div>
+  <p>تفصيلة في الكود: <code>precision_at_k</code> بتقسم على <b>k</b> حتى لو الـ retriever رجّع أقل من k. يعني لو رجّع مستند واحد صح وk = 5، الـ precision = <span class="ltr">1/5</span> مش 1. (فيه test اسمه <code>test_k_larger_than_retrieved</code> بيتأكد من ده.) ولو k ≤ 0 بترجع 0. والـ recall لو الـ gold فاضي بترجع 0.</p>
+
+  <h3>MRR: الإجابة الصح أول واحدة ولا لأ؟</h3>
+  <p>لكل سؤال، دوّر على <b>أول</b> مستند صح في القايمة. الـ reciprocal rank = <span class="ltr">1 / position</span>. لو مفيش ولا مستند صح = 0. الـ <b>MRR</b> هو المتوسط على كل الأسئلة.</p>
+  <div class="formula">rank 1 → 1.0     rank 2 → 0.5     rank 3 → 0.333     rank 10 → 0.1     none → 0</div>
+  <p>لاحظ إن الـ MRR «مسيطر عليه» أول القايمة: الفرق بين rank 1 و2 (نص النقطة) أكبر بكتير من الفرق بين 5 و10. وبيبص على أول hit بس، والباقي ميفرقش معاه.</p>
+
+  <h3>nDCG@k: ترتيب بدرجات</h3>
+  <p><b>Normalized Discounted Cumulative Gain.</b> كل مستند في القايمة بياخد <b>gain</b> حسب درجته، والـ gain ده بيتخصم (<b>discount</b>) كل ما المستند ينزل تحت باللوغاريتم، ونجمع (<b>cumulative</b>)، وبعدين نقسم على أحسن DCG ممكن لو كنت رتبت ترتيب مثالي (<b>IDCG</b>)، فالناتج بين 0 و1.</p>
+  <div class="formula">DCG@k = Σ (2^rel − 1) / log2(i + 2)    (i = 0 للأول)        nDCG@k = DCG@k / IDCG@k</div>
+  <p>الميزة: الـ nDCG بيفهم <b>graded relevance</b>. الـ gold ممكن يقول «d3 درجته 3، d1 درجته 2، d2 درجته 1». الـ MRR والـ recall بيبسطوا كل ده لـ صح/غلط. استخدم nDCG لما يكون فيه كذا مستند «صح جزئيًا» لكل سؤال.</p>
+  <div class="note"><strong>تشبيه:</strong> قايمة نتايج جوجل. الـ precision = كام لينك مفيد في الصفحة. الـ recall = لقيت كل اللينكات المفيدة ولا لأ. الـ MRR = أول لينك مفيد كان رقم كام. الـ nDCG = هل أهم لينك فوق، والأقل أهمية تحته، والزبالة في الآخر.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: رتّب القايمة وشوف الأربع مقاييس بتتحرك</h3>
+      <p>ده سؤال q1 من الـ fixture: «what is the threshold before a multipart upload is dropped». الـ gold: <span class="ltr">d3=3, d1=2, d2=1</span> (الـ gold_doc_ids للـ precision/recall/MRR هم d3 وd1 بس).</p>
+      <p>اضغط على أي مستند عشان تطلّعه فوق، وحرّك k. الأعمدة في الرسم = الـ gain بعد الـ discount لكل مكان.</p>
+      <div class="note ai"><strong>جرّب:</strong> (١) حط d9 أول واحد: الـ MRR يقع للنص والـ nDCG يقع، بس الـ recall@5 ميتغيرش خالص. (٢) بدّل d3 وd1: الـ MRR ثابت 1، والـ precision والـ recall ثابتين، بس الـ nDCG بس هو اللي حس بالفرق.</div>
+    </div>
+    <div class="instrument">
+      <div id="d496-list" style="display:grid;gap:4px;direction:ltr"></div>
+      <label class="mono" style="display:grid;gap:2px;font-size:13px;direction:ltr">k = <span id="d496-vk">3</span><input type="range" id="d496-k" min="1" max="6" value="3"></label>
+      <canvas id="d496-ndcgCv" width="520" height="200" aria-label="الـ gain بعد الخصم لكل مكان"></canvas>
+      <div class="readout">
+        <div><small>precision@k</small><b id="d496-p">0</b></div>
+        <div><small>recall@k</small><b id="d496-r">0</b></div>
+        <div><small>reciprocal rank</small><b id="d496-rr">0</b></div>
+        <div><small>nDCG@k</small><b id="d496-n">0</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" id="d496-ideal">ترتيب مثالي</button>
+        <button type="button" id="d496-bad">ترتيب baseline سيئ</button>
+        <button type="button" id="d496-shuf">عشوائي</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: الـ MRR على ٤ أسئلة</h3>
+      <p>كل slider = مكان أول مستند صح لسؤال (0 = مالقاهوش خالص). شوف قد إيه نزول سؤال واحد من 1 لـ 2 بيأثر أكتر من نزوله من 5 لـ 10.</p>
+      <div class="note"><strong>الدرس:</strong> متوسط عالي ممكن يخبي سؤال بيفشل دايمًا (خليه 0 وشوف المتوسط لسه شكله معقول). عشان كده بنعمل slicing للأسئلة، هتشوفها تحت.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d496-mrrCv" width="520" height="220" aria-label="منحنى 1 على الرتبة"></canvas>
+      <div class="mrow">
+        <label>q1 rank = <span id="d496-vq0">1</span><input type="range" id="d496-q0" min="0" max="10" value="1"></label>
+        <label>q2 rank = <span id="d496-vq1">2</span><input type="range" id="d496-q1" min="0" max="10" value="2"></label>
+        <label>q3 rank = <span id="d496-vq2">1</span><input type="range" id="d496-q2" min="0" max="10" value="1"></label>
+        <label>q4 rank = <span id="d496-vq3">4</span><input type="range" id="d496-q3" min="0" max="10" value="4"></label>
+      </div>
+      <div class="formula" id="d496-mrrTxt"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d496-ans">
+  <div class="station-head"><span class="tag">03</span><h2>Faithfulness و Answer Relevance: تقييم الإجابة نفسها</h2></div>
+  <p><b>Faithfulness</b> (اسمها كمان groundedness أو support أو attribution): قسّم الإجابة لـ <b>claims</b> (جمل)، ولكل claim اسأل: «هل الكلام ده موجود في الـ context اللي اترجع؟». المقياس = نسبة الـ claims اللي عدّت. ده بيمسك الـ generator اللي بيألّف، حتى لو الـ retriever جاب الصح.</p>
+  <p><b>Answer relevance</b>: هل الإجابة ردت على السؤال؟ الـ faithfulness بتسأل «الإجابة متأسسة على الـ <b>context</b>؟»، والـ relevance بتسأل «الإجابة متأسسة على <b>السؤال</b>؟».</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>Faithfulness</th><th>Relevance</th></tr>
+    <tr><td>إجابة متأسسة على الـ context بس بتتكلم في موضوع تاني</td><td>عالي</td><td>واطي</td></tr>
+    <tr><td>إجابة قصيرة في صلب السؤال بس متجاهلة الـ context</td><td>واطي</td><td>عالي</td></tr>
+  </table></div>
+  <p>الطريقة القياسية: <b>LLM-as-judge</b>. prompt بياخد (claim, context) ويرد yes/no، وprompt تاني بياخد (question, answer). الدرس بيستخدم <b>MockJudge</b>: قاضي deterministic بيحسب تداخل الكلمات (token overlap) عشان الـ eval يشتغل offline. في الـ production بتبدله بـ model حقيقي، وشكل المقياس نفسه مبيتغيرش.</p>
+  <div class="formula">supported(claim, ctx):  |tokens(claim) ∩ tokens(ctx)| / |tokens(claim)| ≥ 0.4
+relevant(q, ans):       |tokens(q) ∩ tokens(ans)| / |tokens(q)| ≥ 0.4</div>
+  <p>الـ tokens هنا = كلمات بحروف صغيرة وأرقام، من غير stop words (the, is, of, what, how…) ومن غير الكلمات اللي حرف واحد. والـ claims بتتقسم عند <code>. ! ?</code> متبوعة بمسافة. لو مفيش claims الـ faithfulness = 0، والـ relevance رقم 0 أو 1 لكل سؤال.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: القاضي الـ Mock بعينك</h3>
+      <p>عدّل الإجابة أو الـ context. كل claim هيتلوّن: أخضر لو اتدعم، أحمر لو لأ، وجنبه نسبة التداخل. الكلمات اللي مش موجودة في الـ context متعلّم عليها.</p>
+      <p>جرّب تضيف جملة مألّفة زي <span class="ltr">"Uploads are retried forever by the kernel."</span> وشوف الـ faithfulness تنزل. وحرّك الـ threshold وشوف القاضي بيبقى أشد أو أرحم.</p>
+      <div class="note"><strong>عيب القاضي ده:</strong> بيعدّ كلمات بس. جملة «The abort threshold is not three failed parts» هتعدّي (5 من 6 كلمات موجودين في الـ context، والـ «not» هي الوحيدة الناقصة: 0.83 ≥ 0.4)، مع إنها بتقول العكس! ده بالظبط ليه في الـ production بتستخدم LLM judge حقيقي.</div>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px;font-size:14px">السؤال<input type="text" id="d496-qIn" class="mono" style="font:inherit;font-family:var(--f-mono);font-size:13px;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink);direction:ltr" value="what is the threshold before a multipart upload is dropped"></label>
+      <label style="display:grid;gap:2px;font-size:14px">الـ context (اللي اترجع)<textarea id="d496-ctx" rows="3" style="font-family:var(--f-mono);font-size:13px;padding:6px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink);direction:ltr">Abort threshold. The abort threshold is configured per bucket at three failed parts. Past that threshold the upload is aborted. AbortMultipartOnFail aborts an in-flight S3 multipart upload and decrements the per-bucket retry budget.</textarea></label>
+      <label style="display:grid;gap:2px;font-size:14px">الإجابة<textarea id="d496-ansIn" rows="3" style="font-family:var(--f-mono);font-size:13px;padding:6px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink);direction:ltr">The abort threshold is three failed parts per bucket. Past that threshold the multipart upload is aborted. Uploads are retried forever by the kernel.</textarea></label>
+      <label class="mono" style="display:grid;gap:2px;font-size:13px;direction:ltr">overlap_threshold = <span id="d496-vth">0.40</span><input type="range" id="d496-th" min="0.1" max="1" step="0.05" value="0.4"></label>
+      <div id="d496-claims" style="display:grid;gap:6px;direction:ltr"></div>
+      <div class="readout">
+        <div><small>faithfulness</small><b id="d496-faith">0</b></div>
+        <div><small>question overlap</small><b id="d496-qov">0</b></div>
+        <div><small>answer_relevance</small><b id="d496-rel">0</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d496-diag">
+  <div class="station-head"><span class="tag">04</span><h2>اقرا الأرقام: التشخيص</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>العَرَض</th><th>السبب المحتمل</th><th>تصلّح إيه</th></tr>
+    <tr><td>recall@k واطي و precision@k واطي</td><td>الـ chunker قطع الإجابة أو الـ retriever مش لاقيها</td><td>حدود الـ chunks (درس 64) أو نوع الـ retriever (درس 65)</td></tr>
+    <tr><td>recall@k كويس بس MRR واطي</td><td>الـ chunk الصح في الـ top-k بس مش الأول</td><td>الـ reranker (درس 66)</td></tr>
+    <tr><td>MRR عالي بس faithfulness واطي</td><td>الـ generator بيألّف رغم إن الـ context صح</td><td>prompt التوليد؛ إجبار «استشهد أو ارفض»</td></tr>
+    <tr><td>faithfulness عالي بس relevance واطي</td><td>الإجابة متأسسة بس خارج الموضوع</td><td>الـ query rewriter (درس 67) أو prompt التوليد</td></tr>
+    <tr><td>الأربعة عاليين والمستخدمين لسه بيشتكوا</td><td>الـ eval set مش ممثل للواقع</td><td>زوّد الـ qrels بأسئلة مستخدمين حقيقية</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: دكتور الـ RAG</h3>
+      <p>حرّك المقاييس كأنها جاية من dashboard، وشوف التشخيص بيتغير حسب الجدول اللي فوق. (العتبة 0.7 هنا اختيار مني للتوضيح بس، مش رقم من الدرس.)</p>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>recall@k = <span id="d496-vdr">0.90</span><input type="range" id="d496-dr" min="0" max="1" step="0.05" value="0.9"></label>
+        <label>MRR = <span id="d496-vdm">0.40</span><input type="range" id="d496-dm" min="0" max="1" step="0.05" value="0.4"></label>
+        <label>faithfulness = <span id="d496-vdf">0.90</span><input type="range" id="d496-df" min="0" max="1" step="0.05" value="0.9"></label>
+        <label>relevance = <span id="d496-vdl">0.90</span><input type="range" id="d496-dl" min="0" max="1" step="0.05" value="0.9"></label>
+      </div>
+      <canvas id="d496-diagCv" width="520" height="150" aria-label="أعمدة المقاييس"></canvas>
+      <div class="verdict" id="d496-dx"></div>
+    </div>
+  </div>
+  <h3>Failure modes الديمو هيخبيها عنك</h3>
+  <ul class="checklist">
+    <li><b>تحيّز الـ LLM-as-judge:</b> الموديل بيحكم على كلامه إنه faithful أكتر من الحقيقة. استخدم judge من عيلة موديلات مختلفة عن الـ generator، أو قيّم عينة بإيدك.</li>
+    <li><b>Qrels rot (تعفن الـ qrels):</b> الإجابات الصح بتتغير مع تغير الـ corpus. مستند كان gold لـ q1 في يناير ممكن ميبقاش هو الصح في أكتوبر لأن الفريق غيّر اسم الدالة. اعمل مراجعة للـ qrels كل ربع سنة.</li>
+    <li><b>فحص الـ faithfulness جملة جملة بيفوّت الـ macro-claims:</b> كل جملة لوحدها ممكن تعدّي، بس الإجابة ككل بتضلّل. ضيف مراجعة نوعية لعينة فوق المقياس الأوتوماتيك.</li>
+    <li><b>متوسط recall@k بيخبي فشل أسئلة معينة:</b> 90% متوسط ممكن يخبي إن نوع أسئلة كامل دايمًا بيفشل. قسّم الـ qrels حسب النوع (literal، paraphrased، multi-topic) وطلّع أرقام لكل شريحة.</li>
+  </ul>
+  <h3>في الـ production</h3>
+  <ul class="checklist">
+    <li>شغّل الـ eval مع أي تغيير في الـ retriever أو الـ generator. نزول في recall@k = test فشل.</li>
+    <li>خزّن الـ metric trace لكل سؤال. لما مستخدم يشتكي، دوّر على الـ qrels entry المشابهة وشوف كان هيتمسك ولا لأ.</li>
+    <li>قسّم الـ qrels طبقات: smoke set ‎20‎ سؤال في الـ CI، regression set ‎200‎ كل ليلة، deep set ‎2000‎ كل أسبوع.</li>
+  </ul>
+</section>
+
+<!-- CODE -->
+<section id="d496-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من فولدر الريبو، شغّل الأصل الأول عشان تشوف جدول المقارنة، وبعدين الـ tests:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/68-rag-eval-precision-recall/code/main.py
+<span class="c"># الـ tests (unittest، مش محتاج pytest):</span>
+python3 -m unittest discover phases/19-capstone-projects/68-rag-eval-precision-recall/code/tests</pre></div>
+  <details><summary>شكل الناتج المتوقع</summary><pre class="term">metric          | baseline       | hybrid         | hybrid+rerank
+---------------------------------------------------------------------
+precision@1     | ...
+precision@3     | ...
+...             (12 صف: precision/recall/ndcg عند 1,3,5 + mrr + faithfulness + answer_relevance)</pre><p>الأرقام بـ 3 خانات عشرية. حسب الدرس: صف الـ hybrid بيكسب الـ baseline في الـ recall، والـ rerank بيكسب الـ hybrid في الـ MRR. اقرا الجدول بنفسك واربطه بجدول التشخيص.</p></details>
+  <p><b>القاعدة:</b> افتح <code>my_rag_eval.py</code> واكتب الخطوات دي بإيدك. الـ Copy للمقارنة بس.</p>
+
+  <h3>خطوة ١: الـ Qrel</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import math, re
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+
+@dataclass
+class Qrel:
+    qid: str
+    query: str
+    gold_doc_ids: list[str]                 <span class="c"># المستندات الصح</span>
+    gold_answer_substring: str              <span class="c"># مرجع بس</span>
+    graded_relevance: dict[str, int] = field(default_factory=dict)  <span class="c"># درجات للـ nDCG</span></pre></div>
+
+  <h3>خطوة ٢: precision و recall</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def precision_at_k(retrieved, gold, k):
+    if k &lt;= 0:
+        return 0.0
+    top = retrieved[:k]
+    if not top:
+        return 0.0
+    return sum(1 for r in top if r in gold) / k     <span class="c"># بنقسم على k مش len(top)</span>
+
+def recall_at_k(retrieved, gold, k):
+    if not gold:
+        return 0.0
+    top = set(retrieved[:k])
+    return len(top &amp; gold) / len(gold)              <span class="c"># من الـ gold، لقينا كام؟</span></pre></div>
+
+  <h3>خطوة ٣: reciprocal rank و MRR</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def reciprocal_rank(retrieved, gold):
+    for i, doc_id in enumerate(retrieved):
+        if doc_id in gold:
+            return 1.0 / (i + 1)                    <span class="c"># أول hit بس</span>
+    return 0.0
+
+def mean_reciprocal_rank(retrieved_per_query, gold_per_query):
+    if len(retrieved_per_query) != len(gold_per_query):
+        raise ValueError("retrieved_per_query and gold_per_query must have the same length")
+    if not retrieved_per_query:
+        return 0.0
+    return sum(reciprocal_rank(r, g) for r, g in
+               zip(retrieved_per_query, gold_per_query)) / len(retrieved_per_query)</pre></div>
+
+  <h3>خطوة ٤: DCG و nDCG</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def dcg_at_k(retrieved, graded, k):
+    s = 0.0
+    for i, doc_id in enumerate(retrieved[:k]):
+        rel = graded.get(doc_id, 0)
+        if rel &lt;= 0:
+            continue
+        s += ((2 ** rel) - 1) / math.log2(i + 2)    <span class="c"># gain ÷ discount</span>
+    return s
+
+def ndcg_at_k(retrieved, graded, k):
+    dcg = dcg_at_k(retrieved, graded, k)
+    ideal = [d for d, _ in sorted(graded.items(), key=lambda x: -x[1])]  <span class="c"># أحسن ترتيب</span>
+    idcg = dcg_at_k(ideal, graded, k)
+    return 0.0 if idcg == 0 else dcg / idcg</pre></div>
+
+  <h3>خطوة ٥: claims والقاضي الـ Mock</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>_SENTENCE_BOUNDARY = re.compile(r"(?&lt;=[.!?])\s+")
+_TOK = re.compile(r"[a-z0-9]+")
+STOP = {"the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "of", "to", "in", "on", "at", "for", "with", "and", "or", "as", "by",
+        "that", "this", "these", "those", "it", "its", "from", "we", "our", "you",
+        "your", "i", "do", "does", "did", "have", "has", "had", "will", "would",
+        "can", "could", "should", "may", "might", "what", "when", "where",
+        "which", "who", "why", "how"}
+
+def extract_claims(answer):                         <span class="c"># جملة = claim</span>
+    parts = _SENTENCE_BOUNDARY.split(answer.strip())
+    return [p.strip() for p in parts if p.strip()]
+
+def _content_tokens(text):
+    return {t for t in _TOK.findall(text.lower()) if t not in STOP and len(t) &gt; 1}
+
+@dataclass
+class MockJudge:
+    overlap_threshold: float = 0.4
+
+    def supported(self, claim, context):           <span class="c"># claim موجود في الـ context؟</span>
+        c, ctx = _content_tokens(claim), _content_tokens(context)
+        if not c or not ctx:
+            return False
+        return len(c &amp; ctx) / len(c) &gt;= self.overlap_threshold
+
+    def relevant(self, question, answer):          <span class="c"># الإجابة بتغطي السؤال؟</span>
+        q, a = _content_tokens(question), _content_tokens(answer)
+        if not q:
+            return False
+        return len(q &amp; a) / len(q) &gt;= self.overlap_threshold</pre></div>
+  <p>لاحظ الاتجاه: في <code>supported</code> بنقسم على كلمات الـ <b>claim</b>، وفي <code>relevant</code> بنقسم على كلمات <b>السؤال</b>.</p>
+
+  <h3>خطوة ٦: faithfulness و answer relevance</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def faithfulness(claims, context_texts, judge):
+    if not claims:
+        return 0.0
+    blob = " ".join(context_texts)                  <span class="c"># كل الـ context في نص واحد</span>
+    return sum(1 for c in claims if judge.supported(c, blob)) / len(claims)
+
+def answer_relevance(question, answer, judge):
+    return 1.0 if judge.relevant(question, answer) else 0.0</pre></div>
+
+  <h3>خطوة ٧: الـ orchestrator</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def evaluate_pipeline(pipeline, qrels, ks=(1, 3, 5), judge=None):
+    judge = judge or MockJudge()
+    per_q_ret, per_q_gold, per_q_ans = [], [], []
+    metrics = defaultdict(list)
+    for q in qrels:
+        retrieved, answer = pipeline(q.query, max(ks))   <span class="c"># pipeline(query, k) → (ids, answer)</span>
+        gold = set(q.gold_doc_ids)
+        per_q_ret.append(retrieved); per_q_gold.append(gold)
+        per_q_ans.append((q.query, answer, retrieved))
+        for k in ks:
+            metrics[f"precision@{k}"].append(precision_at_k(retrieved, gold, k))
+            metrics[f"recall@{k}"].append(recall_at_k(retrieved, gold, k))
+            metrics[f"ndcg@{k}"].append(ndcg_at_k(retrieved, q.graded_relevance, k))
+
+    by_id = {d.doc_id: d for d in CORPUS}               <span class="c"># CORPUS = الـ 12 مستند في الملف</span>
+    faith, rel = [], []
+    for question, answer, retrieved in per_q_ans:
+        ctx = [by_id[d].text() for d in retrieved if d in by_id]
+        faith.append(faithfulness(extract_claims(answer), ctx, judge))
+        rel.append(answer_relevance(question, answer, judge))
+
+    return {
+        "per_query_retrieved": per_q_ret,
+        **{m: sum(v) / len(v) if v else 0.0 for m, v in metrics.items()},
+        "mrr": mean_reciprocal_rank(per_q_ret, per_q_gold),
+        "faithfulness": sum(faith) / len(faith) if faith else 0.0,
+        "answer_relevance": sum(rel) / len(rel) if rel else 0.0,
+    }</pre></div>
+  <p>انسخ من الملف الأصلي الـ <code>Doc</code> والـ <code>CORPUS</code> (12 مستند) والـ <code>QRELS</code> (4 أسئلة) والتلات pipelines: <code>baseline_pipeline</code> (تداخل كلمات بس، بيخسر لما السؤال يقول «dropped» والمستند يقول «aborted»)، <code>hybrid_pipeline</code> (نفس الكلام + قاموس مرادفات <code>_SYN</code> + bonus لو كلمة في العنوان، بديل لـ retriever درس 65)، و<code>hybrid_plus_rerank_pipeline</code> (بيجيب <span class="ltr">2k</span> ويعيد ترتيبهم بـ boost تقيل للعنوان، بديل للـ cross-encoder). الإجابة في الـ baseline = body أول مستند، وفي الاتنين التانيين = أول مستندين متلزقين.</p>
+
+  <h3>خطوة ٨: اطبع جدول المقارنة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def main():
+    pipelines = {"baseline": baseline_pipeline, "hybrid": hybrid_pipeline,
+                 "hybrid+rerank": hybrid_plus_rerank_pipeline}
+    order = ["precision@1", "precision@3", "precision@5",
+             "recall@1", "recall@3", "recall@5",
+             "ndcg@1", "ndcg@3", "ndcg@5",
+             "mrr", "faithfulness", "answer_relevance"]
+    rows = {n: evaluate_pipeline(fn, QRELS, ks=(1, 3, 5)) for n, fn in pipelines.items()}
+    header = "metric          | " + " | ".join(f"{n:&lt;14}" for n in pipelines)
+    print(header); print("-" * len(header))
+    for m in order:
+        print(f"{m:&lt;15} | " + " | ".join(f"{rows[n][m]:.3f}".ljust(14) for n in pipelines))
+
+if __name__ == "__main__":
+    main()</pre></div>
+  <details><summary>اختبر نفسك بالـ tests بتاعة الدرس (اكتبهم في دماغك)</summary><pre class="term">precision_at_k(["a"], {"a"}, 5)          → 0.2
+recall_at_k(["a"], {"a","b"}, 1)         → 0.5
+reciprocal_rank(["x","a"], {"a"})        → 0.5
+MRR of ranks 1, 2, none                  → (1 + 0.5 + 0) / 3 = 0.5
+ndcg_at_k(["a","b","c"], {"a":3,"b":2,"c":1}, 3) → 1.0
+extract_claims("First claim. Second claim! Third claim? Trailing") → 4 claims</pre></details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d496-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>hit-rate@k:</b> ضيف مقياس خامس وقارنه بالـ recall@k. امتى بيختلفوا؟
+      <details><summary>تلميح وإجابة</summary><code>hit_rate_at_k = 1.0 if set(retrieved[:k]) &amp; gold else 0.0</code>. بيتساووا لما الـ gold فيه مستند واحد بس (زي q2 وq3 وq4). بيختلفوا لما الـ gold أكتر من واحد: لو لقيت d3 بس من <span class="ltr">{d3, d1}</span> يبقى hit-rate = 1 وrecall = 0.5. الـ hit-rate بيسأل «لقيت أي حاجة؟» والـ recall بيسأل «لقيت كله؟».</details></li>
+    <li><b>Faithfulness بدرجات:</b> 0 مش مدعوم، 1 مدعوم جزئيًا، 2 مدعوم كامل.
+      <details><summary>تلميح</summary>خلي القاضي يرجّع درجة بدل bool: مثلًا overlap ≥ 0.8 → 2، ≥ 0.4 → 1، غير كده 0. والمقياس = <span class="ltr">sum(scores) / (2 * len(claims))</span> عشان يفضل بين 0 و1.</details></li>
+    <li><b>Judge حقيقي:</b> بدّل الـ MockJudge بـ model call وقيس الاختلاف بينهم على الـ fixture.
+      <details><summary>تلميح</summary>اعمل class فيه نفس الدالتين <code>supported</code> و<code>relevant</code> (نفس الـ interface، فالـ evaluator مش هيحس). prompt بيرجع yes/no بس، و<span class="ltr">temperature=0</span>. قيس disagreement = عدد الـ claims اللي القاضيين اختلفوا عليها ÷ الإجمالي. وجرب جملة النفي اللي في المعمل ٣.</details></li>
+    <li><b>Slicing بنوع السؤال:</b> ضيف class ("literal"، "paraphrased"، "multi-topic") وطلّع المقاييس لكل شريحة.
+      <details><summary>تلميح</summary>ضيف <code>query_class: str = "literal"</code> للـ Qrel، وبعدين <code>groupby</code> على الـ class ونادي <code>evaluate_pipeline</code> على كل مجموعة لوحدها. q1 مثلًا paraphrased («dropped» بدل «aborted»).</details></li>
+    <li><b>طول الإجابة ضد الـ faithfulness:</b> ضيف مقياس للطول واعمل correlation وارسم المنحنى.
+      <details><summary>تلميح</summary>خزّن لكل سؤال <code>(len(answer.split()), faith)</code> وارسمهم scatter بـ matplotlib. توقّع (مش حقيقة من الدرس، جرّب وشوف): كل ما الإجابة تطول، فرص جملة مألّفة تزيد.</details></li>
+    <li><b>إضافة مني · CI gate حقيقي:</b> اكتب script <code>eval_gate.py</code> بيشغّل <code>evaluate_pipeline</code> على الـ pipeline الجديد ويقارنه بـ baseline محفوظ في <code>baseline_metrics.json</code>، ويفشل (<code>sys.exit(1)</code>) لو recall@5 نزل أكتر من 0.02 أو faithfulness نزلت تحت رقم انت تحدده.
+      <details><summary>الفكرة</summary>ده بالظبط «عامل نزول الـ recall زي test فشل». احذف <code>per_query_retrieved</code> قبل ما تحفظ الـ json، وخلّي الـ script يطبع جدول diff بين القديم والجديد. اربطه بـ GitHub Actions على أي PR بيلمس الـ retriever أو الـ prompts.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d496-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: حاجات الدرس مقالهاش</h2></div>
+  <ul class="checklist">
+    <li><b>precision@k مع k ثابت ظالمة شوية:</b> لو السؤال ليه مستند gold واحد بس، أحسن precision@5 ممكنة = 0.2. فمتقارنش precision بين أسئلة عدد الـ gold بتاعها مختلف من غير ما تاخد ده في بالك.</li>
+    <li><b>ليه <span class="ltr">2^rel − 1</span>؟</b> عشان يكبّر الفرق بين المستند الممتاز والكويس: درجة 3 → gain 7، درجة 2 → 3، درجة 1 → 1. يعني المستند الممتاز أهم بكتير من «ضعف» الكويس.</li>
+    <li><b>الـ IDCG في الكود بيتحسب من الـ graded_relevance بس</b>، مش من الـ gold_doc_ids. فلو نسيت تحط درجات، الـ nDCG = 0 دايمًا. خلي الـ qrels متسقة.</li>
+    <li><b>MRR عالي ≠ الإجابة صح:</b> الـ MRR بيقيس الـ retriever. ممكن يبقى 1.0 والـ generator يألّف. عشان كده لازم المقاييس الست مع بعض.</li>
+    <li><b>في الـ Agents:</b> نفس الفكرة بتتطبق على tool retrieval: لما الـ agent بيختار tool من 200، الـ recall@k بتاع «الـ tool الصح ظهر في الـ candidates؟» هو أول رقم تبص عليه. ونفس الـ faithfulness بتتطبق على ملخصات الـ agent لنتايج الـ tools.</li>
+    <li><b>Contextual Retrieval من Anthropic</b> (في القراءات الإضافية) بيقيس الـ retrieval بـ <span class="ltr">1 − recall@20</span>، يعني «نسبة الفشل»، وده أسهل في المقارنة لما الأرقام كلها قريبة من 1.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d496-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d496-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d496-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d496-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أحسب precision@k وrecall@k وMRR بإيدي على قايمة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه الـ nDCG هو الوحيد اللي حس بتبديل d3 وd1 في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الفرق بين faithfulness وanswer relevance وعيب الـ mock judge</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ eval بإيدي وشغّلت جدول المقارنة والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="5"> أقدر أشخّص المرحلة البايظة من الأرقام</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>recall@k</td><td>الرقم الأساسي لأي retriever في RAG، وفي اختيار الـ tools عند الـ agents</td></tr>
+    <tr><td>MRR</td><td>تقييم الـ rerankers ومحركات البحث</td></tr>
+    <tr><td>nDCG@k</td><td>أنظمة البحث والـ recommendation اللي فيها درجات أهمية</td></tr>
+    <tr><td>Faithfulness</td><td>كشف الـ hallucination في RAG، أدوات زي Ragas</td></tr>
+    <tr><td>Answer relevance</td><td>كشف الإجابات اللي «صح بس مش في الموضوع»</td></tr>
+    <tr><td>Qrels</td><td>الـ eval sets في الـ CI، مراجعات ربع سنوية</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> End-to-End RAG System. هنوصّل كل القطع (chunker، retriever، reranker، generator) ونشغّل الـ eval ده على النظام كله.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F68-rag-eval-precision-recall" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/68-rag-eval-precision-recall</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=496,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d496-roadmap').closest('.day');
+
+// roadmap: phase 19 = days 431..515
+const rm=$('d496-roadmap');
+for(let i=431;i<=515;i++){const s=document.createElement('span');s.textContent=i-430;s.title='Day '+i;if(i===N)s.className='now';rm.appendChild(s)}
+setTimeout(()=>{const n=rm.querySelector('.now');if(n&&rm.scrollWidth>rm.clientWidth)rm.scrollLeft=n.offsetLeft-rm.clientWidth/2},50);
+
+// ---------- Lab 1: ranking metrics ----------
+const GRADED={d3:3,d1:2,d2:1},GOLD=new Set(['d3','d1']);
+const TITLES={d1:'AbortMultipartOnFail',d2:'Uploading large files',d3:'Abort threshold',d9:'Drop policy for stale records',d7:'Cancellation',d10:'Worker pool sizing'};
+let order=['d9','d1','d7','d3','d2','d10'];
+const lc=$('d496-ndcgCv'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+function dcg(list,k){let s=0;list.slice(0,k).forEach((d,i)=>{const r=GRADED[d]||0;if(r>0)s+=(Math.pow(2,r)-1)/Math.log2(i+2)});return s}
+function ndcg(list,k){const ideal=Object.entries(GRADED).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);const i=dcg(ideal,k);return i?dcg(list,k)/i:0}
+function rank(){
+  const k=+$('d496-k').value;$('d496-vk').textContent=k;
+  const L=$('d496-list');L.innerHTML='';
+  order.forEach((d,i)=>{const b=document.createElement('button');b.type='button';
+    const g=GRADED[d]||0,inK=i<k;
+    b.style.cssText='text-align:left;display:flex;justify-content:space-between;gap:8px;font-family:var(--f-mono);font-size:13px;'+(inK?'':'opacity:.45;')+(g?'border-color:'+css(g===3?'--ok':g===2?'--vec-a':'--vec-b'):'');
+    b.innerHTML='<span>#'+(i+1)+' '+d+' · '+TITLES[d]+'</span><span>'+(g?'rel '+g+(GOLD.has(d)?' ★':''):'—')+'</span>';
+    b.title='اطلع فوق';
+    b.addEventListener('click',()=>{if(i>0){[order[i-1],order[i]]=[order[i],order[i-1]];rank()}});
+    L.appendChild(b)});
+  const top=order.slice(0,k),hits=top.filter(d=>GOLD.has(d)).length;
+  $('d496-p').textContent=f(hits/k,3);$('d496-r').textContent=f(hits/GOLD.size,3);
+  const fi=order.findIndex(d=>GOLD.has(d));$('d496-rr').textContent=f(fi<0?0:1/(fi+1),3);
+  $('d496-n').textContent=f(ndcg(order,k),3);
+  // chart
+  lx.clearRect(0,0,LW,LH);const bw=LW/6,base=LH-34,sc=(base-14)/7;
+  order.forEach((d,i)=>{const r=GRADED[d]||0,gain=Math.pow(2,r)-1,disc=gain/Math.log2(i+2),x=i*bw+10;
+    lx.fillStyle=css('--soft');lx.fillRect(x,base-gain*sc,bw-20,gain*sc);
+    lx.fillStyle=i<k?css('--vec-a'):css('--muted');lx.globalAlpha=i<k?1:.4;lx.fillRect(x,base-disc*sc,bw-20,disc*sc);lx.globalAlpha=1;
+    lx.fillStyle=css('--ink');lx.font='12px JetBrains Mono, monospace';lx.textAlign='center';
+    lx.fillText(d,x+(bw-20)/2,base+14);lx.fillStyle=css('--muted');lx.fillText('÷log2('+(i+2)+')',x+(bw-20)/2,base+28);
+    if(gain)lx.fillText(f(disc,2),x+(bw-20)/2,base-disc*sc-4)});
+  lx.strokeStyle=css('--vec-b');lx.setLineDash([5,4]);lx.beginPath();lx.moveTo(k*bw,4);lx.lineTo(k*bw,base);lx.stroke();lx.setLineDash([]);
+  lx.fillStyle=css('--vec-b');lx.textAlign='left';lx.fillText('k',k*bw+4,14);
+}
+$('d496-k').addEventListener('input',rank);
+$('d496-ideal').addEventListener('click',()=>{order=['d3','d1','d2','d9','d7','d10'];rank()});
+$('d496-bad').addEventListener('click',()=>{order=['d9','d1','d7','d3','d2','d10'];rank()});
+$('d496-shuf').addEventListener('click',()=>{for(let i=order.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[order[i],order[j]]=[order[j],order[i]]}rank()});
+rank();
+
+// ---------- Lab 2: MRR ----------
+const mc=$('d496-mrrCv'),mx=AI.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+function mrr(){
+  const r=[0,1,2,3].map(i=>+$('d496-q'+i).value);
+  r.forEach((v,i)=>$('d496-vq'+i).textContent=v||'none');
+  const rr=r.map(v=>v?1/v:0),m=rr.reduce((a,b)=>a+b,0)/4;
+  mx.clearRect(0,0,MW,MH);const X=v=>40+(v-1)*(MW-60)/9,Y=v=>MH-30-v*(MH-50);
+  mx.strokeStyle=css('--line');mx.lineWidth=1;mx.beginPath();mx.moveTo(40,Y(0));mx.lineTo(MW-10,Y(0));mx.moveTo(40,Y(0));mx.lineTo(40,Y(1));mx.stroke();
+  mx.strokeStyle=css('--muted');mx.lineWidth=2;mx.beginPath();for(let v=1;v<=10;v+=.1){const p=[X(v),Y(1/v)];v===1?mx.moveTo(...p):mx.lineTo(...p)}mx.stroke();
+  mx.font='12px JetBrains Mono, monospace';mx.fillStyle=css('--muted');mx.textAlign='center';
+  for(let v=1;v<=10;v++)mx.fillText(v,X(v),MH-14);mx.textAlign='left';mx.fillText('1/rank',44,16);
+  const cols=['--vec-a','--vec-b','--ok','--bad'];
+  r.forEach((v,i)=>{mx.fillStyle=css(cols[i]);const px=v?X(v):X(1)+i*14,py=Y(rr[i]);mx.beginPath();mx.arc(px+(v?0:0),py,7,0,7);mx.fill();mx.fillStyle=css('--ink');mx.fillText('q'+(i+1),px+9,py-6)});
+  mx.strokeStyle=css('--ink');mx.setLineDash([6,4]);mx.beginPath();mx.moveTo(40,Y(m));mx.lineTo(MW-10,Y(m));mx.stroke();mx.setLineDash([]);
+  mx.fillStyle=css('--ink');mx.textAlign='right';mx.fillText('MRR = '+f(m,3),MW-12,Y(m)-6);mx.textAlign='left';
+  $('d496-mrrTxt').textContent='MRR = ('+rr.map(v=>f(v,3)).join(' + ')+') / 4 = '+f(m,3);
+}
+[0,1,2,3].forEach(i=>$('d496-q'+i).addEventListener('input',mrr));mrr();
+
+// ---------- Lab 3: mock judge ----------
+const STOP=new Set('the a an is are was were be been being of to in on at for with and or as by that this these those it its from we our you your i do does did have has had will would can could should may might what when where which who why how'.split(' '));
+const toks=t=>new Set((t.toLowerCase().match(/[a-z0-9]+/g)||[]).filter(w=>!STOP.has(w)&&w.length>1));
+const claimsOf=a=>a.trim().split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(Boolean);
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function judge(){
+  const th=+$('d496-th').value;$('d496-vth').textContent=th.toFixed(2);
+  const ctx=toks($('d496-ctx').value),ans=$('d496-ansIn').value,q=toks($('d496-qIn').value);
+  const cl=claimsOf(ans),box=$('d496-claims');box.innerHTML='';let ok=0;
+  cl.forEach(c=>{const ct=toks(c),inter=[...ct].filter(t=>ctx.has(t)).length,ov=ct.size?inter/ct.size:0,sup=ct.size>0&&ctx.size>0&&ov>=th;if(sup)ok++;
+    const d=document.createElement('div');d.style.cssText='border:1px solid '+css(sup?'--ok':'--bad')+';border-radius:6px;padding:4px 8px;font-family:var(--f-mono);font-size:12.5px';
+    const words=c.split(/(\s+)/).map(w=>{const t=(w.toLowerCase().match(/[a-z0-9]+/g)||[]).filter(x=>!STOP.has(x)&&x.length>1);const miss=t.length&&t.some(x=>!ctx.has(x));return miss?'<u style="text-decoration-color:'+css('--bad')+';text-decoration-thickness:2px">'+esc(w)+'</u>':esc(w)}).join('');
+    d.innerHTML='<b style="color:'+css(sup?'--ok':'--bad')+'">'+(sup?'✓ supported':'✗ unsupported')+' · '+inter+'/'+ct.size+' = '+f(ov,2)+'</b><br>'+words;box.appendChild(d)});
+  const faith=cl.length?ok/cl.length:0;$('d496-faith').textContent=f(faith,3);
+  const at=toks(ans),qi=[...q].filter(t=>at.has(t)).length,qov=q.size?qi/q.size:0;
+  $('d496-qov').textContent=qi+'/'+q.size+' = '+f(qov,2);$('d496-rel').textContent=(q.size&&qov>=th)?'1.0':'0.0';
+}
+['d496-th','d496-ctx','d496-ansIn','d496-qIn'].forEach(id=>$(id).addEventListener('input',judge));judge();
+
+// ---------- Lab 4: diagnosis ----------
+const dc=$('d496-diagCv'),dx=AI.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+function diag(){
+  const v={r:+$('d496-dr').value,m:+$('d496-dm').value,f:+$('d496-df').value,l:+$('d496-dl').value};
+  $('d496-vdr').textContent=v.r.toFixed(2);$('d496-vdm').textContent=v.m.toFixed(2);$('d496-vdf').textContent=v.f.toFixed(2);$('d496-vdl').textContent=v.l.toFixed(2);
+  const T=.7,lo=x=>x<T;let msg,bad;
+  if(lo(v.r)){msg='recall واطي ← المشكلة في الـ chunker أو الـ retriever (دروس 64 و65)';bad='r'}
+  else if(lo(v.m)){msg='الـ recall كويس بس الـ MRR واطي ← الصح موجود بس مش أول واحد: الـ reranker (درس 66)';bad='m'}
+  else if(lo(v.f)){msg='الـ retrieval تمام بس faithfulness واطي ← الـ generator بيألّف: صلّح الـ prompt (استشهد أو ارفض)';bad='f'}
+  else if(lo(v.l)){msg='متأسسة بس خارج الموضوع ← الـ query rewriter (درس 67) أو prompt التوليد';bad='l'}
+  else{msg='كله عالي. لو المستخدمين لسه بيشتكوا ← الـ eval set مش ممثل: زوّد أسئلة حقيقية';bad=null}
+  const e=$('d496-dx');e.textContent=msg;e.style.color=bad?css('--bad'):css('--ok');
+  dx.clearRect(0,0,DW,DH);const items=[['recall@k','r'],['MRR','m'],['faithful','f'],['relevance','l']],bw=DW/4;
+  items.forEach(([n,k],i)=>{const x=i*bw+16,w=bw-32,h=v[k]*(DH-40);
+    dx.fillStyle=css('--soft');dx.fillRect(x,10,w,DH-40);dx.fillStyle=css(k===bad?'--bad':lo(v[k])?'--vec-b':'--vec-a');dx.fillRect(x,DH-30-h,w,h);
+    dx.fillStyle=css('--ink');dx.font='12px JetBrains Mono, monospace';dx.textAlign='center';dx.fillText(n,x+w/2,DH-12)});
+  const ty=DH-30-T*(DH-40);dx.strokeStyle=css('--muted');dx.setLineDash([4,4]);dx.beginPath();dx.moveTo(0,ty);dx.lineTo(DW,ty);dx.stroke();dx.setLineDash([]);dx.textAlign='left';
+}
+['d496-dr','d496-dm','d496-df','d496-dl'].forEach(id=>$(id).addEventListener('input',diag));diag();
+
+// ---------- quiz ----------
+AI.quiz($('d496-quizBox'),[
+ ['ليه recall@k عادة هو الرقم الأساسي للـ retrieval في RAG الـ production؟',['الـ recall بيتجاهل الترتيب','الـ recall مطلوب في الـ OpenAPI spec','الـ recall هو نفسه الـ precision في RAG','الـ generator يقدر يتجاهل chunks مالهاش لازمة لكن مستحيل يطلّع إجابة من chunk ما شافهوش، فتفويت الـ chunk الصح هو الغلطة الأغلى'],3,'retriever فوّت الـ chunk الصح مفيش حاجة تحت تصلّحه؛ الـ chunks الزيادة بتضيّع tokens بس نادرًا ما بتبوّظ الإجابة.'],
+ ['الـ MRR بيحسب إيه؟',['عدد tokens الإجابة','المتوسط الهندسي للـ cosine similarity','الـ median لرتبة تاني مستند صح','متوسط 1 / مكان أول مستند صح على كل الأسئلة'],3,'الـ MRR مسيطر عليه أول القايمة: rank 1 بيدي 1.0، rank 2 بيدي 0.5، rank 10 بيدي 0.1.'],
+ ['امتى تستخدم nDCG بدل recall@k؟',['لما الـ retriever مش بيرجّع scores','لما الـ corpus صغير','أبدًا','لما الـ gold labels فيها درجات أهمية (مثلًا A=3، B=2، C=1) والمقاييس الـ binary بتضيّع المعلومة دي'],3,'الـ nDCG بيستخدم gains بدرجات وخصم حسب المكان؛ الـ recall بيبسط كل حاجة لصح/غلط.'],
+ ['إيه الفرق بين faithfulness وanswer relevance؟',['faithfulness مقياس retrieval والـ relevance مقياس chunker','هما نفس المقياس باسمين','faithfulness بتقيس precision والـ relevance بتقيس recall','faithfulness بتسأل «الإجابة متأسسة على الـ context اللي اترجع؟» والـ relevance بتسأل «الإجابة ردت على السؤال؟»'],3,'إجابة faithful بس خارج الموضوع: faithfulness عالي وrelevance واطي. إجابة في الموضوع بس مش متأسسة: العكس.'],
+ ['pipeline عنده recall@5 كويس بس MRR واطي. تفحص أنهي مرحلة الأول؟',['الـ generator','الـ chunker','الـ corpus ingestor','الـ reranker، لأن الـ chunk الصح في الـ top-k بس مش فوق'],3,'recall@5 معناه الصح في أول 5؛ MRR واطي معناه مش في الأول. ده شغل الـ reranker.'],
+ ['إيه الخطر اللي بيخلي ملف qrels متجمد خطير مع الوقت؟',['الـ eval بياكل مساحة disk','الـ embedding vectors بتنتهي صلاحيتها','الـ retriever بيبطل يشتغل بعد ٦ شهور','Qrels rot: الـ corpus بيتغير ومستند كان الإجابة الصح الربع اللي فات مبقاش هو؛ والأرقام بتتحسب على labels قديمة'],3,'اعمل مراجعة للـ qrels كل ربع سنة، وإلا المقاييس هتقيس الحاجة الغلط والـ corpus بيتطور.'],
+ ['(سؤال مني) الـ gold = {d3, d1}. الـ retriever رجّع [d9, d3, d7, d1, d2]. إيه precision@3 وrecall@3 والـ reciprocal rank؟',['1/3 و 1/2 و 1/2','2/3 و 1 و 1','1/3 و 1/2 و 1','2/5 و 1 و 1/2'],0,'أول 3 = d9, d3, d7 فيهم d3 بس صح: precision = 1/3، recall = 1/2 (لقينا d3 من اتنين). أول صح في المكان 2 → RR = 0.5.'],
+ ['(سؤال مني) الـ MockJudge بيعتبر جملة «The abort threshold is not three failed parts» supported مع context بيقول إنه three failed parts. ليه؟',['لأن threshold 0.4 عالي','لأنه بيعد تداخل الكلمات بس: 5 من 6 كلمات موجودين في الـ context (0.83)، والـ «not» اللي قلبت المعنى مجرد كلمة ناقصة واحدة','لأن الـ claims مش بتتقسم صح','لأن الـ context فاضي'],1,'القاضي اللفظي مش بيفهم المعنى. ده بالظبط ليه بتبدله بـ LLM judge في الـ production، وتعمل hand-grading لعينة.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+AI.onTheme(()=>{if(!document.body.contains(lc))return false;rank();mrr();judge();diag()});
+})();
+</script>

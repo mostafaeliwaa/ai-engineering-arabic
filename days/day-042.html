@@ -1,0 +1,674 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 20 · Monitoring Models in Production — Data Drift and Concept Drift</span>
+  <h1>اليوم ٤٢: الموديل بيقع من غير ما يقولك</h1>
+  <p class="lede">الموديل اللي في الـ production عمره ما هيرمي error لما يبوظ. هيفضل يرجّع scores بـ HTTP 200 والدنيا حواليه بتتغير. النهاردة هتبني بإيدك الأدوات اللي بتكشف ده: <b>PSI</b> و<b>KS</b> و<b>chi-square</b>، والـ windows، وسياسة alerts ما تصحّيكش بالليل على الفاضي.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١١٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (stdlib بس)</b></span>
+    <span>قبله: <b>ML System Design</b></span>
+    <span>بعده: <b>Feature Stores و Training-Serving Skew</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d42-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d42-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر امبارح</h2></div>
+  <p>امبارح صممنا نظام ML من المشكلة لحد الـ deployment. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. إيه الفرق بين offline metric و online metric و business metric؟</summary>الـ offline بيتقاس قبل الإطلاق على داتا قديمة محجوزة (زي F1). الـ online بيتقاس على الترافيك الحي (زي نسبة قبول العرض). والـ business بيتقاس بعد أسابيع بتجربة (زي نسبة الـ churn في الجروب اللي اتعامل مقابل holdout). والـ guardrails لازم ما تسوءش طول الوقت.</details>
+  <details><summary>٢. يعني إيه label delay، وإديني مثال؟</summary>الوقت ما بين الـ prediction ووصول النتيجة الحقيقية. في الـ fraud الـ chargeback ممكن ييجي بعد أسابيع، وفي الـ churn بعد ٣٠ يوم. النهاردة هنشوف إن التأخير ده هو اللي بيأخر اكتشاف الـ concept drift.</details>
+  <details><summary>٣. لو توزيع الـ scores اتحرك فجأة، إيه الـ safe default؟</summary>وقّف الأفعال الأوتوماتيك ونبّه بني آدم. النهاردة هنتعلم إزاي نكتشف الحركة دي بالأرقام بدل ما نستنى تقرير الفاينانس.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>15 min</b>الـ ٤ طبقات وأنواع الـ drift التلاتة</div>
+    <div><b>25 min</b>PSI و KS و chi-square + المعامل</div>
+    <div><b>15 min</b>الـ windows وسياسة الـ alerts</div>
+    <div><b>30 min</b>اكتب الكود وشغّل الـ stream</div>
+    <div><b>25 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d42-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: كل حاجة خضرا والموديل غلطان</h2></div>
+  <p>موديل payment-risk نزل بدقة ٩٥٪. بعد شهرين حملة ماركتنج جابت يوزرز من الـ app بسلّات (baskets) أكبر. بعد أربع شهور الـ fraudsters غيروا طريقتهم، ودفعات كانت آمنة بقت تتحول لـ chargebacks.</p>
+  <p>طول الوقت ده السيرفس بترجّع HTTP 200، والـ latency طبيعي، والـ logs نضيفة. أول علامة على المصيبة كانت تقرير فاينانس عن الـ chargebacks بعد أسابيع من الخسارة.</p>
+  <div class="note"><strong>التشبيه:</strong> software monitoring زي إنك تتأكد إن الدكتور بيرد على التليفون. model monitoring إنك تتأكد إن التشخيص اللي بيقوله لسه صح، وإن العيانين اللي بييجوا لسه شبه اللي اتدرب عليهم.</div>
+
+  <h3>تراقب إيه؟ ٤ طبقات</h3>
+  <p>أول تلاتة بيدّوك إنذار بدري. الرابعة بس هي اللي بتقيس الصح والغلط، بس بتيجي متأخرة.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الطبقة</th><th>الإشارات</th><th>متاحة إمتى</th><th>بتجاوب على</th></tr>
+    <tr><td>System health</td><td>p50/p99 latency، error rate، throughput، memory</td><td>فورًا</td><td>السيرفس بترد؟</td></tr>
+    <tr><td>Inputs</td><td>توزيع كل feature، نسبة الـ missing، الـ schema، categories جديدة</td><td>فورًا</td><td>الداتا الحية شبه داتا التدريب؟</td></tr>
+    <tr><td>Predictions</td><td>توزيع الـ scores، نسبة الـ positive، نسبة الإجابات الـ default</td><td>فورًا</td><td>الموديل بيتصرف زي الأول؟</td></tr>
+    <tr><td>Outcomes</td><td>accuracy، precision، calibration، business metric</td><td>بعد الـ label delay</td><td>الموديل لسه صح؟</td></tr>
+  </table></div>
+  <p>الدرس ده مركز على مراقبة الـ <b>inputs</b> لأنها شغالة قبل ما الـ labels توصل. بس ليها حد هتشوفه بعينك: في تغييرات مش بتلمس الـ inputs خالص.</p>
+</section>
+
+<section id="d42-types">
+  <div class="station-head"><span class="tag">02</span><h2>أنواع الـ drift التلاتة</h2></div>
+  <p>التوزيع المشترك للـ inputs <code>x</code> والـ labels <code>y</code> ممكن تكتبه بطريقتين:</p>
+  <div class="formula">P(x, y) = P(x) · P(y | x) = P(y) · P(x | y)</div>
+  <p>كل نوع drift بيغيّر حتة مختلفة من دول:</p>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>اللي اتغير</th><th>اللي ثابت</th><th>مثال الدفع</th><th>مين يشوفه</th></tr>
+    <tr><td>Covariate drift</td><td class="ltr">P(x)</td><td class="ltr">P(y | x)</td><td>يوزرز app أكتر بسلّات أكبر</td><td>Input monitors</td></tr>
+    <tr><td>Prior drift</td><td class="ltr">P(y)</td><td class="ltr">P(x | y)</td><td>نسبة الـ fraud اتضاعفت في هجمة، والـ fraud شكله زي ما هو</td><td>Prediction و outcome monitors</td></tr>
+    <tr><td>Concept drift</td><td class="ltr">P(y | x)</td><td>ممكن يفضل ثابت</td><td>نفس السلة بقى ليها risk مختلف</td><td>Outcome monitors بس</td></tr>
+  </table></div>
+  <div class="note"><strong>تشبيه:</strong> مدرس بيصحح امتحانات. <b>Covariate</b>: جاله طلبة من مدرسة تانية مستواهم مختلف، بس الإجابة الصح هي هي. <b>Prior</b>: نسبة الطلبة الشاطرين في الدفعة زادت. <b>Concept</b>: الوزارة غيرت نموذج الإجابة، فنفس الورقة اللي كانت صح بقت غلط، والمدرس مش هيعرف غير لما حد يقوله.</div>
+  <p>Gama وزمايله بيسموا تغيير <span class="ltr">P(y | x)</span> <b>real concept drift</b>، وتغيير <span class="ltr">P(x)</span> اللي ما بيلمسش <span class="ltr">P(y | x)</span> <b>virtual drift</b>. وكمان بيقسموا الـ drift حسب شكله مع الوقت: <b>sudden</b> (فجأة)، <b>incremental</b> (شوية شوية)، <b>gradual</b> (القديم والجديد بيتبادلوا لحد ما الجديد يكسب)، أو <b>recurring</b> (concept بيرجع تاني، زي موسم).</p>
+  <p><b>مش كل covariate drift بيأذي.</b> لو الموديل اتعلم <span class="ltr">P(y | x)</span> كويس، هيفضل صح لكل input. بس ممكن يخسر دقة لو الترافيك راح لمناطق كان فيها داتا تدريب قليلة، أو قريبة من الـ decision boundary.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: حرّك العالم وشوف مين يلاحظ</h3>
+      <p>كل نقطة دفعة: مكانها الأفقي هو الـ <code>amount</code>، ولونها هو الـ label الحقيقي (برتقالي = fraud). الخط الأزرق هو الموديل الثابت (اتدرب على <span class="ltr">amount &gt; 120</span>). الخط المتقطع هو الحدود الحقيقية في الدنيا.</p>
+      <p>حرّك متوسط الـ amount (ده covariate drift) وبعدين رجّعه وحرّك الحدود الحقيقية (ده concept drift). بص على الـ PSI وعلى الـ accuracy.</p>
+      <div class="note ai"><strong>هتلاحظ:</strong> الـ covariate drift بيولّع الـ PSI والدقة تقريبًا ثابتة. الـ concept drift الـ PSI ساكت خالص والدقة بتقع. ده بالظبط اللي الديمو في الكود هيوريهولك.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d42-typeCanvas" width="520" height="300" aria-label="نقط دفعات وحدود الموديل"></canvas>
+      <label style="display:grid;gap:2px">متوسط الـ amount: <b class="mono" id="d42-tMeanV">100</b><input type="range" id="d42-tMean" min="80" max="140" step="1" value="100"></label>
+      <label style="display:grid;gap:2px">الحدود الحقيقية (boundary): <b class="mono" id="d42-tBndV">120</b><input type="range" id="d42-tBnd" min="95" max="140" step="1" value="120"></label>
+      <div class="readout">
+        <div><small>PSI (amount)</small><b id="d42-tPsi">0</b></div>
+        <div><small>Accuracy</small><b id="d42-tAcc">0</b></div>
+        <div><small>نسبة الـ fraud</small><b id="d42-tRate">0</b></div>
+      </div>
+      <div class="verdict" id="d42-tVerdict"></div>
+      <div class="btns">
+        <button type="button" data-d42t="118,120">Covariate</button>
+        <button type="button" data-d42t="100,105">Concept</button>
+        <button type="button" data-d42t="100,120">رجّع</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="d42-labels">
+  <div class="station-head"><span class="tag">03</span><h2>الـ labels المتأخرة والـ windows</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المشكلة</th><th>الـ label بيوصل إمتى</th></tr>
+    <tr><td>Ad click</td><td>ثواني</td></tr>
+    <tr><td>Churn في الـ ٣٠ يوم الجايين</td><td>٣٠ يوم</td></tr>
+    <tr><td>Card fraud</td><td>لما الـ chargeback يوصل، غالبًا بعد أسابيع</td></tr>
+    <tr><td>Loan default</td><td>شهور أو سنين</td></tr>
+  </table></div>
+  <p>في فترة التأخير عندك inputs و predictions ومفيش outcomes. فراقب الاتنين الأولانيين، واعمل join للـ labels لما توصل، واحسب الـ outcome metrics على الجزء اللي ليه label بس. الديمو بيستخدم delay = 500 event، فمراقب الـ accuracy دايمًا بيبص ٥٠٠ event لورا.</p>
+  <h3>Reference window و current window</h3>
+  <ul class="checklist">
+    <li>• <b>Reference window:</b> داتا التدريب، أو فترة production راجعتها بإيدك. ثابتة لحد ما تعمل retrain.</li>
+    <li>• <b>Current window:</b> آخر <code>N</code> event، أو آخر <code>T</code> ساعة.</li>
+  </ul>
+  <p>الـ <b>sliding window</b> بيتحرك بخطوة أصغر من حجمه، فالـ windows المتتالية بتتداخل. الـ <b>tumbling window</b> بيتحرك بحجمه كله. حجم الـ window trade-off: صغير = بيلاحظ بسرعة بس بيحسب الـ noise على إنه drift. كبير = مستقر بس بيبلّغ متأخر.</p>
+  <div class="note"><strong>خلي بالك من الـ seasonality:</strong> ترافيك الاتنين غير ترافيك السبت في منتجات كتير. خلي الـ reference يغطي دورة كاملة، أو قارن كل window بنفس الفترة في دورة قبلها. وإلا كل أسبوع هيصحيك alert على حاجة طبيعية.</div>
+</section>
+
+<section id="d42-psi">
+  <div class="station-head"><span class="tag">04</span><h2>PSI و KS: تقيس الفرق بين توزيعين</h2></div>
+  <h3>Population Stability Index (PSI)</h3>
+  <p>جاي من الـ credit scoring. قطّع قيم الـ reference لـ bins، عادة ١٠ bins عند الـ deciles، بحيث كل bin فيه ١٠٪ من الـ reference. عدّ نسبة قيم الـ current في كل bin. وبعدين اجمع term لكل bin:</p>
+  <div class="formula">PSI = Σ (current_share − reference_share) · ln(current_share / reference_share)</div>
+  <p>لو bin نسبته صفر، الـ log هيبقى لانهائي، فبنقص (clip) كل نسبة لقيمة صغيرة زي 0.0001. الـ PSI <b>symmetric</b>: بيساوي KL divergence من current لـ reference + KL من reference لـ current.</p>
+  <div class="tablewrap"><table>
+    <tr><th>PSI</th><th>القراءة المتعارف عليها</th></tr>
+    <tr><td class="ltr">&lt; 0.1</td><td>مستقر</td></tr>
+    <tr><td class="ltr">0.1 – 0.25</td><td>تغيير متوسط</td></tr>
+    <tr><td class="ltr">&gt; 0.25</td><td>تغيير كبير</td></tr>
+  </table></div>
+  <p>دي <b>عُرف</b> مش test إحصائي. الـ PSI بيكبر مع عدد الـ bins وبيصغر مع حجم العينة. في الديمو، windows من ٥٠٠ event من غير drift بتدي بين 0.01 و0.04.</p>
+
+  <h3>Kolmogorov-Smirnov (KS)</h3>
+  <p>الـ <code>D</code> هو أكبر فرق رأسي بين الـ empirical CDF بتاعة العينتين. تخيل خطين بيطلعوا سلالم من ٠ لـ ١، والـ D هو أطول مسافة رأسية بينهم.</p>
+  <div class="formula">D = max_x | F_reference(x) − F_current(x) |</div>
+  <p>D = 0 لو العينتين متطابقين، وD = 1 لو مفيش أي تداخل. مش محتاج bins. الـ p-value بيجي من توزيع Kolmogorov بحجم عينة فعّال <span class="ltr">n·m / (n+m)</span>.</p>
+  <div class="note"><strong>فخ العينات الكبيرة:</strong> مع مليون event في الـ window، الـ p-value بيروح للصفر على فرق محدش يهتم بيه، زي shift قدره 0.02 standard deviation. فاستخدم <code>D</code> نفسه كـ effect size، وما تعملش alert غير لما الـ D والـ p-value الاتنين يعدّوا الـ thresholds.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: اسحب التوزيع وشوف PSI و D</h3>
+      <p>الرمادي هو الـ reference (١٠ bins كل واحد ١٠٪). الأزرق هو الـ current window. تحت: الـ ECDF للاتنين، والخط البرتقالي هو الـ D.</p>
+      <p><b>اسحب على الرسم يمين وشمال</b> عشان تحرك متوسط الـ current، أو استخدم الـ sliders. الـ reference والـ current نفس الحجم n. جرّب n = 100000 مع shift صغير جدًا (0.04) وبص على الـ p-value.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d42-psiCanvas" width="520" height="380" aria-label="هيستوجرام وECDF"></canvas>
+      <div class="mrow">
+        <label>shift (sd) <span id="d42-pShiftV">0</span><input type="range" id="d42-pShift" min="-2" max="2" step="0.02" value="0"></label>
+        <label>scale <span id="d42-pScaleV">1</span><input type="range" id="d42-pScale" min="0.5" max="2" step="0.05" value="1"></label>
+        <label>bins <span id="d42-pBinsV">10</span><input type="range" id="d42-pBins" min="4" max="30" step="1" value="10"></label>
+        <label>window n <span id="d42-pNV">500</span><input type="range" id="d42-pN" min="0" max="5" step="1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>PSI</small><b id="d42-pPsi">0</b></div>
+        <div><small>KS D</small><b id="d42-pD">0</b></div>
+        <div><small>KS p-value</small><b id="d42-pP">1</b></div>
+      </div>
+      <div class="verdict" id="d42-pVerdict"></div>
+      <div class="btns"><button type="button" id="d42-pResample">عينة جديدة</button></div>
+    </div>
+  </div>
+
+  <h3>Chi-square للـ categorical features</h3>
+  <p>لـ feature زي الـ payment channel، اعمل جدول بصفين (reference و current) وعمود لكل category. الـ expected count في كل خانة جاي من مجاميع الصف والعمود:</p>
+  <div class="formula">expected[r][c] = row_total[r] · column_total[c] / grand_total<br>chi2 = Σ (observed − expected)² / expected</div>
+  <p>درجات الحرية <code>k − 1</code> لـ <code>k</code> categories. category ظهرت في الـ current بس بتضيف term كبير، فالـ test بيتفاعل مع القيم الجديدة. والـ effect size هو <b>Cramér's V</b>، ولجدول بصفين بيساوي <span class="ltr">√(chi2 / grand_total)</span>.</p>
+  <div class="formula">مثال: reference = [1000, 700, 300]  current = [140, 290, 70]</div>
+</section>
+
+<section id="d42-alerts">
+  <div class="station-head"><span class="tag">05</span><h2>الـ alerts والإنذارات الكدابة</h2></div>
+  <p>كل test عنده false-alarm rate قدره <code>alpha</code> لما مفيش حاجة اتغيرت. والمراقبة بتشغل tests كتير. ٥٠ feature كل ساعة عند <span class="ltr">alpha = 0.05</span> يعني <span class="ltr">50 × 24 = 1200</span> test في اليوم، و٥٪ منهم = <b>حوالي ٦٠ إنذار كداب كل يوم</b>. الناس بتبطل تقرا الـ alerts قبل كده بكتير (ده اسمه <b>alert fatigue</b>).</p>
+  <p>أربع قواعد بيخلوا الـ alerts مفيدة:</p>
+  <ol class="ex">
+    <li><b>صحّح لتعدد الـ tests:</b> Bonferroni بيقسم الـ alpha على عدد الـ tests. الديمو: family alpha = 0.01 على ٢ tests، يعني كل test بـ 0.005.</li>
+    <li><b>اطلب effect size:</b> ما تعملش alert غير لو PSI أو D أو Cramér's V كمان عدّى threshold.</li>
+    <li><b>اطلب persistence:</b> alert بس بعد <code>k</code> windows drift ورا بعض. الديمو: <span class="ltr">k = 2</span>.</li>
+    <li><b>افصل الـ warnings عن الـ alerts:</b> الـ warning يروح dashboard، والـ alert يروح لبني آدم.</li>
+  </ol>
+  <p>الديمو بيوري القاعدة ٢ شغالة: window نضيف طلع chi-square p-value = 0.0009، أقل من الـ alpha. بس الـ Cramér's V أقل من 0.1، فالسياسة سجلته warning مش alert.</p>
+
+  <h3>إمتى تعمل retrain؟</h3>
+  <ul class="checklist">
+    <li>• <b>Schedule:</b> كل أسبوع أو شهر. بسيط، بس بيعمل retrain لما مفيش حاجة اتغيرت، وبيستنى لما حاجة اتغيرت.</li>
+    <li>• <b>Drift:</b> لما الـ input drift على features مهمة يفضل فوق الـ threshold.</li>
+    <li>• <b>Performance:</b> لما outcome metric ينزل تحت قيمة الـ reference ناقص tolerance.</li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>الـ drift</th><th>الفعل المفيد</th></tr>
+    <tr><td>Covariate، والدقة ثابتة</td><td>غالبًا ولا حاجة. كمّل راقب الـ outcome metric.</td></tr>
+    <tr><td>Covariate لمناطق فيها داتا قليلة</td><td>Retrain على داتا حديثة فيها المناطق دي</td></tr>
+    <tr><td>Prior drift</td><td>Recalibrate للـ scores أو حرّك الـ decision threshold</td></tr>
+    <tr><td>Concept drift</td><td>اجمع labels جديدة الأول. الـ retrain على labels قديمة بيعلّمه الـ concept القديم تاني.</td></tr>
+  </table></div>
+  <p>بعد الـ retrain، اختبر الموديل الجديد على أحدث داتا ليها labels، ونزّله بمراحل الـ shadow والـ canary من درس امبارح، وبعدين صفّر الـ reference window على داتا التدريب الجديدة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: شغّل الـ stream كله</h3>
+      <p>ده نسخة JS من الـ stream اللي في الكود: ٩٠٠٠ دفعة، covariate drift من ٣٠٠٠ لـ ٥٠٠٠، رجوع طبيعي لحد ٦٥٠٠، وبعدين concept drift. الـ reference أول ٢٠٠٠، والموديل threshold على الـ amount.</p>
+      <p>غيّر حجم الـ window والـ patience والـ label delay واضغط «شغّل». الأرقام مش هتطابق الـ Python بالظبط (random generator مختلف)، بس السلوك نفسه.</p>
+      <p>الخطوط: <span style="color:var(--vec-a)">PSI</span>، <span style="color:var(--vec-b)">accuracy</span>. المثلثات الحمرا ALERT، والخضرا resolved.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d42-streamCanvas" width="520" height="320" aria-label="مخطط زمني للـ drift والـ alerts"></canvas>
+      <div class="mrow">
+        <label>window <span id="d42-sWinV">500</span><input type="range" id="d42-sWin" min="0" max="4" step="1" value="2"></label>
+        <label>patience <span id="d42-sPatV">2</span><input type="range" id="d42-sPat" min="1" max="4" step="1" value="2"></label>
+        <label>label delay <span id="d42-sDelV">500</span><input type="range" id="d42-sDel" min="0" max="1500" step="250" value="500"></label>
+        <label>Bonferroni n_tests <span id="d42-sNtV">2</span><input type="range" id="d42-sNt" min="1" max="2" step="1" value="2"></label>
+      </div>
+      <div class="btns"><button type="button" class="primary" id="d42-sPlay">شغّل ▶</button><button type="button" id="d42-sSeed">stream جديد</button></div>
+      <div class="readout">
+        <div><small>أول alert amount</small><b id="d42-sCov">-</b></div>
+        <div><small>أول alert accuracy</small><b id="d42-sCon">-</b></div>
+        <div><small>alerts كدابة قبل 3000</small><b id="d42-sFalse">-</b></div>
+      </div>
+      <pre class="term" id="d42-sLog" style="max-height:170px;overflow:auto"></pre>
+    </div>
+  </div>
+</section>
+
+<section id="d42-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>الكود كله standard library بس. من جذر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/02-ml-fundamentals/20-model-monitoring-and-drift/code/main.py
+python3 -m unittest discover -s phases/02-ml-fundamentals/20-model-monitoring-and-drift/code/tests -v</pre></div>
+  <p><b>القاعدة:</b> اكتب كل خطوة بنفسك في ملف <code>my_drift.py</code>. الأصل للمراجعة بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الـ bins و PSI</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import bisect, math
+
+def quantile_edges(reference, bins=10):
+    ordered = sorted(reference)
+    n = len(ordered)
+    <span class="c"># حدود الـ bins عند الـ deciles بتاعة الـ reference</span>
+    edges = [ordered[min(n - 1, (n * i) // bins)] for i in range(1, bins)]
+    return sorted(set(edges))
+
+def bin_fractions(values, edges):
+    counts = [0] * (len(edges) + 1)
+    for value in values:
+        counts[bisect.bisect_right(edges, value)] += 1   <span class="c"># رقم الـ bin</span>
+    total = len(values)
+    return [c / total for c in counts]
+
+def psi_from_fractions(expected, actual, eps=1e-4):
+    total = 0.0
+    for e, a in zip(expected, actual):
+        e, a = max(e, eps), max(a, eps)                  <span class="c"># clip عشان الـ log</span>
+        total += (a - e) * math.log(a / e)
+    return total
+
+def psi(reference, current, bins=10):
+    edges = quantile_edges(reference, bins)
+    return psi_from_fractions(bin_fractions(reference, edges), bin_fractions(current, edges))</pre></div>
+
+  <h3>خطوة ٢: KS statistic والـ p-value</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def ks_statistic(sample_a, sample_b):
+    a, b = sorted(sample_a), sorted(sample_b)
+    n, m = len(a), len(b)
+    i = j = 0
+    d = 0.0
+    while i &lt; n and j &lt; m:
+        x = min(a[i], b[j])
+        while i &lt; n and a[i] &lt;= x:      <span class="c"># عدّي كل النسخ المتكررة (ties)</span>
+            i += 1
+        while j &lt; m and b[j] &lt;= x:
+            j += 1
+        d = max(d, abs(i / n - j / m))   <span class="c"># الفرق بين الـ CDFs</span>
+    return d
+
+def ks_pvalue(d, n, m):
+    effective_n = n * m / (n + m)
+    lam = math.sqrt(effective_n) * d
+    if lam &lt; 1e-3:
+        return 1.0
+    total = 0.0
+    for k in range(1, 101):              <span class="c"># سلسلة توزيع Kolmogorov</span>
+        term = 2 * (-1) ** (k - 1) * math.exp(-2 * k * k * lam * lam)
+        total += term
+        if abs(term) &lt; 1e-12:
+            break
+    return min(1.0, max(0.0, total))</pre></div>
+
+  <h3>خطوة ٣: Chi-square</h3>
+  <p><code>chi2_sf</code> بتحسب الـ survival function عن طريق الـ regularized upper incomplete gamma: series للقيم الصغيرة و continued fraction للكبيرة. انقلها من الملف الأصلي (<code>_gamma_p_series</code> و <code>_gamma_q_fraction</code>)، وركّز انت على الـ test نفسه:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class ChiSquareResult:
+    statistic: float
+    dof: int
+    p_value: float
+    cramers_v: float
+
+def chi_square_test(reference_counts, current_counts):
+    categories = [c for c in sorted(set(reference_counts) | set(current_counts))
+                  if reference_counts.get(c, 0) + current_counts.get(c, 0) &gt; 0]
+    rows = [[reference_counts.get(c, 0) for c in categories],
+            [current_counts.get(c, 0) for c in categories]]
+    row_totals = [sum(r) for r in rows]
+    grand = sum(row_totals)
+    if len(categories) &lt; 2 or 0 in row_totals:
+        return ChiSquareResult(0.0, 0, 1.0, 0.0)
+    statistic = 0.0
+    for col, _ in enumerate(categories):
+        col_total = rows[0][col] + rows[1][col]
+        for r in range(2):
+            expected = row_totals[r] * col_total / grand    <span class="c"># المتوقع لو مفيش drift</span>
+            statistic += (rows[r][col] - expected) ** 2 / expected
+    dof = len(categories) - 1
+    return ChiSquareResult(statistic, dof, chi2_sf(statistic, dof),
+                           math.sqrt(statistic / grand))   <span class="c"># Cramér's V</span></pre></div>
+
+  <h3>خطوة ٤: الـ window والـ monitor</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from collections import deque
+
+class SlidingWindow:
+    def __init__(self, size):
+        if size &lt; 1:
+            raise ValueError(f"window size must be at least 1, got {size}")
+        self.items = deque(maxlen=size)      <span class="c"># القديم بيقع لوحده</span>
+    def add(self, item): self.items.append(item)
+    def full(self): return len(self.items) == self.items.maxlen
+    def column(self, key): return [item[key] for item in self.items]
+
+class DriftMonitor:
+    def __init__(self, reference, numeric, categorical, bins=10):
+        self.numeric, self.categorical = numeric, categorical
+        <span class="c"># كل حاجة عن الـ reference بتتحسب مرة واحدة</span>
+        self.reference_values = {f: [r[f] for r in reference] for f in numeric}
+        self.edges = {f: quantile_edges(v, bins) for f, v in self.reference_values.items()}
+        self.expected = {f: bin_fractions(self.reference_values[f], self.edges[f]) for f in numeric}
+        self.reference_counts = {f: count_categories([r[f] for r in reference]) for f in categorical}
+
+    def check(self, window):
+        report = {}
+        for f in self.numeric:
+            current = window.column(f)
+            d = ks_statistic(self.reference_values[f], current)
+            report[f] = {"psi": psi_from_fractions(self.expected[f], bin_fractions(current, self.edges[f])),
+                         "ks": d, "ks_p": ks_pvalue(d, len(self.reference_values[f]), len(current))}
+        for f in self.categorical:
+            res = chi_square_test(self.reference_counts[f], count_categories(window.column(f)))
+            report[f] = {"chi2": res.statistic, "p": res.p_value, "v": res.cramers_v}
+        return report</pre></div>
+  <p><code>count_categories</code> مجرد dictionary بيعدّ كل قيمة.</p>
+
+  <h3>خطوة ٥: سياسة الـ alerts</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from dataclasses import field
+
+@dataclass
+class AlertPolicy:
+    n_tests: int
+    family_alpha: float = 0.01
+    psi_warn: float = 0.10
+    psi_drift: float = 0.25
+    ks_drift: float = 0.10
+    min_cramers_v: float = 0.10
+    patience: int = 2
+    streaks: dict = field(default_factory=dict)
+
+    @property
+    def alpha(self):                       <span class="c"># Bonferroni</span>
+        return self.family_alpha / self.n_tests
+
+    def level(self, metrics):
+        if "psi" in metrics:
+            if metrics["psi"] &gt;= self.psi_drift or (metrics["ks"] &gt;= self.ks_drift and metrics["ks_p"] &lt; self.alpha):
+                return "drift"
+            return "warn" if metrics["psi"] &gt;= self.psi_warn else "ok"
+        if metrics["p"] &lt; self.alpha and metrics["v"] &gt;= self.min_cramers_v:   <span class="c"># p + effect size</span>
+            return "drift"
+        return "warn" if metrics["p"] &lt; self.alpha else "ok"
+
+    def update(self, name, level):
+        previous = self.streaks.get(name, 0)
+        streak = previous + 1 if level == "drift" else 0
+        self.streaks[name] = streak
+        if streak == self.patience:        <span class="c"># persistence</span>
+            return "ALERT"
+        if previous &gt;= self.patience and streak == 0:
+            return "resolved"
+        return None</pre></div>
+
+  <h3>خطوة ٦: stream فيه drift مزروع</h3>
+  <p>٩٠٠٠ دفعة، كل واحدة فيها <code>amount</code> و<code>channel</code> و<code>label</code>:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Events</th><th>Amount</th><th>Channel (app, store, web)</th><th>Label boundary</th><th>التغيير</th></tr>
+    <tr><td class="ltr">0–2999</td><td class="ltr">mean 100, sd 20</td><td class="ltr">35, 15, 50 %</td><td class="ltr">120</td><td>فترة الـ reference</td></tr>
+    <tr><td class="ltr">3000–4999</td><td class="ltr">mean 118, sd 24</td><td class="ltr">60, 10, 30 %</td><td class="ltr">120</td><td>Covariate drift</td></tr>
+    <tr><td class="ltr">5000–6499</td><td class="ltr">mean 100, sd 20</td><td class="ltr">35, 15, 50 %</td><td class="ltr">120</td><td>رجوع للطبيعي</td></tr>
+    <tr><td class="ltr">6500–8999</td><td class="ltr">mean 100, sd 20</td><td class="ltr">35, 15, 50 %</td><td class="ltr">105</td><td>Concept drift</td></tr>
+  </table></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_stream(n=9000, seed=7, segments=SEGMENTS):
+    rng = random.Random(seed)
+    events = []
+    for t in range(n):
+        s = segment_at(t, segments)                       <span class="c"># أنهي segment احنا فيه</span>
+        amount = rng.gauss(s.amount_mean, s.amount_sd)
+        channel = rng.choices(CHANNELS, weights=s.channel_mix)[0]
+        label = 1 if amount + rng.gauss(0, 6) &gt; s.boundary else 0   <span class="c"># الحقيقة + noise</span>
+        events.append({"t": t, "amount": amount, "channel": channel, "label": label})
+    return events</pre></div>
+  <p>الموديل threshold على <code>amount</code> متدرب على أول ٢٠٠٠ event (<code>fit_threshold</code> بتجرب كل خامس قيمة وتختار الأدق). الـ windows ٥٠٠ والخطوة ٢٥٠، والـ labels بتوصل متأخرة ٥٠٠. <code>run_monitoring</code> بتربط كل ده، و<code>labeled_accuracy</code> بتحسب الدقة على الجزء اللي الـ label بتاعه وصل بس.</p>
+  <details><summary>الناتج المتوقع (مختصر)</summary><pre class="term">  end    PSI   KS D   chi2 p    acc  levels (amount/channel/accuracy)  events
+ 3000  0.010  0.041  3.0e-01  0.932  ok/ok/ok
+ 3250  0.152  0.163  7.6e-06  0.924  drift/warn/ok
+ 3500  0.463  0.298  2.8e-26  0.936  drift/drift/ok                     ALERT amount
+ 3750  0.609  0.343  3.5e-35  0.942  drift/drift/ok                     ALERT channel
+ ...
+ 5500  0.026  0.044  2.6e-01  0.898  ok/ok/ok                           resolved amount, resolved channel
+ ...
+ 7250  0.040  0.048  7.1e-01  0.848  ok/ok/drift
+ 7500  0.022  0.039  6.1e-01  0.778  ok/ok/drift                        ALERT accuracy</pre></details>
+  <p><b>اقرا النتيجة على ٣ أجزاء:</b></p>
+  <ul class="checklist">
+    <li>• <b>Covariate:</b> الـ drift بدأ عند ٣٠٠٠، والـ alert على amount جه عند ٣٥٠٠. الدقة فضلت بين 0.89 و0.95 لأن قاعدة الـ label ما اتغيرتش.</li>
+    <li>• <b>Recovery:</b> الـ inputs رجعت طبيعي عند ٥٠٠٠، والـ alerts اتحلت عند ٥٥٠٠.</li>
+    <li>• <b>Concept:</b> بدأ عند ٦٥٠٠، والـ input monitors ساكتين لأن الـ inputs ما اتغيرتش. الدقة نزلت من 0.946 لبين 0.76 و0.79. الـ alert جه عند ٧٥٠٠، يعني بعد ١٠٠٠ event، ٥٠٠ منهم بسبب الـ label delay.</li>
+  </ul>
+
+  <h3>خطوة ٧: نفس الكلام بـ scipy والمكتبات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from scipy import stats
+
+result = stats.ks_2samp(reference_amounts, current_amounts)
+print(result.statistic, result.pvalue)
+
+table = [[1000, 700, 300], [140, 290, 70]]
+chi2 = stats.chi2_contingency(table)
+print(chi2.statistic, chi2.pvalue, chi2.dof)</pre></div>
+  <p>الدرس بيقول إن الـ KS statistic والـ chi-square statistic والـ p-value بتاعه طابقوا scipy. أما الـ KS p-value فاختلف لحد ١٨٪ من قيمة scipy، أكتر عند الـ p-values الصغيرة جدًا، لأن كودنا بيستخدم التوزيع الحدّي (limiting) بتاع Kolmogorov، و<code>ks_2samp</code> بيستخدم exact method لو العينتين ≤ 10,000. ولو فيه category اتنين بس، <code>chi2_contingency</code> بيطبق Yates' correction افتراضيًا فالأرقام هتختلف.</p>
+  <div class="tablewrap"><table>
+    <tr><th>المكتبة</th><th>بتعمل إيه</th></tr>
+    <tr><td>Evidently</td><td>بتختار test لكل عمود: لـ reference ≤ 1000 صف، KS للأرقام و chi-square للـ categories. للأكبر: Wasserstein و Jensen-Shannon بـ threshold 0.1. والـ PSI اختيار متاح.</td></tr>
+    <tr><td>NannyML</td><td>بتقدّر الأداء قبل الـ labels بـ CBPE من الـ predicted probabilities (لازم تبقى calibrated). الـ docs بتاعتهم بتقول إنها بتتعامل مع covariate shift بس مش مع concept drift.</td></tr>
+    <tr><td>TensorFlow Data Validation</td><td>بتقارن spans متتالية: L-infinity للـ categorical و Jensen-Shannon تقريبي للأرقام، وكمان training مقابل serving (درس بكرة).</td></tr>
+  </table></div>
+  <p>الكود اللي كتبته هو اللي جوه كل الأدوات دي. هي بتضيف storage و scheduling و dashboards و tests أكتر.</p>
+  <p><b>Ship it:</b> الدرس بيطلع <code>outputs/skill-drift-monitoring.md</code>: skill بتخطط المراقبة لموديل جديد وبتعمل triage لأي drift alert: أنهي طبقة ضربت، أنهي نوع drift، والفعل الصح: تستنى، تعمل recalibrate، تجمع labels، ولا retrain.</p>
+</section>
+
+<section id="d42-exercises">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>حجم الـ window:</b> شغّل الـ stream بـ windows ٢٠٠ و٢٠٠٠. سجّل الـ warnings الكدابة قبل ٣٠٠٠ وتأخير الـ alert.
+      <details><summary>تلميح</summary>غيّر <code>window_size</code> في <code>run_monitoring</code>. خلي بالك إن الـ step ٢٥٠ ثابت. المتوقع: ٢٠٠ = warnings أكتر بس alert أسرع، ٢٠٠٠ = هادي بس متأخر (لأن الـ window محتاج يتملي بداتا الـ drift). جرب ده الأول في معمل ٣.</details></li>
+    <li><b>شيل الحمايات:</b> خلي <code>n_tests=1</code> و<code>patience=1</code> و<code>min_cramers_v=0</code>. عدّ الـ alerts في الفترة النضيفة ٥٠٠٠–٦٥٠٠.
+      <details><summary>تلميح</summary>هتشوف alerts ظهرت على windows نضيفة، زي الـ window اللي كان p = 0.0009 وكان warning بس. ده بيوريك ليه الـ ٤ قواعد موجودين.</details></li>
+    <li><b>Drift تدريجي:</b> ضيف feature متوسطها بيزيد 0.01 كل ١٠٠ event. مين يتفاعل الأول، PSI ولا KS؟
+      <details><summary>تلميح</summary>ضيفه في <code>make_stream</code> و<code>numeric</code>. اطبع أول window كل واحد فيهم عدّى الـ threshold بتاعه (PSI ≥ 0.25 مقابل D ≥ 0.10 و p &lt; alpha). قيس بنفسك وما تفترضش.</details></li>
+    <li><b>Jensen-Shannon:</b> اعمل JS distance على نفس الـ decile bins وقارنه بالـ PSI على كل window.
+      <details><summary>تلميح</summary><code>M = (P+Q)/2</code>، <code>JS = ½KL(P‖M) + ½KL(Q‖M)</code>، والـ distance = <code>√JS</code>. استخدم نفس الـ eps clipping. الـ JS محدود (bounded) عكس الـ PSI.</details></li>
+    <li><b>Positive-prediction rate:</b> ضيف monitor لنسبة الـ predictions الموجبة. اشرح ليه بيفضل ساكت في الـ concept drift.
+      <details><summary>الإجابة</summary>الـ prediction دالة في الـ amount بس، والـ amount ما اتغيرش في الـ concept drift. يعني نسبة الـ predictions الموجبة ثابتة، اللي اتغير هو الـ labels. (في الـ covariate drift بقى هيتحرك لأن amounts أكبر = predictions موجبة أكتر.)</details></li>
+    <li><b>إضافة مني · مراقبة RAG/LLM app:</b> عندك chatbot بيستقبل أسئلة. اكتب monitor بيعمل chi-square على توزيع الـ "topic" (حطه انت بكلمات مفتاحية: billing، shipping، tech، other) بين أسبوع reference وآخر يوم، و PSI على طول السؤال بالكلمات. شغّله على داتا وهمية فيها يوم ظهر فيه topic جديد اسمه "refund".
+      <details><summary>تلميح</summary>الـ category الجديدة هتضيف term كبير في الـ chi-square (لأنها مش في الـ reference). اعمل warning لما topic نسبته ٠ في الـ reference يبقى أكتر من ٢٪ في الـ current، حتى لو الـ V صغير. ده بالظبط إزاي تكتشف إن اليوزرز بدأوا يسألوا عن حاجة الـ knowledge base بتاعتك مش مغطياها.</details></li>
+  </ol>
+</section>
+
+<section id="d42-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ما قالهوش بصراحة</h2></div>
+  <h3>الحدس</h3>
+  <p>فكّر في الـ monitoring كـ «جهاز إنذار دخان» و«ميزان حرارة». الـ input drift هو الدخان: بيجي بدري وساعات بيكون شوية بخار من المطبخ. الـ outcome metric هو الحرارة: الحقيقة، بس لما توصلك يكون الحريق بدأ. محتاج الاتنين، ومحتاج تعرف إن ممكن يبقى في حريق من غير دخان (concept drift).</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li>• <b>الـ reference هو داتا التدريب بعد الـ preprocessing والـ live هو الـ raw:</b> هتلاقي drift وهمي. قارن نفس المرحلة من الـ pipeline بنفس الكود (ده موضوع بكرة).</li>
+    <li>• <b>نسيان الـ missing values:</b> لو feature بقت null فجأة، والكود بيحطها 0، الـ PSI هيعلى بس مش هتعرف السبب. راقب نسبة الـ missing لوحدها.</li>
+    <li>• <b>Retrain أوتوماتيك على أي drift:</b> في الـ concept drift من غير labels جديدة، أنت بتصرف compute عشان تعلّمه نفس الحاجة القديمة.</li>
+    <li>• <b>Feedback loop:</b> لو الموديل بيبلوك الـ fraud، الدفعات المبلوكة مالهاش chargeback، فالـ outcome metric نفسه بيبقى متحيز. خلي جزء صغير random (زي ما قلنا امبارح).</li>
+    <li>• <b>تثبيت الـ reference للأبد:</b> لازم يتصفّر بعد كل retrain.</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <p>نفس الأفكار بالظبط على inputs و outputs الأنظمة دي: توزيع طول الـ prompts، لغة اليوزرز، الـ topics، نسبة الـ refusals، نسبة الـ tool calls اللي بتفشل، طول الردود، و scores الـ retrieval في الـ RAG. الـ concept drift هنا مثلًا لما الـ API اللي الـ agent بيكلمه يغير الـ response format، أو لما سياسة الشركة تتغير فالإجابة «الصح» تتغير. الـ input monitors مش هتشوف ده، محتاج evaluation على عينة من المحادثات (ده في درس LLM observability في فيز ١٧).</p>
+</section>
+
+<section id="d42-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d42-quizBox"></div>
+</section>
+
+<section id="d42-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d42-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أفرق بين covariate و prior و concept drift بالـ P(x, y)</label></li>
+    <li><label><input type="checkbox" data-ck="2"> لعبت في المعامل وشفت إن الـ concept drift ما بيحركش الـ PSI</label></li>
+    <li><label><input type="checkbox" data-ck="3"> كتبت PSI و KS و chi-square بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="4"> شغّلت main.py والـ tests وفهمت الـ ALERT والـ resolved</label></li>
+    <li><label><input type="checkbox" data-ck="5"> أقدر أشرح الـ ٤ قواعد بتوع الـ alerts وليه</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>PSI</td><td>الـ credit scoring، dashboards المراقبة، Evidently</td></tr>
+    <tr><td>KS test</td><td>مقارنة توزيعات الـ features والـ scores</td></tr>
+    <tr><td>Chi-square / Cramér's V</td><td>الـ categorical features، topics أسئلة اليوزرز في الـ chatbots</td></tr>
+    <tr><td>Label delay</td><td>الـ fraud، الـ churn، القروض، تقييم ردود الـ LLM</td></tr>
+    <tr><td>Bonferroni + persistence</td><td>أي نظام alerting فيه tests كتير</td></tr>
+    <tr><td>Concept drift</td><td>تغير سلوك الـ fraudsters، تغير الـ APIs اللي الـ agents بتكلمها</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Feature Stores و Training-Serving Skew: لما الـ feature اللي الموديل اتدرب عليها تتحسب بطريقة غير اللي بتتحسب بيها وقت الـ serving. هنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F20-model-monitoring-and-drift" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/20-model-monitoring-and-drift</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+
+// roadmap
+const rm=$('d42-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===20)s.className='now';rm.appendChild(s)}
+
+// ---------- shared stats ----------
+function rng(seed){let s=seed>>>0||1;return()=>{s^=s<<13;s>>>=0;s^=s>>>17;s^=s<<5;s>>>=0;return s/4294967296}}
+function gaussFn(r){return(m,sd)=>{let u=0,v=0;while(u===0)u=r();v=r();return m+sd*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}}
+function bisectRight(a,x){let lo=0,hi=a.length;while(lo<hi){const m=(lo+hi)>>1;if(x<a[m])hi=m;else lo=m+1}return lo}
+function qEdges(ref,bins){const o=ref.slice().sort((a,b)=>a-b),n=o.length,e=[];for(let i=1;i<bins;i++)e.push(o[Math.min(n-1,Math.floor(n*i/bins))]);return [...new Set(e)].sort((a,b)=>a-b)}
+function fracs(vals,edges){const c=new Array(edges.length+1).fill(0);vals.forEach(v=>c[bisectRight(edges,v)]++);return c.map(x=>x/vals.length)}
+function psiF(e,a){let t=0;for(let i=0;i<e.length;i++){const E=Math.max(e[i],1e-4),A=Math.max(a[i],1e-4);t+=(A-E)*Math.log(A/E)}return t}
+function ksStat(sa,sb){const a=sa.slice().sort((x,y)=>x-y),b=sb.slice().sort((x,y)=>x-y),n=a.length,m=b.length;let i=0,j=0,d=0;while(i<n&&j<m){const x=Math.min(a[i],b[j]);while(i<n&&a[i]<=x)i++;while(j<m&&b[j]<=x)j++;d=Math.max(d,Math.abs(i/n-j/m))}return d}
+function ksP(d,n,m){const lam=Math.sqrt(n*m/(n+m))*d;if(lam<1e-3)return 1;let t=0;for(let k=1;k<=100;k++){const term=2*((k%2)?1:-1)*Math.exp(-2*k*k*lam*lam);t+=term;if(Math.abs(term)<1e-12)break}return Math.min(1,Math.max(0,t))}
+const sci=x=>x===0?'0':(x<1e-3?x.toExponential(1):f(x,4));
+
+// ---------- Lab 1: drift types ----------
+const tc=$('d42-typeCanvas'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+const MODEL_T=120,NPT=600;
+const base=(()=>{const r=rng(42),g=gaussFn(r),z=[],noise=[],jit=[];for(let i=0;i<NPT;i++){z.push(g(0,1));noise.push(g(0,6));jit.push(r())}return{z,noise,jit}})();
+const refAmt=base.z.map(z=>100+20*z),tEdges=qEdges(refAmt,10),tExp=fracs(refAmt,tEdges);
+function drawType(){
+  const mean=+$('d42-tMean').value,bnd=+$('d42-tBnd').value,sd=mean===100?20:20+(mean-100)*4/18;
+  $('d42-tMeanV').textContent=mean;$('d42-tBndV').textContent=bnd;
+  const amt=base.z.map(z=>mean+sd*z),lab=amt.map((a,i)=>a+base.noise[i]>bnd?1:0);
+  const acc=amt.reduce((s,a,i)=>s+(((a>MODEL_T)?1:0)===lab[i]?1:0),0)/NPT;
+  const p=psiF(tExp,fracs(amt,tEdges)),rate=lab.reduce((a,b)=>a+b,0)/NPT;
+  tx.clearRect(0,0,TW,TH);
+  const X=v=>20+(v-30)/(200-30)*(TW-40);
+  tx.strokeStyle=css('--grid');tx.lineWidth=1;for(let v=40;v<=200;v+=20){tx.beginPath();tx.moveTo(X(v),0);tx.lineTo(X(v),TH-24);tx.stroke()}
+  tx.fillStyle=css('--muted');tx.font='11px JetBrains Mono, monospace';tx.textAlign='center';for(let v=40;v<=200;v+=40)tx.fillText(v,X(v),TH-8);
+  amt.forEach((a,i)=>{tx.fillStyle=lab[i]?css('--vec-b'):css('--muted');tx.globalAlpha=lab[i]?.9:.45;tx.beginPath();tx.arc(X(a),14+base.jit[i]*(TH-50),3,0,7);tx.fill()});tx.globalAlpha=1;
+  tx.strokeStyle=css('--vec-a');tx.lineWidth=3;tx.beginPath();tx.moveTo(X(MODEL_T),0);tx.lineTo(X(MODEL_T),TH-24);tx.stroke();
+  tx.strokeStyle=css('--ink');tx.lineWidth=2;tx.setLineDash([6,5]);tx.beginPath();tx.moveTo(X(bnd),0);tx.lineTo(X(bnd),TH-24);tx.stroke();tx.setLineDash([]);
+  tx.fillStyle=css('--vec-a');tx.textAlign='left';tx.fillText('model 120',X(MODEL_T)+4,12);tx.fillStyle=css('--ink');tx.fillText('truth '+bnd,X(bnd)+4,26);
+  $('d42-tPsi').textContent=f(p,3);$('d42-tAcc').textContent=f(acc,3);$('d42-tRate').textContent=f(rate*100,1)+'%';
+  const v=$('d42-tVerdict');
+  if(p>=0.25&&acc>0.88){v.textContent='Covariate drift: الـ PSI ضرب، والدقة لسه كويسة';v.style.color=css('--vec-b')}
+  else if(p<0.1&&acc<0.88){v.textContent='Concept drift: الـ inputs زي ما هي والدقة وقعت. محدش هيعرف غير من الـ labels';v.style.color=css('--bad')}
+  else if(p>=0.1&&acc<0.88){v.textContent='الاتنين مع بعض: inputs اتحركت والدقة وقعت';v.style.color=css('--bad')}
+  else if(p>=0.1){v.textContent='تغيير متوسط في الـ inputs';v.style.color=css('--vec-b')}
+  else{v.textContent='مستقر';v.style.color=css('--ok')}
+}
+['d42-tMean','d42-tBnd'].forEach(id=>$(id).addEventListener('input',drawType));
+document.querySelectorAll('[data-d42t]').forEach(b=>b.addEventListener('click',()=>{const [m,bd]=b.dataset.d42t.split(',');$('d42-tMean').value=m;$('d42-tBnd').value=bd;drawType()}));
+drawType();
+
+// ---------- Lab 2: PSI & KS ----------
+const pc=$('d42-psiCanvas'),px=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+const NS=[100,500,2000,10000,50000,100000];
+let pSeed=7,refZ=[],curZ=[];
+function sample(){const g=gaussFn(rng(pSeed)),n=NS[+$('d42-pN').value];refZ=[];curZ=[];for(let i=0;i<n;i++){refZ.push(g(0,1));curZ.push(g(0,1))}}
+function drawPsi(){
+  const sh=+$('d42-pShift').value,sc=+$('d42-pScale').value,bins=+$('d42-pBins').value,n=NS[+$('d42-pN').value];
+  $('d42-pShiftV').textContent=f(sh,2);$('d42-pScaleV').textContent=f(sc,2);$('d42-pBinsV').textContent=bins;$('d42-pNV').textContent=n.toLocaleString('en');
+  const cur=curZ.map(z=>sh+sc*z),edges=qEdges(refZ,bins),e=fracs(refZ,edges),a=fracs(cur,edges);
+  const p=psiF(e,a),d=ksStat(refZ,cur),pv=ksP(d,refZ.length,n);
+  px.clearRect(0,0,PW,PH);
+  const lo=-4,hi=4,X=v=>20+(Math.max(lo,Math.min(hi,v))-lo)/(hi-lo)*(PW-40);
+  // histogram (top) using bins edges, height = share / width
+  const HT=170,ed=[lo,...edges,hi];
+  let mx=0;const dens=(arr)=>arr.map((s,i)=>s/Math.max(.05,ed[i+1]-ed[i]));const de=dens(e),da=dens(a);mx=Math.max(...de,...da,.01);
+  for(let i=0;i<e.length;i++){const x0=X(ed[i]),x1=X(ed[i+1]);
+    px.fillStyle=css('--muted');px.globalAlpha=.3;px.fillRect(x0,HT-de[i]/mx*(HT-20),x1-x0-1,de[i]/mx*(HT-20));
+    px.fillStyle=css('--vec-a');px.globalAlpha=.55;px.fillRect(x0+2,HT-da[i]/mx*(HT-20),x1-x0-5,da[i]/mx*(HT-20));px.globalAlpha=1}
+  px.fillStyle=css('--ink');px.font='11px JetBrains Mono, monospace';px.textAlign='left';px.fillText('bins: grey = reference, blue = current',22,14);
+  // ECDF bottom
+  const T0=HT+24,B0=PH-16,Y=v=>B0-v*(B0-T0);
+  px.strokeStyle=css('--line');px.lineWidth=1;px.beginPath();px.moveTo(20,T0);px.lineTo(20,B0);px.lineTo(PW-20,B0);px.stroke();
+  const ecdf=(arr,col)=>{const s=arr.slice().sort((x,y)=>x-y),k=Math.max(1,Math.floor(s.length/400));px.strokeStyle=col;px.lineWidth=2;px.beginPath();px.moveTo(X(lo),Y(0));for(let i=0;i<s.length;i+=k){px.lineTo(X(s[i]),Y(i/s.length))}px.lineTo(X(hi),Y(1));px.stroke()};
+  ecdf(refZ,css('--muted'));ecdf(cur,css('--vec-a'));
+  // locate D on grid
+  let best=0,bx=0,fa=0,fb=0;const sr=refZ.slice().sort((x,y)=>x-y),sc2=cur.slice().sort((x,y)=>x-y);
+  for(let t=lo;t<=hi;t+=0.02){const F1=bisectRight(sr,t)/sr.length,F2=bisectRight(sc2,t)/sc2.length;if(Math.abs(F1-F2)>best){best=Math.abs(F1-F2);bx=t;fa=F1;fb=F2}}
+  if(best>0.005){px.strokeStyle=css('--vec-b');px.lineWidth=3;px.beginPath();px.moveTo(X(bx),Y(fa));px.lineTo(X(bx),Y(fb));px.stroke();px.fillStyle=css('--vec-b');px.fillText('D',X(bx)+5,(Y(fa)+Y(fb))/2)}
+  px.fillStyle=css('--ink');px.fillText('ECDF',22,T0+12);
+  $('d42-pPsi').textContent=f(p,3);$('d42-pD').textContent=f(d,3);$('d42-pP').textContent=sci(pv);
+  const v=$('d42-pVerdict');
+  const sig=pv<0.005,big=d>=0.1;
+  let txt=p<0.1?'PSI: مستقر':p<0.25?'PSI: تغيير متوسط':'PSI: تغيير كبير';
+  txt+=' · KS: '+(sig&&big?'drift (p صغير و D كبير)':sig?'p صغير بس D تافه → warning بس':'مفيش دليل');
+  v.textContent=txt;v.style.color=(p>=0.25||(sig&&big))?css('--bad'):(p>=0.1||sig)?css('--vec-b'):css('--ok');
+}
+let pDrag=false,pStart=0,pBase=0;
+pc.addEventListener('pointerdown',e=>{pDrag=true;pc.setPointerCapture(e.pointerId);pStart=AI.evPos(pc,e)[0];pBase=+$('d42-pShift').value});
+pc.addEventListener('pointermove',e=>{if(!pDrag)return;const dx=AI.evPos(pc,e)[0]-pStart,v=Math.max(-2,Math.min(2,pBase+dx/((PW-40)/8)));$('d42-pShift').value=v;drawPsi()});
+pc.addEventListener('pointerup',()=>pDrag=false);pc.addEventListener('pointercancel',()=>pDrag=false);
+['d42-pShift','d42-pScale','d42-pBins'].forEach(id=>$(id).addEventListener('input',drawPsi));
+$('d42-pN').addEventListener('input',()=>{sample();drawPsi()});
+$('d42-pResample').addEventListener('click',()=>{pSeed++;sample();drawPsi()});
+sample();drawPsi();
+
+// ---------- Lab 3: full stream ----------
+const sc=$('d42-streamCanvas'),sx=AI.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+const WINS=[200,350,500,1000,2000],CH=['app','store','web'];
+const SEG=[[0,100,20,[.35,.15,.5],120],[3000,118,24,[.6,.1,.3],120],[5000,100,20,[.35,.15,.5],120],[6500,100,20,[.35,.15,.5],105]];
+let sSeed=7,rows=[],shown=0,anim=null;
+function makeStream(seed){const r=rng(seed*7919+3),g=gaussFn(r),ev=[];for(let t=0;t<9000;t++){let s=SEG[0];SEG.forEach(q=>{if(t>=q[0])s=q});const amount=g(s[1],s[2]);const u=r();const ch=u<s[3][0]?0:u<s[3][0]+s[3][1]?1:2;const label=amount+g(0,6)>s[4]?1:0;ev.push({amount,ch,label})}return ev}
+function chi2(refC,curC){const k=3,rt=[refC.reduce((a,b)=>a+b,0),curC.reduce((a,b)=>a+b,0)],G=rt[0]+rt[1];let st=0,dof=0;for(let c=0;c<k;c++){const ct=refC[c]+curC[c];if(!ct)continue;dof++;[refC,curC].forEach((row,ri)=>{const ex=rt[ri]*ct/G;st+=(row[c]-ex)**2/ex})}dof-=1;
+  // dof 2 → sf = exp(-x/2); dof 1 → erfc(sqrt(x/2))
+  let p=dof===2?Math.exp(-st/2):dof===1?erfc(Math.sqrt(st/2)):1;return{p,v:Math.sqrt(st/G)}}
+function erfc(x){const t=1/(1+.5*x),y=t*Math.exp(-x*x-1.26551223+t*(1.00002368+t*(.37409196+t*(.09678418+t*(-.18628806+t*(.27886807+t*(-1.13520398+t*(1.48851587+t*(-.82215223+t*.17087277)))))))));return y}
+function runStream(){
+  const W=WINS[+$('d42-sWin').value],pat=+$('d42-sPat').value,delay=+$('d42-sDel').value,nt=+$('d42-sNt').value,alpha=0.01/nt;
+  $('d42-sWinV').textContent=W;$('d42-sPatV').textContent=pat;$('d42-sDelV').textContent=delay;$('d42-sNtV').textContent=nt;
+  const ev=makeStream(sSeed),ref=ev.slice(0,2000);
+  const cand=ref.map(e=>e.amount).sort((a,b)=>a-b);let thr=cand[0],ba=-1;for(let i=0;i<cand.length;i+=5){const t=cand[i];let h=0;ref.forEach(e=>{if((e.amount>t)===(e.label===1))h++});if(h/2000>ba){ba=h/2000;thr=t}}
+  const pred=ev.map(e=>e.amount>thr?1:0);let refAcc=0;for(let i=0;i<2000;i++)if(pred[i]===ev[i].label)refAcc++;refAcc/=2000;
+  const rv=ref.map(e=>e.amount),edges=qEdges(rv,10),exp=fracs(rv,edges),refC=[0,0,0];ref.forEach(e=>refC[e.ch]++);
+  const streak={},out=[];
+  for(let now=2000+Math.ceil(W/250)*250;now<=9000;now+=250){
+    const win=ev.slice(now-W,now),cur=win.map(e=>e.amount),curC=[0,0,0];win.forEach(e=>curC[e.ch]++);
+    const p=psiF(exp,fracs(cur,edges)),d=ksStat(rv,cur),kp=ksP(d,2000,W),cs=chi2(refC,curC);
+    const lv={amount:(p>=0.25||(d>=0.1&&kp<alpha))?'drift':p>=0.1?'warn':'ok',channel:(cs.p<alpha&&cs.v>=0.1)?'drift':cs.p<alpha?'warn':'ok'};
+    const ke=now-delay,ks=Math.max(0,ke-W);let acc=null;if(ke>ks){let h=0;for(let i=ks;i<ke;i++)if(pred[i]===ev[i].label)h++;acc=h/(ke-ks);lv.accuracy=acc<refAcc-0.05?'drift':'ok'}
+    const notes=[];Object.keys(lv).forEach(nm=>{const prev=streak[nm]||0,s=lv[nm]==='drift'?prev+1:0;streak[nm]=s;if(s===pat)notes.push('ALERT '+nm);else if(prev>=pat&&s===0)notes.push('resolved '+nm)});
+    out.push({end:now,psi:p,d,cp:cs.p,acc,lv,notes})}
+  return{out,thr,refAcc};
+}
+let res=null;
+function drawStream(){
+  sx.clearRect(0,0,SW,SH);const L=34,R=SW-10,T=12,B=SH-26,X=t=>L+(t-2000)/7000*(R-L),Yp=v=>B-Math.min(1,v/0.8)*(B-T),Ya=v=>B-(v-0.6)/0.4*(B-T);
+  [[3000,5000,css('--vec-b')],[6500,9000,css('--bad')]].forEach(([a,b,c])=>{sx.fillStyle=c;sx.globalAlpha=.08;sx.fillRect(X(a),T,X(b)-X(a),B-T);sx.globalAlpha=1});
+  sx.fillStyle=css('--muted');sx.font='10px JetBrains Mono, monospace';sx.textAlign='center';[2000,3000,5000,6500,9000].forEach(t=>sx.fillText(t,X(t),SH-10));
+  sx.textAlign='left';sx.fillText('covariate',X(3000)+3,T+10);sx.fillText('concept',X(6500)+3,T+10);
+  sx.strokeStyle=css('--muted');sx.setLineDash([3,4]);sx.lineWidth=1;sx.beginPath();sx.moveTo(L,Yp(0.25));sx.lineTo(R,Yp(0.25));sx.stroke();sx.setLineDash([]);sx.fillText('PSI .25',2,Yp(0.25)+3);
+  if(!res)return;const rs=res.out.slice(0,shown);
+  sx.strokeStyle=css('--vec-a');sx.lineWidth=2;sx.beginPath();rs.forEach((r,i)=>{i?sx.lineTo(X(r.end),Yp(r.psi)):sx.moveTo(X(r.end),Yp(r.psi))});sx.stroke();
+  sx.strokeStyle=css('--vec-b');sx.beginPath();let st=false;rs.forEach(r=>{if(r.acc==null)return;st?sx.lineTo(X(r.end),Ya(r.acc)):sx.moveTo(X(r.end),Ya(r.acc));st=true});sx.stroke();
+  rs.forEach(r=>r.notes.forEach((n,k)=>{const al=n.startsWith('ALERT');sx.fillStyle=al?css('--bad'):css('--ok');const x=X(r.end),y=B-4-k*10;sx.beginPath();sx.moveTo(x,y-8);sx.lineTo(x-5,y);sx.lineTo(x+5,y);sx.closePath();sx.fill()}));
+  if(shown&&shown<=res.out.length){const x=X(res.out[shown-1].end);sx.strokeStyle=css('--ink');sx.lineWidth=1;sx.beginPath();sx.moveTo(x,T);sx.lineTo(x,B);sx.stroke()}
+}
+function summary(){
+  const o=res.out,first=(nm,after)=>{const r=o.find(r=>r.end>after&&r.notes.includes('ALERT '+nm));return r?r.end:'-'};
+  $('d42-sCov').textContent=first('amount',3000);$('d42-sCon').textContent=first('accuracy',6500);
+  $('d42-sFalse').textContent=o.filter(r=>r.end<=3000&&r.notes.some(n=>n.startsWith('ALERT'))).length;
+  $('d42-sLog').textContent='model: amount > '+f(res.thr,1)+'  ref acc '+f(res.refAcc,3)+'\n  end   PSI    D     chi2p    acc   levels\n'+o.filter(r=>r.notes.length||r.end%1000===0).map(r=>String(r.end).padStart(5)+'  '+r.psi.toFixed(3)+'  '+r.d.toFixed(3)+'  '+r.cp.toExponential(1).padStart(7)+'  '+(r.acc==null?'  -  ':r.acc.toFixed(3))+'  '+r.lv.amount+'/'+r.lv.channel+'/'+(r.lv.accuracy||'-')+'  '+r.notes.join(', ')).join('\n');
+}
+function play(){cancelAnimationFrame(anim);res=runStream();shown=0;const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  if(reduce){shown=res.out.length;drawStream();summary();return}
+  let last=0;const step=t=>{if(!document.body.contains(sc))return;if(t-last>40){shown++;last=t;drawStream()}if(shown<res.out.length)anim=requestAnimationFrame(step);else summary()};anim=requestAnimationFrame(step)}
+$('d42-sPlay').addEventListener('click',play);
+$('d42-sSeed').addEventListener('click',()=>{sSeed++;play()});
+['d42-sWin','d42-sPat','d42-sDel','d42-sNt'].forEach(id=>$(id).addEventListener('input',()=>{$('d42-sWinV').textContent=WINS[+$('d42-sWin').value];$('d42-sPatV').textContent=$('d42-sPat').value;$('d42-sDelV').textContent=$('d42-sDel').value;$('d42-sNtV').textContent=$('d42-sNt').value}));
+res=runStream();shown=res.out.length;drawStream();summary();
+
+// ---------- quiz ----------
+AI.quiz($('d42-quizBox'),[
+ ['سيرفس موديل بترد على كل request بـ HTTP 200 والـ latency طبيعي. ممكن تكون مخبية إيه؟',['ولا حاجة، السيرفس السليمة دايمًا بترجع predictions صح','Memory leaks، لأن الـ HTTP 200 عمره ما بيحجز memory','Predictions غلط، لأن الداتا بعدت عن داتا التدريب','Slow queries، لأن HTTP 200 معناه إن الـ request خد أكتر من ثانية'],2,'الـ system health بيقولك إن السيرفس بترد بس، ومش بيقول حاجة عن إن الإجابات لسه صح لداتا النهاردة.'],
+ ['الـ fraudsters غيروا طريقتهم، فنفس features الدفع بقى ليها fraud risk مختلف. ده أنهي نوع drift؟',['Covariate drift، لأن P(x) اتغير','Prior drift، لأن P(y) بس اللي اتغير','مفيش drift، لأن الـ inputs شكلها زي ما هو','Concept drift، لأن P(y | x) اتغير'],3,'توزيع الـ inputs ممكن يفضل زي ما هو والإجابة الصح لكل input تتغير. ده concept drift، والـ labels بس اللي بتكشفه.'],
+ ['bin من ١٠ فيه ١٠٪ من الـ reference و٣٠٪ من الـ current. بيضيف كام للـ PSI؟',['حوالي 1.10، اللي هو ln(0.30/0.10)','حوالي 0.66، تلات أضعاف الفرق','حوالي 0.22، اللي هو (0.30 − 0.10) × ln(3)','حوالي 0.20، الفرق بين النسبتين'],2,'كل bin بيضيف (current − reference) × log النسبة: 0.20 × 1.099 ≈ 0.22.'],
+ ['monitor بيفحص ٥٠ feature كل ساعة عند alpha = 0.05 ومفيش حاجة اتغيرت. كام إنذار كداب تقريبًا في اليوم؟',['حوالي 2.5','حوالي 60','حوالي 1200','ولا واحد، لأن الـ alpha بيحمي كل test'],1,'50 × 24 = 1200 test في اليوم، و٥٪ منهم ≈ 60 بيضربوا على داتا ما اتغيرتش.'],
+ ['مع مليون event في كل window، الـ KS طلّع p = 2e-7 و D = 0.004. السياسة المفروض تعمل إيه؟',['تسجله warning على الأكتر، لأن الـ effect size (D) صغير جدًا','تصحّي الـ on-call، لأن الـ p-value أقل بكتير من الـ alpha','تعمل retrain فورًا، لأن أي نتيجة significant معناها concept drift','تتجاهل KS وتستخدم PSI، لأن KS مش صالح للـ windows الكبيرة'],0,'العينات الكبيرة بتخلي الفروق التافهة significant. محتاج threshold على D كمان قبل ما تنبّه بني آدم.'],
+ ['الـ input monitors ساكتين، بس الدقة على الـ events الجديدة اللي ليها labels نزلت من 0.95 لـ 0.78. الخطوة الصح؟',['تتجاهله، لأن tests الـ input ما لقيتش حاجة','تنزّل thresholds الـ PSI لحد ما الـ input monitors تضرب','تعمل retrain على داتا التدريب الأصلية بـ epochs أكتر','تعامله كـ concept drift وتجمع labels حديثة عشان الـ retrain'],3,'inputs ثابتة ودقة بتقع = تغيير في P(y | x). الـ retrain على labels قديمة بيعلّمه الـ concept القديم تاني، فالـ labels الحديثة الأول.'],
+ ['(سؤال إضافي) نسبة الـ fraud اتضاعفت في هجمة، بس شكل الـ fraud نفسه زي ما هو. الفعل الأنسب حسب الدرس؟',['تتجاهله تمامًا','تعمل recalibrate للـ scores أو تحرك الـ decision threshold','تمسح الـ reference window','تزوّد عدد الـ bins في الـ PSI'],1,'ده prior drift: P(y) اتغير و P(x | y) ثابت. الجدول بيقول recalibrate أو حرّك الـ threshold.'],
+ ['(سؤال إضافي) ليه في الديمو الـ accuracy alert جه عند 7500 مع إن الـ concept drift بدأ عند 6500؟',['لأن الـ PSI كان بيخبيه','لأن الـ labels متأخرة 500، والـ window محتاج يتملي بداتا جديدة، والـ patience محتاج windows ورا بعض','لأن الـ chi-square فشل','لأن الموديل اتدرب تاني في النص'],1,'الدرس بيقول إن التأخير ١٠٠٠ event، ٥٠٠ منهم من الـ label delay، والباقي من الـ window والـ persistence.']
+],6,()=>{const c=document.querySelector('#d42-checklist input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(42,$('d42-checklist'));
+
+AI.onTheme(()=>{if(!document.body.contains(tc))return false;drawType();drawPsi();drawStream()});
+})();
+</script>

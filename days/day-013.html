@@ -1,0 +1,842 @@
+<div class="day" id="d13-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 13 · Numerical Stability</span>
+  <h1>اليوم ١٣: الـ float بيكدب عليك، واتعلم إزاي تمسكه</h1>
+  <p class="lede">التدريب بيمشي ٣ ساعات تمام، وفجأة الـ loss يبقى <code>nan</code>. النهاردة هتفهم ليه ده بيحصل: إزاي الكمبيوتر بيخزن الأرقام العشرية، وإمتى بيحصل <b>overflow</b> و<b>underflow</b>، والحيلة اللي كل framework بيستخدمها في الـ softmax، وإزاي تتأكد إن الـ gradients بتاعتك صح، وليه موديلات النهاردة بتتدرب بـ <b>bfloat16</b>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Tensor Operations</b></span>
+    <span>بعده: <b>Norms and Distances</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d13-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d13-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كنا في الـ Tensor Operations. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. عندك tensor شكله <span class="ltr">(3, 1)</span> وجمعته على tensor شكله <span class="ltr">(1, 4)</span>. شكل الناتج إيه؟ وليه؟</summary>
+    <p>الناتج <span class="ltr">(3, 4)</span>. ده الـ <b>broadcasting</b>: أي بُعد حجمه 1 بيتمط عشان يساوي البُعد اللي قصاده. الأبعاد بتتقارن من اليمين للشمال.</p></details>
+  <details><summary>٢. <code>einsum('ij,jk-&gt;ik', A, B)</code> بتعمل إيه؟</summary>
+    <p>ضرب مصفوفات عادي <span class="ltr">A @ B</span>: الحرف <code>j</code> متكرر في الدخل ومش موجود في الخرج، فبيتجمع عليه.</p></details>
+  <details><summary>٣. إيه الفرق بين <code>reshape</code> و<code>transpose</code>؟</summary>
+    <p><code>reshape</code> بيعيد تقسيم نفس الأرقام بنفس ترتيبها على شكل جديد. <code>transpose</code> بيبدّل ترتيب المحاور نفسها، فالعنصر <span class="ltr">[i, j]</span> يبقى <span class="ltr">[j, i]</span>. لو استخدمت reshape مكان transpose هتلخبط الداتا وانت مش واخد بالك.</p></details>
+  <p>النهاردة نفس الـ tensors دي، بس هنبص على <b>الرقم الواحد</b> جواها: هو متخزن إزاي، وإمتى بيبوظ.</p>
+</section>
+
+<section>
+  <h2>خطة الساعتين</h2>
+  <div class="plan">
+    <div><b>10 min</b>التسخين + المشكلة</div>
+    <div><b>25 min</b>IEEE 754 والمعمل ٠١ (البتات)</div>
+    <div><b>20 min</b>Overflow و log-sum-exp والمعمل ٠٢</div>
+    <div><b>15 min</b>Gradient checking والمعمل ٠٣</div>
+    <div><b>15 min</b>Mixed precision و clipping والمعمل ٠٤</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section id="d13-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: باجات مش بتبان</h2></div>
+  <p>الدرس بيحكي ٣ سيناريوهات حقيقية:</p>
+  <ol class="ex">
+    <li>الموديل بيتدرب ٣ ساعات. عند step 9,000 الـ logits تمام، عند 9,001 بقت <code>inf</code>، وعند 9,002 كل الـ gradients بقت <code>nan</code> والتدريب مات.</li>
+    <li>الموديل خلص تدريب بس الـ accuracy أقل من الورقة البحثية بـ ٢٪. كل حاجة مطابقة… إلا إن الورقة استخدمت float32 وانت استخدمت float16 من غير الـ scaling الصح. أخطاء التقريب أكلت الدقة بهدوء.</li>
+    <li>كتبت cross-entropy بنفسك. شغالة على logits صغيرة، ولما الـ logits تعدّي 100 بترجع <code>inf</code>، عشان <code>exp(100)</code> أكبر من أكبر رقم float32 يقدر يشيله.</li>
+  </ol>
+  <div class="note"><strong>التشبيه:</strong> الـ float زي مسطرة مكتوب عليها عدد محدود من العلامات. أي رقم بين علامتين بيتقرّب لأقرب علامة. والمسطرة ليها أول وآخر: أي حاجة أكبر من آخرها بتبقى «لا نهاية»، وأي حاجة أصغر من أول علامة بتبقى صفر.</div>
+</section>
+
+<!-- IEEE + LAB 1 -->
+<section id="d13-ieee">
+  <div class="station-head"><span class="tag">02</span><h2>IEEE 754: الرقم العشري جوه الكمبيوتر</h2></div>
+  <p>أي float متقسم ٣ حتت: <b>sign</b> (بت واحدة: موجب ولا سالب)، <b>exponent</b> (بيحدد المدى: الرقم كبير قد إيه أو صغير قد إيه)، و<b>mantissa</b> (بتحدد الدقة: كام رقم معنوي).</p>
+  <div class="formula">float32 = [1 sign] [8 exponent] [23 mantissa]<br>Value = (-1)^sign × 2^(exponent − 127) × 1.mantissa</div>
+  <p>فكّر فيها زي الـ scientific notation: <span class="ltr">6.02 × 10²³</span>. الـ exponent هو الـ ٢٣ (بيحدد الحجم)، والـ mantissa هي ٦٫٠٢ (بتحدد كام رقم مظبوط عندك). الفرق إن الكمبيوتر بيستخدم أساس ٢ مش ١٠.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Format</th><th>Bits</th><th>Exponent</th><th>Mantissa</th><th>أرقام عشرية دقيقة</th><th>المدى تقريبًا</th></tr>
+    <tr><td class="ltr">float64</td><td>64</td><td>11</td><td>52</td><td>~15-16</td><td class="ltr">±1.8e308</td></tr>
+    <tr><td class="ltr">float32</td><td>32</td><td>8</td><td>23</td><td>~7-8</td><td class="ltr">±3.4e38</td></tr>
+    <tr><td class="ltr">float16</td><td>16</td><td>5</td><td>10</td><td>~3-4</td><td class="ltr">±65,504</td></tr>
+    <tr><td class="ltr">bfloat16</td><td>16</td><td>8</td><td>7</td><td>~2-3</td><td class="ltr">±3.4e38</td></tr>
+  </table></div>
+  <ul class="ex">
+    <li><b>float32</b> فيه حوالي ٧ أرقام دقيقة: يفرّق بين <span class="ltr">1.0000001</span> و<span class="ltr">1.0000002</span>، بس مش بين <span class="ltr">1.00000001</span> و<span class="ltr">1.00000002</span>. بعد ٧ أرقام كله ضوضاء تقريب.</li>
+    <li><b>float16</b> فيه ٣ أرقام بس، وأكبر رقم يشيله 65,504. ده صغير بشكل مقلق في الـ ML، لأن الـ logits والـ activations بتعدّيه كتير.</li>
+    <li><b>bfloat16</b> حل Google لمشكلة المدى: نفس الـ exponent بتاع float32 (٨ بت، يعني نفس المدى لحد 3.4e38) بس الـ mantissa ٧ بت بس. في التدريب المدى أهم من الدقة، فالـ bfloat16 غالبًا بيكسب.</li>
+  </ul>
+
+  <h3>ليه <span class="ltr">0.1 + 0.2 ≠ 0.3</span>؟</h3>
+  <p>زي ما <span class="ltr">1/3</span> في العشري <span class="ltr">0.3333…</span> مالهاش آخر، الـ <span class="ltr">0.1</span> في الثنائي كسر بيتكرر للأبد: <span class="ltr">0.000110011001100…</span>. الـ float32 بيقصه عند ٢٣ بت، فاللي بيتخزن فعلًا حوالي <span class="ltr">0.100000001490116</span>. والـ 0.2 بتبقى حوالي <span class="ltr">0.200000002980232</span>، ومجموعهم حوالي <span class="ltr">0.300000004470348</span> مش 0.3.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>&gt;&gt;&gt; 0.1 + 0.2
+0.30000000000000004
+&gt;&gt;&gt; 0.1 + 0.2 == 0.3
+False</pre></div>
+  <p>ده بيفرق في الـ ML عشان: (١) مقارنات زي <code>if loss &lt; threshold</code> ممكن تغلط، (٢) جمع قيم صغيرة كتير (gradient updates على آلاف الـ steps) بيبعد عن المجموع الحقيقي، (٣) اختبارات الـ reproducibility بتفشل لو قارنت بـ <code>==</code>.</p>
+  <div class="note"><strong>القاعدة:</strong> عمرك ما تقارن floats بـ <code>==</code>. استخدم <code>abs(a - b) &lt; epsilon</code> أو <code>math.isclose()</code>.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: شوف البتات بعينك</h3>
+      <p>اكتب أي رقم وشوف هو بيتخزن إزاي في الـ ٣ formats. الأحمر = sign، البرتقالي = exponent، الأزرق = mantissa. المربع المليان = 1.</p>
+      <p>جرب <b>0.1</b> وشوف الـ «المتخزن فعلًا». بعدين <b>65504</b> و<b>70000</b>: الـ float16 هيقلب <span class="ltr">inf</span> والـ bfloat16 لأ. وجرب <b>1e-8</b>: الـ float16 هيخليه صفر.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ bfloat16 هو حرفيًا أول ١٦ بت من الـ float32 (الكود في الريبو بيعمله بـ <code>as_int &amp; 0xFFFF0000</code>). عشان كده التحويل بينهم سهل جدًا.</div>
+    </div>
+    <div class="instrument">
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">الرقم: <input id="d13-num" type="text" value="0.1" class="ltr" style="font:inherit;font-family:var(--f-mono);padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink);width:160px" aria-label="الرقم"></label>
+      <div class="btns" id="d13-numPresets">
+        <button type="button" data-v="0.1">0.1</button>
+        <button type="button" data-v="0.3">0.3</button>
+        <button type="button" data-v="3.14159">3.14159</button>
+        <button type="button" data-v="65504">65504</button>
+        <button type="button" data-v="70000">70000</button>
+        <button type="button" data-v="1e-8">1e-8</button>
+        <button type="button" data-v="-2.5">-2.5</button>
+      </div>
+      <canvas id="d13-bits" width="560" height="250" aria-label="البتات في float32 و float16 و bfloat16"></canvas>
+      <div class="readout">
+        <div><small>float32 متخزن</small><b id="d13-v32">—</b></div>
+        <div><small>float16 متخزن</small><b id="d13-v16">—</b></div>
+        <div><small>bfloat16 متخزن</small><b id="d13-vbf">—</b></div>
+        <div><small>خطأ float32</small><b id="d13-e32">—</b></div>
+        <div><small>خطأ float16</small><b id="d13-e16">—</b></div>
+        <div><small>خطأ bfloat16</small><b id="d13-ebf">—</b></div>
+      </div>
+      <div class="verdict" id="d13-bitsVerdict"></div>
+    </div>
+  </div>
+
+  <h3>الـ Machine epsilon</h3>
+  <p>أصغر رقم <span class="ltr">e</span> بحيث <span class="ltr">1.0 + e ≠ 1.0</span>. ده «عرض العلامة» على المسطرة عند الرقم ١. لـ float32 هو <span class="ltr">2⁻²³ ≈ 1.19e-7</span>. لـ float16 هو <span class="ltr">2⁻¹⁰ ≈ 9.8e-4</span>، ولـ bfloat16 <span class="ltr">2⁻⁷ ≈ 0.0078</span>. يعني في bfloat16، <span class="ltr">1 + 0.003</span> بيرجع 1 تاني!</p>
+</section>
+
+<!-- CANCELLATION -->
+<section id="d13-cancel">
+  <div class="station-head"><span class="tag">03</span><h2>Catastrophic Cancellation: الطرح اللي بيفضح الضوضاء</h2></div>
+  <p>لما تطرح رقمين قريبين جدًا من بعض، الأرقام المهمة بتلغي بعض، واللي يفضل هو ضوضاء التقريب، بس دلوقتي بقت هي أول الرقم.</p>
+  <div class="formula">a = 1.0000001 → stored as 1.00000011920929 (float32)<br>b = 1.0000000<br>true a−b = 0.0000001 · computed = 0.00000011920929 · relative error = 19.2%</div>
+  <p>طرحة واحدة = خطأ ١٩٪. <b>التشبيه:</b> عايز تعرف وزن ريشة، فوزنت شاحنة وعليها الريشة، ووزنت الشاحنة لوحدها، وطرحت. الميزان بتاع الشاحنات مش حساس كفاية، فالفرق اللي طلعلك كله غلط الميزان.</p>
+  <p>بيحصل في الـ ML لما:</p>
+  <ul class="ex">
+    <li>تحسب الـ variance بالمعادلة <span class="ltr">E[x²] − E[x]²</span> والمتوسط كبير (الاتنين أرقام ضخمة وقريبة).</li>
+    <li>تطرح log-probabilities قريبة من بعض.</li>
+    <li>تحسب gradient بالـ finite differences بـ epsilon صغير زيادة (هنشوفها في المعمل ٠٣).</li>
+  </ul>
+  <div class="note"><strong>الحل:</strong> رتّب المعادلة بحيث متطرحش أرقام كبيرة قريبة. للـ variance: استخدم <b>Welford</b> (بيحدّث المتوسط والانحراف خطوة بخطوة) أو اطرح المتوسط الأول. للاحتمالات: اشتغل في الـ log-space من الأول للآخر. ولجمع أرقام صغيرة كتير، الكود فيه <b>Kahan summation</b>: بيحتفظ بالـ «فكة» اللي ضاعت في كل جمعة ويرجّعها في اللي بعدها.</div>
+</section>
+
+<!-- OVERFLOW + LSE + LAB 2 -->
+<section id="d13-overflow">
+  <div class="station-head"><span class="tag">04</span><h2>Overflow و Underflow و حيلة Log-Sum-Exp</h2></div>
+  <p><b>Overflow</b> = الناتج أكبر من أكبر رقم ينفع يتخزن فيبقى <code>inf</code>. <b>Underflow</b> = الناتج أقرب للصفر من أصغر رقم موجب فيبقى <code>0.0</code>.</p>
+  <div class="formula">float32: max 3.4028235e+38 · min normal 1.175e-38 · min denormal 1.401e-45</div>
+  <div class="tablewrap"><table>
+    <tr><th>العملية (float32)</th><th>الناتج</th></tr>
+    <tr><td class="ltr">exp(88.7)</td><td class="ltr">3.40e+38 (على الحافة)</td></tr>
+    <tr><td class="ltr">exp(89.0)</td><td class="ltr">inf (overflow)</td></tr>
+    <tr><td class="ltr">exp(-87.3)</td><td class="ltr">1.18e-38 (فوق الـ underflow بالعافية)</td></tr>
+    <tr><td class="ltr">exp(-104)</td><td class="ltr">0.0 (underflow)</td></tr>
+    <tr><td class="ltr">log(0.0) · log(-1.0)</td><td class="ltr">-inf · nan</td></tr>
+    <tr><td class="ltr">log(1e-46)</td><td class="ltr">-inf (الدخل نفسه بقى صفر)</td></tr>
+  </table></div>
+  <p>الـ <code>exp()</code> موجودة في softmax و sigmoid والاحتمالات. الـ <code>log()</code> موجودة في cross-entropy و log-likelihood و KL divergence. والتركيبة <span class="ltr">log(exp(x))</span> حقل ألغام من غير الحيلة الصح.</p>
+
+  <h3>حيلة Log-Sum-Exp</h3>
+  <p>حساب <span class="ltr">log(Σ exp(xᵢ))</span> مباشرة خطر: لو أي x كبير، الـ exp بيعمل overflow. لو كلهم سالب جدًا، كل الـ exp بتبقى صفر و<span class="ltr">log(0) = −inf</span>. الحيلة: <b>اطرح أكبر قيمة الأول</b>.</p>
+  <div class="formula">log(Σ exp(xᵢ)) = max(x) + log(Σ exp(xᵢ − max(x)))</div>
+  <p><b>الإثبات خطوة خطوة:</b> ضيف واطرح ثابت c جوه الأس: <span class="ltr">exp(xᵢ) = exp(xᵢ − c)·exp(c)</span>. طلّع <span class="ltr">exp(c)</span> برة المجموع لأنه مشترك. و<span class="ltr">log(a·b) = log a + log b</span>، فيطلع <span class="ltr">c + log(Σ exp(xᵢ − c))</span>. خلي <span class="ltr">c = max(x)</span>.</p>
+  <p><b>ليه ده آمن؟</b> بعد الطرح أكبر أس بقى <span class="ltr">exp(0) = 1</span>، فمفيش overflow. وفيه على الأقل حد واحد = 1، فالمجموع ≥ 1، والـ log مستحيل يبقى −inf.</p>
+  <p>الحيلة دي موجودة في: الـ softmax، الـ cross-entropy، جمع log-probabilities في موديلات الـ sequences، الـ Mixture of Gaussians، والـ variational inference.</p>
+
+  <h3>الـ Softmax لازم الحيلة دي</h3>
+  <div class="formula">softmax(xᵢ) = exp(xᵢ) / Σⱼ exp(xⱼ)</div>
+  <p>مع logits <span class="ltr">[100, 101, 102]</span>: <span class="ltr">exp(100) = 2.69e43</span>، وده أكبر بكتير من حد الـ float32 (3.4e38)، فكلهم <code>inf</code> و<span class="ltr">inf/inf = nan</span>. بعد طرح 102: <span class="ltr">exp(−2)=0.135، exp(−1)=0.368، exp(0)=1</span>، المجموع 1.503، والـ softmax = <span class="ltr">[0.090, 0.245, 0.665]</span>. نفس الاحتمالات بالظبط، بس آمنة. <b>ده مش تحسين، ده شرط إن الحساب يبقى صح.</b></p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: اكسر الـ softmax بإيدك</h3>
+      <p>حرّك الـ logits التلاتة، وبعدين حرّك «الإزاحة» اللي بتتضاف على التلاتة مع بعض. الأعمدة الباهتة = naive، الغامقة = stable.</p>
+      <p>لاحظ: الإزاحة <b>مش بتغير الاحتمالات</b> رياضيًا خالص (الـ softmax مش بيهمه تزود نفس الرقم على الكل). بس الـ naive بيتكسر أول ما الإزاحة تعدي حوالي 88 في float32 (overflow)، أو تنزل تحت حوالي −104 (underflow → <span class="ltr">0/0</span>).</p>
+      <div class="note"><strong>جرب:</strong> بدّل لـ float64 وشوف الحد بيبعد (حوالي 709)، بس لسه موجود.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d13-sm" width="560" height="280" aria-label="أعمدة softmax naive و stable"></canvas>
+      <div class="mrow">
+        <label>z₁ <span id="d13-z1v">2</span><input type="range" id="d13-z1" min="-10" max="10" step="0.1" value="2"></label>
+        <label>z₂ <span id="d13-z2v">1</span><input type="range" id="d13-z2" min="-10" max="10" step="0.1" value="1"></label>
+        <label>z₃ <span id="d13-z3v">0.1</span><input type="range" id="d13-z3" min="-10" max="10" step="0.1" value="0.1"></label>
+        <label>shift <span id="d13-shv">0</span><input type="range" id="d13-sh" min="-1100" max="1100" step="1" value="0"></label>
+      </div>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">النوع: <select id="d13-prec"><option value="32">float32</option><option value="64">float64</option></select></label>
+        <button type="button" data-sm="2,1,0.1,0">[2, 1, 0.1]</button>
+        <button type="button" data-sm="0,1,2,100">[100, 101, 102]</button>
+        <button type="button" data-sm="0,1,2,1000">[1000, 1001, 1002]</button>
+        <button type="button" data-sm="-2,-1,0,-998">[−1000, −999, −998]</button>
+      </div>
+      <div class="readout">
+        <div><small>logits</small><b id="d13-zs">—</b></div>
+        <div><small>naive LSE</small><b id="d13-lseN">—</b></div>
+        <div><small>stable LSE</small><b id="d13-lseS">—</b></div>
+      </div>
+      <div class="verdict" id="d13-smVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- NAN -->
+<section id="d13-nan">
+  <div class="station-head"><span class="tag">05</span><h2>NaN و Inf: فيروس بينتشر</h2></div>
+  <p>الـ <code>nan</code> (Not a Number) والـ <code>inf</code> بينتشروا زي العدوى. <code>nan</code> واحدة في gradient update → الـ weight يبقى nan → كل output بعد كده nan. التدريب بيموت في step واحدة.</p>
+  <div class="tablewrap"><table>
+    <tr><th>بيطلع <code>inf</code> من</th><th>بيطلع <code>nan</code> من</th></tr>
+    <tr><td><span class="ltr">exp()</span> لرقم موجب كبير</td><td class="ltr">0.0 / 0.0</td></tr>
+    <tr><td>القسمة على صفر <span class="ltr">1.0 / 0.0</span></td><td class="ltr">inf − inf · inf × 0</td></tr>
+    <tr><td>overflow في الجمع التراكمي في float32</td><td><span class="ltr">sqrt()</span> أو <span class="ltr">log()</span> لرقم سالب، وأي حساب فيه nan أصلًا</td></tr>
+  </table></div>
+  <p>حاجة غريبة لازم تعرفها: <span class="ltr">nan == nan</span> بترجع <code>False</code>، وأي مقارنة مع nan بترجع False. عشان كده تكشفها بـ <code>math.isnan(x)</code> و<code>math.isinf(x)</code> و<code>math.isfinite(x)</code>.</p>
+  <h3>الوقاية: ٦ استراتيجيات</h3>
+  <ol class="ex">
+    <li>احبس دخل الـ exp: <code>exp(clamp(x, -80, 80))</code>.</li>
+    <li>زوّد epsilon في المقام: <code>x / (y + 1e-8)</code>.</li>
+    <li>زوّد epsilon جوه الـ log: <code>log(x + 1e-8)</code>.</li>
+    <li>استخدم النسخ المستقرة (log-sum-exp، stable softmax).</li>
+    <li>Gradient clipping عشان الأوزان متنفجرش.</li>
+    <li>وانت بتدوّر على باج: اتأكد من nan/inf بعد كل forward pass.</li>
+  </ol>
+</section>
+
+<!-- GRADCHECK + LAB 3 -->
+<section id="d13-gradcheck">
+  <div class="station-head"><span class="tag">06</span><h2>Numerical Gradient Checking: راجع الـ backprop بتاعك</h2></div>
+  <p>الـ gradients اللي بتحسبها بالمعادلات (analytical) ممكن يبقى فيها باج. بنتأكد منها بحساب الـ gradient بالطريقة «الغبية» البطيئة: نحرّك الدخل حتة صغيرة ونشوف الناتج اتغير قد إيه.</p>
+  <div class="formula">df/dx ≈ (f(x + h) − f(x − h)) / 2h      ← centered, error O(h²)<br>df/dx ≈ (f(x + h) − f(x)) / h            ← forward, error O(h)</div>
+  <p>الـ centered أدق بكتير. <b>اختيار h:</b> كبير زيادة = التقريب غلط (خطأ رياضي). صغير زيادة = catastrophic cancellation (خطأ float). المعتاد <span class="ltr">h = 1e-5</span> لحد <span class="ltr">1e-7</span>.</p>
+  <div class="formula">relative_error = |grad_a − grad_n| / max(|grad_a|, |grad_n|, 1e-8)</div>
+  <div class="tablewrap"><table>
+    <tr><th>relative_error</th><th>المعنى</th></tr>
+    <tr><td class="ltr">&lt; 1e-7</td><td>ممتاز، الـ gradient صح</td></tr>
+    <tr><td class="ltr">&lt; 1e-5</td><td>مقبول، غالبًا صح</td></tr>
+    <tr><td class="ltr">&gt; 1e-3</td><td>فيه حاجة غلط</td></tr>
+    <tr><td class="ltr">&gt; 1</td><td>الـ gradient غلط خالص</td></tr>
+  </table></div>
+  <p>اعمل gradient check دايمًا لما تكتب layer أو loss جديدة. PyTorch عنده <code>torch.autograd.gradcheck()</code> للموضوع ده.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: الـ V بتاعة h</h3>
+      <p>الرسمة دي محسوبة live في المتصفح (float64). المحور الأفقي <span class="ltr">log₁₀(h)</span>، والرأسي <span class="ltr">log₁₀</span> للـ relative error بين المشتقة الحقيقية والتقريب.</p>
+      <p>هتلاقي شكل <b>V</b>: على اليمين (h كبير) الخطأ رياضي وبيقل كل ما h يصغر. على الشمال (h صغير جدًا) الخطأ بيرجع يكبر ويبقى عشوائي: دي الـ cancellation. الـ centered (الأزرق) بيوصل لقاع أوطى بكتير من الـ forward (البرتقالي).</p>
+      <p>حرّك h لحد <span class="ltr">1e-15</span> وشوف الحكم بيقلب.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d13-gc" width="560" height="320" aria-label="الخطأ مقابل h"></canvas>
+      <div class="mrow">
+        <label>الدالة <select id="d13-fn"><option value="cube">x³</option><option value="sin">sin(x)</option><option value="exp">exp(x)</option></select></label>
+        <label>x = <span id="d13-xv">1.5</span><input type="range" id="d13-x" min="0.2" max="3" step="0.1" value="1.5"></label>
+        <label style="grid-column:1/-1">h = 1e<span id="d13-hv">-5</span><input type="range" id="d13-h" min="-16" max="-1" step="0.5" value="-5"></label>
+      </div>
+      <div class="readout">
+        <div><small>forward rel err</small><b id="d13-ef">—</b></div>
+        <div><small>centered rel err</small><b id="d13-ec">—</b></div>
+      </div>
+      <div class="verdict" id="d13-gcVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- MIXED PRECISION + CLIP + LAB 4 -->
+<section id="d13-mixed">
+  <div class="station-head"><span class="tag">07</span><h2>Mixed Precision و Loss Scaling و Gradient Clipping</h2></div>
+  <h3>Mixed precision training</h3>
+  <p>الـ GPUs الحديثة فيها Tensor Cores بتضرب مصفوفات float16 أسرع من float32 بـ 2-8 مرات. الفكرة إننا ناخد السرعة دي من غير ما نبوّظ الدقة:</p>
+  <ol class="ex">
+    <li>نحتفظ بنسخة <b>master</b> من الأوزان في float32.</li>
+    <li>الـ forward pass في float16 (سريع).</li>
+    <li>الـ loss تتحسب في float32 (عشان متعملش overflow).</li>
+    <li>الـ backward pass في float16 (سريع).</li>
+    <li>الـ gradients تتحول لـ float32.</li>
+    <li>نحدّث الـ master weights في float32.</li>
+  </ol>
+  <p><b>المشكلة:</b> الـ gradients غالبًا صغيرة جدًا (<span class="ltr">1e-8</span> أو أقل)، والـ float16 بيقلب أي حاجة تحت حوالي <span class="ltr">6e-8</span> صفر. الموديل يبطل يتعلم لأن كل التحديثات بقت صفر.</p>
+  <h3>Loss scaling</h3>
+  <p>اضرب الـ loss في رقم كبير (مثلًا 1024) قبل الـ backward → كل الـ gradients تكبر 1024 مرة وتعدي حد الـ underflow → اقسم على 1024 قبل تحديث الأوزان. نفس التحديث بالظبط، من غير ما حاجة تضيع. <b>التشبيه:</b> زي ما تكبّر صورة ميكروسكوب عشان تقدر تقيسها بمسطرة عادية، وبعدين تقسم على التكبير.</p>
+  <p><b>Dynamic loss scaling</b> بيظبط الرقم لوحده: ابدأ بـ 65536. لو الـ gradients عملت overflow لـ <code>inf</code> اقسمه على ٢. لو عدّى N step من غير overflow ضاعفه.</p>
+
+  <h3>ليه bfloat16 بيكسب في التدريب</h3>
+  <div class="formula">float16:  [1 sign] [5 exponent] [10 mantissa]<br>bfloat16: [1 sign] [8 exponent] [7 mantissa]</div>
+  <ul class="ex">
+    <li>الـ activations والـ logits بتعدّي 65,504 وقت الـ spikes في التدريب: float16 بيعمل overflow، bfloat16 لأ.</li>
+    <li>الـ loss scaling لازم مع float16، وغالبًا مش محتاجه مع bfloat16 لأن مداه بيغطي أحجام الـ gradients.</li>
+    <li>التحويل من float32 لـ bfloat16 مجرد قص لآخر ١٦ بت من الـ mantissa، والـ exponent ما بيتغيرش.</li>
+  </ul>
+  <p>float16 أحسن للـ <b>inference</b> (القيم محدودة والدقة أهم)، و bfloat16 أحسن للـ <b>training</b> (المدى أهم). عشان كده الـ TPUs وكروت NVIDIA الحديثة (A100، H100) بتدعم bfloat16 في الهاردوير.</p>
+
+  <h3>Gradient clipping</h3>
+  <p>الـ <b>exploding gradients</b>: الـ gradients بتكبر بشكل أُسّي وهي راجعة في layers كتير (شائع في RNNs والشبكات العميقة والـ transformers). gradient واحد ضخم ممكن يبوّظ كل الأوزان في step واحدة. نوعين:</p>
+  <ul class="ex">
+    <li><b>Clip by value:</b> احبس كل عنصر لوحده: <code>clamp(grad, -max_val, max_val)</code>. سهل، بس ممكن <b>يغير اتجاه</b> الـ gradient.</li>
+    <li><b>Clip by norm:</b> لو <span class="ltr">‖grad‖ &gt; max_norm</span>، اضرب المتجه كله في <span class="ltr">max_norm / ‖grad‖</span>. <b>بيحافظ على الاتجاه</b>. ده اللي <code>torch.nn.utils.clip_grad_norm_()</code> بيعمله، وده الاختيار المعتاد.</li>
+  </ul>
+  <p>القيم المعتادة: <span class="ltr">max_norm=1.0</span> للـ transformers، <span class="ltr">0.5</span> للـ RL، <span class="ltr">5.0</span> للشبكات الأبسط. الـ clipping مش «تلفيقة»، ده حزام أمان: من غيره batch واحدة شاذة ممكن تضيّع أسابيع تدريب.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٤ (أ): clip by value ضد clip by norm</h3>
+      <p>اسحب راس السهم الأسود (الـ gradient الأصلي). المربع المتقطع = حدود الـ clip by value، والدايرة = حدود الـ clip by norm.</p>
+      <p>شد السهم بعيد في اتجاه مايل: البرتقالي (by value) بيتزنق في ركن المربع واتجاهه بيتغير، الأزرق (by norm) بيقصر بس وبيفضل في نفس الاتجاه.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d13-clip" width="420" height="320" aria-label="مقارنة clipping"></canvas>
+      <label style="display:grid;gap:2px">الحد max = <b class="mono" id="d13-maxv">2</b><input type="range" id="d13-max" min="0.5" max="5" step="0.1" value="2"></label>
+      <div class="readout">
+        <div><small>‖g‖</small><b id="d13-gn">—</b></div>
+        <div><small>by value</small><b id="d13-cv">—</b></div>
+        <div><small>by norm</small><b id="d13-cn">—</b></div>
+        <div><small>انحراف الاتجاه (value)</small><b id="d13-ang">—</b></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٤ (ب): loss scaling في float16</h3>
+      <p>عندنا 4000 gradient أحجامهم موزعة على log scale من <span class="ltr">1e-9</span> لـ <span class="ltr">1e-3</span> (نفس فكرة تمرين ٥). كل واحد بيتضرب في الـ scale ويتحوّل لـ float16.</p>
+      <p>الأحمر = بقى صفر (underflow)، البنفسجي الغامق = بقى inf (overflow)، الأخضر = سليم. من غير scaling هتلاقي حوالي الربع اتمسح. كبّر الـ scale وشوف الأحمر بيختفي… لحد ما تكبر زيادة ويظهر الـ overflow. ده بالظبط ليه الـ dynamic loss scaling موجود.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d13-ls" width="520" height="220" aria-label="هيستوجرام الـ gradients بعد التحويل لـ float16"></canvas>
+      <label style="display:grid;gap:2px">scale = 2^<b class="mono" id="d13-sv">0</b><input type="range" id="d13-s" min="0" max="30" step="1" value="0"></label>
+      <div class="readout">
+        <div><small>scale</small><b id="d13-sval">1</b></div>
+        <div><small>صفر</small><b id="d13-z0">—</b></div>
+        <div><small>inf</small><b id="d13-zi">—</b></div>
+        <div><small>سليم</small><b id="d13-zok">—</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- NORM + BUGS -->
+<section id="d13-norm">
+  <div class="station-head"><span class="tag">08</span><h2>الـ Normalization كمثبّت رقمي، وأشهر ٧ باجات</h2></div>
+  <p>الـ BatchNorm والـ LayerNorm والـ RMSNorm بيتشرحوا عادةً إنهم بيساعدوا التدريب يتقارب. بس هما كمان <b>مثبّتات رقمية</b>. من غيرهم القيم ممكن تكبر أُسّيًا: layer 1 في <span class="ltr">[0, 1]</span>، layer 10 في <span class="ltr">[0, 10,000]</span>، layer 50 في <span class="ltr">[0, inf]</span>.</p>
+  <div class="formula">LayerNorm(x) = (x − mean(x)) / (std(x) + ε) · γ + β</div>
+  <p>الـ <span class="ltr">ε</span> (عادةً <span class="ltr">1e-5</span>) بيمنع القسمة على صفر لما كل القيم تبقى زي بعض. والـ <span class="ltr">γ, β</span> بارامترات بتتعلم عشان الشبكة ترجّع أي scale هي محتاجاه. النتيجة إن القيم تفضل في مدى آمن في كل layer، فلا overflow في الـ forward ولا انفجار في الـ backward.</p>
+  <div class="tablewrap"><table>
+    <tr><th>العَرَض</th><th>السبب</th><th>الحل</th></tr>
+    <tr><td>الـ loss بقت NaN بعد كام epoch</td><td>الـ logits كبرت والـ softmax عمل overflow، أو الـ learning rate عالي والأوزان انفجرت</td><td>stable softmax، قلّل الـ LR، gradient clipping</td></tr>
+    <tr><td>الـ loss واقفة عند <span class="ltr">log(num_classes)</span></td><td>الموديل بيطلع احتمالات شبه متساوية: الـ gradients بتختفي أو الموديل مش بيتعلم أصلًا</td><td>راجع الـ labels، راجع الـ loss، دوّر على dead ReLUs</td></tr>
+    <tr><td>الـ validation accuracy أقل من المتوقع بـ ١-٣٪</td><td>mixed precision من غير loss scaling: الـ updates الصغيرة بتتمسح بهدوء</td><td>dynamic loss scaling أو bfloat16</td></tr>
+    <tr><td>gradient norm = 0.0 في بعض الـ layers</td><td>dead ReLU (كل الدخل سالب) أو underflow في float16</td><td>LeakyReLU أو GELU، gradient scaling، راجع الـ initialization</td></tr>
+    <tr><td>نتايج مختلفة على GPU تاني</td><td>ترتيب الجمع بيختلف في الـ parallel reductions، والجمع في الـ float مش associative</td><td>اقبل فرق صغير (<span class="ltr">1e-6</span>) أو <code>torch.use_deterministic_algorithms(True)</code> وادفع تمن السرعة</td></tr>
+    <tr><td><code>exp()</code> بترجع inf في الـ loss</td><td>logits خام داخلة على exp من غير طرح الـ max</td><td><code>torch.nn.functional.log_softmax()</code> (فيها log-sum-exp جوه)</td></tr>
+    <tr><td>التدريب باظ بعد ما حوّلت من float32 لـ float16</td><td>float16 مش بيشيل gradients تحت <span class="ltr">6e-8</span> ولا activations فوق 65,504</td><td>AMP مع loss scaling، أو bfloat16</td></tr>
+  </table></div>
+</section>
+
+<!-- CODE -->
+<section id="d13-code">
+  <div class="station-head"><span class="tag">09</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من فولدر الريبو، شغّل الملف الكامل الأول عشان تشوف الـ ١٤ demo:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/01-math-foundations/13-numerical-stability/code/numerical.py</pre></div>
+  <p><b>القاعدة:</b> بعد ما تشوفه، اقفل الملف واكتب الخطوات دي بنفسك في <code>my_numerical.py</code>. الملف الأصلي مش محتاج أي مكتبة برة الـ standard library (<code>math</code>، <code>struct</code>، <code>random</code>).</p>
+
+  <h3>خطوة ١: حدود الدقة + Kahan</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+print(f"0.1 + 0.2 = {0.1 + 0.2}")
+print(f"0.1 + 0.2 == 0.3? {0.1 + 0.2 == 0.3}")
+print(f"Difference: {(0.1 + 0.2) - 0.3:.2e}")
+print(math.isclose(0.1 + 0.2, 0.3))          <span class="c"># الطريقة الصح للمقارنة</span>
+
+def kahan_sum(values):
+    total = 0.0
+    compensation = 0.0                       <span class="c"># الفكة اللي ضاعت</span>
+    for v in values:
+        y = v - compensation
+        t = total + y
+        compensation = (t - total) - y       <span class="c"># اللي اتقص في الجمعة دي</span>
+        total = t
+    return total
+
+naive = 0.0
+for _ in range(1_000_000):
+    naive += 1e-7
+print(naive, kahan_sum([1e-7] * 1_000_000), 1e-7 * 1_000_000)</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">0.1 + 0.2 = 0.30000000000000004
+0.1 + 0.2 == 0.3? False
+Difference: 5.55e-17
+True</pre><p>السطر الأخير: الـ naive هيطلع قريب من 0.1 بس فيه غلط صغير في آخر الخانات، والـ Kahan هيبقى أقرب بكتير للقيمة الحقيقية. قارن الرقمين بنفسك.</p></details>
+
+  <h3>خطوة ٢: softmax الـ naive والـ stable</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def softmax_naive(logits):
+    exps = [math.exp(z) for z in logits]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+def softmax_stable(logits):
+    max_logit = max(logits)                       <span class="c"># الحيلة كلها هنا</span>
+    exps = [math.exp(z - max_logit) for z in logits]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+print(softmax_naive([2.0, 1.0, 0.1]))
+print(softmax_stable([2.0, 1.0, 0.1]))            <span class="c"># نفس الناتج</span>
+print(softmax_stable([100.0, 101.0, 102.0]))
+<span class="c"># softmax_naive([1000.0, 1001.0, 1002.0])  ← جربها: OverflowError</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><p>أول سطرين متطابقين تقريبًا: حوالي <span class="ltr">[0.659, 0.242, 0.099]</span>. التالت: <span class="ltr">[0.090, 0.245, 0.665]</span> (الأرقام دي من الدرس نفسه). ملاحظة: في Python الـ <code>math.exp(1000)</code> بترمي <code>OverflowError</code> بدل ما ترجع inf، أما NumPy و PyTorch فبيرجعوا <code>inf</code> وبعدين <code>nan</code>.</p></details>
+
+  <h3>خطوة ٣: log-sum-exp و cross-entropy المستقرين</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def logsumexp_stable(values):
+    c = max(values)
+    return c + math.log(sum(math.exp(v - c) for v in values))
+
+def log_softmax_stable(logits):
+    lse = logsumexp_stable(logits)
+    return [z - lse for z in logits]              <span class="c"># log-probs من غير exp ثم log</span>
+
+def cross_entropy_stable(true_class, logits):
+    return -log_softmax_stable(logits)[true_class]
+
+print(f"{logsumexp_stable([1.0, 2.0, 3.0]):.6f}")
+print(f"{logsumexp_stable([500.0, 501.0, 502.0]):.6f}")   <span class="c"># الـ naive هنا overflow</span>
+print(f"{logsumexp_stable([5.0, 5.0, 5.0]):.6f}", 5 + math.log(3))
+print(f"{cross_entropy_stable(1, [2.0, 5.0, 1.0]):.6f}")
+print(cross_entropy_stable(0, [0.0, 0.0, 50.0]))           <span class="c"># واثق وغلطان</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><p>الأول حوالي <span class="ltr">3.407606</span>، والتاني هو نفس الرقم + 500 (<span class="ltr">502.407606</span>) لأن إزاحة الكل بثابت بتزيح الـ LSE بنفس الثابت. التالت لازم يساوي <span class="ltr">5 + ln 3</span> بالظبط. الـ cross-entropy حوالي <span class="ltr">0.0659</span> (صغيرة لأن الكلاس الصح عنده أكبر logit). والأخير رقم كبير قريب من 50: الموديل واثق جدًا وغلطان.</p></details>
+
+  <h3>خطوة ٤: sigmoid و binary cross-entropy المستقرين</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sigmoid_stable(x):
+    if x &gt;= 0:
+        z = math.exp(-x)                    <span class="c"># exp لرقم سالب، آمن</span>
+        return 1.0 / (1.0 + z)
+    else:
+        z = math.exp(x)                     <span class="c"># برضه exp لرقم سالب</span>
+        return z / (1.0 + z)
+
+def binary_cross_entropy_stable(y_true, logit):
+    max_val = max(0.0, logit)               <span class="c"># نفس حيلة الـ max</span>
+    return max_val + math.log(math.exp(-max_val) + math.exp(logit - max_val)) - y_true * logit
+
+for x in [0.0, 10.0, -10.0, 710.0, -710.0]:
+    print(x, sigmoid_stable(x))
+<span class="c"># 1/(1+exp(-x)) العادية بتعمل OverflowError عند x = -710</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><p><span class="ltr">sigmoid(0) = 0.5</span> بالظبط. الموجب الكبير قريب من 1، والسالب الكبير قريب من 0 (أو صفر)، ومفيش ولا error. لاحظ إن الـ BCE بتاخد <b>logit</b> مش احتمال، عشان متحسبش <span class="ltr">log(0)</span>.</p></details>
+
+  <h3>خطوة ٥: gradient checking</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def numerical_gradient(f, x, h=1e-5):
+    grad = []
+    for i in range(len(x)):
+        x_plus = x[:]; x_minus = x[:]
+        x_plus[i] += h
+        x_minus[i] -= h
+        grad.append((f(x_plus) - f(x_minus)) / (2 * h))   <span class="c"># centered</span>
+    return grad
+
+def check_gradient(analytical, numerical, tolerance=1e-5):
+    for i, (a, n) in enumerate(zip(analytical, numerical)):
+        denom = max(abs(a), abs(n), 1e-8)
+        rel_error = abs(a - n) / denom
+        status = "OK" if rel_error &lt; tolerance else "FAIL"
+        print(f"  param {i}: analytical={a:.8f} numerical={n:.8f} "
+              f"rel_error={rel_error:.2e} [{status}]")
+
+def f(p):
+    x, y = p
+    return x**2 + 3*x*y + y**3
+
+def f_grad(p):
+    x, y = p
+    return [2*x + 3*y, 3*x + 3*y**2]                     <span class="c"># اشتقاق بالإيد</span>
+
+check_gradient(f_grad([2.0, 1.0]), numerical_gradient(f, [2.0, 1.0]))
+check_gradient([1.0, 1.0], numerical_gradient(lambda p: p[0]**2 + p[1]**2, [3.0, 4.0]))</pre></div>
+  <details><summary>الناتج المتوقع</summary><p>الأول: الـ analytical بالظبط <span class="ltr">[7, 9]</span> (<span class="ltr">2·2+3·1 = 7</span> و<span class="ltr">3·2+3·1² = 9</span>)، والـ numerical قريب جدًا منهم، والاتنين <b>OK</b>. التاني: gradient غلط بالقصد، الصح <span class="ltr">[6, 8]</span>، فالاتنين <b>FAIL</b>.</p></details>
+
+  <h3>خطوة ٦: clipping وفحص الـ tensors</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def clip_by_value(gradients, max_val):
+    return [max(-max_val, min(max_val, g)) for g in gradients]
+
+def clip_by_norm(gradients, max_norm):
+    total_norm = math.sqrt(sum(g ** 2 for g in gradients))
+    if total_norm &gt; max_norm:
+        scale = max_norm / total_norm            <span class="c"># صغّر الكل بنفس النسبة</span>
+        return [g * scale for g in gradients]
+    return list(gradients)
+
+def check_tensor(name, values):
+    n_nan = sum(1 for v in values if math.isnan(v))
+    n_inf = sum(1 for v in values if math.isinf(v))
+    if n_nan or n_inf:
+        print(f"  WARNING {name}: {n_nan} NaN, {n_inf} Inf out of {len(values)} values")
+        return False
+    print(f"  OK {name}: all {len(values)} values finite")
+    return True
+
+grads = [10.0, 20.0, 30.0]
+print(clip_by_value(grads, 15.0))
+c = clip_by_norm(grads, 5.0)
+print(math.sqrt(sum(g**2 for g in grads)), math.sqrt(sum(g**2 for g in c)))
+check_tensor("grads_bad", [0.01, float('nan'), -0.03])</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">[10.0, 15.0, 15.0]</pre><p>بعدها الـ norm الأصلي <span class="ltr">√1400 ≈ 37.42</span> والجديد <span class="ltr">5.0</span> (ممكن يطلع 4.999999… بسبب التقريب). لاحظ إن الـ by value غيّر النسبة من <span class="ltr">1:2:3</span> لـ <span class="ltr">1:1.5:1.5</span>. وآخر سطر: <span class="ltr">WARNING grads_bad: 1 NaN, 0 Inf out of 3 values</span>.</p></details>
+
+  <h3>خطوة ٧: محاكاة bfloat16 و float16 + Welford + LayerNorm</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import struct
+
+def simulate_bfloat16(x):
+    packed = struct.pack('f', x)                       <span class="c"># float32 → 4 bytes</span>
+    as_int = int.from_bytes(packed, 'little')
+    truncated = as_int &amp; 0xFFFF0000                    <span class="c"># شيل آخر 16 بت</span>
+    return struct.unpack('f', truncated.to_bytes(4, 'little'))[0]
+
+def simulate_float16(x):
+    try:
+        return struct.unpack('e', struct.pack('e', x))[0]   <span class="c"># 'e' = half</span>
+    except (OverflowError, struct.error):
+        return float('inf') if x &gt; 0 else float('-inf')
+
+def welford_variance(values):
+    n, mean, m2 = 0, 0.0, 0.0
+    for x in values:
+        n += 1
+        delta = x - mean
+        mean += delta / n
+        m2 += delta * (x - mean)
+    return m2 / n if n &gt;= 2 else 0.0
+
+def layer_norm(values, epsilon=1e-5, gamma=1.0, beta=0.0):
+    n = len(values)
+    mean = sum(values) / n
+    var = sum((v - mean) ** 2 for v in values) / n
+    std = math.sqrt(var + epsilon)                     <span class="c"># epsilon جوه الـ sqrt</span>
+    return [(v - mean) / std * gamma + beta for v in values]
+
+for v in [math.pi, 65504.0, 100000.0]:
+    print(v, simulate_float16(v), simulate_bfloat16(v))
+print(welford_variance([1e8 + 1, 1e8 + 2, 1e8 + 3, 1e8 + 4, 1e8 + 5]))
+print(layer_norm([5.0, 5.0, 5.0, 5.0]))               <span class="c"># مفيش قسمة على صفر</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><p>الـ float16 للـ π أقرب من الـ bfloat16 (mantissa أكتر). الـ 65504 بيعدّي في الاتنين. الـ 100000 بيبقى <code>inf</code> في float16 ورقم قريب منه في bfloat16. الـ Welford لازم يطلع 2.0 (القيمة الحقيقية). والـ LayerNorm لدخل ثابت بيطلع أصفار من غير أي error. شغّل وقارن.</p></details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d13-exercises">
+  <div class="station-head"><span class="tag">10</span><h2>التمارين</h2></div>
+  <p>التمارين ١ و٢ و٥ محتاجين <code>numpy</code>. اعمل ٣ على الأقل النهاردة.</p>
+  <ol class="ex">
+    <li><b>Catastrophic cancellation:</b> احسب variance للقيم <span class="ltr">[1000000.0, 1000001.0, 1000002.0]</span> بالمعادلة <span class="ltr">E[x²] − E[x]²</span> في float32، وبعدين بـ Welford. قارن بالقيمة الحقيقية 0.6667.
+      <details><summary>تلميح</summary>حوّل القيم بـ <code>np.float32</code> قبل التربيع، وبعدين استخدم <code>variance_naive</code> و<code>welford_variance</code>. رقم حوالين <span class="ltr">10¹²</span> في float32 المسافة بينه وبين الرقم اللي بعده أكبر بكتير من 1، فاستنى إن الـ naive يطلع بعيد جدًا عن 0.6667، والـ Welford قريب.</details></li>
+    <li><b>صيد الدقة:</b> لاقي أصغر float32 موجب <span class="ltr">x</span> بحيث <span class="ltr">1.0 + x == 1.0</span>… يعني الحد ده هو الـ machine epsilon. اتأكد إنه زي <code>numpy.finfo(numpy.float32).eps</code>.
+      <details><summary>تلميح</summary>ابدأ بـ <code>x = np.float32(1.0)</code> واقسمه على ٢ طول ما <code>np.float32(1.0) + x != np.float32(1.0)</code>. خلي كل حاجة float32. آخر قيمة لسه بتغيّر المجموع لازم تساوي <span class="ltr">2⁻²³ ≈ 1.19e-7</span>.</details></li>
+    <li><b>حالات حدية لـ log-sum-exp:</b> جرب (أ) كل القيم متساوية، (ب) قيمة واحدة أكبر بكتير من الباقي، (ج) كلهم سالب جدًا (−1000). اتأكد إن الـ stable صح في الأماكن اللي الـ naive بيفشل فيها.
+      <details><summary>تلميح</summary>توقّع الأول. n قيم كلها c → <span class="ltr">c + ln n</span>. قيمة واحدة كبيرة → الناتج قريب منها. قيم حوالين −1000 → قريب من <span class="ltr">−1000 + ln n</span>، والـ naive بيرجع <span class="ltr">-inf</span> لأن كل exp بقت صفر.</details></li>
+    <li><b>Gradient check لـ layer:</b> اعمل layer خطية <span class="ltr">y = Wx + b</span> والـ backward بتاعها، واستخدم <code>numerical_gradient</code> عشان تتأكد لـ W شكلها 3×2.
+      <details><summary>تلميح</summary>لـ loss L، الـ gradient بتاع W هو الـ outer product بين الـ upstream gradient و<span class="ltr">x</span>. اكتب الـ loss كدالة في W مفرودة (flattened)، نادي <code>numerical_gradient</code>، وابعت الاتنين لـ <code>check_gradient</code>. سهّلها على نفسك: خلي <span class="ltr">L = sum(y)</span>، فالـ upstream gradient كله وحايد.</details></li>
+    <li><b>تجربة loss scaling:</b> اعمل gradients عشوائية في المدى <span class="ltr">[1e-9, 1e-3]</span>، حوّلها لـ float16، واحسب نسبة اللي بقى صفر. بعدين اضرب في 1024 قبل التحويل، ورجّع، واحسب النسبة تاني.
+      <details><summary>تلميح</summary>اسحب الأحجام على log scale: <code>10 ** np.random.uniform(-9, -3, n)</code> وحوّل بـ <code>np.float16</code>. float16 مش بيشيل تحت حوالي <span class="ltr">6e-8</span>، فاستنى إن حوالي الربع يبقى صفر قبل الـ scaling، وتقريبًا ولا حاجة بعده. المعمل ٠٤ (ب) بيعمل نفس التجربة، قارن نتيجتك بيه.</details></li>
+    <li><b>إضافة مني · احتمال جملة كاملة من LLM:</b> الـ APIs بترجع <code>logprobs</code> لكل token. عندك جملة 300 token واحتمال كل token حوالي 0.1. احسب احتمال الجملة كلها مرة بضرب الاحتمالات (<span class="ltr">0.1 × 0.1 × …</span>) ومرة بجمع الـ log-probs. إيه اللي حصل للضرب؟ وإزاي تقارن بين جملتين بأطوال مختلفة بشكل عادل (ده اللي بيحصل في الـ reranking والـ evals)؟
+      <details><summary>الإجابة</summary><span class="ltr">0.1³⁰⁰ = 1e-300</span> لسه بيعدّي في float64 بالعافية، بس جرّب 400 token وهيبقى <span class="ltr">0.0</span> (أصغر من <span class="ltr">~5e-324</span>)، وبعد كده <span class="ltr">log(0) = -inf</span>. الجمع في الـ log-space بيدي <span class="ltr">300 × ln(0.1) ≈ −690.8</span> من غير أي مشكلة. للمقارنة العادلة استخدم متوسط الـ log-prob لكل token (sum / length)، وإلا الجملة الأطول هتخسر دايمًا.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d13-extra">
+  <div class="station-head"><span class="tag">11</span><h2>إضافة مني: اللي الدرس ما قالهوش صريح</h2></div>
+  <h3>الحدس في جملة</h3>
+  <p>الـ float مش «رقم عشري»، ده <b>رقم بدقة نسبية</b>: الغلط بتاعه دايمًا حوالي ٧ أرقام من حجمه (في float32). عشان كده المشاكل بتظهر في حالتين بس: الرقم <b>خرج من المسطرة</b> (overflow/underflow)، أو <b>طرحت رقمين قريبين</b> فاللي فضل هو الغلط. كل حيلة في الدرس هي هروب من واحدة من الحالتين.</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="ex">
+    <li><b>تطبيق softmax قبل <code>CrossEntropyLoss</code>:</b> في PyTorch الـ <code>nn.CrossEntropyLoss</code> بتاخد logits خام وبتعمل log-softmax جواها. لو اديتها احتمالات، انت عملت softmax مرتين والتدريب هيبقى أضعف من غير أي error.</li>
+    <li><b><code>torch.log(torch.softmax(x))</code></b> بدل <code>log_softmax</code>: الاحتمال الصغير ممكن يبقى صفر، فالـ log يبقى <span class="ltr">-inf</span>. استخدم <code>log_softmax</code> علطول.</li>
+    <li><b>epsilon في المكان الغلط:</b> <span class="ltr">sqrt(x + eps)</span> غير <span class="ltr">sqrt(x) + eps</span>. الـ gradient بتاع <span class="ltr">sqrt</span> عند الصفر لا نهائي، فلو الـ eps برة الـ sqrt ممكن تاخد inf في الـ backward حتى لو الـ forward سليم.</li>
+    <li><b>مقارنة floats في الـ tests</b> بـ <code>==</code>: استخدم <code>math.isclose</code> أو <code>np.allclose</code> أو <code>torch.testing.assert_close</code>.</li>
+    <li><b>إنك تفتكر Python بيرجع inf:</b> الـ <code>math.exp(1000)</code> في Python بترمي <code>OverflowError</code>، لكن NumPy و PyTorch بيرجعوا <code>inf</code> بصمت. الباج اللي مش بيظهر في الـ prototype ممكن يظهر في الـ training.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents</h3>
+  <ul class="ex">
+    <li><b>Attention:</b> الـ scores بتتقسم على <span class="ltr">√d</span> قبل الـ softmax (هتشوفها في Phase 7)، وجزء من السبب إن الـ dot products متكبرش والـ softmax ميتشبعش. والـ FlashAttention بتحسب الـ softmax على حتت وبتحتفظ بـ <b>max جاري</b>: نفس حيلة log-sum-exp النهاردة.</li>
+    <li><b>التدريب:</b> موديلات اللغة الكبيرة بتتدرب عادةً بـ bfloat16 مع master weights في float32، وبـ gradient clipping (غالبًا max_norm=1.0) زي ما الدرس قال.</li>
+    <li><b>Temperature:</b> لما بتقسم الـ logits على temperature صغيرة جدًا، الـ logits بتكبر جدًا، وبدون طرح الـ max الـ softmax هيعمل overflow.</li>
+    <li><b>الـ logprobs في الـ APIs</b> بترجع في الـ log-space عشان نفس سبب تمرين ٦، وهي اللي بتستخدمها في الـ evals والـ confidence scoring والـ reranking.</li>
+    <li><b>الـ inference:</b> الـ quantization (float16، int8، float8) هو نفس الكلام: أقل بتات = أسرع وأرخص، بس لازم تعرف المدى والدقة اللي بتتنازل عنهم.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d13-quizSec">
+  <div class="station-head"><span class="tag">12</span><h2>كويز</h2></div>
+  <div class="quiz" id="d13-quiz"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d13-done">
+  <div class="station-head"><span class="tag">13</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d13-checklist">
+    <li><label><input type="checkbox" data-ck="ieee"> أقدر أشرح sign / exponent / mantissa وليه bfloat16 مداه زي float32</label></li>
+    <li><label><input type="checkbox" data-ck="lab"> كسرت الـ softmax الـ naive في المعمل ٠٢ وفهمت ليه الإزاحة مش بتغير الناتج</label></li>
+    <li><label><input type="checkbox" data-ck="lse"> أقدر أكتب stable softmax و log-sum-exp من دماغي</label></li>
+    <li><label><input type="checkbox" data-ck="gc"> عملت gradient check وفهمت شكل الـ V بتاع h</label></li>
+    <li><label><input type="checkbox" data-ck="code"> كتبت الـ ٧ خطوات بإيدي وشغّلت <code>numerical.py</code></label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="quiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Log-sum-exp / stable softmax</td><td>كل softmax، cross-entropy، الـ attention، الـ FlashAttention</td></tr>
+    <tr><td>Log-space</td><td>logprobs في الـ LLM APIs، الـ beam search، الـ likelihood</td></tr>
+    <tr><td>Gradient checking</td><td>أي layer أو loss بتكتبها بنفسك (<code>torch.autograd.gradcheck</code>)</td></tr>
+    <tr><td>Mixed precision / loss scaling</td><td>تدريب أي موديل كبير على GPU (AMP)</td></tr>
+    <tr><td>bfloat16</td><td>تدريب الـ LLMs على TPUs و A100 / H100</td></tr>
+    <tr><td>Gradient clipping</td><td>الـ transformers، الـ RNNs، الـ RL</td></tr>
+    <tr><td>Epsilon في المقام</td><td>LayerNorm، RMSNorm، Adam</td></tr>
+    <tr><td>Welford / Kahan</td><td>إحصائيات الـ BatchNorm، جمع الـ metrics على داتا كبيرة</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Norms and Distances. هنقيس «طول» المتجه بأكتر من طريقة (L1، L2، …) والمسافات بين المتجهات، وهتلاقي الـ norm بتاع الـ gradient clipping النهاردة راجع تاني.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F13-numerical-stability" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/13-numerical-stability</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, fmt=A.fmt;
+const $=id=>document.getElementById(id);
+const root=$('d13-root');
+
+// roadmap
+const rm=$('d13-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===13)s.className='now';rm.appendChild(s)}
+
+// ---------- float helpers ----------
+const dv=new DataView(new ArrayBuffer(4));
+function f32bits(x){dv.setFloat32(0,x);return dv.getUint32(0)}
+function bitsToF32(u){dv.setUint32(0,u>>>0);return dv.getFloat32(0)}
+function bf16(x){return bitsToF32(f32bits(x)&0xFFFF0000)}
+function roundEven(v){const f=Math.floor(v),d=v-f;if(d>0.5)return f+1;if(d<0.5)return f;return f%2===0?f:f+1}
+function flog2(a){let e=Math.floor(Math.log2(a));if(Math.pow(2,e)>a)e--;if(Math.pow(2,e+1)<=a)e++;return e}
+function toHalf(x){
+  if(isNaN(x)||!isFinite(x))return x;
+  const s=x<0?-1:1,a=Math.abs(x);
+  if(a===0)return 0;
+  if(a>=65520)return s*Infinity;
+  if(a<Math.pow(2,-14)){const sp=Math.pow(2,-24);return s*roundEven(a/sp)*sp}
+  const e=flog2(a),sp=Math.pow(2,e-10);const q=roundEven(a/sp)*sp;
+  return q>65504?s*Infinity:s*q;
+}
+function halfBits(q){
+  if(isNaN(q))return[0,31,512];
+  const s=(q<0||Object.is(q,-0))?1:0,a=Math.abs(q);
+  if(a===Infinity)return[s,31,0];
+  if(a===0)return[s,0,0];
+  if(a<Math.pow(2,-14))return[s,0,Math.round(a/Math.pow(2,-24))];
+  const e=flog2(a);return[s,e+15,Math.round((a/Math.pow(2,e)-1)*1024)];
+}
+const sig=v=>isFinite(v)?(v===0?'0':(+v.toPrecision(10)).toString()):String(v);
+const sci=v=>!isFinite(v)?String(v):(v===0?'0':v.toExponential(2));
+
+// ---------- Lab 1: bits ----------
+const bc=$('d13-bits'),bx=A.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+let curNum=0.1;
+function drawBitsRow(y,label,bits,nE,nM){
+  bx.fillStyle=css('--ink');bx.font='13px JetBrains Mono, monospace';bx.textAlign='left';bx.fillText(label,4,y-8);
+  const n=bits.length,w=16,g=1,x0=4;
+  for(let i=0;i<n;i++){
+    const col=i===0?css('--bad'):(i<=nE?css('--vec-b'):css('--vec-a'));
+    const x=x0+i*(w+g);
+    if(bits[i]==='1'){bx.fillStyle=col;bx.fillRect(x,y,w,w)}
+    else{bx.strokeStyle=col;bx.lineWidth=1.2;bx.strokeRect(x+.5,y+.5,w-1,w-1)}
+  }
+}
+function drawBits(){
+  bx.clearRect(0,0,BW,BH);
+  const x=curNum;
+  const b32=f32bits(x).toString(2).padStart(32,'0');
+  const h=toHalf(x),hb=halfBits(h);
+  const b16=String(hb[0])+hb[1].toString(2).padStart(5,'0')+hb[2].toString(2).padStart(10,'0');
+  const bbf=b32.slice(0,16);
+  drawBitsRow(28,'float32   (1 | 8 | 23)',b32,8,23);
+  drawBitsRow(98,'float16   (1 | 5 | 10)',b16,5,10);
+  drawBitsRow(168,'bfloat16  (1 | 8 | 7)',bbf,8,7);
+  bx.font='12px JetBrains Mono, monospace';
+  [['sign',css('--bad')],['exponent',css('--vec-b')],['mantissa',css('--vec-a')]].forEach(([t,c],i)=>{bx.fillStyle=c;bx.fillRect(4+i*120,224,12,12);bx.fillStyle=css('--ink');bx.fillText(t,22+i*120,235)});
+  const v32=Math.fround(x),vbf=bf16(x);
+  $('d13-v32').textContent=sig(v32);$('d13-v16').textContent=sig(h);$('d13-vbf').textContent=sig(vbf);
+  const err=v=>!isFinite(v)?'∞':sci(Math.abs(v-x));
+  $('d13-e32').textContent=err(v32);$('d13-e16').textContent=err(h);$('d13-ebf').textContent=err(vbf);
+  const vd=$('d13-bitsVerdict');
+  if(!isFinite(h)&&isFinite(vbf)){vd.textContent='float16 عمل overflow (أكبر من 65,504) بس bfloat16 لسه شايله';vd.style.color=css('--bad')}
+  else if(h===0&&x!==0&&vbf!==0){vd.textContent='float16 عمل underflow وقلبه صفر، bfloat16 لسه شايله';vd.style.color=css('--bad')}
+  else if(v32===x){vd.textContent='الرقم ده بيتخزن بالظبط في float32 (من غير أي تقريب)';vd.style.color=css('--ok')}
+  else{vd.textContent='مفيش format شايله بالظبط: كله تقريب. قارن الأخطاء';vd.style.color=css('--muted')}
+}
+function setNum(s){const v=Number(s);if(s.trim()===''||isNaN(v)){$('d13-bitsVerdict').textContent='اكتب رقم صحيح (زي 0.1 أو 1e-8)';return}curNum=v;drawBits()}
+$('d13-num').addEventListener('input',e=>setNum(e.target.value));
+$('d13-numPresets').querySelectorAll('[data-v]').forEach(b=>b.addEventListener('click',()=>{$('d13-num').value=b.dataset.v;setNum(b.dataset.v)}));
+drawBits();
+
+// ---------- Lab 2: softmax ----------
+const sc=$('d13-sm'),sx=A.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+function softmaxBoth(z,p32){
+  const fr=p32?Math.fround:(v=>v);
+  const zz=z.map(v=>fr(v));
+  const en=zz.map(v=>fr(Math.exp(v)));
+  let sn=0;en.forEach(v=>sn=fr(sn+v));
+  const pn=en.map(v=>fr(v/sn));
+  const m=Math.max(...zz);
+  const es=zz.map(v=>fr(Math.exp(fr(v-m))));
+  let ss=0;es.forEach(v=>ss=fr(ss+v));
+  const ps=es.map(v=>fr(v/ss));
+  return{zz,en,sn,pn,ps,lseN:Math.log(sn),lseS:m+Math.log(ss)};
+}
+function drawSm(){
+  const z=[1,2,3].map(i=>+$('d13-z'+i).value),sh=+$('d13-sh').value;
+  [1,2,3].forEach(i=>$('d13-z'+i+'v').textContent=fmt(z[i-1],1));$('d13-shv').textContent=sh;
+  const L=z.map(v=>v+sh),p32=$('d13-prec').value==='32';
+  const r=softmaxBoth(L,p32);
+  sx.clearRect(0,0,SW,SH);
+  const top=20,base=SH-40,hgt=base-top,gw=SW/3;
+  sx.strokeStyle=css('--grid');sx.lineWidth=1;
+  for(let k=0;k<=4;k++){const y=base-hgt*k/4;sx.beginPath();sx.moveTo(30,y);sx.lineTo(SW,y);sx.stroke();sx.fillStyle=css('--muted');sx.font='11px JetBrains Mono, monospace';sx.textAlign='right';sx.fillText((k/4).toFixed(2),26,y+4)}
+  for(let i=0;i<3;i++){
+    const cx=30+(gw-10)*i+(gw-10)/2;
+    [[r.pn[i],-26,css('--vec-b'),.45,'naive'],[r.ps[i],4,css('--vec-a'),1,'stable']].forEach(([p,dx,c,al,lab])=>{
+      const x=cx+dx,w=22;
+      if(!isFinite(p)||isNaN(p)){
+        sx.strokeStyle=css('--bad');sx.lineWidth=2;sx.strokeRect(x,top,w,hgt);sx.beginPath();sx.moveTo(x,top);sx.lineTo(x+w,base);sx.moveTo(x+w,top);sx.lineTo(x,base);sx.stroke();
+        sx.fillStyle=css('--bad');sx.font='bold 12px JetBrains Mono, monospace';sx.textAlign='center';sx.fillText(isNaN(p)?'NaN':String(p),x+w/2,top-6);
+      }else{
+        sx.globalAlpha=al;sx.fillStyle=c;sx.fillRect(x,base-hgt*p,w,hgt*p);sx.globalAlpha=1;
+        sx.fillStyle=css('--ink');sx.font='11px JetBrains Mono, monospace';sx.textAlign='center';sx.fillText(p.toFixed(3),x+w/2,base-hgt*p-5);
+      }
+    });
+    sx.fillStyle=css('--ink');sx.font='12px JetBrains Mono, monospace';sx.textAlign='center';sx.fillText('z'+(i+1)+' = '+fmt(L[i],1),cx-4,base+18);
+  }
+  sx.textAlign='left';sx.font='11px JetBrains Mono, monospace';
+  sx.globalAlpha=.45;sx.fillStyle=css('--vec-b');sx.fillRect(SW-150,SH-14,10,10);sx.globalAlpha=1;sx.fillStyle=css('--ink');sx.fillText('naive',SW-136,SH-5);
+  sx.fillStyle=css('--vec-a');sx.fillRect(SW-80,SH-14,10,10);sx.fillStyle=css('--ink');sx.fillText('stable',SW-66,SH-5);
+  $('d13-zs').textContent='['+L.map(v=>fmt(v,1)).join(', ')+']';
+  $('d13-lseN').textContent=isFinite(r.lseN)?fmt(r.lseN,4):String(r.lseN);
+  $('d13-lseS').textContent=fmt(r.lseS,4);
+  const vd=$('d13-smVerdict'),bad=r.pn.some(v=>isNaN(v)||!isFinite(v));
+  if(bad&&r.en.some(v=>!isFinite(v))){vd.textContent='الـ naive اتكسر: exp عمل overflow → inf / inf = NaN. الـ stable سليم.';vd.style.color=css('--bad')}
+  else if(bad){vd.textContent='الـ naive اتكسر: كل الـ exp عملت underflow → 0 / 0 = NaN. الـ stable سليم.';vd.style.color=css('--bad')}
+  else{vd.textContent='الاتنين متطابقين: الأرقام لسه جوه المسطرة';vd.style.color=css('--ok')}
+}
+['d13-z1','d13-z2','d13-z3','d13-sh'].forEach(id=>$(id).addEventListener('input',drawSm));
+$('d13-prec').addEventListener('change',drawSm);
+root.querySelectorAll('[data-sm]').forEach(b=>b.addEventListener('click',()=>{const v=b.dataset.sm.split(',').map(Number);['d13-z1','d13-z2','d13-z3','d13-sh'].forEach((id,i)=>$(id).value=v[i]);drawSm()}));
+drawSm();
+
+// ---------- Lab 3: gradient check ----------
+const gc=$('d13-gc'),gx=A.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+const FN={cube:[x=>x*x*x,x=>3*x*x],sin:[Math.sin,Math.cos],exp:[Math.exp,Math.exp]};
+function relErr(a,n){const d=Math.max(Math.abs(a),Math.abs(n),1e-8);return Math.abs(a-n)/d}
+function errs(fn,x,h){const[f,df]=FN[fn],t=df(x);return[relErr(t,(f(x+h)-f(x))/h),relErr(t,(f(x+h)-f(x-h))/(2*h))]}
+function drawGc(){
+  const fn=$('d13-fn').value,x=+$('d13-x').value,lh=+$('d13-h').value;
+  $('d13-xv').textContent=x;$('d13-hv').textContent=lh;
+  const L=46,R=GW-12,T=12,B=GH-34;
+  const px=v=>L+(v+16)/15*(R-L),py=v=>T+(-v)/17*(B-T);
+  gx.clearRect(0,0,GW,GH);
+  gx.strokeStyle=css('--grid');gx.lineWidth=1;gx.fillStyle=css('--muted');gx.font='11px JetBrains Mono, monospace';
+  for(let k=-16;k<=-1;k+=3){gx.beginPath();gx.moveTo(px(k),T);gx.lineTo(px(k),B);gx.stroke();gx.textAlign='center';gx.fillText('1e'+k,px(k),B+14)}
+  for(let k=0;k>=-17;k-=4){gx.beginPath();gx.moveTo(L,py(k));gx.lineTo(R,py(k));gx.stroke();gx.textAlign='right';gx.fillText('1e'+k,L-4,py(k)+4)}
+  gx.textAlign='center';gx.fillText('h',(L+R)/2,GH-4);
+  // threshold band
+  gx.fillStyle=css('--ok');gx.globalAlpha=.08;gx.fillRect(L,py(-5),R-L,B-py(-5));gx.globalAlpha=1;
+  const curve=(idx,col)=>{gx.strokeStyle=col;gx.lineWidth=2;gx.beginPath();let first=true;
+    for(let v=-16;v<=-1.0001;v+=0.05){const e=errs(fn,x,Math.pow(10,v))[idx];const ly=Math.max(-17,Math.min(0,e>0?Math.log10(e):-17));
+      if(first){gx.moveTo(px(v),py(ly));first=false}else gx.lineTo(px(v),py(ly))}gx.stroke()};
+  curve(0,css('--vec-b'));curve(1,css('--vec-a'));
+  gx.strokeStyle=css('--ink');gx.setLineDash([4,4]);gx.beginPath();gx.moveTo(px(lh),T);gx.lineTo(px(lh),B);gx.stroke();gx.setLineDash([]);
+  gx.textAlign='left';gx.fillStyle=css('--vec-b');gx.fillText('forward',L+6,T+12);gx.fillStyle=css('--vec-a');gx.fillText('centered',L+70,T+12);
+  gx.fillStyle=css('--ok');gx.fillText('< 1e-5 OK',R-74,B-6);
+  const [ef,ec]=errs(fn,x,Math.pow(10,lh));
+  $('d13-ef').textContent=sci(ef);$('d13-ec').textContent=sci(ec);
+  const vd=$('d13-gcVerdict');
+  if(ec<1e-7){vd.textContent='centered: ممتاز (< 1e-7)';vd.style.color=css('--ok')}
+  else if(ec<1e-5){vd.textContent='centered: مقبول (< 1e-5)';vd.style.color=css('--ok')}
+  else if(ec<1e-3){vd.textContent='centered: مشكوك فيه، غيّر h';vd.style.color=css('--vec-b')}
+  else{vd.textContent='centered: الحكم «غلط» مع إن الـ gradient صح! المشكلة في h مش في الكود';vd.style.color=css('--bad')}
+}
+['d13-x','d13-h'].forEach(id=>$(id).addEventListener('input',drawGc));$('d13-fn').addEventListener('change',drawGc);
+drawGc();
+
+// ---------- Lab 4a: clipping ----------
+const cc=$('d13-clip'),cx=A.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h,CS=26,cox=CW/2,coy=CH/2;
+let G=[4.5,2],cdrag=false;
+function drawClip(){
+  const m=+$('d13-max').value;$('d13-maxv').textContent=m;
+  cx.clearRect(0,0,CW,CH);A.grid(cx,CW,CH,CS,cox,coy);
+  cx.strokeStyle=css('--vec-b');cx.setLineDash([6,4]);cx.lineWidth=1.5;cx.strokeRect(cox-m*CS,coy-m*CS,2*m*CS,2*m*CS);cx.setLineDash([]);
+  cx.strokeStyle=css('--vec-a');cx.beginPath();cx.arc(cox,coy,m*CS,0,Math.PI*2);cx.stroke();
+  const n=Math.hypot(G[0],G[1]);
+  const V=G.map(g=>Math.max(-m,Math.min(m,g)));
+  const N=n>m?G.map(g=>g*m/n):G.slice();
+  const P=p=>[cox+p[0]*CS,coy-p[1]*CS];
+  A.arrow(cx,cox,coy,...P(G),css('--ink'),2.5);
+  A.arrow(cx,cox,coy,...P(V),css('--vec-b'),3);
+  A.arrow(cx,cox,coy,...P(N),css('--vec-a'),3);
+  const[gx_,gy_]=P(G);cx.fillStyle=css('--ink');cx.beginPath();cx.arc(gx_,gy_,7,0,7);cx.fill();
+  $('d13-gn').textContent=fmt(n);
+  $('d13-cv').textContent='['+V.map(v=>fmt(v)).join(', ')+']';
+  $('d13-cn').textContent='['+N.map(v=>fmt(v)).join(', ')+']';
+  const a1=Math.atan2(G[1],G[0]),a2=Math.atan2(V[1],V[0]);let d=Math.abs(a1-a2)*180/Math.PI;if(d>180)d=360-d;
+  $('d13-ang').textContent=(n?fmt(d,1):0)+'°';
+}
+cc.addEventListener('pointerdown',e=>{cdrag=true;cc.setPointerCapture(e.pointerId);cmove(e)});
+function cmove(e){if(!cdrag)return;const[x,y]=A.evPos(cc,e);G=[Math.max(-7.5,Math.min(7.5,(x-cox)/CS)),Math.max(-5.8,Math.min(5.8,(coy-y)/CS))];G=G.map(v=>Math.round(v*10)/10);drawClip()}
+cc.addEventListener('pointermove',cmove);cc.addEventListener('pointerup',()=>cdrag=false);cc.addEventListener('pointercancel',()=>cdrag=false);
+$('d13-max').addEventListener('input',drawClip);
+drawClip();
+
+// ---------- Lab 4b: loss scaling ----------
+let seed=12345;const rnd=()=>{seed=(seed*1103515245+12345)%2147483648;return seed/2147483648};
+const NG=4000,LOGS=[];for(let i=0;i<NG;i++)LOGS.push(-9+6*rnd());
+const lc=$('d13-ls'),lx=A.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+function drawLs(){
+  const k=+$('d13-s').value,S=Math.pow(2,k);$('d13-sv').textContent=k;$('d13-sval').textContent=S.toLocaleString('en');
+  const nb=24,bins=Array.from({length:nb},()=>[0,0,0]);let z=0,inf=0;
+  LOGS.forEach(l=>{const g=Math.pow(10,l),h=toHalf(g*S);let t=0;if(h===0){t=1;z++}else if(!isFinite(h)){t=2;inf++}
+    const b=Math.min(nb-1,Math.floor((l+9)/6*nb));bins[b][t]++});
+  lx.clearRect(0,0,LW,LH);
+  const L=10,R=LW-10,T=10,B=LH-28,bw=(R-L)/nb,mx=Math.max(...bins.map(b=>b[0]+b[1]+b[2]));
+  bins.forEach((b,i)=>{let y=B;[[1,css('--bad')],[2,css('--ink')],[0,css('--ok')]].forEach(([t,c])=>{const h=(B-T)*b[t]/mx;lx.fillStyle=c;lx.globalAlpha=t===0?.75:.9;lx.fillRect(L+i*bw+1,y-h,bw-2,h);y-=h});lx.globalAlpha=1});
+  lx.fillStyle=css('--muted');lx.font='11px JetBrains Mono, monospace';lx.textAlign='center';
+  for(let e=-9;e<=-3;e++)lx.fillText('1e'+e,L+(e+9)/6*(R-L),LH-10);
+  lx.textAlign='left';
+  const pct=v=>(v/NG*100).toFixed(1)+'%';
+  $('d13-z0').textContent=pct(z);$('d13-zi').textContent=pct(inf);$('d13-zok').textContent=pct(NG-z-inf);
+  $('d13-z0').style.color=z?css('--bad'):'';$('d13-zi').style.color=inf?css('--bad'):'';
+}
+$('d13-s').addEventListener('input',drawLs);drawLs();
+
+// ---------- quiz ----------
+const Q=[
+ ['المدى التقريبي للأرقام اللي float32 يقدر يمثلها؟',['± 1.8e308','± 3.4e38','± 1.0e10','± 65,504'],1,'float32 فيه exponent بـ 8 بت فمداه حوالي ±3.4e38. الـ float16 محدود بـ ±65,504، والـ float64 بيوصل ±1.8e308.'],
+ ['ليه 0.1 + 0.2 مش بتساوي 0.3 في الـ floating point؟',['الـ CPU فيه باج في دايرة الجمع','0.1 و 0.2 مينفعش يتمثلوا بالظبط في الـ binary floating point','Python بيقرّب كل الكسور لأرقام صحيحة','0.3 مش رقم float صالح'],1,'0.1 كسر بيتكرر في الثنائي (زي 1/3 في العشري). float32 بيقصه فيتخزن حوالي 0.100000001490116، والغلط المتراكم بيخلي المجموع مختلف عن 0.3.'],
+ ['في الـ stable softmax، ليه بنطرح max(logits) قبل الـ exp؟',['عشان نخلي متوسط الـ logits صفر','عشان نحوّل من float16 لـ float32','عشان الاحتمالات تبقى متساوية أكتر','عشان نمنع الـ exp من الـ overflow، لأن أكبر أس بيبقى 0'],3,'بعد الطرح أكبر قيمة بقت 0 و exp(0) = 1 ومستحيل تعمل overflow. الباقي سالب فالـ exp بتاعه أقل من 1. والاحتمالات نفسها بالظبط زي الـ naive رياضيًا.'],
+ ['في الـ gradient checking بالـ centered differences، إيه اللي يحصل لو h صغير جدًا (مثلًا 1e-15)؟',['التقريب بيبقى أدق','الـ gradient بيبقى صفر لوحده','الـ catastrophic cancellation بتبوّظ النتيجة لأن f(x+h) و f(x-h) تقريبًا متطابقين','حساب الدالة بيبقى أسرع'],2,'لما h صغير جدًا، f(x+h) و f(x-h) بيختلفوا في آخر كام رقم بس. الطرح بيلغي الأرقام المهمة ويفضل ضوضاء التقريب. القيم الكويسة المعتادة من 1e-5 لـ 1e-7 (شفتها في المعمل ٠٣).'],
+ ['ليه bfloat16 غالبًا أحسن من float16 في تدريب الشبكات؟',['bfloat16 بياخد memory أقل من float16','bfloat16 ليه نفس مدى الـ exponent بتاع float32، فمش بيعمل overflow على الـ activations الكبيرة من غير loss scaling','bfloat16 مدعوم على GPUs أكتر','bfloat16 فيه mantissa أكتر فدقته أعلى'],1,'bfloat16 فيه 8 بت exponent (نفس float32، لحد 3.4e38) و float16 فيه 5 بس (أقصى 65,504). في التدريب الـ activations والـ gradients ممكن تعدي 65,504. والاتنين 16 بت، فنفس الـ memory.'],
+ ['موديل classification بـ 10 كلاسات، والـ loss واقفة من أول التدريب عند حوالي 2.30. ده غالبًا معناه إيه؟',['الموديل اتعلم كويس جدًا','الـ loss عملت overflow','الموديل بيطلع احتمالات شبه متساوية: ln(10) ≈ 2.30، يعني مش بيتعلم','الـ learning rate صغير بس الموديل تمام'],2,'الـ cross-entropy لتوزيع uniform على N كلاس = ln(N). وقوف الـ loss عند ln(10) هو العَرَض «stuck at log(num_classes)»: راجع الـ labels والـ loss والـ dead ReLUs.'],
+ ['الـ gradient بتاعك [30, 1] والحد 5. أنهي clipping بيحافظ على اتجاهه؟',['clip by value (max_val = 5) → [5, 1]','clip by norm (max_norm = 5)','الاتنين بيحافظوا على الاتجاه','ولا واحد فيهم'],1,'clip by norm بيضرب المتجه كله في نفس الرقم (5/‖g‖) فالنسبة 30:1 بتفضل زي ما هي. clip by value غيّر النسبة لـ 5:1، يعني لف الاتجاه. جربها في المعمل ٠٤ (أ).']
+];
+A.quiz($('d13-quiz'),Q,5,()=>{const c=root.querySelector('[data-ck="quiz"]');if(c){c.checked=true;A.store.set('aiefs-d13-quiz','1')}});
+
+// ---------- checklist ----------
+A.checklist(13,root);
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(bc))return false;drawBits();drawSm();drawGc();drawClip();drawLs()});
+})();
+</script>

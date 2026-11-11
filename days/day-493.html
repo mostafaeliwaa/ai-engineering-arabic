@@ -1,0 +1,627 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 65 · Hybrid Retrieval with BM25 and Dense Embeddings</span>
+  <h1>اليوم ٤٩٣: BM25 + Dense، والـ RRF هو الحَكَم</h1>
+  <p class="lede">النهاردة هتبني <b>BM25</b> من الصفر بإيدك، وجنبه <b>dense retriever</b> على embedding وهمي ثابت يشتغل من غير نت، وبعدين تدمجهم بـ <b>Reciprocal Rank Fusion</b> بالظبط زي ما اتنشر سنة 2009. والأهم: هتفهم ليه الدمج بالـ <b>rank</b> بيكسب الدمج بالـ <b>score</b>، وإزاي تظبط الـ knobs: <code>k1</code> و<code>b</code> و<code>k</code> وأوزان كل طريقة.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (pure، من غير مكتبات)</span>
+    <span>قبله: <b>Chunking Strategies, Compared</b></span>
+    <span>بعده: <b>Cross-Encoder Reranker</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects · Track F (RAG)</span>
+    <div class="roadmap" id="d493-roadmap" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d493-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ chunking امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>ليه الدرس قال إن اختيار مكان القطع (chunk boundaries) مش مجرد hyperparameter؟
+      <details><summary>الإجابة</summary>لأنه <b>السقف</b> لأي حاجة الـ retriever يقدر يرجّعها. لو الإجابة اتقطعت من السياق بتاعها، مفيش embedding ولا reranker ولا LLM يقدر يصلّح ده بعدين. النهاردة بنبني الـ retriever اللي بيدوّر جوه الـ chunks دي.</details></li>
+    <li>الـ recall@k اتحسب إزاي على الـ gold spans؟
+      <details><summary>الإجابة</summary>كل سؤال معاه مكان الإجابة بالظبط (character offsets). لو أي chunk من الـ top-k اللي رجعوا بيتقاطع مع الـ span ده يبقى recall = 1 للسؤال ده، غير كده 0. وبعدين متوسط على كل الأسئلة.</details></li>
+    <li>لو مش عارف حاجة عن الـ corpus ومش هتعمل benchmark، الدرس نصحك بأنهي chunker؟
+      <details><summary>الإجابة</summary><b>Recursive split</b>: أقوى baseline لوحده. ولو الـ docs فيها structure واضح (markdown / API docs) يبقى structural markdown.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة ونص</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>المشكلة: ليه طريقة واحدة مش كفاية</div>
+    <div><b>20 min</b>BM25 + Dense + RRF بالمعامل</div>
+    <div><b>30 min</b>اكتب الكود بإيدك وشغّله</div>
+    <div><b>20 min</b>التمارين + الكويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d493-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: كل طريقة بتقع في نوع أسئلة مختلف</h2></div>
+  <p><b>البحث الحرفي (Lexical / BM25)</b> بيكسب لما السؤال فيه اسم حرفي موجود في الـ corpus زي ما هو. سؤال عن <code>AbortMultipartOnFail</code> بيرجّع دالة الـ Go الصح في microseconds. نفس السؤال لو عملته embedding، بيقعد على الحدود بين تلات clusters والـ dense retriever بيجيب الملف الغلط الأول.</p>
+  <p><b>البحث بالمعنى (Dense / Semantic)</b> بيكسب لما السؤال متصاغ بكلام تاني غير كلمات الـ corpus. واحد بيسأل «how do we handle cancelled uploads» عمره ما كتب كلمة abort ولا multipart. الـ BM25 هيجيب صفحة «uploading large files» عشان فيها كلمة uploads، والـ dense هو اللي هيلاقي دالة الـ abort اللي وصفها بيتكلم عن الإلغاء.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ BM25 زي أمين مكتبة عنده فهرس كروت: لو قلتله اسم الكتاب بالحرف هيطلّعهولك في ثانية، بس لو وصفتله الفكرة بكلامك هيتوه. الـ dense زي صاحبك اللي فاهم الموضوع: بيفهم قصدك حتى لو قلته بكلام مختلف، بس لو قلتله كود غريب زي <code>AbortMultipartOnFail</code> ممكن يفتكره حاجة شبهه.</div>
+  <p>الاختيار بينهم مش ثابت: <b>توزيع الأسئلة هو المتغير</b>. أي RAG system في الـ production بيستقبل النوعين من نفس الـ endpoint ومن نفس المستخدمين، فالـ retrieval لازم يتعامل مع الاتنين في نفس الوقت. ده اسمه <b>hybrid retrieval</b>، والجزء اللي لازم يبقى صح هو خطوة الدمج.</p>
+  <div class="formula">Query ──► BM25 Index ──► Ranked List A ─┐
+      └──► Dense Index ─► Ranked List B ─┴─► Reciprocal Rank Fusion ──► Top-k Chunks</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d493-bm25">
+  <div class="station-head"><span class="tag">02</span><h2>BM25 في فقرة واحدة</h2></div>
+  <p>الـ BM25 بيدي score لكل زوج (سؤال، document) بإنه يجمع على كل كلمة في السؤال: <b>IDF</b> (قد إيه الكلمة نادرة) مضروب في <b>term frequency مُشبَّع</b> (saturating) فيه تصحيح لطول الـ document.</p>
+  <div class="formula">score(q, d) = Σ<sub>t∈q</sub> IDF(t) · f·(k1+1) / ( f + k1·(1 − b + b·dl/avgdl) )</div>
+  <div class="formula">IDF(t) = ln( (N − df + 0.5) / (df + 0.5) + 1 )</div>
+  <ul class="checklist">
+    <li><b>f</b> = الكلمة اتكررت كام مرة في الـ document. <b>dl</b> = طول الـ document بالـ tokens. <b>avgdl</b> = متوسط الأطوال. <b>N</b> = عدد الـ documents. <b>df</b> = الكلمة موجودة في كام document.</li>
+    <li><b>k1</b> بيتحكم في الـ saturation: أول مرة الكلمة تظهر بتدي score كبير، والتكرار بعد كده بيدي أقل وأقل لحد سقف <span class="ltr">k1+1</span>. الـ default 1.5 هو التوصية المنشورة، و<b>متحركوش من غير benchmark</b>.</li>
+    <li><b>b</b> بيتحكم قد إيه الطول فارق: 0 = تجاهل الطول خالص، 1 = normalization كامل. الـ default 0.75 معناه إن الـ documents الطويلة بتتعاقب، بس مش بشكل خطي.</li>
+    <li>الـ IDF هنا هو تعريف Robertson وSparck Jones الـ smoothed. الـ <b>+1 جوه الـ log</b> بيخلي الـ IDF موجب حتى لو الكلمة موجودة في أكتر من نص الـ corpus. ده مهم للـ stopwords (موجودة في أغلب الـ documents)، وفي الـ corpora الصغيرة اللي كلمة شائعة واحدة ممكن تعدي خط النص.</li>
+  </ul>
+  <h3>Field weighting: «الاسم أهم من الكلام»</h3>
+  <p>عايز تقول للـ BM25 إن الـ match في اسم الـ symbol (الـ title) أهم من الـ match في الـ body؟ الكود بيعمل ده بإنه <b>يكرر tokens الـ title وقت الـ indexing</b> (هنا 3 مرات)، مش وقت الـ scoring. كده الرياضة فاضلة زي ما هي بالظبط ومفيش score منفصل لكل field محتاج تدمجه.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الـ saturation والـ length penalty بعينك</h3>
+      <p>الخط المتقطع = لو الـ tf بيزيد خطي (من غير saturation). الخط الأزرق = مساهمة الـ tf في BM25. حرّك <code>k1</code> وشوف السقف <span class="ltr">k1+1</span> بيتحرك. حرّك <code>b</code> و<span class="ltr">dl/avgdl</span>: document أطول من المتوسط بيتعاقب، والعقاب بيختفي لما <span class="ltr">b = 0</span>.</p>
+      <p>وتحت: الـ IDF كدالة في <code>df</code>. لاحظ إنه عمره ما بيبقى سالب بفضل الـ +1.</p>
+      <div class="note ai"><strong>لاحظ:</strong> لو <span class="ltr">k1 = 0</span> الكلمة بتدي نفس الـ score سواء ظهرت مرة ولا 100 مرة (binary). ولو k1 كبير جدًا بيقرب من الخط الخطي.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d493-tfCv" width="520" height="250" aria-label="منحنى مساهمة الـ term frequency"></canvas>
+      <div class="mrow">
+        <label>k1 = <span id="d493-vk1">1.5</span><input type="range" id="d493-k1" min="0" max="3" step="0.1" value="1.5"></label>
+        <label>b = <span id="d493-vb">0.75</span><input type="range" id="d493-b" min="0" max="1" step="0.05" value="0.75"></label>
+        <label>dl/avgdl = <span id="d493-vdl">1</span><input type="range" id="d493-dl" min="0.25" max="4" step="0.25" value="1"></label>
+        <label>df (N = 100) = <span id="d493-vdf">10</span><input type="range" id="d493-df" min="1" max="100" step="1" value="10"></label>
+      </div>
+      <canvas id="d493-idfCv" width="520" height="150" aria-label="منحنى الـ IDF"></canvas>
+      <div class="readout">
+        <div><small>tf part @ f=1</small><b id="d493-t1"></b></div>
+        <div><small>tf part @ f=5</small><b id="d493-t5"></b></div>
+        <div><small>IDF(df)</small><b id="d493-idf"></b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d493-dense">
+  <div class="station-head"><span class="tag">03</span><h2>Dense retrieval في فقرة واحدة</h2></div>
+  <p>حوّل كل chunk لمتجه بطول ثابت باستخدام embedding model. وقت السؤال: اعمل embedding للسؤال، رتّب كل الـ chunks بالـ cosine similarity، ورجّع الـ top-k. <b>الموديل هو اللي بيحدد الجودة</b>؛ الـ algorithm نفسه سطرين: dot product وsort.</p>
+  <p>الدرس ده بيستخدم <b>embedding وهمي ثابت (deterministic) مبني على hash</b> عشان تقرا رياضة الدمج من غير أي network call: كل token بيتعمله hash، والـ hash بيزوّد أرقام في خانات معينة في متجه 96 بُعد، وفيه كمان خلط على مستوى الـ bigrams (كل حرفين ورا بعض) عشان يفرق عن BM25، وفي الآخر normalize. الترتيب بالـ cosine ثابت بين كل run والتاني، وده اللي الـ tests محتاجاه. وهو نفس الـ embedding بتاع درس ٦٤ عشان الـ chunks تبقى قابلة للمقارنة.</p>
+  <div class="note"><strong>خد بالك:</strong> الـ mock embedding ده <b>مش فاهم معنى</b> بجد؛ هو بس بيوزّع الكلمات في خانات بطريقة مختلفة عن BM25. التمرين الأول بيطلب منك تبدله بموديل حقيقي وتشوف الترتيب بيتغير إزاي على السؤال المُعاد صياغته.</div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d493-rrf">
+  <div class="station-head"><span class="tag">04</span><h2>Reciprocal Rank Fusion: الدمج بالتصويت</h2></div>
+  <p>عندك قايمتين مترتبين. لكل مرشح ظهر في أي قايمة، اجمع مساهمات الـ reciprocal rank بتاعته. ورقة 2009 (Cormack, Clarke, Buettcher) استخدمت:</p>
+  <div class="formula">RRF(d) = Σ<sub>lists</sub> w · 1 / (k + rank(d))       k = 60 (default)، rank بيبدأ من 1</div>
+  <p>رتّب بالمجموع. <b>ده الـ algorithm كله.</b></p>
+  <p>الـ <span class="ltr">k = 60</span> مش رقم عشوائي: مساهمة المركز الأول <span class="ltr">1/61</span> والمركز العاشر <span class="ltr">1/70</span>. يعني المساهمة بتقل ببطء فالمرشحين اللي تحت لسه <b>بيصوّتوا</b>. k أصغر = المراكز الأولى بتسيطر. k أكبر = المنحنى بيبقى مفرود أكتر.</p>
+  <p>في الكود فيه knob تاني: <b>وزن لكل طريقة</b> (per-modality weight) عشان تقوّي BM25 أو dense لو عندك دليل إن واحد فيهم أحسن على الـ corpus بتاعك. ضرب مساهمة الـ rank في الوزن هو أبسط تطبيق صحيح: بيحافظ على شكل تناقص الـ rank وبيفضل scale-free.</p>
+
+  <h3>ليه الدمج بالـ rank أحسن من score-weighted interpolation؟</h3>
+  <p>الـ BM25 scores <b>مالهاش سقف ومعتمدة على الـ corpus</b>. الـ cosine محصور بين <span class="ltr">-1</span> و<span class="ltr">1</span>. معادلة زي <span class="ltr">alpha · bm25 + (1 − alpha) · cosine</span> محتاجة تظبط alpha لكل corpus، و<b>بتبوظ كل مرة تعمل reindex</b>. الدمج بالـ rank لأ: مركزين في قايمتين مختلفتين قابلين للمقارنة. الدرس بيقول إن الـ RRF baseline المنشور كسب الـ score interpolation في كل TREC track عام من 2010، وإن توثيق Vespa وWeaviate وصل لنفس النتيجة: خليك rank-based إلا لو عندك دليل قوي جدًا.</p>
+  <div class="note"><strong>تشبيه:</strong> اتنين حكام في مسابقة: واحد بيدي درجات من 10 والتاني من 1000، وكل سنة السلم بتاعه بيتغير. لو جمعت الدرجات، الحكم بتاع الـ 1000 هيكسب دايمًا. الحل؟ كل حكم يقول <b>ترتيبه</b> بس، وانت تجمع الترتيب. ده الـ RRF.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: منحنى الـ RRF وفخ الـ interpolation</h3>
+      <p><b>فوق:</b> مساهمة كل مركز <span class="ltr">1/(k+rank)</span> نسبةً لمساهمة المركز الأول. حرّك k من 1 لـ 200: عند k = 1 المركز التاني بياخد تقريبًا تلت مساهمة الأول بس، وعند k = 60 المركز العشرين لسه بياخد حوالي ٧٥٪.</p>
+      <p><b>تحت:</b> تلات documents. حرّك «scale الـ BM25» كأنك عملت reindex والـ scores كلها اتضربت في رقم. شوف ترتيب الـ interpolation بيتقلب، وترتيب الـ RRF ثابت لأنه مش شايف الـ scores أصلًا.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d493-rrfCv" width="520" height="220" aria-label="منحنى مساهمة الـ RRF"></canvas>
+      <div class="mrow">
+        <label>RRF k = <span id="d493-vrk">60</span><input type="range" id="d493-rk" min="1" max="200" step="1" value="60"></label>
+        <label>rank 1 / rank 10</label>
+      </div>
+      <div class="readout">
+        <div><small>1/(k+1)</small><b id="d493-r1"></b></div>
+        <div><small>1/(k+10)</small><b id="d493-r10"></b></div>
+        <div><small>rank10 ÷ rank1</small><b id="d493-rr"></b></div>
+      </div>
+      <div class="mrow">
+        <label>BM25 scale = <span id="d493-vsc">1</span><input type="range" id="d493-sc" min="0.1" max="10" step="0.1" value="1"></label>
+        <label>alpha = <span id="d493-val">0.5</span><input type="range" id="d493-al" min="0" max="1" step="0.05" value="0.5"></label>
+      </div>
+      <div id="d493-interp" style="display:grid;gap:6px;direction:ltr"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d493-play">
+  <div class="station-head"><span class="tag">05</span><h2>معمل ٣: الـ hybrid retriever شغال قدامك</h2></div>
+  <p>ده port بالـ JavaScript لنفس الكود بتاع الدرس (نفس الـ tokenizer، نفس الـ BM25 بالـ field weights، نفس الـ mock embedding بـ 96 بُعد، نفس الـ RRF) على نفس الـ corpus بتاع الـ 7 documents. جرّب الـ 3 أسئلة بتوع الـ demo، أو اكتب سؤالك.</p>
+  <div class="instrument">
+    <div class="btns">
+      <button type="button" class="primary" data-d493q="AbortMultipartOnFail">literal: AbortMultipartOnFail</button>
+      <button type="button" data-d493q="how do we handle cancelled uploads">paraphrased: cancelled uploads</button>
+      <button type="button" data-d493q="centralized authorization for service accounts">mixed: authorization</button>
+      <button type="button" data-d493q="abort multipart">abort multipart (جرّبها!)</button>
+    </div>
+    <input type="search" id="d493-qin" aria-label="اكتب سؤال" style="font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);direction:ltr" value="AbortMultipartOnFail">
+    <div class="mrow">
+      <label>k1 = <span id="d493-vpk1">1.5</span><input type="range" id="d493-pk1" min="0" max="3" step="0.1" value="1.5"></label>
+      <label>b = <span id="d493-vpb">0.75</span><input type="range" id="d493-pb" min="0" max="1" step="0.05" value="0.75"></label>
+      <label>title weight = <span id="d493-vptw">3</span><input type="range" id="d493-ptw" min="1" max="6" step="1" value="3"></label>
+      <label>RRF k = <span id="d493-vprk">60</span><input type="range" id="d493-prk" min="1" max="200" step="1" value="60"></label>
+      <label>BM25 weight = <span id="d493-vpwb">1</span><input type="range" id="d493-pwb" min="0" max="3" step="0.1" value="1"></label>
+      <label>dense weight = <span id="d493-vpwd">1</span><input type="range" id="d493-pwd" min="0" max="3" step="0.1" value="1"></label>
+    </div>
+    <div class="tablewrap" id="d493-lists" style="direction:ltr"></div>
+    <canvas id="d493-fuseCv" width="520" height="210" aria-label="مساهمة كل طريقة في الـ fused score"></canvas>
+    <p style="font-size:15px;color:var(--muted)">الأعمدة: الجزء الأزرق = مساهمة BM25 في الـ RRF score، والبرتقالي = مساهمة الـ dense. الـ k_each = 5 والـ k_out = 5 زي الـ demo.</p>
+  </div>
+  <div class="note ai"><strong>جرّب «abort multipart»:</strong> الـ tokenizer بيعمل lowercase وبياخد <span class="ltr">[a-z0-9]+</span>، فـ <code>AbortMultipartOnFail</code> بيبقى token واحد <code>abortmultipartonfail</code>. يعني لو حد كتب الكلمتين منفصلين، الـ BM25 مش هيطابق الـ title خالص (هيطابق كلمة multipart في الـ body بس). ده درس حقيقي: الـ tokenizer بتاع BM25 بيحدد هو يقدر يشوف إيه.</div>
+  <div class="note"><strong>المقارنة مع الدرس:</strong> الدرس بيقول إن الـ literal query بتيجي BM25 rank 1 وdense rank 4 وRRF rank 1، والـ paraphrased بتيجي BM25 rank 6 وdense rank 1 وRRF rank 1. قارن باللي المعمل بيطلّعه ولما تشغّل الكود بنفسك. لو لقيت فرق، صدّق اللي بيطلع من الكود عندك، مش الكلام.</div>
+</section>
+
+<!-- STATION 6: knobs -->
+<section id="d493-knobs">
+  <div class="station-head"><span class="tag">06</span><h2>ظبط الـ knobs، والـ failure modes اللي الـ demo هيخبيها</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>Knob</th><th>Default</th><th>علّيه لما</th><th>وطّيه لما</th></tr>
+    <tr><td>BM25 k1</td><td>1.5</td><td>الكلمات بتتكرر في الـ documents وعايز التكرار يفرق أكتر</td><td>الـ documents قصيرة والتكرار مجرد noise</td></tr>
+    <tr><td>BM25 b</td><td>0.75</td><td>الـ documents الطويلة فعلًا بتقول أقل لكل كلمة</td><td>طول الـ document مالوش علاقة بالموضوع</td></tr>
+    <tr><td>RRF k</td><td>60</td><td>عايز المرشحين اللي تحت يفضلوا يصوّتوا</td><td>عايز الـ top-1 يسيطر</td></tr>
+    <tr><td>BM25 weight</td><td>1.0</td><td>الـ corpus فيه أسماء حرفية والأسئلة بتطابقها</td><td>الأسئلة بيصيغها المستخدمين بكلامهم</td></tr>
+    <tr><td>Dense weight</td><td>1.0</td><td>الأسئلة paraphrased</td><td>الأسئلة literal</td></tr>
+  </table></div>
+  <p><b>ظبّط بإنك تعيد تشغيل الـ eval harness بتاع درس ٦٨ على مجموعة أسئلة held-out، مش بالإحساس.</b></p>
+  <h3>Failure modes</h3>
+  <ul class="checklist">
+    <li><b>Out-of-vocabulary tokens:</b> الـ IDF بيتحسب من الـ corpus، فكلمة موجودة في السؤال بس بتدي صفر في BM25. الـ dense بيعمل «hallucinate» لمتجه لنفس الكلمة، فعلى identifier مش موجود في الـ corpus بيرجّع جيران شكلهم مقنع بس غلط. الدمج بيمتص ده لأن BM25 مش بيرجّع حاجة فمساهمته بتختفي، <b>بس ده لو عملت de-duplicate بالـ document مش بالـ chunk</b>.</li>
+    <li><b>Stop-token domination:</b> BM25 على كلمة «the» بيطلّع ترتيب شبه متساوي لكل الـ corpus. فلتر الـ stop tokens في الـ indexer، أو اقبل إن الكلمات عالية الـ IDF هتسيطر لوحدها.</li>
+    <li><b>Identical content across modalities:</b> لو الـ corpus صغير والـ top-1 بتاع BM25 هو نفسه بتاع dense، الـ RRF هيديك نفس الـ top-1 ونفس الجيران. ده سلوك صح مش failure، بس بيخلي الدمج شكله مش باين. حط <b>زوج أسئلة adversarial</b> في الـ eval عشان تتأكد إن الدمج شغال فعلًا.</li>
+  </ul>
+  <h3>Production patterns</h3>
+  <ul class="checklist">
+    <li>اعمل index للـ BM25 جوه الـ process؛ الـ bottleneck هو الـ term-frequency dictionary مش المتجهات.</li>
+    <li>خزّن الـ dense vectors في store منفصل (هنا flat list، في الـ production هتستخدم HNSW).</li>
+    <li>شغّل السؤالين بالتوازي؛ الدمج merge بوقت ثابت على الـ union.</li>
+    <li>احفظ الـ modality بتاع كل hit عشان الـ reranker اللي بعده يشوف مين صوّت له.</li>
+  </ul>
+  <p><b>Ship it:</b> درس ٦٦ هياخد الـ fused top-k ده ويعمله rerank بـ cross-encoder، ودرس ٦٨ هيقيّم الـ pipeline كله بـ precision وrecall وMRR وnDCG، والـ hybrid retriever ده هو أول مرحلة في الـ end-to-end system في درس ٦٩.</p>
+</section>
+
+<!-- CODE -->
+<section id="d493-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو شغّل الأصل الأول وشوف الـ 3 أسئلة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/65-hybrid-retrieval-bm25-dense/code/main.py
+<span class="c"># والـ tests:</span>
+python3 phases/19-capstone-projects/65-hybrid-retrieval-bm25-dense/code/tests/test_hybrid.py</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_hybrid.py</code> واكتب الخطوات دي بإيدك. متعملش Copy غير لو اتزنقت وعايز تقارن.</p>
+
+  <h3>خطوة ١: الـ Doc والـ tokenizer</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import math, re
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+
+@dataclass
+class Doc:
+    doc_id: str
+    title: str
+    body: str
+
+    def field_text(self, field_name: str) -> str:   <span class="c"># title ولا body</span>
+        return {"title": self.title, "body": self.body}.get(field_name, "")
+
+_TOKEN = re.compile(r"[a-z0-9]+")
+
+def tokenize(text: str) -> list[str]:               <span class="c"># lowercase + حروف وأرقام بس</span>
+    return _TOKEN.findall(text.lower())</pre></div>
+
+  <h3>خطوة ٢: BM25Index من الصفر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class BM25Index:
+    k1: float = 1.5
+    b: float = 0.75
+    field_weights: dict[str, int] = field(default_factory=lambda: {"title": 3, "body": 1})
+    docs: list[Doc] = field(default_factory=list)
+    doc_lens: list[int] = field(default_factory=list)
+    df: Counter = field(default_factory=Counter)
+    tf: list[Counter] = field(default_factory=list)
+    avgdl: float = 0.0
+
+    def _doc_tokens(self, doc: Doc) -> list[str]:
+        out: list[str] = []
+        for field_name, weight in self.field_weights.items():
+            tokens = tokenize(doc.field_text(field_name))
+            out.extend(tokens * weight)              <span class="c"># field weighting = تكرار وقت الـ indexing</span>
+        return out
+
+    def add(self, doc: Doc) -> None:
+        tokens = self._doc_tokens(doc)
+        counts = Counter(tokens)
+        self.docs.append(doc)
+        self.doc_lens.append(len(tokens))
+        self.tf.append(counts)
+        for term in counts:                          <span class="c"># df: الكلمة في كام document</span>
+            self.df[term] += 1
+        self.avgdl = sum(self.doc_lens) / max(1, len(self.doc_lens))
+
+    def search(self, query: str, k: int = 10) -> list[tuple[Doc, float]]:
+        if not self.docs:
+            return []
+        q_terms = tokenize(query)
+        n = len(self.docs)
+        scores: list[float] = [0.0] * n
+        for term in q_terms:
+            df = self.df.get(term, 0)
+            if df == 0:                              <span class="c"># OOV → مساهمة صفر</span>
+                continue
+            idf = math.log((n - df + 0.5) / (df + 0.5) + 1.0)   <span class="c"># الـ +1 يخليه موجب</span>
+            for i, counts in enumerate(self.tf):
+                f = counts.get(term, 0)
+                if f == 0:
+                    continue
+                dl = self.doc_lens[i]
+                denom = f + self.k1 * (1 - self.b + self.b * dl / (self.avgdl or 1))
+                scores[i] += idf * f * (self.k1 + 1) / denom      <span class="c"># saturating tf</span>
+        ranked = sorted(zip(self.docs, scores), key=lambda x: -x[1])
+        return [(d, s) for d, s in ranked[:k] if s > 0]</pre></div>
+
+  <h3>خطوة ٣: الـ mock embedding والـ DenseIndex</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def mock_embed(text: str, dim: int = 96) -> list[float]:
+    vec = [0.0] * dim
+    for tok in tokenize(text):
+        h = 0
+        for ch in tok:                               <span class="c"># hash ثابت للـ token</span>
+            h = (h * 1315423911) ^ ord(ch)
+            h &= 0xFFFFFFFF
+        vec[h % dim] += 1.0
+        vec[(h >> 7) % dim] += 0.5
+        <span class="c"># add bigram-style mixing to spread synonyms differently from BM25.</span>
+        for i in range(len(tok) - 1):
+            bg = (ord(tok[i]) * 31 + ord(tok[i + 1])) & 0xFFFFFFFF
+            vec[bg % dim] += 0.25
+    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+    return [v / norm for v in vec]                   <span class="c"># unit length</span>
+
+def cosine(a: list[float], b: list[float]) -> float:   <span class="c"># متجهات normalized → dot = cosine</span>
+    return sum(x * y for x, y in zip(a, b))
+
+@dataclass
+class DenseIndex:
+    vectors: list[tuple[Doc, list[float]]] = field(default_factory=list)
+
+    def add(self, doc: Doc) -> None:
+        text = f"{doc.title}\n{doc.body}"
+        self.vectors.append((doc, mock_embed(text)))
+
+    def search(self, query: str, k: int = 10) -> list[tuple[Doc, float]]:
+        qv = mock_embed(query)
+        scored = [(d, cosine(qv, v)) for d, v in self.vectors]
+        scored.sort(key=lambda x: -x[1])
+        return scored[:k]</pre></div>
+
+  <h3>خطوة ٤: الـ RRF</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def rrf(
+    rankings: list[list[tuple[Doc, float]]],
+    k: int = 60,
+    weights: list[float] | None = None,
+) -> list[tuple[Doc, float]]:
+    if weights is None:
+        weights = [1.0] * len(rankings)
+    if len(weights) != len(rankings):
+        raise ValueError("weights length must match rankings length")
+    score: dict[str, float] = defaultdict(float)
+    by_id: dict[str, Doc] = {}
+    for w, ranks in zip(weights, rankings):
+        for rank, (doc, _) in enumerate(ranks):      <span class="c"># الـ score نفسه متجاهل!</span>
+            score[doc.doc_id] += w * (1.0 / (k + rank + 1))   <span class="c"># rank بيبدأ من 1</span>
+            by_id[doc.doc_id] = doc
+    fused = sorted(score.items(), key=lambda x: -x[1])
+    return [(by_id[did], s) for did, s in fused]</pre></div>
+
+  <h3>خطوة ٥: HybridRetriever</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class HybridRetriever:
+    bm25: BM25Index = field(default_factory=BM25Index)
+    dense: DenseIndex = field(default_factory=DenseIndex)
+    rrf_k: int = 60
+    bm25_weight: float = 1.0
+    dense_weight: float = 1.0
+
+    def add(self, doc: Doc) -> None:                 <span class="c"># نفس الـ doc في الاتنين</span>
+        self.bm25.add(doc)
+        self.dense.add(doc)
+
+    def search(self, query: str, k_each: int = 10, k_out: int = 5) -> dict[str, list]:
+        bm25_hits = self.bm25.search(query, k=k_each)
+        dense_hits = self.dense.search(query, k=k_each)
+        fused = rrf(
+            [bm25_hits, dense_hits],
+            k=self.rrf_k,
+            weights=[self.bm25_weight, self.dense_weight],
+        )
+        return {"bm25": bm25_hits, "dense": dense_hits, "fused": fused[:k_out]}</pre></div>
+
+  <h3>خطوة ٦: الـ corpus والـ demo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>CORPUS = [
+    Doc("d1", "AbortMultipartOnFail",
+        "Aborts an in-flight S3 multipart upload and decrements the per-bucket retry budget when "
+        "the upload fails. Wired into the central retry budget configuration."),
+    Doc("d2", "Uploading large files",
+        "When you upload a large file the storage service splits it into parts. The client must "
+        "track each part. If the network drops the partial upload can be resumed or cancelled "
+        "depending on the resume window. Cancelled uploads do not block subsequent attempts."),
+    Doc("d3", "Per-bucket budgets",
+        "Each storage bucket carries a retry budget that limits how often a failed operation can "
+        "be retried within a window. Budget exhaustion triggers a cooldown period."),
+    Doc("d4", "check_permission",
+        "Authorization is centralized in the check_permission function which evaluates a policy "
+        "against the principal, the resource, and the action. Both human users and service "
+        "accounts pass through the same function."),
+    Doc("d5", "Policy engine",
+        "The policy engine wraps an Open Policy Agent runtime and exposes evaluate. Cached for "
+        "a configured TTL to amortize repeated lookups."),
+    Doc("d6", "Search ranking",
+        "Production search engines combine lexical and semantic retrieval through a rank fusion "
+        "step. The fusion is rank-based, not score-based, so the two modalities can be combined "
+        "without per-corpus calibration."),
+    Doc("d7", "Index sizing",
+        "The vector index sits in memory. Plan for 1 KB per vector at 256 dimensions in float32 "
+        "and add a small overhead for the graph structure."),
+]
+
+def print_ranking(label, hits, top=5):
+    print(f"  {label}:")
+    for i, (doc, score) in enumerate(list(hits)[:top]):
+        print(f"    {i + 1}. {doc.doc_id} ({doc.title})  score={score:.4f}")
+
+def main() -> None:
+    retriever = HybridRetriever()
+    for d in CORPUS:
+        retriever.add(d)
+    queries = [
+        ("AbortMultipartOnFail", "literal symbol"),
+        ("how do we handle cancelled uploads", "paraphrased"),
+        ("centralized authorization for service accounts", "mixed"),
+    ]
+    for q, note in queries:
+        print(f"\nquery: {q}\nnote:  {note}")
+        result = retriever.search(q, k_each=5, k_out=5)
+        print_ranking("bm25 ", result["bm25"])
+        print_ranking("dense", result["dense"])
+        print_ranking("fused", result["fused"])
+
+if __name__ == "__main__":
+    main()</pre></div>
+  <p>ملاحظة: الـ notes بتاعة الأسئلة في الملف الأصلي أطول (بتشرح كل سؤال المفروض يكسب فيه مين)، اختصرتها هنا عشان تكتب أسرع.</p>
+  <details><summary>شكل الناتج المتوقع</summary><pre class="term">query: AbortMultipartOnFail
+note:  literal symbol
+  bm25 :
+    1. d1 (AbortMultipartOnFail)  score=…
+  dense:
+    1. …
+  fused:
+    1. d1 (AbortMultipartOnFail)  score=0.0…
+…</pre><p>الأرقام بالظبط هتطلع عندك. الـ RRF scores هتبقى حوالين <span class="ltr">1/61 + 1/62 ≈ 0.0325</span> للي جه في الأوائل في القايمتين. والـ tests لازم تعدي كلها (<code>OK</code> في الآخر)، ومنها إن الـ literal query بيكسب في الـ fused، وإن الـ dense بيلاقي d2 في أول 3 للسؤال المُعاد صياغته.</p></details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d493-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Embedding حقيقي:</b> بدّل <code>mock_embed</code> بموديل حقيقي من الـ provider بتاعك. شغّل الـ demo تاني وشوف الـ dense-only ranking اتغير إزاي على السؤال المُعاد صياغته.
+      <details><summary>تلميح</summary>خلي <code>DenseIndex.add</code> و<code>search</code> ينادوا دالة <code>embed(text)</code> واحدة؛ اعمل embed للـ corpus مرة واحدة وخزنه. اتأكد إنك بتعمل normalize (أو استخدم cosine حقيقي) لأن <code>cosine()</code> هنا مجرد dot product. المتوقع إن d2 (Uploading large files) أو d1 يطلعوا فوق على «cancelled uploads» لأن الموديل الحقيقي فاهم إن cancelled قريبة من abort.</details></li>
+    <li><b>Modality تالتة:</b> ضيف summaries للـ chunks في index منفصل وادمجها كقايمة تالتة في الـ RRF. قيس المكسب.
+      <details><summary>تلميح</summary><code>rrf</code> أصلًا بياخد list of rankings وweights بأي طول، فمجرد تضيف <code>summary_hits</code> و<code>weight</code> تالت. اكتب summary سطر واحد لكل doc، واعملها DenseIndex تاني. قيس بـ recall@k على أسئلة صغيرة انت كاتبها (أو استنى درس ٦٨).</details></li>
+    <li><b>Sweep على RRF k:</b> جرّب <span class="ltr">10, 30, 60, 100, 200</span> وارسم recall@k من درس ٦٨. فين القمة على الـ corpus بتاعك؟
+      <details><summary>تلميح</summary>loop على k، واعمل <code>HybridRetriever(rrf_k=k)</code> جديد لكل قيمة. على corpus صغير زي ده غالبًا الفرق هيبقى صغير لأن k بيأثر لما القايمتين يختلفوا في الترتيب جامد؛ عشان كده محتاج أسئلة adversarial (literal وparaphrased) في الـ eval.</details></li>
+    <li><b>BM25F بجد:</b> اعمل BM25F صح (length normalization لكل field لوحده بدل خدعة التكرار) وقارن على corpus الـ symbol matches فيه هي الأهم.
+      <details><summary>تلميح</summary>خزّن <code>tf</code> و<code>dl</code> و<code>avgdl</code> لكل field. احسب tf مُطبَّع لكل field: <span class="ltr">tf_f / (1 − b_f + b_f·dl_f/avgdl_f)</span>، اجمعهم بالأوزان في <span class="ltr">tf̃</span> واحد، وبعدين طبّق الـ saturation مرة واحدة: <span class="ltr">IDF · tf̃ / (k1 + tf̃)</span>. الفرق عن خدعة التكرار إن title طويل مش هيتعاقب بنفس طول الـ body.</details></li>
+    <li><b>إضافة مني · De-dup + attribution زي الـ production:</b> في الشغل الحقيقي الـ index فيه <b>chunks</b> مش documents، وكذا chunk من نفس الـ doc ممكن يظهروا. عدّل الـ <code>rrf</code> عشان (أ) يعمل de-duplicate بالـ <code>doc_id</code> قبل الدمج (أحسن chunk بس لكل doc في كل قايمة)، و(ب) يرجّع مع كل نتيجة <code>sources</code>: مين صوّت له وبأي rank، عشان الـ reranker في درس ٦٦ يستخدمها.
+      <details><summary>الإجابة</summary>لكل قايمة: <code>seen=set()</code>، ولما تلف على الـ hits خد الـ hit بس لو <code>doc_id</code> مش في <code>seen</code>، واحسب الـ rank على القايمة المنضفة (عشان duplicates متزقش ranks التانيين لتحت). خزّن <code>votes[doc_id].append((modality_name, rank))</code> جنب الـ score، ورجّع <code>(doc, score, votes)</code>. ده بالظبط اللي الدرس قاله في الـ failure modes («de-duplicate by document, not by chunk») وفي الـ production patterns («persist the modality of each retrieved hit»).</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d493-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: الحدس، الأخطاء، وفين ده في الـ LLMs والـ agents</h2></div>
+  <ul class="checklist">
+    <li><b>الحدس في جملة:</b> الـ BM25 بيقيس «الكلمة النادرة دي موجودة هنا كام مرة، بالنسبة لطول الكلام؟»، والـ dense بيقيس «المعنى ده قريب من المعنى ده؟»، والـ RRF بيقول «اللي الاتنين حطوه فوق، يبقى فوق».</li>
+    <li><b>غلطة ١: تجمع scores بدل ranks.</b> هتشتغل كويس على الـ corpus بتاعك النهاردة، وتبوظ بعد أول reindex أو تغيير embedding model من غير ما حد ياخد باله. لو مضطر للـ score fusion، اعمل eval بعد كل reindex.</li>
+    <li><b>غلطة ٢: tokenizer مش مناسب للكود.</b> زي ما شفت في المعمل، <code>AbortMultipartOnFail</code> بقى token واحد. في code search كتير بيقسموا الـ camelCase والـ snake_case لأجزاء وكمان يحتفظوا بالاسم الكامل، عشان «abort multipart» و«AbortMultipartOnFail» الاتنين يطابقوا. (ده مش في كود الدرس، فكّر فيه كتحسين.)</li>
+    <li><b>غلطة ٣: <span class="ltr">rank + 1</span>.</b> الـ <code>enumerate</code> بيبدأ من 0، والصيغة المنشورة rank بيبدأ من 1. لو نسيت الـ +1 مساهمة الأول هتبقى <span class="ltr">1/60</span> بدل <span class="ltr">1/61</span>؛ فرق صغير، بس الـ tests والمقارنة مع أي مكتبة هتختلف.</li>
+    <li><b>غلطة ٤: تحط weight = 0 لطريقة وتفتكرها اتشالت.</b> هي فعلًا مش بتساهم، بس لسه بتتنفذ وبتاخد latency. لو عايز تقفلها، متشغلهاش أصلًا.</li>
+    <li><b>فين في الـ LLM systems:</b> أي RAG chatbot على docs شركة فيها أكواد منتجات أو أسماء APIs أو أرقام error محتاج الجزء الحرفي؛ الـ embeddings لوحدها بتتلخبط في الأرقام والأسماء الغريبة. والـ agents اللي بتدوّر في codebase بتستخدم بحث حرفي (زي grep) وبحث بالمعنى، وده نفس الفكرة: كل أداة بتكسب في نوع أسئلة.</li>
+    <li><b>بعد كده:</b> الـ hybrid بيحسّن الـ <b>recall</b> (الحاجة الصح تبقى جوه الـ top-k). الترتيب الدقيق جوه الـ top-k ده شغل الـ reranker بكرة.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d493-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d493-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d493-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d493-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه BM25 بيكسب في الـ literal والـ dense في الـ paraphrased</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم k1 (saturation) وb (length) وجربتهم في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="3"> أقدر أكتب صيغة الـ RRF وأقول ليه k = 60</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم ليه الـ rank fusion أحسن من الـ score interpolation</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الـ HybridRetriever بإيدي وعدّت الـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>BM25</td><td>محركات البحث الحرفي، أول مرحلة في RAG على docs فيها أسماء وأكواد</td></tr>
+    <tr><td>Field weighting</td><td>تقوية الـ title / اسم الـ symbol في code search</td></tr>
+    <tr><td>Dense retrieval</td><td>الـ vector stores، البحث بالمعنى في أي RAG</td></tr>
+    <tr><td>RRF</td><td>الـ hybrid search في Vespa وWeaviate وغيرهم، ودمج أي قوايم مترتبة</td></tr>
+    <tr><td>Per-modality weights</td><td>تقوية طريقة على corpus بعينه بناءً على eval</td></tr>
+    <tr><td>De-dup + modality attribution</td><td>المدخل للـ reranker (درس ٦٦) والـ eval (درس ٦٨)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Cross-Encoder Reranker. هناخد الـ fused top-k ده ونرتبه من جديد بموديل بيقرا السؤال والـ chunk مع بعض.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F65-hybrid-retrieval-bm25-dense" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/65-hybrid-retrieval-bm25-dense</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=493,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d493-roadmap').closest('.day');
+
+// roadmap: phase 19 lesson numbers
+const rm=$('d493-roadmap');const LES=[];for(let i=1;i<=17;i++)LES.push(i);for(let i=20;i<=87;i++)LES.push(i);
+LES.forEach(i=>{const s=document.createElement('span');s.textContent=i;if(i===65)s.className='now';rm.appendChild(s)});
+setTimeout(()=>{const now=rm.querySelector('.now');if(now)rm.scrollLeft=now.offsetLeft-rm.clientWidth/2},0);
+
+// ---------- Lab 1: tf saturation + idf ----------
+const tc=$('d493-tfCv'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+const ic=$('d493-idfCv'),ix=AI.setupCanvas(ic),IW=+ic.dataset.w,IH=+ic.dataset.h;
+const tfPart=(fr,k1,b,r)=>fr===0?0:fr*(k1+1)/(fr+k1*(1-b+b*r));
+const idfF=(n,df)=>Math.log((n-df+0.5)/(df+0.5)+1);
+function lab1(){
+  const k1=+$('d493-k1').value,b=+$('d493-b').value,r=+$('d493-dl').value,df=+$('d493-df').value;
+  $('d493-vk1').textContent=f(k1,1);$('d493-vb').textContent=f(b);$('d493-vdl').textContent=f(r);$('d493-vdf').textContent=df;
+  tx.clearRect(0,0,TW,TH);
+  const L=40,R=TW-14,T=14,B=TH-30,FM=10,YM=5;
+  const X=v=>L+(v/FM)*(R-L),Y=v=>B-(v/YM)*(B-T);
+  tx.strokeStyle=css('--line');tx.lineWidth=1;for(let v=0;v<=YM;v++){tx.beginPath();tx.moveTo(L,Y(v));tx.lineTo(R,Y(v));tx.stroke()}
+  tx.fillStyle=css('--muted');tx.font='11px JetBrains Mono, monospace';tx.textAlign='right';for(let v=0;v<=YM;v++)tx.fillText(v,L-6,Y(v)+4);
+  tx.textAlign='center';for(let v=0;v<=FM;v+=2)tx.fillText(v,X(v),B+14);tx.fillText('f (term count in doc)',(L+R)/2,TH-4);
+  // linear
+  tx.strokeStyle=css('--muted');tx.setLineDash([5,5]);tx.lineWidth=1.5;tx.beginPath();tx.moveTo(X(0),Y(0));tx.lineTo(X(YM),Y(YM));tx.stroke();
+  // ceiling
+  tx.strokeStyle=css('--vec-b');tx.beginPath();tx.moveTo(L,Y(k1+1));tx.lineTo(R,Y(k1+1));tx.stroke();tx.setLineDash([]);
+  tx.fillStyle=css('--vec-b');tx.textAlign='left';if(k1+1<=YM)tx.fillText('ceiling k1+1 = '+f(k1+1,1),L+6,Y(k1+1)-5);
+  // avg length reference
+  tx.strokeStyle=css('--grid');tx.lineWidth=2;tx.beginPath();for(let i=0;i<=200;i++){const v=i/20,y=tfPart(v,k1,b,1);i?tx.lineTo(X(v),Y(y)):tx.moveTo(X(v),Y(y))}tx.stroke();
+  tx.strokeStyle=css('--vec-a');tx.lineWidth=3;tx.beginPath();for(let i=0;i<=200;i++){const v=i/20,y=tfPart(v,k1,b,r);i?tx.lineTo(X(v),Y(y)):tx.moveTo(X(v),Y(y))}tx.stroke();
+  for(let v=1;v<=FM;v++){tx.fillStyle=css('--vec-a');tx.beginPath();tx.arc(X(v),Y(tfPart(v,k1,b,r)),3,0,7);tx.fill()}
+  tx.fillStyle=css('--ink');tx.textAlign='left';tx.fillText('dl/avgdl='+f(r)+'  (grey = avg length)',L+6,T+10);
+  $('d493-t1').textContent=f(tfPart(1,k1,b,r),3);$('d493-t5').textContent=f(tfPart(5,k1,b,r),3);
+  // idf
+  ix.clearRect(0,0,IW,IH);const n=100,iL=40,iR=IW-14,iT=10,iB=IH-26,ymax=idfF(n,1)*1.05;
+  const iX=v=>iL+((v-1)/(n-1))*(iR-iL),iY=v=>iB-(v/ymax)*(iB-iT);
+  ix.strokeStyle=css('--line');ix.beginPath();ix.moveTo(iL,iB);ix.lineTo(iR,iB);ix.moveTo(iL,iT);ix.lineTo(iL,iB);ix.stroke();
+  ix.strokeStyle=css('--muted');ix.setLineDash([3,4]);ix.beginPath();ix.moveTo(iX(50),iT);ix.lineTo(iX(50),iB);ix.stroke();ix.setLineDash([]);
+  ix.strokeStyle=css('--ok');ix.lineWidth=2.5;ix.beginPath();for(let d=1;d<=n;d++){d>1?ix.lineTo(iX(d),iY(idfF(n,d))):ix.moveTo(iX(d),iY(idfF(n,d)))}ix.stroke();
+  ix.fillStyle=css('--bad');ix.beginPath();ix.arc(iX(df),iY(idfF(n,df)),5,0,7);ix.fill();
+  ix.fillStyle=css('--muted');ix.font='11px JetBrains Mono, monospace';ix.textAlign='center';ix.fillText('df (docs containing term, N=100)',(iL+iR)/2,IH-6);ix.fillText('N/2',iX(50),iT+10);
+  ix.textAlign='right';ix.fillText(f(ymax/1.05,1),iL-4,iY(ymax/1.05)+4);ix.fillText('0',iL-4,iB+4);
+  $('d493-idf').textContent=f(idfF(n,df),3);
+}
+['d493-k1','d493-b','d493-dl','d493-df'].forEach(id=>$(id).addEventListener('input',lab1));lab1();
+
+// ---------- Lab 2: RRF curve + interpolation trap ----------
+const rc=$('d493-rrfCv'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+function lab2(){
+  const k=+$('d493-rk').value;$('d493-vrk').textContent=k;
+  rx.clearRect(0,0,RW,RH);const L=40,R=RW-14,T=14,B=RH-28,M=20,bw=(R-L)/M;
+  rx.strokeStyle=css('--line');rx.lineWidth=1;[0,.25,.5,.75,1].forEach(v=>{const y=B-v*(B-T);rx.beginPath();rx.moveTo(L,y);rx.lineTo(R,y);rx.stroke()});
+  rx.fillStyle=css('--muted');rx.font='11px JetBrains Mono, monospace';rx.textAlign='right';[0,.5,1].forEach(v=>rx.fillText(v*100+'%',L-4,B-v*(B-T)+4));
+  // k=60 reference outline
+  for(let r=1;r<=M;r++){const v=(61)/(60+r);rx.strokeStyle=css('--muted');rx.setLineDash([3,3]);rx.strokeRect(L+(r-1)*bw+3,B-v*(B-T),bw-6,v*(B-T));rx.setLineDash([])}
+  for(let r=1;r<=M;r++){const v=(k+1)/(k+r);rx.fillStyle=css('--vec-a');rx.globalAlpha=.8;rx.fillRect(L+(r-1)*bw+3,B-v*(B-T),bw-6,v*(B-T));rx.globalAlpha=1}
+  rx.fillStyle=css('--muted');rx.textAlign='center';[1,5,10,15,20].forEach(r=>rx.fillText(r,L+(r-.5)*bw,B+13));rx.fillText('rank (dashed = k 60)',(L+R)/2,RH-3);
+  $('d493-r1').textContent=f(1/(k+1),5);$('d493-r10').textContent=f(1/(k+10),5);$('d493-rr').textContent=f((k+1)/(k+10)*100,1)+'%';
+  // interpolation
+  const sc=+$('d493-sc').value,al=+$('d493-al').value;$('d493-vsc').textContent=f(sc,1);$('d493-val').textContent=f(al);
+  const D=[['A',8,0.30],['B',6,0.75],['C',2,0.80]];
+  const lin=D.map(d=>[d[0],al*d[1]*sc+(1-al)*d[2]]).sort((a,b)=>b[1]-a[1]);
+  const bmR=D.slice().sort((a,b)=>b[1]-a[1]).map(d=>d[0]),dnR=D.slice().sort((a,b)=>b[2]-a[2]).map(d=>d[0]);
+  const rr=D.map(d=>[d[0],1/(k+bmR.indexOf(d[0])+1)+1/(k+dnR.indexOf(d[0])+1)]).sort((a,b)=>b[1]-a[1]);
+  const row=(lab,arr,col)=>`<div><b style="color:${col}">${lab}</b> ${arr.map(x=>x[0]+'('+f(x[1],4)+')').join(' > ')}</div>`;
+  $('d493-interp').innerHTML=`<div class="mono" style="font-size:13px;color:var(--muted)">A: bm25 ${f(8*sc,2)}, cos 0.30 · B: bm25 ${f(6*sc,2)}, cos 0.75 · C: bm25 ${f(2*sc,2)}, cos 0.80</div>`+
+    row('linear  ',lin,css('--bad'))+row('RRF     ',rr,css('--ok'))+
+    `<div style="direction:rtl;font-size:15px">الـ linear top-1 دلوقتي <b>${lin[0][0]}</b>. حرّك الـ scale وشوف بيتغير؛ الـ RRF مش بيتأثر بالـ scale خالص.</div>`;
+}
+['d493-rk','d493-sc','d493-al'].forEach(id=>$(id).addEventListener('input',lab2));lab2();
+
+// ---------- Lab 3: hybrid retriever port ----------
+const CORPUS=[
+ ['d1','AbortMultipartOnFail','Aborts an in-flight S3 multipart upload and decrements the per-bucket retry budget when the upload fails. Wired into the central retry budget configuration.'],
+ ['d2','Uploading large files','When you upload a large file the storage service splits it into parts. The client must track each part. If the network drops the partial upload can be resumed or cancelled depending on the resume window. Cancelled uploads do not block subsequent attempts.'],
+ ['d3','Per-bucket budgets','Each storage bucket carries a retry budget that limits how often a failed operation can be retried within a window. Budget exhaustion triggers a cooldown period.'],
+ ['d4','check_permission','Authorization is centralized in the check_permission function which evaluates a policy against the principal, the resource, and the action. Both human users and service accounts pass through the same function.'],
+ ['d5','Policy engine','The policy engine wraps an Open Policy Agent runtime and exposes evaluate. Cached for a configured TTL to amortize repeated lookups.'],
+ ['d6','Search ranking','Production search engines combine lexical and semantic retrieval through a rank fusion step. The fusion is rank-based, not score-based, so the two modalities can be combined without per-corpus calibration.'],
+ ['d7','Index sizing','The vector index sits in memory. Plan for 1 KB per vector at 256 dimensions in float32 and add a small overhead for the graph structure.']
+].map(d=>({id:d[0],title:d[1],body:d[2]}));
+const tok=t=>t.toLowerCase().match(/[a-z0-9]+/g)||[];
+function embed(text,dim){dim=dim||96;const v=new Array(dim).fill(0);
+  for(const t of tok(text)){let h=0;for(const ch of t){h=(Math.imul(h,1315423911)^ch.charCodeAt(0))>>>0}
+    v[h%dim]+=1;v[(h>>>7)%dim]+=0.5;
+    for(let i=0;i<t.length-1;i++){const bg=(t.charCodeAt(i)*31+t.charCodeAt(i+1))>>>0;v[bg%dim]+=0.25}}
+  const n=Math.sqrt(v.reduce((s,x)=>s+x*x,0))||1;return v.map(x=>x/n)}
+const DV=CORPUS.map(d=>embed(d.title+'\n'+d.body));
+function bm25Search(q,k1,b,tw,k){
+  const tf=[],lens=[],df={};
+  CORPUS.forEach(d=>{const toks=[];for(let i=0;i<tw;i++)toks.push(...tok(d.title));toks.push(...tok(d.body));
+    const c={};toks.forEach(t=>c[t]=(c[t]||0)+1);tf.push(c);lens.push(toks.length);Object.keys(c).forEach(t=>df[t]=(df[t]||0)+1)});
+  const n=CORPUS.length,avg=lens.reduce((a,x)=>a+x,0)/n,sc=new Array(n).fill(0);
+  tok(q).forEach(t=>{const d=df[t]||0;if(!d)return;const idf=Math.log((n-d+0.5)/(d+0.5)+1);
+    tf.forEach((c,i)=>{const fr=c[t]||0;if(!fr)return;sc[i]+=idf*fr*(k1+1)/(fr+k1*(1-b+b*lens[i]/(avg||1)))})});
+  return CORPUS.map((d,i)=>[d,sc[i]]).sort((a,b)=>b[1]-a[1]).slice(0,k).filter(x=>x[1]>0)}
+function denseSearch(q,k){const qv=embed(q);return CORPUS.map((d,i)=>[d,DV[i].reduce((s,x,j)=>s+x*qv[j],0)]).sort((a,b)=>b[1]-a[1]).slice(0,k)}
+function rrfF(lists,k,w){const sc=new Map(),parts=new Map();
+  lists.forEach((L,li)=>L.forEach((h,r)=>{const c=w[li]/(k+r+1);sc.set(h[0].id,(sc.get(h[0].id)||0)+c);const p=parts.get(h[0].id)||[0,0,h[0]];p[li]+=c;parts.set(h[0].id,p)}));
+  return Array.from(sc.entries()).sort((a,b)=>b[1]-a[1]).map(e=>[parts.get(e[0])[2],e[1],parts.get(e[0])])}
+const fc=$('d493-fuseCv'),fx=AI.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+let lastFused=[];
+function drawFuse(){
+  fx.clearRect(0,0,FW,FH);const L=150,R=FW-60,T=10,rowH=38;
+  const mx=Math.max(1e-9,...lastFused.map(x=>x[1]));
+  fx.font='12px JetBrains Mono, monospace';
+  lastFused.forEach((x,i)=>{const y=T+i*rowH,p=x[2],wA=(p[0]/mx)*(R-L),wB=(p[1]/mx)*(R-L);
+    fx.fillStyle=css('--ink');fx.textAlign='left';fx.fillText((i+1)+'. '+x[0].id+' '+x[0].title.slice(0,13),4,y+18);
+    fx.fillStyle=css('--vec-a');fx.fillRect(L,y+6,wA,18);fx.fillStyle=css('--vec-b');fx.fillRect(L+wA,y+6,wB,18);
+    fx.fillStyle=css('--muted');fx.fillText(f(x[1],4),L+wA+wB+6,y+19)});
+  if(!lastFused.length){fx.fillStyle=css('--muted');fx.textAlign='left';fx.fillText('no hits',10,30)}
+}
+function lab3(){
+  const k1=+$('d493-pk1').value,b=+$('d493-pb').value,tw=+$('d493-ptw').value,rk=+$('d493-prk').value,wb=+$('d493-pwb').value,wd=+$('d493-pwd').value;
+  $('d493-vpk1').textContent=f(k1,1);$('d493-vpb').textContent=f(b);$('d493-vptw').textContent=tw;$('d493-vprk').textContent=rk;$('d493-vpwb').textContent=f(wb,1);$('d493-vpwd').textContent=f(wd,1);
+  const q=$('d493-qin').value;
+  const bm=bm25Search(q,k1,b,tw,5),dn=denseSearch(q,5),fu=rrfF([bm,dn],rk,[wb,wd]).slice(0,5);lastFused=fu;
+  const cell=(L,i)=>L[i]?`${L[i][0].id} <span style="color:var(--muted)">${L[i][0].title}</span> <b>${f(L[i][1],4)}</b>`:'—';
+  let h='<table><tr><th>#</th><th>BM25</th><th>Dense</th><th>Fused (RRF)</th></tr>';
+  for(let i=0;i<5;i++)h+=`<tr><td>${i+1}</td><td>${cell(bm,i)}</td><td>${cell(dn,i)}</td><td>${cell(fu,i)}</td></tr>`;
+  $('d493-lists').innerHTML=h+'</table>';drawFuse();
+}
+['d493-pk1','d493-pb','d493-ptw','d493-prk','d493-pwb','d493-pwd','d493-qin'].forEach(id=>$(id).addEventListener('input',lab3));
+root.querySelectorAll('[data-d493q]').forEach(btn=>btn.addEventListener('click',()=>{root.querySelectorAll('[data-d493q]').forEach(x=>x.classList.toggle('primary',x===btn));$('d493-qin').value=btn.dataset.d493q;lab3()}));
+lab3();
+
+// ---------- quiz ----------
+AI.quiz($('d493-quizBox'),[
+ ['ليه الـ RAG endpoint في الـ production محتاج lexical وsemantic retrieval في نفس الوقت؟',['البحث الحرفي مطلوب قانونيًا عشان الـ compliance','الـ semantic retrieval دايمًا أدق','عشان بيقسم حجم الـ index على اتنين','توزيع الأسئلة فيه أسماء حرفية وفيه أسئلة متصاغة بكلام تاني، وكل طريقة بتقع في نوع'],3,'BM25 بيسيطر على الـ symbols الحرفية والـ dense على الـ paraphrases، ونفس المستخدمين بيبعتوا النوعين.'],
+ ['الـ parameter b في BM25 عند الـ default 0.75 يبقى إيه؟',['عدد الـ fields في الـ document','أُس بيتطبق على الـ cosine وقت السؤال','مضروب في الـ IDF','knob للـ length normalization: الـ documents الأطول بتتعاقب بس مش بشكل خطي'],3,'b بيعمل interpolation بين مفيش normalization (0) وnormalization كامل (1)؛ 0.75 هي التوصية المنشورة.'],
+ ['الـ Reciprocal Rank Fusion بيحسب إيه لكل مرشح؟',['متوسط BM25 والـ dense scores بعد min-max normalization','مجموع 1 / (k + rank) على كل قايمة فيها المرشح','حاصل ضرب الـ cosine similarities','الـ median rank بين الطرق'],1,'RRF بيجمع مساهمات 1 / (k + rank) لكل قايمة؛ k = 60 هو الـ default المنشور.'],
+ ['ليه الـ rank-based fusion مفضل على interpolation خطي بين BM25 والـ cosine scores؟',['الـ cosine scores مالهاش سقف','الـ BM25 scores مالهاش سقف ومعتمدة على الـ corpus، والـ cosine محصور بين -1 و1؛ السلالم مش قابلة للمقارنة بين الـ corpora','الـ BM25 scores مينفعش تترتب','الـ interpolation محتاج GPU'],1,'الـ score interpolation بيبوظ مع كل reindex لأن توزيع الـ scores بيتحرك؛ الـ ranks قابلة للمقارنة بين الطرق من الأساس.'],
+ ['إيه اللي بيحصل للـ RRF لما تصغّر الثابت k جدًا؟',['الدمج بيبقى زي جمع scores خطي','مساهمة المركز الأول بتسيطر، والمراكز اللي تحت مساهمتها شبه صفر','الكلمات اللي برا الـ corpus بتاخد score موجب','الدمج بيتجاهل الطريقة التانية'],1,'k صغير بيركّز المساهمة في المركز الأول؛ k كبير بيفرد المنحنى ويخلي المرشحين اللي تحت يصوّتوا.'],
+ ['الـ field weighting عن طريق تكرار الـ tokens بيتجنب أنهي مشكلة بالظبط؟',['خطوة تجميع scores تانية وقت السؤال؛ الرياضة بتفضل زي ما هي ومش محتاج logic لدمج score لكل field','الـ embeddings اللي برا الـ vocabulary','إن الـ IDF يقع لصفر','إن الـ cosine يبقى سالب'],0,'تكرار الـ tokens وقت الـ indexing بيضرب الـ term frequency، فالـ BM25 بيفضل summation واحد بدل combinator منفصل لكل field.'],
+ ['(سؤال مني) الـ tokenizer بتاع الدرس هيعمل إيه في "AbortMultipartOnFail"؟',['["abort","multipart","on","fail"]','["abortmultipartonfail"]','["AbortMultipartOnFail"]','["abort_multipart_on_fail"]'],1,'بيعمل lowercase وبياخد [a-z0-9]+، ومفيش فواصل جوه الاسم، فبيطلع token واحد. عشان كده «abort multipart» مش بتطابق الـ title.'],
+ ['(سؤال مني) doc ظهر rank 1 في BM25 وrank 3 في dense، والأوزان 1 وk = 60. الـ RRF score بتاعه كام؟',['1/61 + 1/63','1/60 + 1/62','1/1 + 1/3','(1 + 3) / 60'],0,'الـ rank بيبدأ من 1: 1/(60+1) + 1/(60+3) ≈ 0.0164 + 0.0159 = 0.0323.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(tc))return false;lab1();lab2();lab3()});
+})();
+</script>

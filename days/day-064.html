@@ -1,0 +1,383 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 08 · Instance Segmentation — Mask R-CNN</span>
+  <h1>اليوم ٦٤: Mask R-CNN = Detector + قناع صغير لكل شيء</h1>
+  <p class="lede">امبارح الـ U-Net دمجت العربيتين اللي لازقين في بعض في بقعة واحدة. النهاردة هنفصلهم: قناع لكل شيء حتى لو من نفس الـ class. الفكرة بسيطة: خد <b>Faster R-CNN</b> (الـ detector) وزوّد عليه فرع صغير بيرسم القناع. والجزء الصعب الحقيقي هو الـ <b>RoIAlign</b>، وهتكتبه بإيدك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (PyTorch + torchvision)</span>
+    <span>قبله: <b>Semantic Segmentation (U-Net)</b></span>
+    <span>بعده: <b>Image Generation — GANs</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 lessons</span>
+    <div class="roadmap" id="d64-roadmap" aria-label="دروس الفيز الرابعة"></div>
+  </div>
+</header>
+
+<section id="d64-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ U-Net؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>ليه الـ U-Net محتاجة skip connections؟
+      <details><summary>الإجابة</summary>لأن الـ encoder بيضغط التفاصيل المكانية عشان ياخد سياق، والـ decoder من غير خرايط الـ encoder عالية الدقة مش هيعرف يرسم حدود حادة. الـ skips بتديهاله.</details></li>
+    <li>ليه الـ Dice loss بتتستخدم مع الـ cross-entropy؟
+      <details><summary>الإجابة</summary>الـ CE بيدي gradients مستقرة بس بيعامل كل البكسلات سواسية فبيطغى عليه الـ background. الـ Dice بتحسّن التداخل مباشرة ومش متأثرة بعدم توازن الـ classes.</details></li>
+    <li>الفرق بين semantic وinstance؟
+      <details><summary>الإجابة</summary>الـ semantic: class لكل بكسل ومفيش تمييز بين شيئين من نفس الـ class (بيتدمجوا). الـ instance: قناع منفصل لكل شيء.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة والربع</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>المفاهيم: الـ pipeline، FPN، RPN، RoIAlign، mask head، losses</div>
+    <div><b>20 min</b>المعامل التفاعلية</div>
+    <div><b>25 min</b>اكتب RoIAlign وجرّب الـ pretrained model</div>
+    <div><b>5 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 -->
+<section id="d64-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: قناع لكل شيء</h2></div>
+  <p>الـ semantic segmentation بيدّيك قناع لكل <b>class</b>. الـ instance segmentation بيدّيك قناع لكل <b>شيء</b>، حتى لو اتنين من نفس الـ class. وده اللي محتاجه لما تعد أفراد، أو تتابع شيء عبر فريمات الفيديو، أو تقيس حاجات (مربع كل طوبة في حيطة، كل خلية في صورة ميكروسكوب).</p>
+  <p><b>Mask R-CNN</b> (He وآخرين، 2017) حلّتها بإعادة صياغة المشكلة: <b>detection + قناع</b>. التصميم كان نضيف لدرجة إن تقريبًا كل ورقة instance segmentation لخمس سنين بعدها كانت نسخة من Mask R-CNN، وتطبيق torchvision لسه الافتراضي الإنتاجي للداتا الصغيرة والمتوسطة.</p>
+  <p>المشكلة الهندسية الصعبة هي الـ <b>sampling</b>: إزاي تقص منطقة feature بحجم ثابت من مربع اقتراح (proposal) أركانه مش على حدود البكسلات بالظبط؟ لو عملتها غلط بتخسر عُشور نقطة mAP في كل حتة. الـ RoIAlign هو الحل.</p>
+</section>
+
+<!-- 02 -->
+<section id="d64-arch">
+  <div class="station-head"><span class="tag">02</span><h2>المعمارية: خمس قطع</h2></div>
+  <div class="formula">Input → ResNet backbone → FPN → RPN (top-K proposals) → RoIAlign → Box head + Mask head → NMS → boxes + classes + masks</div>
+  <ol class="ex">
+    <li><b>Backbone:</b> ResNet-50 أو 101 مدرّب على ImageNet. بيطلّع هرم خرايط features عند strides ٤ و٨ و١٦ و٣٢.</li>
+    <li><b>FPN (Feature Pyramid Network):</b> وصلات top-down وlateral بتدي كل مستوى C channel من features غنية بالمعنى. الـ detection بيسأل المستوى اللي يناسب حجم الشيء.</li>
+    <li><b>RPN (Region Proposal Network):</b> conv head صغيرة، عند كل موضع anchor بتتنبأ «فيه شيء هنا؟» و«إزاي أظبط المربع؟». بتطلّع حوالي ١٠٠٠ proposal للصورة.</li>
+    <li><b>RoIAlign:</b> بيجيب patch ثابتة الحجم (مثلًا ٧×٧) من أي مربع على أي مستوى FPN. bilinear sampling من غير أي تقريب (quantisation).</li>
+    <li><b>Heads:</b> head من طبقتين للمربع (بيظبط المربع ويختار class) + head conv صغيرة بتطلّع قناع ثنائي <span class="ltr">28×28</span> لكل proposal.</li>
+  </ol>
+  <div class="note"><strong>تشبيه:</strong> فريق تحقيق: الـ <b>backbone+FPN</b> بيجهزوا خريطة المكان بكل المقاييس. الـ <b>RPN</b> هو المخبر اللي بيقول «شوف المناطق دي». الـ <b>RoIAlign</b> هو المصوّر اللي بيصوّر كل منطقة بدقة بنفس الحجم. وبعدين فيه محلل (box head) بيقول إيه ده، ورسّام (mask head) بيرسم الشكل جوه الصورة دي.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: امشي مع صورة جوه Mask R-CNN</h3>
+      <p>اضغط «اللي بعدها» وراقب أنهي قطعة بتشتغل وبتعمل إيه.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ RoIAlign بياخد مدخلين: الـ features من الـ FPN <b>والـ proposals من الـ RPN</b>. وبعدها بيطلع فرعين متوازيين: فرع المربع وفرع القناع.</div>
+    </div>
+    <div id="d64-lab1"></div>
+  </div>
+  <h3>ليه FPN بأربع مستويات (P2..P5) مش مستوى واحد؟</h3>
+  <p>الأشياء في الصور الطبيعية بتغطي مدى واسع من الأحجام. شيء صغير على feature map عند stride 32 بياخد خانة واحدة تقريبًا، وده معلومات مكانية قليلة جدًا. الـ FPN بتوجّه الأشياء الصغيرة للمستويات الضحلة عالية الدقة (P2) والكبيرة للمستويات العميقة قليلة الدقة (P5)، فكل proposal بياخد map ليه receptive field مناسب لحجمه.</p>
+</section>
+
+<!-- 03 -->
+<section id="d64-roialign">
+  <div class="station-head"><span class="tag">03</span><h2>RoIAlign ضد RoIPool: ليه التقريب بيقتل الدقة</h2></div>
+  <p>الـ <b>RoIPool</b> (من Fast R-CNN) بيقسّم مربع الـ proposal لـ grid ويأخد الـ max في كل خانة، <b>ويقرّب كل الإحداثيات لأعداد صحيحة</b>. التقريب ده بيزيح الـ feature map عن إحداثيات بكسلات الصورة بحد أقصى بكسل كامل من الـ feature map. ده بسيط على صورة 224×224، بس كارثة لما الـ feature map عند stride 32 (بكسل واحد = ٣٢ بكسل في الصورة).</p>
+  <pre class="ltr" style="direction:ltr">RoIPool:
+  box (34.7, 51.3, 98.2, 142.9)
+  round -> (34, 51, 98, 142)
+  split grid -> round each cell boundary
+  misalignment accumulates at every step
+
+RoIAlign:
+  box (34.7, 51.3, 98.2, 142.9)
+  sample at exact float coordinates using bilinear interpolation
+  no rounding anywhere</pre>
+  <p>الـ RoIAlign رفع mask AP بـ ٣ لـ ٤ نقاط على COCO <b>ببلاش</b>. وكل detector بيهتم بالـ localisation دلوقتي بيستخدمه (YOLOv7 seg, RT-DETR, Mask2Former كمان).</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: حجم الغلطة من التقريب</h3>
+      <p>الخط الأزرق هو الإزاحة (بالبكسل) اللي بيسببها التقريب لو الإحداثي بيتقص لتحت لأقرب خانة feature. جرّب strides مختلفة، وحرّك الـ <span class="ltr">x1</span>.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الغلطة بتوصل لحد الـ stride نفسه (٣٢ بكسل عند stride 32!). الـ RoIAlign خطه على الصفر لأنه بياخد الإحداثي زي ما هو. ودي مش مجرد نظرية: إزاحة ١٦ بكسل في قناع دقيق تقتل الـ IoU.</div>
+    </div>
+    <div id="d64-lab2"></div>
+  </div>
+  <h3>معمل ٣: الـ bilinear sampling (قلب الـ RoIAlign)</h3>
+  <p>لما الإحداثي يقع بين أربع خانات feature، بنخد <b>متوسط موزون</b> لأقرب أربعة جيران، والوزن بيعتمد على القرب. غيّر الموضع جوه الـ 2×2 وشوف الأوزان.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>القيم في الأركان: <span class="ltr">(0,0)=10, (1,0)=20, (0,1)=30, (1,1)=40</span>. حرّك <span class="ltr">fx, fy</span> (الإحداثي الكسري داخل الخانة).</p>
+      <div class="note ai"><strong>لاحظ:</strong> عند <span class="ltr">fx=fy=0</span> القيمة = ١٠ (الركن نفسه). عند <span class="ltr">0.5, 0.5</span> = متوسط الأربعة = ٢٥. الأوزان دايمًا مجموعها ١، والانتقال بيبقى سلس، وده اللي بيخلّي الـ gradient يعدي (مفيش «قفزات» تقريب).</div>
+    </div>
+    <div id="d64-lab3"></div>
+  </div>
+</section>
+
+<!-- 04 -->
+<section id="d64-heads">
+  <div class="station-head"><span class="tag">04</span><h2>الـ RPN، الـ mask head، والـ losses</h2></div>
+  <h3>الـ RPN في فقرة</h3>
+  <p>عند كل موضع في الـ feature map حط K anchor boxes بأحجام وأشكال مختلفة. اتنبأ بـ objectness score لكل anchor وبـ offset لتحويله لمربع أحسن. احتفظ بأعلى ~١٠٠٠ مربع بالـ score، شغّل NMS عند IoU 0.7، وادّي الناجين للـ heads. الـ RPN بيتدرب بـ mini-loss خاصة بيه، نفس هيكل YOLO loss (درس ٦٢) بس بـ class اتنين (شيء / مفيش شيء).</p>
+  <h3>الـ mask head</h3>
+  <p>لكل proposal (بعد RoIAlign) الـ mask head هي FCN صغيرة: ٤ conv ٣×٣، وبعدها deconv ×٢، وآخر <span class="ltr">1×1 conv</span> بتطلّع <span class="ltr">num_classes</span> channel بدقة <span class="ltr">28×28</span>. <b>القناة اللي تقابل الـ class المتنبأ بيه هي بس اللي بتتحفظ</b> والباقي بيتتجاهل. ده بيفصل تنبؤ القناع عن التصنيف. بعد كده بنكبّر الـ 28×28 لحجم الـ proposal الأصلي بالبكسل عشان نطلّع القناع النهائي.</p>
+  <div class="note"><strong>ليه قناة لكل class؟</strong> عشان مسألة «شكل الشيء» تتعلّم لكل class لوحدها، وقرار الـ classifier مايأثرش على أنهي قناع بيتنتج، بس على أنهي قناة بتتقرا وقت الـ inference.</div>
+  <h3>الـ losses: خمسة مجمّعين</h3>
+  <div class="formula">L = L_rpn_cls + L_rpn_box + L_box_cls + L_box_reg + L_mask</div>
+  <ul class="ex" style="list-style:disc">
+    <li><code>L_rpn_cls, L_rpn_box</code>: objectness + box regression للـ proposals بتاعة الـ RPN.</li>
+    <li><code>L_box_cls</code>: cross-entropy على (C+1) class (شاملة الـ background) على classifier الـ head.</li>
+    <li><code>L_box_reg</code>: smooth L1 على تظبيط المربع في الـ head.</li>
+    <li><code>L_mask</code>: binary cross-entropy لكل بكسل على خرج الـ 28×28.</li>
+  </ul>
+  <p>كل loss ليه وزن افتراضي، وتطبيق torchvision بيكشفهم كـ arguments للـ constructor.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: تكلفة قناع أدق (28 ضد 56)</h3>
+      <p>الـ mask head بتطلّع <span class="ltr">N × C × m × m</span> رقم. غيّر عدد الـ proposals وعدد الـ classes ودقة القناع <span class="ltr">m</span> وشوف حجم الذاكرة (float32 = ٤ بايت للرقم). ده تمهيد لتمرين الـ ٥٦×٥٦.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الذاكرة بتتضاعف ×٤ لما تضاعف m (لأنها <span class="ltr">m²</span>). ولو الـ head بتطلّع قناة لكل class (91 في COCO) التكلفة بتكبر بسرعة. ده سبب إن 28×28 توازن مقبول بين دقة الحدود والـ memory.</div>
+    </div>
+    <div id="d64-lab4"></div>
+  </div>
+  <h3>شكل الخرج في torchvision</h3>
+  <p>الـ <code>maskrcnn_resnet50_fpn_v2</code> بيرجّع list من dicts، واحد لكل صورة:</p>
+  <pre class="ltr" style="direction:ltr">{
+    "boxes":  (N, 4)    in (x1, y1, x2, y2) pixel coordinates,
+    "labels": (N,)      class IDs, 0 = background so indices are 1-based,
+    "scores": (N,)      confidence scores,
+    "masks":  (N, 1, H, W)  float masks in [0, 1] - threshold at 0.5 for binary,
+}</pre>
+  <p>القناع هو بدقة الصورة الكاملة فعلًا. الـ 28×28 اتكبّرت جوه الموديل.</p>
+</section>
+
+<!-- 05 code -->
+<section id="d64-code">
+  <div class="station-head"><span class="tag">05</span><h2>الكود: RoIAlign بإيدك وتجهيز موديل للـ fine-tuning</h2></div>
+  <p>الأول شغّل الكود الأصلي، وبعدين افتح <code>my_maskrcnn.py</code> واكتب الخطوات بنفسك. متعملش Copy غير لو اتزنقت.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/08-instance-segmentation-mask-rcnn/code/main.py</pre></div>
+  <p>الناتج المتوقع: ٣ سطور <code>box i: max|diff|=...</code> بأرقام صغيرة جدًا (الدرس بيقول جوه <span class="ltr">1e-5</span>)، وبعدها لو التحميل اشتغل: شكل الـ boxes/labels/masks، وسطر <code>trainable: ... total: ...</code> للموديل المجمّد. أول مرة التحميل بينزّل الأوزان فممكن ياخد وقت، ولو فشل التحميل الكود بيطبع <code>[pretrained] skipped</code> ويكمّل.</p>
+
+  <h3>خطوة ١: RoIAlign من الصفر</h3>
+  <p>ده الجزء الوحيد في Mask R-CNN اللي أسهل تفهمه ككود من إنك تفهمه كلام.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn.functional as F
+
+def roi_align_single(feature, box, output_size=7, spatial_scale=1 / 16.0):
+    """
+    feature: (C, H, W) خريطة features لصورة واحدة
+    box: (x1, y1, x2, y2) بإحداثيات بكسلات الصورة الأصلية
+    output_size: ضلع الـ grid الخارج (7 للـ box head, 14 للـ mask head)
+    spatial_scale: مقلوب الـ stride
+    """
+    C, H, W = feature.shape
+    x1, y1, x2, y2 = [c * spatial_scale - 0.5 for c in box]   # لفضاء الـ feature map
+    bin_w = (x2 - x1) / output_size
+    bin_h = (y2 - y1) / output_size
+
+    # مراكز الخانات (بدون أي تقريب)
+    grid_y = torch.linspace(y1 + bin_h / 2, y2 - bin_h / 2, output_size)
+    grid_x = torch.linspace(x1 + bin_w / 2, x2 - bin_w / 2, output_size)
+    yy, xx = torch.meshgrid(grid_y, grid_x, indexing="ij")
+
+    # grid_sample عايز إحداثيات بين -1 و1
+    gx = 2 * (xx + 0.5) / W - 1
+    gy = 2 * (yy + 0.5) / H - 1
+    grid = torch.stack([gx, gy], dim=-1).unsqueeze(0)
+    sampled = F.grid_sample(feature.unsqueeze(0), grid, mode="bilinear",
+                            align_corners=False)
+    return sampled.squeeze(0)</pre></div>
+  <p>كل رقم في الناتج متاخد من موضع bilinear. مفيش تقريب ولا quantisation ولا gradients مفقودة.</p>
+
+  <h3>خطوة ٢: قارنه بـ RoIAlign بتاع torchvision</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torchvision.ops import roi_align
+
+feature = torch.randn(1, 16, 50, 50)
+boxes = torch.tensor([[0, 10, 20, 100, 90]], dtype=torch.float32)  # (batch_idx, x1, y1, x2, y2)
+
+ours = roi_align_single(feature[0], boxes[0, 1:].tolist(), output_size=7, spatial_scale=1/4)
+theirs = roi_align(feature, boxes, output_size=(7, 7), spatial_scale=1/4,
+                   sampling_ratio=1, aligned=True)[0]
+
+print(f"shape ours:   {tuple(ours.shape)}")
+print(f"shape theirs: {tuple(theirs.shape)}")
+print(f"max|diff|:    {(ours - theirs).abs().max().item():.3e}")</pre></div>
+  <p>مع <code>sampling_ratio=1</code> و<code>aligned=True</code> الاتنين بيتطابقوا لحد <span class="ltr">1e-5</span>. لو مش بتتطابق، أول مشتبه: الـ <code>-0.5</code> أو الـ <code>aligned</code>.</p>
+
+  <h3>خطوة ٣: حمّل Mask R-CNN مدرّب جاهز</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+from torchvision.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
+
+model = maskrcnn_resnet50_fpn_v2(weights=MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
+model.eval()
+print(f"params: {sum(p.numel() for p in model.parameters()):,}")
+# طريقة أبسط لعدد الـ classes (من غير الحركة اللي في الدرس):
+print("classes (with background):", model.roi_heads.box_predictor.cls_score.out_features)</pre></div>
+  <p>حوالي <b>46M</b> parameter و<b>91</b> class (COCO). الـ class رقم 0 هو الـ background، وكل اللي الموديل بيكتشفه فعلًا بيبدأ من 1. (ملحوظة: السطر في الدرس الأصلي بيحسب عدد الـ classes بطريقة ملتفة؛ <code>out_features</code> لوحدها هي الرقم.)</p>
+
+  <h3>خطوة ٤: شغّل inference</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>with torch.no_grad():
+    x = torch.randn(3, 400, 600)
+    predictions = model([x])        # list من الصور، كل صورة tensor (3, H, W) بقيم 0..1
+p = predictions[0]
+print(f"boxes:  {tuple(p['boxes'].shape)}")
+print(f"labels: {tuple(p['labels'].shape)}")
+print(f"scores: {tuple(p['scores'].shape)}")
+print(f"masks:  {tuple(p['masks'].shape)}")
+
+binary_masks = (p['masks'] &gt; 0.5).squeeze(1)   # (N, H, W) boolean لكل شيء</pre></div>
+  <p>ملحوظة: على صورة <code>randn</code> عشوائية غالبًا N هيبقى صغير أو صفر لأن مفيش أشياء حقيقية. ده عادي. جرّب بصورة حقيقية لو عايز تشوف أقنعة (الصورة لازم تتحول لـ tensor بقيم بين ٠ و١).</p>
+
+  <h3>خطوة ٥: بدّل الـ heads لعدد classes مخصص</h3>
+  <p>الوصفة الشائعة للـ fine-tuning: أعد استخدام الـ backbone والـ FPN والـ RPN، وبدّل الـ head بتاعين.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
+
+def build_custom_maskrcnn(num_classes):
+    model = maskrcnn_resnet50_fpn_v2(weights=MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)      # head المربع الجديدة
+    in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
+    hidden_layer = 256
+    model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)  # head القناع
+    return model
+
+custom = build_custom_maskrcnn(num_classes=5)
+print(f"custom cls_score.out_features: {custom.roi_heads.box_predictor.cls_score.out_features}")</pre></div>
+  <p><b>مهم:</b> <code>num_classes</code> لازم تشمل الـ background. داتا فيها ٤ classes حقيقية تستخدم <code>num_classes=5</code>.</p>
+
+  <h3>خطوة ٦: جمّد اللي مش محتاج تدريب</h3>
+  <p>على الداتا الصغيرة جمّد الـ backbone والـ FPN. الـ RPN والـ heads بس هما اللي بيتعلموا.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def freeze_backbone_and_fpn(model):
+    # الـ FPN جوه model.backbone (model.backbone.fpn) فتجميد backbone.parameters() بيجمّد الاتنين
+    for p in model.backbone.parameters():
+        p.requires_grad = False
+    return model
+
+custom = freeze_backbone_and_fpn(custom)
+trainable = sum(p.numel() for p in custom.parameters() if p.requires_grad)
+print(f"trainable after freeze: {trainable:,}")</pre></div>
+  <p>على داتا ٥٠٠ صورة ده الفرق بين التقارب والـ overfitting.</p>
+
+  <h3>خطوة ٧: خطوة تدريب واحدة (Use It)</h3>
+  <p>حلقة التدريب الكاملة في torchvision حوالي ٤٠ سطر وما بتتغيرش كتير بين المهام. بدّل الداتا وامشي.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def train_step(model, images, targets, optimizer):
+    model.train()                                   # في وضع train بيرجّع dict من 5 losses
+    loss_dict = model(images, targets)
+    losses = sum(loss for loss in loss_dict.values())
+    optimizer.zero_grad()
+    losses.backward()
+    optimizer.step()
+    return {k: v.item() for k, v in loss_dict.items()}</pre></div>
+  <p>الـ <code>targets</code> لازم تكون list من dicts لكل صورة فيها <code>boxes</code> و<code>labels</code> و<code>masks</code> (كـ tensors ثنائية <span class="ltr">(num_instances, H, W)</span>). الموديل بيرجّع dict بخمس losses وقت التدريب، وlist من التنبؤات وقت الـ eval، حسب <code>model.training</code>.</p>
+  <p>الـ <code>pycocotools</code> بتطلّع mAP@IoU=0.5:0.95 <b>للمربعات وللأقنعة</b>. محتاج الرقمين عشان تعرف مين الـ bottleneck: الـ box head ولا الـ mask head.</p>
+  <div class="note"><strong>اللي الدرس بيطلّعه (Ship It):</strong> ملفين في <code>outputs/</code>: prompt بيسأل ٣ أسئلة ويختار بين instance وsemantic وpanoptic مع الموديل اللي تبدأ بيه، وskill بيولّد حوالي ١٠ سطور كود لتبديل الـ heads في أي detector من torchvision لو أعطيته الـ <span class="ltr">num_classes</span> الجديد.</div>
+</section>
+
+<!-- 06 exercises -->
+<section id="d64-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> اتأكد إن RoIAlign بتاعك بيتطابق مع <code>torchvision.ops.roi_align</code> على ١٠٠ مربع عشوائي، وبلّغ بأقصى فرق مطلق. وشغّل RoIPool كمان (سلوك ما قبل 2017) وورّي إنه بيبعد بـ ١–٢ بكسل feature map على المربعات القريبة من الحافة.
+      <details><summary>تلميح</summary>ولّد مربعات داخل حدود الصورة (<code>x2 &gt; x1</code>). للمقارنة بـ RoIPool استخدم <code>torchvision.ops.roi_pool</code>، وبعدها قارنه بـ <code>roi_align</code> بنفس المربعات والـ <code>spatial_scale</code>. كمان تقدر تحسب الفرق في «الإحداثي بعد التقريب» زي معمل ٢.</details></li>
+    <li><b>(متوسط)</b> اعمل fine-tune لـ <code>maskrcnn_resnet50_fpn_v2</code> على داتا مخصصة من ٥٠ صورة (أي classين: بالونات، أسماك، حفر، لوجوهات). جمّد الـ backbone، درّب ٢٠ epoch، وبلّغ بـ mask AP@0.5.
+      <details><summary>تلميح</summary>استخدم <code>build_custom_maskrcnn(3)</code> (class واحد + background = ٢، أو classين + background = ٣). حضّر لكل صورة dict فيه <code>boxes</code> و<code>labels</code> و<code>masks</code>. استخدم <code>freeze_backbone_and_fpn</code> وoptimizer على الـ parameters اللي <code>requires_grad</code> بس. ملاحظة: الـ <code>labels</code> بتبدأ من 1.</details></li>
+    <li><b>(صعب)</b> بدّل الـ mask head بحيث تتنبأ بـ ٥٦×٥٦ بدل ٢٨×٢٨. قيس mAP@IoU=0.75 قبل وبعد، وفسّر ليه الفرق (أو غيابه) بيتطابق مع المقايضة المتوقعة بين دقة الحدود والذاكرة.
+      <details><summary>تلميح</summary>الـ mask head بتاخد RoIAlign بـ <span class="ltr">14×14</span> وبعد الـ deconv ×٢ بتطلع ٢٨. لـ ٥٦ محتاج RoIAlign بـ ٢٨ أو deconv إضافي، ومعمل ٤ بيوريك إن الذاكرة بتتضاعف ٤ مرات. المتوقع كسب بسيط عند IoU عالي (حدود أدق) وتكلفة أكبر.</details></li>
+    <li><b>(تمرين مني)</b> عندك داتا فيها ٣ classes حقيقية (كلب، قطة، عصفور). كام لازم تكون <code>num_classes</code>؟ وكام قناة في خرج الـ mask head لكل proposal؟ وإيه اللي بيحصل لو حطيت ٣؟
+      <details><summary>الإجابة</summary><code>num_classes = 4</code> (٣ + background). الـ mask head بتطلّع ٤ قنوات لكل proposal بحجم 28×28. لو حطيت ٣ هتبقى بتخلّي class حقيقي يتعامل كـ background (الـ labels بتبدأ من ١ فهيقع label=3 برا المدى أو أحد الـ classes يضيع)، وغالبًا هتاخد index error أو نتايج غلط من غير ما تفهم السبب.</details></li>
+  </ol>
+</section>
+
+<!-- 07 own -->
+<section id="d64-own">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس مبيقولوش صراحة</h2></div>
+  <div class="note ai"><strong>حدس:</strong> Mask R-CNN = «اكتشف الأول، وبعدين ارسم جوه كل مربع». بتحوّل مشكلة صعبة (instance segmentation) لمشكلتين تعرفهم: detection (درس ٦٢) وsemantic segmentation صغيرة (زي درس ٦٣ بس على مربع 28×28 بس). عشان كده بيشتغل كويس: كل جزء بيعمل حاجة بسيطة.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul class="ex" style="list-style:disc">
+    <li><b>نسيان الـ background في <code>num_classes</code></b>: أشهر غلطة. الـ labels لازم تبدأ من ١ و<code>num_classes</code> = عدد الـ classes + ١.</li>
+    <li><b>مدخلات الصور:</b> torchvision detection بتاخد <b>list</b> من tensors بقيم ٠..١ (مش batch tensor واحد ومش ٠..٢٥٥)، والـ resize والـ normalize بيحصلوا جوه الموديل.</li>
+    <li><b>الأقنعة:</b> لازم تبقى <code>uint8</code>/bool بشكل <span class="ltr">(num_instances, H, W)</span> مضبوطة على المربعات. لو القناع والمربع مش بيتطابقوا، الـ mask loss هتتعلم حاجة غريبة.</li>
+    <li><b>تفسير mAP واحد بس:</b> بلّغ box AP وmask AP الاتنين. لو الـ box AP كويس والـ mask AP ضعيف، المشكلة في الـ mask head أو دقة الـ RoIAlign، مش في الـ detection.</li>
+    <li><b>إعادة تدريب كل حاجة على داتا صغيرة:</b> الـ overfitting. جمّد الـ backbone زي ما اتعلمنا.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents؟</h3>
+  <p>الـ instance masks هي اللي بتخلّي موديلات زي <b>SAM</b> (Segment Anything) تفضل مفيدة: «حدد الشيء ده بالظبط». وده بيتعامل مع الـ vision-language models: لما تقول للموديل «اللي على اليمين» هو محتاج يربط الكلام بـ instance معين مش بـ class كله. وفي الـ agents اللي بتتحكم في روبوتات أو شاشات، قناع الشيء الواحد هو اللي بيحدد «أمسك أنهي كوباية بالظبط».</p>
+</section>
+
+<!-- 08 quiz -->
+<section id="d64-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d64-quizBox"></div>
+</section>
+
+<!-- 09 wrap -->
+<section id="d64-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d64-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أسمّي القطع الخمس في Mask R-CNN وأقول كل واحدة بتعمل إيه</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه RoIAlign أحسن من RoIPool وشفت حجم الغلطة في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ bilinear sampling وأوزانه</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت <code>roi_align_single</code> وقارنتها بـ torchvision</label></li>
+    <li><label><input type="checkbox" data-ck="5"> عارف أبدّل الـ heads وأجمّد الـ backbone وأحط <code>num_classes</code> صح</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرين واحد على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>RoIAlign</td><td>كل detector/segmenter بيقص مناطق من feature maps، وفي YOLOv7 seg وMask2Former</td></tr>
+    <tr><td>FPN</td><td>أغلب الـ detectors الحديثة (ومنها YOLO بنسخ كتير)</td></tr>
+    <tr><td>RPN</td><td>عيلة R-CNN كلها</td></tr>
+    <tr><td>Swap heads + freeze</td><td>أي fine-tuning على داتا خاصة (مصانع، طب، زراعة)</td></tr>
+    <tr><td>Mask AP</td><td>تقييم أي موديل instance segmentation على COCO</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Image Generation — GANs: بدل ما الموديل يفهم صور، هيتعلم يخلقها من الصفر بلعبة بين شبكتين.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F08-instance-segmentation-mask-rcnn" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/08-instance-segmentation-mask-rcnn</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=64,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d64-roadmap').closest('.day');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===8)s.className='now';$('d64-roadmap').appendChild(s)}
+
+// ---- lab1: pipeline flow ----
+L.flow($('d64-lab1'),{height:340,label:'مسار Mask R-CNN',
+ nodes:[{id:'img',label:'Image',x:0,y:.5},{id:'bb',label:'ResNet',x:.2,y:.5},{id:'fpn',label:'FPN',x:.4,y:.5},{id:'rpn',label:'RPN',x:.55,y:0},{id:'ra',label:'RoIAlign',x:.6,y:.5},{id:'bh',label:'Box head',x:.85,y:.2},{id:'mh',label:'Mask head',x:.9,y:.85},{id:'out',label:'Boxes+Masks',x:1,y:.5}],
+ edges:[['img','bb'],['bb','fpn'],['fpn','rpn','features'],['fpn','ra','features'],['rpn','ra','top-K'],['ra','bh','7×7'],['ra','mh','14×14'],['bh','out'],['mh','out']],
+ steps:[
+  {active:['img'],text:'صورة الدخل. الموديل هيطلّع boxes وclasses وmasks.'},
+  {active:['bb','fpn'],edges:[['img','bb'],['bb','fpn']],text:'الـ <b>backbone + FPN</b>: خرايط features عند strides ٤..٣٢، كل مستوى غني بالمعنى.'},
+  {active:['rpn'],edges:[['fpn','rpn']],text:'الـ <b>RPN</b>: عند كل موضع anchors، بيتنبأ objectness + offset، وبيحتفظ بحوالي ١٠٠٠ proposal (NMS عند 0.7).'},
+  {active:['ra'],edges:[['fpn','ra'],['rpn','ra']],text:'الـ <b>RoIAlign</b>: لكل proposal بيقص patch ثابتة (7×7 للـ box head، 14×14 للـ mask head) بـ bilinear sampling من مستوى FPN المناسب.'},
+  {active:['bh','mh'],edges:[['ra','bh'],['ra','mh']],text:'فرعين متوازيين: <b>box head</b> بتظبط المربع وتختار الـ class، و<b>mask head</b> بترسم قناع 28×28 (القناة بتاعة الـ class المتنبأ بيه بس).'},
+  {active:['out'],edges:[['bh','out'],['mh','out']],text:'<b>NMS</b> + تكبير الـ 28×28 لحجم الـ proposal: الناتج النهائي boxes + classes + scores + masks.'}]});
+
+// ---- lab2: RoIPool rounding error ----
+L.plot($('d64-lab2'),{x:[0,200],y:[0,34],label:'غلطة التقريب بالبكسل',
+ params:[{k:'s',label:'stride',min:4,max:32,step:4,v:16},{k:'x1',label:'x1 (px)',min:0,max:200,step:0.5,v:34.7}],
+ curves:[{f:(x,p)=>x%p.s,label:'RoIPool',color:'a'},{f:()=>0,label:'RoIAlign',color:'ok'}],
+ marks:p=>[{x:p.x1,y:p.x1%p.s,color:'b'}],
+ readout:p=>[['x1 / stride',p.x1/p.s],['بعد التقريب (خانة)',Math.floor(p.x1/p.s)],['الإزاحة بالبكسل',p.x1%p.s],['أقصى إزاحة',p.s]],
+ note:p=>'عند stride '+p.s+' ممكن التقريب يزيح لحد '+p.s+' بكسل. RoIAlign = صفر.'});
+
+// ---- lab3: bilinear ----
+L.calc($('d64-lab3'),{params:[{k:'fx',label:'fx',min:0,max:1,step:0.05,v:0.3},{k:'fy',label:'fy',min:0,max:1,step:0.05,v:0.6}],
+ compute:p=>{const w00=(1-p.fx)*(1-p.fy),w10=p.fx*(1-p.fy),w01=(1-p.fx)*p.fy,w11=p.fx*p.fy;return [['وزن (0,0)',w00],['وزن (1,0)',w10],['وزن (0,1)',w01],['وزن (1,1)',w11],['المجموع',w00+w10+w01+w11],['القيمة المحسوبة',10*w00+20*w10+30*w01+40*w11]]},
+ note:p=>'الأقرب للركن = وزن أكبر. نفس المنطق جوه grid_sample.'});
+
+// ---- lab4: mask memory ----
+L.calc($('d64-lab4'),{params:[{k:'n',label:'proposals N',min:100,max:1000,step:100,v:1000},{k:'c',label:'classes C',min:5,max:91,step:1,v:91},{k:'m',label:'mask m',min:14,max:56,step:14,v:28}],
+ compute:p=>{const num=p.n*p.c*p.m*p.m;return [['أرقام خرج الـ mask head',num],['حجم float32 (MB)',num*4/1048576],['لنفس الإعداد بـ m=56 (MB)',p.n*p.c*3136*4/1048576],['النسبة 56 / m',3136/(p.m*p.m)]]},
+ note:p=>'الذاكرة ∝ m². القناة بتاعة الـ class المتنبأ بيه بس هي اللي بتتقرا.'});
+
+// ---- quiz ----
+AI.quiz($('d64-quizBox'),[
+ ['ليه Mask R-CNN استبدل RoIPool بـ RoIAlign؟',['RoIPool بيقرّب إحداثيات المربع لأعداد صحيحة في خطوات كتير فبيزيح الـ feature map عن بكسلات الصورة لحد بكسل feature كامل؛ RoIAlign بيستخدم bilinear sampling من غير تقريب فبيحافظ على الـ localisation','RoIPool كان فيه مشكلة حقوق','RoIPool بيشتغل على CPU بس','RoIAlign أسرع على الـ GPU'],0,'تقريب RoIPool بيكلّف إزاحة بحجم الـ stride (٣٢ بكسل عند stride 32). RoIAlign بياخد عينات عند إحداثيات float بالظبط بـ bilinear interpolation. التغيير رفع mask AP بـ ٣–٤ نقاط على COCO في الورقة الأصلية.'],
+ ['الـ mask head في Mask R-CNN بتطلّع قناع 28×28 لكل class لكل proposal. ليه لكل class؟',['الورقة طلبت كده','القناع الثنائي بيطفح في channel واحدة','عشان نفصل تعلّم القناع عن التصنيف: الـ head بتتعلم شكل كل class لوحده فقرار الـ classifier مايأثرش على القناع المنتج، بس على القناة اللي بتتقرا وقت الـ inference','القنوات لكل class بتلزم للـ backprop'],2,'إنتاج قناع لكل class لكل proposal بيفصل تعلم الشكل عن تعلم التصنيف. وقت الـ inference بتقرا القناة المطابقة للـ class المتنبأ بيه بس. الفصل ده مهم لأن شكل القناع واحتمال الـ class مسائل مختلفة.'],
+ ['الـ labels في torchvision Mask R-CNN بتبدأ من 1 مش 0. ليه؟',['torchvision بتستخدم 1-based indexing في كل حاجة','الـ class 0 محجوز للـ background، فالـ classes الحقيقية دايمًا من 1 والـ classifier بيعامل الـ background كـ class حقيقي له logits وgradients','داتا التدريب هي اللي حددت كده','bug قديم'],1,'أغلب الـ detectors بتعتبر الـ background class 0 والأمامية 1..C. الـ softmax على (C+1) class بيخلّي الشبكة تتنبأ بنشاط «مفيش شيء هنا» مش بس تدي confidence واطي لكل class. داتا فيها ٤ classes حقيقية بتستخدم num_classes=5.'],
+ ['عملت fine-tune لـ Mask R-CNN على ٥٠٠ صورة والـ val mAP ثابت والـ train loss بينزل. أول حاجة تجرّبها؟',['زوّد الـ epochs','استخدم learning rate أعلى','اتحوّل لـ U-Net','جمّد الـ backbone والـ FPN بحيث الـ RPN والـ heads بس هما اللي يتدربوا؛ ٥٠٠ صورة قليلة جدًا لتحديث ٢٣M parameter في الـ backbone من غير overfitting'],3,'على الداتا الصغيرة مفيش إشارة كفاية لـ fine-tuning كل parameter. تجميد الـ backbone والـ FPN المدرّبين مسبقًا وتدريب الـ RPN objectness head والـ classifier/mask heads هي الوصفة القياسية.'],
+ ['الـ FPN جوه Mask R-CNN فيها ٤ مستويات (P2, P3, P4, P5) عند strides 4, 8, 16, 32. ليه مش مستوى واحد؟',['عشان نقلل الـ parameters','٤ مستويات اختيار عشوائي','الأشياء في الصور الطبيعية بتغطي مدى أحجام؛ توجيه كل proposal للمستوى المناسب لحجمه بيدي الـ head خريطة بـ receptive field مناسب، وده أفضل دايمًا من مقياس واحد','عشان نستخدم GPU memory أكتر'],2,'شيء صغير على خريطة stride-32 بياخد خانة واحدة تقريبًا فمعلومات مكانية قليلة جدًا. الـ FPN بتوجّه الصغير للمستويات الضحلة عالية الدقة (P2) والكبير للعميقة قليلة الدقة (P5).'],
+ ['(سؤال مني) صورة بعرض ٦٠٠ و stride = 16 عدد خانات الـ feature map أفقيًا تقريبًا كام؟ وإزاحة x1 = ٣٤٫٧ بتتقرّب لأنهي خانة (قص لتحت)؟',['٣٧ خانة، والخانة 2','٣٧ خانة، والخانة 3','٦٠٠ خانة، والخانة 34','١٦ خانة، والخانة 2'],0,'٦٠٠ ÷ ١٦ ≈ ٣٧٫٥ فحوالي ٣٧ خانة. و٣٤٫٧ ÷ ١٦ = ٢٫١٧ فبتتقص للخانة ٢، يعني بتفقد ٣٤٫٧ − ٣٢ = ٢٫٧ بكسل في الصورة.'],
+ ['(سؤال مني) بتحضّر داتا لـ Mask R-CNN. شكل tensor الأقنعة لصورة فيها ٣ أشياء وحجمها ٤٠٠×٦٠٠؟',['(400, 600, 3)','(3, 400, 600)','(1, 400, 600)','(3, 28, 28)'],1,'الأقنعة في الـ targets بشكل (num_instances, H, W) أقنعة ثنائية بدقة الصورة الكاملة، واحد لكل شيء. الـ 28×28 دي مجرد دقة خرج الـ mask head داخليًا.']
+],5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

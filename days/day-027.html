@@ -1,0 +1,511 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 05 · Support Vector Machines</span>
+  <h1>اليوم ٢٧: دوّر على أعرض شارع بين الفريقين</h1>
+  <p class="lede">فيه خطوط كتير ممكن تفصل class اتنين. الـ <b>SVM</b> بتختار الخط اللي سايب <b>أوسع مسافة</b> لأقرب نقط من الناحيتين. النهاردة هتشوف الـ margin، والـ support vectors، والـ hinge loss، والـ C، وأشيك فكرة في الـ ML الكلاسيكي: <b>kernel trick</b>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia)</span>
+    <span>محتاج: <b>Optimization و Norms و Convex Optimization من Phase 1</b></span>
+    <span>بعده: <b>K-Nearest Neighbors</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d27-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d27-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: الشجر</h2></div>
+  <details><summary>١. node فيها ٥ قطط و٥ كلاب. Gini و Entropy بكام؟</summary>Gini = <span class="ltr">1 − (0.25 + 0.25) = 0.5</span>، و Entropy = 1.0. دي أقصى خلطة لـ class اتنين.</details>
+  <details><summary>٢. إيه مصدرين العشوائية في الـ Random Forest؟</summary>Bootstrap sample لكل شجرة (سحب مع إرجاع، حوالي 63% من العينات بتظهر)، و subset عشوائي من الـ features في كل split (<span class="ltr">√n</span> للـ classification).</details>
+  <details><summary>٣. ليه الـ MDI ممكن يضحك عليك؟</summary>منحاز للـ features اللي ليها قيم كتير، لأنها بتدي فرص تقسيم أكتر. اتأكد بالـ permutation importance. وخلي بالك: الشجر مش محتاجة scaling، بس الـ SVM النهاردة <b>محتاجاه جدًا</b>.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>15 min</b>الـ margin والـ support vectors</div>
+    <div><b>15 min</b>Soft margin و C و hinge loss + المعامل</div>
+    <div><b>15 min</b>Dual و kernel trick + معمل الـ kernels</div>
+    <div><b>30 min</b>اكتب LinearSVM بإيدك</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d27-margin">
+  <div class="station-head"><span class="tag">01</span><h2>الـ Maximum Margin: أعرض شارع</h2></div>
+  <p>تخيل حيين بينهم شارع. عايز ترسم الشارع بحيث يبقى <b>أعرض ما يمكن</b> من غير ما يدخل في أي بيت. خط النص هو الـ decision boundary، والرصيفين هما الـ margin. شارع عريض = الموديل واثق، وأي نقطة جديدة فيها noise بسيط مش هتقلب الناحية. عشان كده بيعمم أحسن.</p>
+  <p>الـ labels هنا <span class="ltr">y ∈ {−1, +1}</span> (مش 0 و1 زي logistic)، والخط هو <span class="ltr">wᵀx + b = 0</span>. بُعد أي نقطة عن الخط:</p>
+  <div class="formula">distance = |wᵀxᵢ + b| / ‖w‖</div>
+  <p>النقطة متصنفة صح لو <span class="ltr">yᵢ(wᵀxᵢ + b) &gt; 0</span>. بنثبّت الرصيفين عند <span class="ltr">wᵀx + b = +1</span> و <span class="ltr">−1</span>، فعرض الشارع كله = <span class="ltr">2/‖w‖</span>. المسألة:</p>
+  <div class="formula">maximize 2/‖w‖   subject to   yᵢ(wᵀxᵢ + b) ≥ 1  for all i
+⟺  minimize ½‖w‖²   subject to   yᵢ(wᵀxᵢ + b) ≥ 1</div>
+  <p>تكبير <span class="ltr">2/‖w‖</span> = تصغير <span class="ltr">‖w‖²</span>، والتانية أسهل في الحل. دي <b>convex quadratic program</b>، يعني ليها حل global واحد بس، مفيش local minima تتوه فيها.</p>
+  <h3>Support Vectors: القلة اللي بتحكم</h3>
+  <p>النقط اللي واقفة <b>على الرصيف بالظبط</b> (<span class="ltr">yᵢ(wᵀxᵢ + b) = 1</span>) اسمها support vectors. هما بس اللي بيحددوا الخط. حرّك أو امسح أي نقطة تانية بعيدة: الخط مش هيتحرك خالص. جرب ده في المعمل ٢.</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>وقت الـ prediction محتاج تخزن الـ support vectors بس، مش الداتا كلها، فالموديل خفيف في الميموري.</li>
+    <li>عدد الـ support vectors بيدي حد (bound) للـ generalization error: كل ما يقلوا بالنسبة لحجم الداتا، التعميم يبقى أحسن.</li>
+  </ul>
+</section>
+
+<!-- STATION 2 -->
+<section id="d27-soft">
+  <div class="station-head"><span class="tag">02</span><h2>Soft Margin و C و Hinge Loss</h2></div>
+  <p>الداتا الحقيقية نادرًا تنفصل بخط نضيف. فيه نقط جوه الشارع أو في الناحية الغلط. الحل: نسمح بمخالفات ونحاسب عليها بـ <b>slack variables</b> <span class="ltr">ξᵢ</span> (قد إيه النقطة i مخالفة):</p>
+  <div class="formula">minimize ½‖w‖² + C·Σ ξᵢ   s.t.  yᵢ(wᵀxᵢ + b) ≥ 1 − ξᵢ ,  ξᵢ ≥ 0</div>
+  <div class="tablewrap"><table>
+    <tr><th>C</th><th>السلوك</th></tr>
+    <tr><td class="ltr">C كبير</td><td>غرامة المخالفة غالية → شارع ضيق وغلطات أقل على الـ train → ممكن overfit</td></tr>
+    <tr><td class="ltr">C صغير</td><td>بنسامح أكتر → شارع عريض وغلطات أكتر → ممكن underfit</td></tr>
+  </table></div>
+  <p>الـ C هي <b>عكس</b> قوة الـ regularization: C كبير = regularization أقل.</p>
+
+  <h3>Hinge loss</h3>
+  <p>نقدر نكتب نفس المسألة من غير قيود:</p>
+  <div class="formula">minimize ½‖w‖² + C·Σ max(0, 1 − yᵢ·f(xᵢ))</div>
+  <p>الجزء <span class="ltr">max(0, 1 − y·f(x))</span> هو الـ <b>hinge loss</b> (شكله زي مفصّلة الباب): <b>صفر</b> لو النقطة صح وبره الشارع (<span class="ltr">y·f(x) ≥ 1</span>)، و<b>خطي</b> لو جوه الشارع أو غلط. قارنه بالـ logistic loss بتاع امبارح <span class="ltr">log(1 + e^(−y·f(x)))</span>: ناعم وعمره ما بيوصل صفر بالظبط.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: hinge قصاد logistic</h3>
+      <p>اسحب النقطة على المحور الأفقي (<span class="ltr">y·f(x)</span>). شوف إمتى الـ hinge يبقى صفر بالظبط والـ logistic لسه بيحسب.</p>
+      <p>النتيجة المهمة: الـ hinge بيدي حلول <b>sparse</b>: النقط اللي بره الشارع مساهمتها صفر، فالـ support vectors بس هي اللي بتفرق. الـ logistic بيستخدم كل النقط.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d27-lossC" width="520" height="300" aria-label="منحنى الـ hinge والـ logistic loss"></canvas>
+      <div class="readout">
+        <div><small>y·f(x)</small><b id="d27-m">0.5</b></div>
+        <div><small>Hinge</small><b id="d27-h">0.5</b></div>
+        <div><small>Logistic</small><b id="d27-l">0.474</b></div>
+      </div>
+      <div class="verdict" id="d27-lv"></div>
+    </div>
+  </div>
+
+  <h3>تدريب Linear SVM بالـ Gradient Descent (Primal)</h3>
+  <p>مش لازم QP solver. خد الـ hinge + L2 واعمل gradient descent:</p>
+  <div class="formula">L(w,b) = (λ/2)‖w‖² + (1/n)·Σ max(0, 1 − yᵢ(wᵀxᵢ + b))
+لو yᵢ(wᵀxᵢ+b) ≥ 1:   ∂L/∂w = λw          ∂L/∂b = 0
+لو yᵢ(wᵀxᵢ+b) &lt; 1:   ∂L/∂w = λw − yᵢxᵢ    ∂L/∂b = −yᵢ</div>
+  <p>يعني: لو النقطة مرتاحة بره الشارع، بس صغّر w شوية (regularization). لو جوه الشارع أو غلط، زقّ الخط ناحيتها. ده اسمه <b>primal formulation</b>، وتكلفته <span class="ltr">O(n·d)</span> لكل epoch، سريع جدًا للداتا الكبيرة الـ sparse عالية الأبعاد زي تصنيف النصوص. الـ λ هنا بتلعب دور <span class="ltr">1/C</span> (الكود بيستخدم <span class="ltr">λ = 1/(C·n)</span>).</p>
+</section>
+
+<!-- STATION 3: LAB -->
+<section id="d27-lab">
+  <div class="station-head"><span class="tag">03</span><h2>معمل ٢: ابني الشارع بإيدك</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p><b>اضغط</b> في مكان فاضي عشان تضيف نقطة من الـ class المختار. <b>اسحب</b> أي نقطة تحركها. فعّل «مسح» وادوس على نقطة تشيلها.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>الخط الغامق = الـ boundary، والمتقطعين = الرصيفين (±1).</li>
+        <li>النقط اللي عليها حلقة = support vectors.</li>
+        <li>اسحب نقطة بعيدة عن الشارع: الخط ثابت. اسحب support vector: الخط يتحرك فورًا.</li>
+        <li>حط نقطة «خاينة» جوه الفريق التاني، وبعدين حرّك الـ C من صغير لكبير.</li>
+      </ul>
+      <p style="font-size:15px;color:var(--muted)">المعمل بيحل نفس المسألة بطريقة الـ <b>dual</b> (coordinate descent على <span class="ltr">αᵢ</span>) اللي هتشوفها في المحطة الجاية، فالـ support vectors هنا هي النقط اللي <span class="ltr">αᵢ &gt; 0</span>.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d27-svmC" width="520" height="440" aria-label="معمل الـ SVM: نقط وخط فاصل"></canvas>
+      <label style="display:grid;gap:2px">C = <b class="mono" id="d27-cV">1</b><input type="range" id="d27-c" min="-2" max="1.5" step="0.05" value="0"></label>
+      <div class="readout">
+        <div><small>w</small><b id="d27-w">–</b></div>
+        <div><small>b</small><b id="d27-b">–</b></div>
+        <div><small>margin 2/‖w‖</small><b id="d27-mw">–</b></div>
+        <div><small>support vectors</small><b id="d27-sv">–</b></div>
+        <div><small>train acc</small><b id="d27-acc">–</b></div>
+      </div>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">أضيف: <select id="d27-cls"><option value="1">+1 (أزرق)</option><option value="-1">−1 (برتقاني)</option></select></label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d27-del"> مسح</label>
+        <button type="button" id="d27-traitor">ضيف نقطة خاينة</button>
+        <button type="button" id="d27-reset">رجّع</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d27-kernel">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Dual والـ Kernel Trick</h2></div>
+  <p>من Convex Optimization (شروط KKT) نقدر نكتب نفس المسألة في صورة تانية اسمها <b>dual</b>، فيها متغير <span class="ltr">αᵢ</span> لكل نقطة:</p>
+  <div class="formula">maximize Σαᵢ − ½·Σᵢⱼ αᵢαⱼ yᵢyⱼ (xᵢ · xⱼ)
+s.t.  0 ≤ αᵢ ≤ C ,  Σ αᵢyᵢ = 0</div>
+  <p>بص كويس: الداتا بتظهر <b>بس جوه dot products</b> <span class="ltr">xᵢ · xⱼ</span>. دي الفكرة كلها. بدّل كل dot product بدالة <span class="ltr">K(xᵢ, xⱼ)</span> اسمها <b>kernel</b>، والـ SVM هتتعلم حدود مش خطية من غير ما تحسب التحويل لفضاء أعلى أبدًا.</p>
+  <div class="formula">Linear:      K(x,z) = x · z
+Polynomial:  K(x,z) = (x · z + c)^d
+RBF:         K(x,z) = exp(−γ‖x − z‖²)</div>
+  <p>الـ kernel = <span class="ltr">φ(x)·φ(z)</span>: الـ dot product بعد ما تودّي النقطتين لفضاء أكبر. الـ trick إنك بتحسب الرقم ده مباشرة بتكلفة رخيصة. مثلًا الـ polynomial من درجة d في D بُعد، الفضاء الصريح فيه حوالي <span class="ltr">O(D^d)</span> بُعد، بس <span class="ltr">K(x,z)</span> بيتحسب في <span class="ltr">O(D)</span>.</p>
+  <p>الـ <b>RBF</b> بيودّيك لفضاء <b>لا نهائي</b> الأبعاد. معناه بالبلدي: «قد إيه النقطتين قريبين؟» قريبين جدًا = قريب من 1، بعاد = قريب من 0. ويقدر يتعلم أي حدود ناعمة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: ارفع الداتا لبُعد تالت</h3>
+      <p>الأزرق جوه دايرة والبرتقاني حواليه. مستحيل خط مستقيم يفصلهم في 2D. ضيف feature تالتة <span class="ltr">z = x₁² + x₂²</span> (المسافة من المركز تربيع). في الرسمة التانية (x₁ قصاد z) الأزرق تحت والبرتقاني فوق، فخط <b>أفقي</b> بيفصلهم.</p>
+      <p>حرّك الـ threshold. الخط المستقيم في الفضاء الجديد = <b>دايرة</b> في الفضاء الأصلي. ده بالظبط اللي الـ kernel بيعمله ضمنيًا. في الريبو: Linear SVM على الداتا الدايرية بتفشل، وعلى <span class="ltr">(x₁, x₂, x₁², x₂², x₁x₂)</span> بتنجح.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d27-liftA" width="520" height="300" aria-label="الداتا الدايرية في بعدين"></canvas>
+      <canvas id="d27-liftB" width="520" height="220" aria-label="الداتا بعد الرفع: x1 قصاد z"></canvas>
+      <label style="display:grid;gap:2px">threshold على z = <b class="mono" id="d27-tV">4</b><input type="range" id="d27-t" min="0.5" max="9" step="0.1" value="4"></label>
+      <div class="readout"><div><small>صح</small><b id="d27-lacc">–</b></div><div><small>نصف قطر الدايرة √t</small><b id="d27-rad">–</b></div></div>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: RBF = «قد إيه انت قريب؟»</h3>
+      <p>اسحب النقطة المرجعية. اللون = <span class="ltr">K(ref, x)</span>. الـ γ بتتحكم في نص القطر: γ كبيرة = فقاعة صغيرة (كل نقطة بتأثر بس على اللي جنبها جدًا → حدود متعرجة و overfit)، γ صغيرة = فقاعة واسعة (حدود ناعمة).</p>
+      <p>جدول الريبو للنقطة المرجعية <span class="ltr">[1, 0]</span> و <span class="ltr">γ = 0.5</span>:</p>
+      <div class="tablewrap"><table class="ltr" style="direction:ltr">
+        <tr><th style="text-align:left">z</th><th>Linear</th><th>Poly d=2</th><th>Poly d=3</th><th>RBF</th></tr>
+        <tr><td style="text-align:left">[2,0]</td><td>2.000</td><td>9.000</td><td>27.000</td><td>0.6065</td></tr>
+        <tr><td style="text-align:left">[0,1]</td><td>0.000</td><td>1.000</td><td>1.000</td><td>0.3679</td></tr>
+        <tr><td style="text-align:left">[1.1,0.1]</td><td>1.100</td><td>4.410</td><td>9.261</td><td>0.9900</td></tr>
+        <tr><td style="text-align:left">[5,0]</td><td>5.000</td><td>36.000</td><td>216.000</td><td>0.0003</td></tr>
+        <tr><td style="text-align:left">[−1,0]</td><td>−1.000</td><td>0.000</td><td>0.000</td><td>0.1353</td></tr>
+      </table></div>
+      <p>لاحظ: الـ linear بيقول إن [5,0] «أشبه» من [1.1,0.1] لأنه أطول في نفس الاتجاه، والـ RBF بيقول العكس لأنه بيقيس القرب.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d27-rbfC" width="520" height="360" aria-label="خريطة حرارية للـ RBF kernel"></canvas>
+      <label style="display:grid;gap:2px">γ = <b class="mono" id="d27-gV">0.5</b><input type="range" id="d27-g" min="-2" max="1" step="0.05" value="-0.30103"></label>
+      <div class="readout"><div><small>ref</small><b id="d27-ref">[1, 0]</b></div><div><small>K(ref,[1.1,0.1])</small><b id="d27-k1">–</b></div><div><small>K(ref,[5,0])</small><b id="d27-k2">–</b></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d27-svr">
+  <div class="station-head"><span class="tag">05</span><h2>SVR، وإمتى الـ SVM لسه بتكسب</h2></div>
+  <h3>Support Vector Regression</h3>
+  <p>بدل الشارع، بنرسم <b>أنبوبة</b> عرضها ε حوالين الداتا. النقط جوه الأنبوبة خسارتها صفر، واللي بره بتتحاسب خطيًا:</p>
+  <div class="formula">minimize ½‖w‖² + C·Σ(ξᵢ + ξᵢ*)
+s.t.  yᵢ − (wᵀxᵢ + b) ≤ ε + ξᵢ ,  (wᵀxᵢ + b) − yᵢ ≤ ε + ξᵢ* ,  ξ ≥ 0</div>
+  <p>ε أكبر = أنبوبة أوسع = support vectors أقل وتوقع أنعم. ε أصغر = support vectors أكتر و fit أضيق.</p>
+  <h3>ليه الـ Deep Learning غلبها؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>العامل</th><th>SVM</th><th>Deep learning</th></tr>
+    <tr><td>Feature engineering</td><td>محتاجاه</td><td>بيتعلم الـ features</td></tr>
+    <tr><td>الـ scalability</td><td class="ltr">O(n²) → O(n³) بالـ kernel</td><td class="ltr">O(n) per epoch بالـ SGD</td></tr>
+    <tr><td>صور/نص/صوت</td><td>محتاجة features يدوي</td><td>بيتعلم من الخام</td></tr>
+    <tr><td>داتا كبيرة (&gt;100k)</td><td>بطيئة</td><td>بيكبر كويس</td></tr>
+    <tr><td>GPU</td><td>فايدة محدودة</td><td>تسريع رهيب</td></tr>
+  </table></div>
+  <p>بس الـ SVM لسه بتكسب في: الداتا الصغيرة (مئات لآلاف قليلة)، الداتا عالية الأبعاد الـ sparse (نص بـ TF-IDF)، لما تحتاج ضمانات رياضية (margin bounds)، لما وقت التدريب لازم يبقى أقل حاجة (linear SVM سريعة جدًا)، الـ binary classification اللي ليها margin واضح، و anomaly detection بالـ one-class SVM.</p>
+</section>
+
+<!-- CODE -->
+<section id="d27-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/05-support-vector-machines/code/svm.py</pre></div>
+  <details><summary>أول جزء من الناتج المتوقع (HINGE LOSS)</summary><pre class="term">  y * f(x)    Hinge loss   Logistic loss
+      -2.0         3.000           2.127   ###############
+      -1.0         2.000           1.313   ##########
+      -0.5         1.500           0.974   #######
+       0.0         1.000           0.693   #####
+       0.5         0.500           0.474   ##
+       1.0         0.000           0.313
+       1.5         0.000           0.201
+       2.0         0.000           0.127
+       3.0         0.000           0.049</pre><p>جدول الـ kernels مكتوب فوق في معمل ٤. باقي الأقسام (الأوزان، الـ margin، عدد الـ SVs، جدول الـ C) بتعتمد على الـ random seed، فركز على الاتجاه: C صغير → margin أوسع و SVs أكتر.</p></details>
+  <p>فيه كمان نسخة Julia في نفس الفولدر لو حابب تقارن: <code>code/main.jl</code> (stdlib بس). اكتب انت في <code>my_svm.py</code> من غير copy-paste.</p>
+
+  <h3>خطوة ١: أدوات + hinge loss</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math, random
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+def vec_norm(a):
+    return math.sqrt(dot(a, a))
+
+def hinge_loss(X, y, w, b):
+    total = 0.0
+    for xi, yi in zip(X, y):
+        margin = yi * (dot(w, xi) + b)     <span class="c"># y·f(x)</span>
+        total += max(0.0, 1.0 - margin)    <span class="c"># صفر لو بره الشارع</span>
+    return total / len(X)
+
+def svm_objective(X, y, w, b, lambda_param):
+    return 0.5 * lambda_param * dot(w, w) + hinge_loss(X, y, w, b)</pre></div>
+
+  <h3>خطوة ٢: LinearSVM بالـ SGD على الـ primal</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class LinearSVM:
+    def __init__(self, lr=0.001, lambda_param=0.01, n_epochs=1000):
+        self.lr, self.lambda_param, self.n_epochs = lr, lambda_param, n_epochs
+        self.w, self.b = None, 0.0
+
+    def fit(self, X, y):                    <span class="c"># y لازم تبقى ‎-1 / +1</span>
+        self.w = [0.0] * len(X[0])
+        self.b = 0.0
+        for epoch in range(self.n_epochs):
+            idx = list(range(len(X)))
+            random.shuffle(idx)
+            for i in idx:
+                margin = y[i] * (dot(self.w, X[i]) + self.b)
+                if margin &gt;= 1:             <span class="c"># مرتاحة: regularization بس</span>
+                    self.w = [wj - self.lr * self.lambda_param * wj for wj in self.w]
+                else:                       <span class="c"># جوه الشارع/غلط: زق الخط</span>
+                    self.w = [wj - self.lr * (self.lambda_param * wj - y[i] * X[i][j])
+                              for j, wj in enumerate(self.w)]
+                    self.b -= self.lr * (-y[i])
+
+    def predict(self, X):
+        return [1 if dot(self.w, x) + self.b &gt;= 0 else -1 for x in X]
+
+    def decision_function(self, X):
+        return [dot(self.w, x) + self.b for x in X]
+
+    def margin_width(self):                 <span class="c"># 2 / ‖w‖</span>
+        n = vec_norm(self.w)
+        return 0.0 if n == 0 else 2.0 / n
+
+    def find_support_vectors(self, X, y, tol=0.1):
+        return [i for i in range(len(X))
+                if abs(y[i] * (dot(self.w, X[i]) + self.b) - 1.0) &lt; tol]</pre></div>
+  <p>لاحظ إن الـ <code>find_support_vectors</code> هنا تقريبية: بتدور على النقط اللي <span class="ltr">y·f(x)</span> بتاعها قريب من 1 في حدود <code>tol</code>، لأن الـ SGD مش بيوصل للحل بالظبط.</p>
+
+  <h3>خطوة ٣: الـ kernels</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def linear_kernel(x, z):
+    return dot(x, z)
+
+def polynomial_kernel(x, z, degree=3, c=1.0):
+    return (dot(x, z) + c) ** degree
+
+def rbf_kernel(x, z, gamma=0.5):
+    diff = [xi - zi for xi, zi in zip(x, z)]
+    return math.exp(-gamma * dot(diff, diff))     <span class="c"># قريب = 1، بعيد = 0</span>
+
+for z in ([2.0, 0.0], [1.1, 0.1], [5.0, 0.0]):
+    print(z, linear_kernel([1.0, 0.0], z), round(rbf_kernel([1.0, 0.0], z), 4))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">[2.0, 0.0] 2.0 0.6065
+[1.1, 0.1] 1.1 0.99
+[5.0, 0.0] 5.0 0.0003</pre></details>
+
+  <h3>خطوة ٤: جرّب الـ C على داتا فيها noise</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>random.seed(0)
+X, y = [], []
+for _ in range(100):
+    X.append([random.gauss(2, 1), random.gauss(2, 1)]);   y.append(1)
+    X.append([random.gauss(-2, 1), random.gauss(-2, 1)]); y.append(-1)
+
+for C in [0.01, 1.0, 100.0]:
+    svm = LinearSVM(lr=0.001, lambda_param=1.0 / (C * len(X)), n_epochs=200)
+    svm.fit(X, y)
+    acc = sum(p == t for p, t in zip(svm.predict(X), y)) / len(y)
+    print(C, round(svm.margin_width(), 3), acc,
+          len(svm.find_support_vectors(X, y, tol=0.3)))</pre></div>
+
+  <h3>خطوة ٥: scikit-learn (وماتنساش الـ scaling)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.svm import SVC, LinearSVC, SVR
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+
+clf = Pipeline([
+    ("scaler", StandardScaler()),                       <span class="c"># إجباري تقريبًا مع SVM</span>
+    ("svm", SVC(kernel="rbf", C=1.0, gamma="scale")),
+])
+clf.fit(X_train, y_train)
+print(f"Accuracy: {clf.score(X_test, y_test):.4f}")
+print(f"Support vectors: {clf['svm'].n_support_}")
+
+<span class="c"># داتا كبيرة؟ LinearSVC (primal، خطي في n) بدل SVC (dual، من n² لـ n³)</span>
+clf = Pipeline([("scaler", StandardScaler()),
+                ("svm", LinearSVC(C=1.0, max_iter=10000))])</pre></div>
+  <p><b>ليه الـ scaling؟</b> الـ margin معتمد على <span class="ltr">‖w‖</span>، فلو feature مداها بالآلاف وواحدة من 0 لـ 1، الهندسة كلها بتتشوه.</p>
+  <div class="note"><strong>Ship It:</strong> الدرس بيطلّع <code>outputs/skill-svm-kernel-chooser.md</code>: skill بتساعدك تختار الـ kernel والـ hyperparameters حسب شكل الداتا وحجمها.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d27-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Support vectors:</b> ولّد داتا 2D تنفصل بخط، درّب LinearSVM، وطلّع الـ support vectors. اتأكد إنها أقرب نقط للخط.
+      <details><summary>تلميح</summary>احسب <span class="ltr">|w·x + b| / ‖w‖</span> لكل نقطة ورتّب. أقل كام واحدة لازم يطابقوا اللي <code>find_support_vectors</code> رجّعها (مع tol حوالي 0.3).</details></li>
+    <li><b>الـ C من 0.001 لـ 1000:</b> على داتا فيها noise، ارسم الحدود لكل C.
+      <details><summary>المتوقع</summary>نفس اللي في المعمل ٢: C صغير = شارع عريض والخط مش مهتم بالنقط الخاينة (underfit لو زاد). C كبير = شارع ضيق بيحاول يرضي كل نقطة (overfit).</details></li>
+    <li><b>داتا دايرية:</b> وريني إن الـ linear SVM بتفشل، واحسب مصفوفة الـ RBF kernel ووضح إن الـ classes بتبقى قابلة للفصل.
+      <details><summary>تلميح</summary>مصفوفة <span class="ltr">K[i][j] = rbf(xᵢ, xⱼ)</span>. رتّب النقط حسب الـ class واطبع متوسط K جوه نفس الـ class قصاد بين الـ classes. جوه الـ class هيبقى أعلى بوضوح. أو اعمل زي الريبو: ضيف <span class="ltr">x₁², x₂², x₁x₂</span> ودرّب linear.</details></li>
+    <li><b>Hinge قصاد Logistic:</b> درّب SVM و logistic regression على نفس الداتا. عدّ كام نقطة بتساهم في الحدود في كل واحد.
+      <details><summary>الإجابة</summary>الـ SVM: الـ support vectors بس (النقط اللي <span class="ltr">y·f(x) &lt; 1</span> أو عليها). الـ logistic: كل النقط ليها gradient مش صفر، لأن الـ loss عمرها ما بتبقى صفر.</details></li>
+    <li><b>SVR:</b> اعمل ε-insensitive loss، وfit على <span class="ltr">y = sin(x) + noise</span>، وارسم الأنبوبة ولوّن النقط اللي برّاها.
+      <details><summary>تلميح</summary>loss لكل نقطة = <span class="ltr">max(0, |y − f(x)| − ε)</span>. الـ gradient صفر جوه الأنبوبة و <span class="ltr">±x</span> برّاها. علشان sin محتاج features زي <span class="ltr">x, x², x³</span> أو RBF.</details></li>
+    <li><b>إضافة مني · مصنف intents لـ chatbot:</b> اكتب 40 رسالة قصيرة لـ 2 intents (مثلًا «refund» و«tracking»)، حوّلهم لمتجهات bag-of-words بنفسك، ودرّب LinearSVM بتاعتك. ده بالظبط نوع المشاكل اللي الـ SVM لسه بتلمع فيها: داتا صغيرة، أبعاد كتير، sparse. قارن بعدين بـ <code>LinearSVC</code> على <code>TfidfVectorizer</code>.
+      <details><summary>تلميح</summary>vocab = كل الكلمات اللي ظهرت. المتجه = عدّ. الـ labels <span class="ltr">+1 / −1</span>. بعد التدريب، أكبر 5 أوزان موجبة وسالبة في <code>w</code> هيقولولك أنهي كلمات بتشد لكل intent.</details></li>
+  </ol>
+</section>
+
+<!-- MINE -->
+<section id="d27-mine">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: الحدس والغلطات وفين في الـ LLMs</h2></div>
+  <h3>الحدس</h3>
+  <p>فكّر في الـ SVM كإنها بتسأل: «مين النقط الصعبة؟» وتبني القرار عليهم بس. النقط السهلة البعيدة ملهاش صوت. ده عكس الـ logistic اللي بيسمع للكل بنسب مختلفة.</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>تنسى الـ scaling. أول حاجة تعملها مع SVM أو KNN.</li>
+    <li>تستخدم labels <span class="ltr">0/1</span> مع كود معمول لـ <span class="ltr">−1/+1</span>: الـ <span class="ltr">y·f(x)</span> هيبقى صفر لكل الـ class صفر والتدريب يبوظ.</li>
+    <li>تلخبط اتجاه الـ C: C كبير = regularization <b>أقل</b> (عكس λ و alpha).</li>
+    <li>تجرب <code>SVC(kernel="rbf")</code> على مليون صف. الـ kernel SVM من <span class="ltr">O(n²)</span> لـ <span class="ltr">O(n³)</span>. استخدم LinearSVC أو موديل تاني.</li>
+    <li>تظبط C و γ لوحدهم. هما مربوطين؛ اعمل grid search عليهم مع بعض.</li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <p>فكرة الـ <b>kernel</b> («قيس التشابه بدالة وابني عليه») هي نفس روح الـ attention: <span class="ltr">softmax(q·k)</span> هو dot product مستخدم كـ similarity، وفيه أبحاث بتفسر الـ attention كـ kernel smoother. والـ <b>margin</b> فكرته موجودة في الـ contrastive و triplet losses اللي بتدرّب موديلات الـ embeddings المستخدمة في الـ RAG: عايز المتشابهين قريبين والمختلفين بعيد بمسافة margin على الأقل.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d27-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d27-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d27-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d27-ck">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الـ margin وليه <span class="ltr">2/‖w‖</span></label></li>
+    <li><label><input type="checkbox" data-ck="2"> شفت في المعمل إن الـ support vectors بس هما اللي بيحركوا الخط</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ C وإيه اللي بيحصل لما تكبره</label></li>
+    <li><label><input type="checkbox" data-ck="4"> أقدر أشرح الـ kernel trick وليه الـ dual بيسمح بيه</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت LinearSVM بإيدي وشغّلتها</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Maximum margin</td><td>contrastive / triplet loss في موديلات الـ embeddings</td></tr>
+    <tr><td>Hinge loss</td><td>linear classifiers سريعة، loss لـ ranking</td></tr>
+    <tr><td>Kernel trick</td><td>Gaussian processes، تفسيرات الـ attention كـ kernel</td></tr>
+    <tr><td>RBF similarity</td><td>أي «قرب» بيتحول لـ score بين 0 و1</td></tr>
+    <tr><td>LinearSVC + TF-IDF</td><td>تصنيف نصوص بداتا صغيرة، baseline قبل الـ LLM</td></tr>
+    <tr><td>One-class SVM</td><td>anomaly detection</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> K-Nearest Neighbors. أبسط موديل في الدنيا: مفيش تدريب أصلًا. وهو نفسه قلب الـ vector databases والـ RAG.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F05-support-vector-machines" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/05-support-vector-machines</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+const rm=$('d27-roadmap');for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===5)s.className='now';rm.appendChild(s)}
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(R){let u=0,v=0;while(!u)u=R();v=R();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+/* ---- Lab 1: hinge vs logistic ---- */
+const lc=$('d27-lossC'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+let m=0.5,dragL=false;const L0=40,R0=LW-14,T0=14,B0=LH-30,X=v=>L0+(v+3)/6*(R0-L0),Y=v=>B0-v/4*(B0-T0),Xi=px=>(px-L0)/(R0-L0)*6-3;
+function drawLoss(){
+  lx.clearRect(0,0,LW,LH);lx.strokeStyle=css('--grid');lx.lineWidth=1;
+  for(let v=-3;v<=3;v++){lx.beginPath();lx.moveTo(X(v),T0);lx.lineTo(X(v),B0);lx.stroke()}
+  for(let v=0;v<=4;v++){lx.beginPath();lx.moveTo(L0,Y(v));lx.lineTo(R0,Y(v));lx.stroke()}
+  lx.fillStyle=css('--muted');lx.font='12px JetBrains Mono, monospace';lx.textAlign='center';for(let v=-3;v<=3;v++)lx.fillText(v,X(v),B0+15);lx.fillText('y·f(x)',X(0),B0+28);lx.textAlign='right';for(let v=0;v<=4;v++)lx.fillText(v,L0-6,Y(v)+4);lx.textAlign='left';
+  lx.fillStyle=css('--ok');lx.globalAlpha=.1;lx.fillRect(X(1),T0,R0-X(1),B0-T0);lx.globalAlpha=1;
+  [[v=>Math.max(0,1-v),css('--vec-a'),'hinge'],[v=>Math.log(1+Math.exp(-v)),css('--vec-b'),'logistic']].forEach(([fn,c,n],k)=>{lx.strokeStyle=c;lx.lineWidth=2.5;lx.beginPath();for(let i=0;i<=240;i++){const v=-3+6*i/240,yv=Math.min(4.2,fn(v));i?lx.lineTo(X(v),Y(yv)):lx.moveTo(X(v),Y(yv))}lx.stroke();lx.fillStyle=c;lx.fillText(n,R0-70,T0+14+k*16)});
+  const h=Math.max(0,1-m),lg=Math.log(1+Math.exp(-m));
+  lx.strokeStyle=css('--ink');lx.setLineDash([4,4]);lx.beginPath();lx.moveTo(X(m),T0);lx.lineTo(X(m),B0);lx.stroke();lx.setLineDash([]);
+  [[h,css('--vec-a')],[lg,css('--vec-b')]].forEach(([v,c])=>{lx.fillStyle=c;lx.beginPath();lx.arc(X(m),Y(Math.min(4.2,v)),6,0,7);lx.fill()});
+  lx.fillStyle=css('--ink');lx.beginPath();lx.arc(X(m),B0,8,0,7);lx.fill();
+  $('d27-m').textContent=f(m,2);$('d27-h').textContent=f(h,3);$('d27-l').textContent=f(lg,3);
+  const v=$('d27-lv');if(m<0){v.textContent='متصنفة غلط: الاتنين بيعاقبوا';v.style.color=css('--bad')}else if(m<1){v.textContent='صح بس جوه الشارع: hinge لسه بيعاقب';v.style.color=css('--vec-b')}else{v.textContent='صح وبره الشارع: hinge = 0 بالظبط (مش support vector)';v.style.color=css('--ok')}
+}
+lc.addEventListener('pointerdown',e=>{dragL=true;lc.setPointerCapture(e.pointerId);mvL(e)});
+function mvL(e){if(!dragL)return;m=Math.max(-3,Math.min(3,Xi(AI.evPos(lc,e)[0])));drawLoss()}
+lc.addEventListener('pointermove',mvL);lc.addEventListener('pointerup',()=>dragL=false);
+drawLoss();
+
+/* ---- Lab 2: linear SVM via dual coordinate descent ---- */
+const sc=$('d27-svmC'),sx=AI.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h,SS=40,sox=SW/2,soy=SH/2;
+const toP=(x,y)=>[sox+x*SS,soy-y*SS],toW=(px,py)=>[(px-sox)/SS,(soy-py)/SS];
+function initPts(){const R=rng(3),P=[];for(let i=0;i<14;i++){P.push([gauss(R)*.9+2,gauss(R)*.9+1.5,1]);P.push([gauss(R)*.9-2,gauss(R)*.9-1.5,-1])}return P}
+let pts=initPts(),model=null,dragI=-1;
+function train(P,C){const n=P.length,B=4,al=new Array(n).fill(0),w=[0,0,0];if(n<2)return null;const R=rng(5),idx=P.map((_,i)=>i);
+  for(let ep=0;ep<1500;ep++){for(let i=n-1;i>0;i--){const j=Math.floor(R()*(i+1));[idx[i],idx[j]]=[idx[j],idx[i]]}
+    let mx=0;for(const i of idx){const p=P[i],Q=p[0]*p[0]+p[1]*p[1]+B*B,G=p[2]*(w[0]*p[0]+w[1]*p[1]+w[2]*B)-1,na=Math.min(C,Math.max(0,al[i]-G/Q)),d=na-al[i];if(d){mx=Math.max(mx,Math.abs(d));al[i]=na;w[0]+=d*p[2]*p[0];w[1]+=d*p[2]*p[1];w[2]+=d*p[2]*B}}
+    if(mx<1e-7)break}
+  return{w:[w[0],w[1]],b:w[2]*B,al}}
+function line(w,b,off,col,dash,width){if(Math.hypot(w[0],w[1])<1e-9)return;const pts2=[];const xr=SW/SS/2,yr=SH/SS/2;
+  if(Math.abs(w[1])>Math.abs(w[0])){[-xr,xr].forEach(x=>pts2.push([x,(off-b-w[0]*x)/w[1]]))}else{[-yr,yr].forEach(y=>pts2.push([(off-b-w[1]*y)/w[0],y]))}
+  sx.strokeStyle=col;sx.lineWidth=width;sx.setLineDash(dash);sx.beginPath();sx.moveTo(...toP(...pts2[0]));sx.lineTo(...toP(...pts2[1]));sx.stroke();sx.setLineDash([])}
+function drawSVM(){
+  const C=Math.pow(10,+$('d27-c').value);$('d27-cV').textContent=C<1?f(C,3):f(C,1);
+  model=train(pts,C);sx.clearRect(0,0,SW,SH);AI.grid(sx,SW,SH,SS,sox,soy);
+  const hasBoth=pts.some(p=>p[2]>0)&&pts.some(p=>p[2]<0);
+  if(model&&hasBoth){const{w,b}=model;
+    const cell=10;for(let px=0;px<SW;px+=cell)for(let py=0;py<SH;py+=cell){const[x,y]=toW(px+5,py+5),v=w[0]*x+w[1]*y+b;sx.fillStyle=v>=0?css('--vec-a'):css('--vec-b');sx.globalAlpha=Math.abs(v)<1?.16:.07;sx.fillRect(px,py,cell,cell)}sx.globalAlpha=1;
+    line(w,b,1,css('--muted'),[6,5],1.5);line(w,b,-1,css('--muted'),[6,5],1.5);line(w,b,0,css('--ink'),[],2.5);}
+  let sv=0,ok=0;
+  pts.forEach((p,i)=>{const[px,py]=toP(p[0],p[1]);sx.fillStyle=p[2]>0?css('--vec-a'):css('--vec-b');sx.beginPath();sx.arc(px,py,6,0,7);sx.fill();
+    if(model&&hasBoth){const isSV=model.al[i]>1e-6;if(isSV){sv++;sx.strokeStyle=css('--ink');sx.lineWidth=2;sx.beginPath();sx.arc(px,py,11,0,7);sx.stroke()}if(p[2]*(model.w[0]*p[0]+model.w[1]*p[1]+model.b)>0)ok++}});
+  if(model&&hasBoth){const{w,b}=model,nw=Math.hypot(...w);$('d27-w').textContent='['+f(w[0])+', '+f(w[1])+']';$('d27-b').textContent=f(b);$('d27-mw').textContent=nw?f(2/nw,3):'∞';$('d27-sv').textContent=sv+' / '+pts.length;$('d27-acc').textContent=f(ok/pts.length,3)}
+  else{['d27-w','d27-b','d27-mw','d27-sv','d27-acc'].forEach(id=>$(id).textContent='–')}
+}
+function nearest(x,y){let bi=-1,bd=1e9;pts.forEach((p,i)=>{const[px,py]=toP(p[0],p[1]),d=Math.hypot(px-x,py-y);if(d<bd){bd=d;bi=i}});return bd<14?bi:-1}
+sc.addEventListener('pointerdown',e=>{const[x,y]=AI.evPos(sc,e),i=nearest(x,y);
+  if($('d27-del').checked){if(i>=0){pts.splice(i,1);drawSVM()}return}
+  if(i>=0){dragI=i;sc.setPointerCapture(e.pointerId)}else{const[wx,wy]=toW(x,y);pts.push([wx,wy,+$('d27-cls').value]);drawSVM()}});
+sc.addEventListener('pointermove',e=>{if(dragI<0)return;const[x,y]=AI.evPos(sc,e),[wx,wy]=toW(x,y);pts[dragI][0]=Math.max(-6.4,Math.min(6.4,wx));pts[dragI][1]=Math.max(-5.4,Math.min(5.4,wy));drawSVM()});
+sc.addEventListener('pointerup',()=>dragI=-1);
+$('d27-c').addEventListener('input',drawSVM);
+$('d27-traitor').addEventListener('click',()=>{pts.push([1.2,1.0,-1]);drawSVM()});
+$('d27-reset').addEventListener('click',()=>{pts=initPts();drawSVM()});
+drawSVM();
+
+/* ---- Lab 3: lifting circular data ---- */
+const ca=$('d27-liftA'),ax=AI.setupCanvas(ca),cb=$('d27-liftB'),bx=AI.setupCanvas(cb);
+const circ=(()=>{const R=rng(11),P=[];for(let i=0;i<70;i++){const a=R()*6.283,r=Math.sqrt(R())*1.5;P.push([r*Math.cos(a),r*Math.sin(a),1])}for(let i=0;i<70;i++){const a=R()*6.283,r=2.1+R()*0.9;P.push([r*Math.cos(a),r*Math.sin(a),-1])}return P})();
+function drawLift(){
+  const t=+$('d27-t').value;$('d27-tV').textContent=f(t,1);$('d27-rad').textContent=f(Math.sqrt(t),2);
+  const AW=+ca.dataset.w,AH=+ca.dataset.h,AS=46,aox=AW/2,aoy=AH/2;ax.clearRect(0,0,AW,AH);AI.grid(ax,AW,AH,AS,aox,aoy);
+  ax.fillStyle=css('--vec-a');ax.globalAlpha=.1;ax.beginPath();ax.arc(aox,aoy,Math.sqrt(t)*AS,0,7);ax.fill();ax.globalAlpha=1;
+  ax.strokeStyle=css('--ink');ax.lineWidth=2.5;ax.beginPath();ax.arc(aox,aoy,Math.sqrt(t)*AS,0,7);ax.stroke();
+  let ok=0;circ.forEach(p=>{const z=p[0]*p[0]+p[1]*p[1];if((z<=t?1:-1)===p[2])ok++;ax.fillStyle=p[2]>0?css('--vec-a'):css('--vec-b');ax.beginPath();ax.arc(aox+p[0]*AS,aoy-p[1]*AS,4,0,7);ax.fill()});
+  ax.fillStyle=css('--muted');ax.font='12px JetBrains Mono, monospace';ax.fillText('x1, x2 (original)',8,16);
+  const BW=+cb.dataset.w,BH=+cb.dataset.h,bxo=BW/2,bys=18,byb=BH-14;bx.clearRect(0,0,BW,BH);
+  bx.strokeStyle=css('--grid');bx.lineWidth=1;for(let z=0;z<=10;z+=2){bx.beginPath();bx.moveTo(0,byb-z*bys);bx.lineTo(BW,byb-z*bys);bx.stroke()}
+  bx.fillStyle=css('--vec-a');bx.globalAlpha=.1;bx.fillRect(0,byb-t*bys,BW,t*bys);bx.globalAlpha=1;
+  circ.forEach(p=>{const z=p[0]*p[0]+p[1]*p[1];bx.fillStyle=p[2]>0?css('--vec-a'):css('--vec-b');bx.beginPath();bx.arc(bxo+p[0]*76,byb-z*bys,4,0,7);bx.fill()});
+  bx.strokeStyle=css('--ink');bx.lineWidth=2.5;bx.beginPath();bx.moveTo(0,byb-t*bys);bx.lineTo(BW,byb-t*bys);bx.stroke();
+  bx.fillStyle=css('--muted');bx.font='12px JetBrains Mono, monospace';bx.fillText('x1  vs  z = x1² + x2²  (lifted)',8,16);
+  $('d27-lacc').textContent=ok+' / '+circ.length;
+}
+$('d27-t').addEventListener('input',drawLift);drawLift();
+
+/* ---- Lab 4: RBF heatmap ---- */
+const rc=$('d27-rbfC'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h,RS=52,rox=RW/2-RS*1.5,roy=RH/2;let ref=[1,0],dragR=false;
+function drawRBF(){
+  const g=Math.pow(10,+$('d27-g').value);$('d27-gV').textContent=f(g,3);rx.clearRect(0,0,RW,RH);
+  const cell=8,col=css('--vec-a');for(let px=0;px<RW;px+=cell)for(let py=0;py<RH;py+=cell){const x=(px+4-rox)/RS,y=(roy-py-4)/RS,k=Math.exp(-g*((x-ref[0])**2+(y-ref[1])**2));rx.fillStyle=col;rx.globalAlpha=k*.75;rx.fillRect(px,py,cell,cell)}rx.globalAlpha=1;
+  AI.grid(rx,RW,RH,RS,rox,roy);
+  const sample=[[2,0],[0,1],[1.1,.1],[5,0],[-1,0]];rx.font='12px JetBrains Mono, monospace';
+  sample.forEach(s=>{const px=rox+s[0]*RS,py=roy-s[1]*RS,k=Math.exp(-g*((s[0]-ref[0])**2+(s[1]-ref[1])**2));rx.fillStyle=css('--vec-b');rx.beginPath();rx.arc(px,py,5,0,7);rx.fill();rx.fillStyle=css('--ink');rx.fillText(f(k,3),px+7,py-7)});
+  const[px,py]=[rox+ref[0]*RS,roy-ref[1]*RS];rx.fillStyle=css('--ink');rx.beginPath();rx.arc(px,py,8,0,7);rx.fill();rx.fillStyle=css('--paper');rx.textAlign='center';rx.fillText('r',px,py+4);rx.textAlign='left';
+  $('d27-ref').textContent='['+f(ref[0],1)+', '+f(ref[1],1)+']';
+  $('d27-k1').textContent=f(Math.exp(-g*((1.1-ref[0])**2+(.1-ref[1])**2)),4);$('d27-k2').textContent=f(Math.exp(-g*((5-ref[0])**2+(0-ref[1])**2)),4);
+}
+rc.addEventListener('pointerdown',e=>{dragR=true;rc.setPointerCapture(e.pointerId);mvR(e)});
+function mvR(e){if(!dragR)return;const[x,y]=AI.evPos(rc,e);ref=[Math.round((x-rox)/RS*10)/10,Math.round((roy-y)/RS*10)/10];drawRBF()}
+rc.addEventListener('pointermove',mvR);rc.addEventListener('pointerup',()=>dragR=false);
+$('d27-g').addEventListener('input',drawRBF);drawRBF();
+
+/* ---- quiz ---- */
+const ck=document.querySelector('#d27-ck input[data-ck="6"]');
+AI.quiz($('d27-quizBox'),[
+ ['يعني إيه support vectors في الـ SVM؟',['كل نقط الـ training','الـ feature vectors بعد تحويل الـ kernel','الـ weight vectors اللي اتعلمت','نقط الـ training الأقرب للـ boundary واللي بتحدد الـ hyperplane'],3,'هي النقط اللي واقفة على حدود الـ margin. هما بس اللي بيحددوا الخط، وشيل أي نقطة تانية مش هيغير حاجة.'],
+ ['الـ SVM بتعمل maximize لإيه وهي بتدور على الـ boundary؟',['تعقيد الـ boundary','الـ margin: المسافة بين الـ boundary وأقرب نقط من كل class','مجموع مسافات كل النقط للـ boundary','عدد النقط المتصنفة صح'],1,'أوسع margin = تعميم أحسن على داتا جديدة.'],
+ ['إيه اللي بيحصل لما تكبّر الـ C؟',['الـ margin بيضيق، الغلطات المسموحة بتقل، والموديل ممكن يعمل overfit','عدد الـ support vectors دايمًا بيزيد','الـ margin بيوسع والغلطات المسموحة بتزيد','الـ kernel بيتحول من linear لـ RBF'],0,'C كبير = غرامة غالية على المخالفات = شارع ضيق لازق في الـ train. C صغير = regularization أكتر وشارع أوسع.'],
+ ['الـ kernel trick بيخلي الـ SVM تتعلم حدود مش خطية إزاي؟',['بيبدّل الـ SVM بـ neural network','بيحسب dot products في فضاء عالي الأبعاد من غير ما يحوّل الداتا ليه صراحة','بيشيل الـ outliers قبل التدريب','بيضيف polynomial features للداتا مباشرة'],1,'كل xᵢ·xⱼ بيتبدل بـ K(xᵢ,xⱼ)، فبتاخد dot product الفضاء الكبير (حتى اللانهائي في RBF) من غير ما تبنيه.'],
+ ['الـ hinge loss بتبقى صفر لما y·f(x) ≥ 1. ده معناه إيه؟',['النقطة noise ولازم تتجاهل','النقطة متصنفة غلط','النقطة على الـ boundary بالظبط','النقطة متصنفة صح وواقفة بره الـ margin'],3,'صح وعلى الرصيف أو أبعد. بس النقط جوه الشارع أو الغلط هي اللي بتساهم في الـ loss.'],
+ ['(سؤال إضافي) عندك feature مداها من 0 لـ 100000 وواحدة من 0 لـ 1، ودرّبت SVM من غير scaling. إيه المشكلة؟',['مفيش مشكلة، الـ SVM زي الشجر','الـ margin بيتقاس بـ ‖w‖ فالهندسة بتتشوه والـ feature الكبيرة بتسيطر','الـ SVM هترفض تتدرب','الـ kernel هيتحول لوحده لـ linear'],1,'عكس الشجر اللي اتعلمتها امبارح. الـ SVM (وبكرة الـ KNN) معتمدين على مسافات وأطوال، فالـ scale بيفرق.'],
+ ['(سؤال إضافي) ليه SVC بالـ RBF مش اختيار كويس لمليون صف؟',['لأن الـ RBF مش بيشتغل على أرقام كبيرة','لأن تكلفة الـ kernel SVM من O(n²) لـ O(n³) في عدد النقط','لأنها محتاجة GPU','لأن الـ C لازم يبقى صفر'],1,'الـ dual محتاج يقارن كل نقطة بكل نقطة. للداتا الكبيرة: LinearSVC (خطية في n) أو موديل تاني.']
+],5,()=>{if(ck){ck.checked=true;AI.store.set('aiefs-d27-6','1')}});
+AI.checklist(27,$('d27-ck'));
+
+AI.onTheme(()=>{if(!document.body.contains(lc))return false;drawLoss();drawSVM();drawLift();drawRBF()});
+})();
+</script>

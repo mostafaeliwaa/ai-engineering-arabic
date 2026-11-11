@@ -1,0 +1,612 @@
+<div class="day" id="d9-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 09 · Information Theory</span>
+  <h1>اليوم ٩: نظرية المعلومات، أو إزاي نقيس «المفاجأة»</h1>
+  <p class="lede">كل مرة بتكتب <code>CrossEntropyLoss()</code> أو بتقرا «perplexity» في ورقة عن LLM أو «KL divergence» في الـ RLHF، انت بتستخدم نفس الفكرة: <b>قد إيه الحاجة دي فاجأتني؟</b> النهاردة هنبني الـ entropy والـ cross-entropy والـ KL والـ mutual information من الصفر ونشوفهم بعينينا.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٦٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>محتاج: <b>Day 6 (Probability)</b></span>
+    <span>بعده: <b>Dimensionality Reduction</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d9-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d9-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 8) اتكلمنا عن الـ Optimization: إزاي ننزل على منحنى الـ loss. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ gradient descent بيتحرك في أنهي اتجاه، وليه؟</summary>عكس اتجاه الـ gradient، لأن الـ gradient بيشاور على أسرع طلوع للـ loss، فإحنا بنمشي عكسه عشان ننزل. الخطوة = <span class="ltr">w ← w − lr · ∇L</span>.</details>
+  <details><summary>٢. إيه اللي بيحصل لو الـ learning rate كبير أوي أو صغير أوي؟</summary>كبير أوي: بتنط فوق القاع وممكن تتفرتك (diverge). صغير أوي: بتوصل بس ببطء شديد وممكن تتلزق. عشان كده بنجرب قيم ونستخدم schedules.</details>
+  <details><summary>٣. الـ Adam بيضيف إيه على الـ SGD العادي؟</summary>بيجمع momentum (متوسط متحرك للـ gradients عشان يكمل في نفس الاتجاه) مع learning rate متكيّف لكل parameter (بيقسم على متوسط مربعات الـ gradients). النهاردة هنعرف الـ loss اللي Adam بينزّلها دي جاية منين أصلًا: الـ cross-entropy.</details>
+</section>
+
+<section>
+  <h2>خطة الساعة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ Optimization</div>
+    <div><b>15 min</b>المفاجأة، الـ entropy، والـ cross-entropy (معمل ٠١ و٠٢)</div>
+    <div><b>10 min</b>KL، الـ mutual information، الـ joint/conditional entropy</div>
+    <div><b>10 min</b>الـ softmax والـ label smoothing والـ perplexity (معمل ٠٣)</div>
+    <div><b>15 min</b>اكتب الكود وشغّله</div>
+    <div><b>5 min</b>الكويز والـ checklist</div>
+  </div>
+</section>
+
+<!-- STATION 1: surprise + entropy -->
+<section id="d9-s1">
+  <div class="station-head"><span class="tag">01</span><h2>المفاجأة (Information Content) والـ Entropy</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>تخيل صاحبك بعتلك رسالة «الشمس طلعت النهاردة». ولا معلومة، كنت عارف. لكن لو بعتلك «كسبت اليانصيب» دي مفاجأة ضخمة. يعني: <b>كل ما الحدث يكون نادر، كل ما يشيل معلومات أكتر.</b></p>
+      <div class="formula">I(x) = −log p(x)</div>
+      <p>لو استخدمت log أساس 2 الوحدة اسمها <b>bits</b>، ولو استخدمت الـ ln (أساس e) اسمها <b>nats</b>. نفس الفكرة، وحدة مختلفة، زي متر وقدم.</p>
+      <div class="tablewrap"><table>
+        <tr><th>الحدث</th><th>الاحتمال</th><th>المفاجأة (bits)</th></tr>
+        <tr><td>عملة عادلة تيجي صورة</td><td class="ltr">0.5</td><td class="ltr">1.0</td></tr>
+        <tr><td>زهر يجيب ٦</td><td class="ltr">0.167</td><td class="ltr">2.58</td></tr>
+        <tr><td>حدث واحد في الألف</td><td class="ltr">0.001</td><td class="ltr">9.97</td></tr>
+        <tr><td>حدث مؤكد</td><td class="ltr">1.0</td><td class="ltr">0.0</td></tr>
+      </table></div>
+      <p>الحدث المؤكد مفاجأته صفر، لأنك كنت عارف إنه هيحصل.</p>
+      <h3>الـ Entropy = متوسط المفاجأة</h3>
+      <p>بدل ما نسأل عن حدث واحد، نسأل: <b>في المتوسط</b>، التوزيع ده بيفاجئني قد إيه؟</p>
+      <div class="formula">H(P) = −Σ p(x) · log p(x)</div>
+      <p>العملة العادلة أعلى entropy لمتغير بقيمتين: <b>1 bit</b>. العملة المغشوشة (99% صورة) entropy بتاعتها <b>0.08 bit</b> بس، لأنك عارف تقريبًا هيحصل إيه، فكل رمية مش بتقولك حاجة جديدة.</p>
+      <p>الـ entropy هي عدم اليقين اللي <b>مينفعش تتخلص منه</b>. ومينفعش تضغط الداتا لأقل منها (ده الـ limit بتاع أي zip).</p>
+      <div class="note"><strong>جرب بإيدك:</strong> حرّك احتمال الصورة. المنحنى البرتقالي هو الـ entropy، والأزرق هو مفاجأة «الصورة» لوحدها. لاحظ إن القمة عند 0.5 بالظبط.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d9-entC" width="520" height="340" aria-label="منحنى الـ entropy للعملة"></canvas>
+      <label style="display:grid;gap:2px">احتمال الصورة p = <b class="mono" id="d9-pv">0.50</b><input type="range" id="d9-p" min="0.001" max="0.999" step="0.001" value="0.5"></label>
+      <div class="readout">
+        <div><small>مفاجأة الصورة</small><b id="d9-sH">1</b></div>
+        <div><small>مفاجأة الكتابة</small><b id="d9-sT">1</b></div>
+        <div><small>H (bits)</small><b id="d9-H">1</b></div>
+        <div><small>H (nats)</small><b id="d9-Hn">0.69</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" data-d9p="0.5">عادلة</button>
+        <button type="button" data-d9p="0.99">مغشوشة 99/1</button>
+        <button type="button" data-d9p="0.9">90/10</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2: cross entropy + KL -->
+<section id="d9-s2">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Cross-Entropy والـ KL Divergence</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p><b>الـ Cross-Entropy:</b> الحقيقة جاية من توزيع <span class="ltr">P</span>، بس انت (أو الموديل) فاكرها جاية من <span class="ltr">Q</span>. متوسط المفاجأة اللي هتحس بيها؟</p>
+      <div class="formula">H(P, Q) = −Σ p(x) · log q(x)</div>
+      <p>تشبيه: واحد مصري راح لندن ومتوقع الجو مشمس (Q). كل يوم المطر بيفاجئه أكتر من اللي عايش هناك وعارف (P). الفرق ده هو التمن اللي بيدفعه عشان توقعه غلط.</p>
+      <p>لو <span class="ltr">Q = P</span> بالظبط، الـ cross-entropy = الـ entropy. أي اختلاف بيكبّرها.</p>
+      <p>في الـ classification الـ label الحقيقي one-hot (الكلاس الصح احتماله 1 والباقي 0)، فالمعادلة كلها بتختصر لـ:</p>
+      <div class="formula">H(P, Q) = −log q(true_class)</div>
+      <p>دي <b>كل</b> الـ cross-entropy loss: ارفع احتمال الكلاس الصح.</p>
+      <h3>الـ KL Divergence: الزيادة اللي ملهاش لازمة</h3>
+      <div class="formula">D_KL(P‖Q) = Σ p(x) · log(p(x)/q(x)) = H(P,Q) − H(P)</div>
+      <p>يعني <b>cross-entropy = entropy + KL</b>. والـ entropy بتاعة الـ labels الحقيقية ثابتة أثناء التدريب، فلما تنزّل الـ cross-entropy انت فعليًا بتنزّل الـ KL: بتزق توزيع الموديل ناحية الحقيقة.</p>
+      <p><b>خلي بالك:</b> الـ KL مش متماثل: <span class="ltr">D_KL(P‖Q) ≠ D_KL(Q‖P)</span>، فهو مش «مسافة» حقيقية.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> اسحب أعمدة الموديل Q (البرتقالي) لفوق ولتحت. الأزرق هو الحقيقة P. شوف الـ KL بيوصل صفر لما تطابقهم، ولاحظ إن الاتجاهين بتوع الـ KL مختلفين.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d9-klC" width="520" height="300" aria-label="أعمدة التوزيعين P و Q"></canvas>
+      <div class="readout">
+        <div><small>H(P)</small><b id="d9-hp">-</b></div>
+        <div><small>H(P,Q)</small><b id="d9-ce">-</b></div>
+        <div><small>KL(P‖Q)</small><b id="d9-kl">-</b></div>
+        <div><small>KL(Q‖P)</small><b id="d9-klr">-</b></div>
+      </div>
+      <div class="verdict" id="d9-klv"></div>
+      <div class="btns">
+        <button type="button" data-d9q="good">الموديل الكويس</button>
+        <button type="button" data-d9q="bad">الموديل الوحش</button>
+        <button type="button" data-d9q="match">طابق الحقيقة</button>
+        <button type="button" data-d9q="uni">Uniform</button>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">P = <span class="ltr">[0.7, 0.2, 0.1]</span> (نفس أرقام الدرس). الأرقام بالـ bits.</p>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: joint, conditional, MI -->
+<section id="d9-s3">
+  <div class="station-head"><span class="tag">03</span><h2>Joint و Conditional Entropy و Mutual Information</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p><b>الـ Joint Entropy</b> <span class="ltr">H(X,Y)</span>: عدم اليقين في الاتنين مع بعض.</p>
+      <div class="formula">H(X,Y) = −Σ Σ p(x,y) · log p(x,y)     ≤ H(X) + H(Y)</div>
+      <p>بتتساوى لما يكونوا مستقلين. لو بينهم معلومة مشتركة، الـ joint بيبقى أقل من المجموع، والفرق ده بالظبط هو الـ mutual information.</p>
+      <p><b>الـ Conditional Entropy</b> <span class="ltr">H(Y|X)</span>: عدم اليقين اللي فاضل في Y بعد ما شفت X.</p>
+      <div class="formula">H(Y|X) = H(X,Y) − H(X)      0 ≤ H(Y|X) ≤ H(Y)</div>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+        <li>لو X بيحدد Y تمامًا (درجة الحرارة بالـ Celsius وبالـ Fahrenheit) ⇐ <span class="ltr">H(Y|X) = 0</span>.</li>
+        <li>لو X مالوش علاقة بـ Y (رمية عملة وطقس بكرة) ⇐ <span class="ltr">H(Y|X) = H(Y)</span>.</li>
+      </ul>
+      <p>الـ decision trees بتستخدم ده: في كل split بتختار الـ feature اللي يقلل <span class="ltr">H(Y|X)</span> أكتر حاجة.</p>
+      <p><b>الـ Mutual Information</b> <span class="ltr">I(X;Y)</span>: معرفتك بواحد بتقلل عدم يقينك في التاني قد إيه.</p>
+      <div class="formula">I(X;Y) = H(X) − H(X|Y) = H(Y) − H(Y|X) = H(X) + H(Y) − H(X,Y)
+= Σ Σ p(x,y) · log( p(x,y) / (p(x)·p(y)) )</div>
+      <p>خواصها: دايمًا <span class="ltr">≥ 0</span>، بتساوي صفر <b>بس</b> لو مستقلين، <b>متماثلة</b> <span class="ltr">I(X;Y)=I(Y;X)</span> (عكس الـ KL)، و<span class="ltr">I(X;X) = H(X)</span>.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> حرّك «قد إيه X وY متفقين». المصفوفة <span class="ltr">[[a, b], [b, a]]</span> بتتغير، والأعمدة بتوريك العلاقات. عند 0.5 هما مستقلين، وعند 0.9 هي نفس مصفوفة الدرس «dependent».</div>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">احتمال إن X = Y: <b class="mono" id="d9-agv">0.90</b><input type="range" id="d9-ag" min="0" max="1" step="0.01" value="0.9"></label>
+      <div class="formula" id="d9-joint">[[0.45, 0.05], [0.05, 0.45]]</div>
+      <canvas id="d9-miC" width="520" height="230" aria-label="مقارنة الـ entropies"></canvas>
+      <div class="readout">
+        <div><small>H(X,Y)</small><b id="d9-hxy">-</b></div>
+        <div><small>H(Y|X)</small><b id="d9-hyx">-</b></div>
+        <div><small>I(X;Y)</small><b id="d9-mi">-</b></div>
+      </div>
+    </div>
+  </div>
+  <h3>الـ MI لاختيار الـ features</h3>
+  <p>لكل feature <span class="ltr">X_i</span> احسب <span class="ltr">I(X_i; Y)</span> مع الـ target، رتبهم، وخد أحسن k. ميزتها إنها بتمسك <b>أي</b> علاقة (خطية، مش خطية، حتى مش monotonic)، لكن مع داتا قليلة التقدير بتاعها محتاج samples كفاية و binning معقول.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>بتكتشف</th><th>التكلفة</th><th>Categorical؟</th></tr>
+    <tr><td>Pearson correlation</td><td>العلاقات الخطية</td><td class="ltr">O(n)</td><td>لأ</td></tr>
+    <tr><td>Spearman correlation</td><td>العلاقات الـ monotonic</td><td class="ltr">O(n log n)</td><td>لأ</td></tr>
+    <tr><td>Mutual information</td><td>أي اعتمادية إحصائية</td><td class="ltr">O(n log n) with binning</td><td>أيوه</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 4: softmax, label smoothing, perplexity -->
+<section id="d9-s4">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Softmax والـ Label Smoothing والـ Perplexity</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الموديل بيطلّع أرقام خام اسمها <b>logits</b>. الـ <b>softmax</b> بيعمل لها exp ويقسم على المجموع، فتطلع توزيع احتمالات صحيح.</p>
+      <h3>ليه الـ cross-entropy هي <i>الـ</i> loss بتاعة الـ classification؟ ٣ زوايا ونفس النتيجة</h3>
+      <ol class="ex">
+        <li><b>نظرية المعلومات:</b> بتقيس كام bit بتضيّعها لما تستخدم توزيع الموديل بدل الحقيقي. تقليلها = الموديل يبقى أكفأ «encoder» للواقع.</li>
+        <li><b>Maximum likelihood:</b> الـ likelihood = <span class="ltr">∏ q(y_i)</span>، الـ log بتاعه = <span class="ltr">Σ log q(y_i)</span>، وسالبه <span class="ltr">−Σ log q(y_i)</span> هو بالظبط الـ cross-entropy. يعني تقليل الـ CE = تعظيم احتمال الداتا تحت الموديل.</li>
+        <li><b>الـ gradient:</b> مشتقة الـ CE بالنسبة للـ logits هي ببساطة <span class="ltr">(predicted − true)</span>. نضيفة، مستقرة، وسريعة، وده سبب إنها ماشية مع الـ softmax زي السمنة على العسل.</li>
+      </ol>
+      <h3>Label Smoothing</h3>
+      <p>بدل الـ target الحاد <span class="ltr">[0, 0, 1, 0]</span> نستخدم target ناعم:</p>
+      <div class="formula">soft = (1 − ε) · hard + ε / num_classes</div>
+      <p>مع <span class="ltr">ε = 0.1</span> و٤ كلاسات: <span class="ltr">[0.025, 0.025, 0.925, 0.025]</span>. الـ one-hot الـ entropy بتاعه صفر، والناعم entropy بتاعه موجبة. الفايدة:</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+        <li>بيمنع الموديل يزق الـ logits لقيم متطرفة (عشان تطابق one-hot بالظبط محتاج logit لا نهائي).</li>
+        <li>regularization: الموديل ميقدرش يبقى واثق ١٠٠٪.</li>
+        <li>calibration أحسن: الاحتمالات بتعبر عن عدم اليقين الحقيقي.</li>
+        <li>بيقلل الفرق بين سلوك التدريب والـ inference.</li>
+      </ul>
+      <div class="formula">L = (1 − ε) · CE(hard, pred) + ε · H_uniform(pred)</div>
+      <p>الحد التاني بيعاقب التوقعات البعيدة عن الـ uniform، يعني regularization مباشر على الثقة.</p>
+      <h3>Bits ولا Nats؟ والـ Perplexity</h3>
+      <p>الفرق الوحيد أساس الـ log: 2 ⇐ bits، e ⇐ nats (عرف الـ ML)، 10 ⇐ hartleys (نادر). <span class="ltr">1 nat = 1/ln(2) = 1.4427 bits</span>. PyTorch وTensorFlow بيستخدموا nats افتراضيًا.</p>
+      <div class="formula">Perplexity = 2^H(P,Q) (bits)  =  e^H(P,Q) (nats)</div>
+      <p>الـ perplexity = «عدد الاختيارات المتساوية اللي الموديل محتار بينهم». perplexity 50 يعني كأنه بيختار عشوائي من 50 token في كل خطوة. أقل = أحسن. حسب الدرس: GPT-2 وصل لحوالي 30 على benchmarks مشهورة، والموديلات الحديثة بقت رقم واحد في المجالات المغطاة كويس.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d9-smC" width="520" height="260" aria-label="الـ softmax والـ target"></canvas>
+      <div class="mrow">
+        <label>z0 <span id="d9-z0v">1</span><input type="range" id="d9-z0" min="-4" max="8" step="0.1" value="1"></label>
+        <label>z1 <span id="d9-z1v">0.5</span><input type="range" id="d9-z1" min="-4" max="8" step="0.1" value="0.5"></label>
+        <label>z2 <span id="d9-z2v">3</span><input type="range" id="d9-z2" min="-4" max="8" step="0.1" value="3"></label>
+        <label>z3 <span id="d9-z3v">0.2</span><input type="range" id="d9-z3" min="-4" max="8" step="0.1" value="0.2"></label>
+      </div>
+      <div class="mrow">
+        <label>true class <select id="d9-tc"><option>0</option><option>1</option><option selected>2</option><option>3</option></select></label>
+        <label>ε = <span id="d9-epsv">0</span><input type="range" id="d9-eps" min="0" max="0.5" step="0.01" value="0"></label>
+      </div>
+      <div class="readout">
+        <div><small>CE (nats)</small><b id="d9-loss">-</b></div>
+        <div><small>Perplexity</small><b id="d9-ppl">-</b></div>
+        <div><small>H(target)</small><b id="d9-ht">-</b></div>
+        <div><small>grad = pred − target</small><b id="d9-grad" style="font-size:13px">-</b></div>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">القيم الافتراضية هي نفس مثال الـ label smoothing في كود الدرس: logits <span class="ltr">[1.0, 0.5, 3.0, 0.2]</span>، true class 2. جرب ε = 0.1 لازم الـ CE تطلع ≈ 0.428.</p>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d9-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو (اللي عملته clone يوم ١)، شغّل الملف الأصلي عشان تشوف الصورة الكاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/01-math-foundations/09-information-theory/code/information_theory.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> اقفل الملف واكتب الخطوات دي بنفسك في <code>my_info.py</code>. ارجع للأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: المفاجأة والـ entropy</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+def information_content(p, base=2):
+    if p &lt;= 0 or p &gt; 1:
+        return float('inf') if p &lt;= 0 else 0.0
+    return -math.log(p) / math.log(base)     <span class="c"># -log p، بأي أساس</span>
+
+def entropy(probs, base=2):                  <span class="c"># متوسط المفاجأة</span>
+    return sum(
+        p * information_content(p, base)
+        for p in probs if p &gt; 0                <span class="c"># 0·log0 = 0، فبنتجاهلها</span>
+    )
+
+fair_coin = [0.5, 0.5]
+biased_coin = [0.99, 0.01]
+fair_die = [1/6] * 6
+
+print(f"Fair coin entropy:   {entropy(fair_coin):.4f} bits")
+print(f"Biased coin entropy: {entropy(biased_coin):.4f} bits")
+print(f"Fair die entropy:    {entropy(fair_die):.4f} bits")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Fair coin entropy:   1.0000 bits
+Biased coin entropy: 0.0808 bits
+Fair die entropy:    2.5850 bits</pre></details>
+
+  <h3>خطوة ٢: الـ cross-entropy والـ KL</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def cross_entropy(p, q, base=2):
+    total = 0.0
+    for pi, qi in zip(p, q):
+        if pi &gt; 0:
+            if qi &lt;= 0:
+                return float('inf')          <span class="c"># الموديل قال مستحيل والحقيقة حصلت!</span>
+            total += pi * (-math.log(qi) / math.log(base))
+    return total
+
+def kl_divergence(p, q, base=2):             <span class="c"># CE - H</span>
+    return cross_entropy(p, q, base) - entropy(p, base)
+
+true_dist = [0.7, 0.2, 0.1]
+good_model = [0.6, 0.25, 0.15]
+bad_model = [0.1, 0.1, 0.8]
+
+print(f"Entropy of true dist:     {entropy(true_dist):.4f} bits")
+print(f"CE (good model):          {cross_entropy(true_dist, good_model):.4f} bits")
+print(f"CE (bad model):           {cross_entropy(true_dist, bad_model):.4f} bits")
+print(f"KL divergence (good):     {kl_divergence(true_dist, good_model):.4f} bits")
+print(f"KL divergence (bad):      {kl_divergence(true_dist, bad_model):.4f} bits")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Entropy of true dist:     1.1568 bits
+CE (good model):          1.1896 bits
+CE (bad model):           3.0219 bits
+KL divergence (good):     0.0328 bits
+KL divergence (bad):      1.8651 bits</pre></details>
+
+  <h3>خطوة ٣: الـ cross-entropy كـ loss للـ classification</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def softmax(logits):
+    max_logit = max(logits)                  <span class="c"># نطرح الأكبر عشان الـ exp ميعملش overflow</span>
+    exps = [math.exp(z - max_logit) for z in logits]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+def cross_entropy_loss(true_class, logits):  <span class="c"># -log احتمال الكلاس الصح</span>
+    probs = softmax(logits)
+    return -math.log(probs[true_class])
+
+logits = [2.0, 1.0, 0.1]
+true_class = 0
+
+probs = softmax(logits)
+loss = cross_entropy_loss(true_class, logits)
+
+print(f"Logits:      {logits}")
+print(f"Softmax:     {[f'{p:.4f}' for p in probs]}")
+print(f"True class:  {true_class}")
+print(f"Loss:        {loss:.4f} nats")
+print(f"Perplexity:  {math.exp(loss):.2f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Logits:      [2.0, 1.0, 0.1]
+Softmax:     ['0.6590', '0.2424', '0.0986']
+True class:  0
+Loss:        0.4170 nats
+Perplexity:  1.52</pre></details>
+
+  <h3>خطوة ٤: الـ cross-entropy = negative log-likelihood</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+
+random.seed(42)
+
+n_samples = 1000
+n_classes = 3
+true_labels = [random.randint(0, n_classes - 1) for _ in range(n_samples)]
+model_logits = [[random.gauss(0, 1) for _ in range(n_classes)] for _ in range(n_samples)]
+
+ce_loss = sum(                                <span class="c"># متوسط الـ CE على الداتا</span>
+    cross_entropy_loss(label, logits)
+    for label, logits in zip(true_labels, model_logits)
+) / n_samples
+
+nll = -sum(                                   <span class="c"># سالب متوسط log-likelihood</span>
+    math.log(softmax(logits)[label])
+    for label, logits in zip(true_labels, model_logits)
+) / n_samples
+
+print(f"Cross-entropy loss:      {ce_loss:.6f}")
+print(f"Negative log-likelihood: {nll:.6f}")
+print(f"Difference:              {abs(ce_loss - nll):.2e}")</pre></div>
+  <p>الرقمين هيطلعوا متطابقين والفرق <span class="ltr">0.00e+00</span> (أو قريب جدًا منه). ده الإثبات العملي إن الاتنين نفس الحاجة.</p>
+
+  <h3>خطوة ٥: الـ mutual information</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def mutual_information(joint_probs, base=2):
+    rows = len(joint_probs)
+    cols = len(joint_probs[0])
+
+    <span class="c"># الـ marginals: اجمع الصفوف والأعمدة</span>
+    margin_x = [sum(joint_probs[i][j] for j in range(cols)) for i in range(rows)]
+    margin_y = [sum(joint_probs[i][j] for i in range(rows)) for j in range(cols)]
+
+    mi = 0.0
+    for i in range(rows):
+        for j in range(cols):
+            pxy = joint_probs[i][j]
+            if pxy &gt; 0:
+                mi += pxy * math.log(pxy / (margin_x[i] * margin_y[j])) / math.log(base)
+    return mi
+
+independent = [[0.25, 0.25], [0.25, 0.25]]
+dependent = [[0.45, 0.05], [0.05, 0.45]]
+
+print(f"MI (independent): {mutual_information(independent):.4f} bits")
+print(f"MI (dependent):   {mutual_information(dependent):.4f} bits")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">MI (independent): 0.0000 bits
+MI (dependent):   0.5310 bits</pre></details>
+
+  <h3>خطوة ٦: نفس الكلام بـ NumPy (بالـ nats)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def np_entropy(p):
+    p = np.asarray(p, dtype=float)
+    mask = p &gt; 0                              <span class="c"># نتجنب log(0)</span>
+    result = np.zeros_like(p)
+    result[mask] = p[mask] * np.log(p[mask])
+    return -result.sum()
+
+def np_cross_entropy(p, q):
+    p, q = np.asarray(p, dtype=float), np.asarray(q, dtype=float)
+    mask = p &gt; 0
+    return -(p[mask] * np.log(q[mask])).sum()
+
+def np_kl_divergence(p, q):
+    return np_cross_entropy(p, q) - np_entropy(p)
+
+true = np.array([0.7, 0.2, 0.1])
+pred = np.array([0.6, 0.25, 0.15])
+print(f"Entropy:    {np_entropy(true):.4f} nats")
+print(f"Cross-ent:  {np_cross_entropy(true, pred):.4f} nats")
+print(f"KL div:     {np_kl_divergence(true, pred):.4f} nats")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Entropy:    0.8018 nats
+Cross-ent:  0.8245 nats
+KL div:     0.0227 nats</pre></details>
+  <p><b>قارن باللي طلعلك:</b> الأرقام اللي فوق في الخطوات كلها حسابات مباشرة للمعادلات على نفس المدخلات، فلازم تطلعلك هي هي لحد آخر رقم عشري. لو فيه فرق، يبقى فيه غلطة في الكود بتاعك.</p>
+  <p>الملف الكامل فيه كمان: <code>conditional_entropy</code> و<code>joint_entropy</code> و<code>perplexity</code> وdemo للـ label smoothing وdemo لاختيار features بالـ MI (strong_signal، weak_signal، noise، constant). شغّله ولاحظ إن الـ strong signal بياخد أعلى MI والـ noise والـ constant قريبين من صفر.</p>
+  <div class="note ai"><strong>الربط:</strong> انت كده بنيت من الصفر اللي <code>torch.nn.CrossEntropyLoss()</code> بيعمله جواه. لما الـ loss بتنزل أثناء التدريب، ده معناه إن توزيع الموديل بيقرب من التوزيع الحقيقي، ومقاس بالـ nats اللي بتضيع.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d9-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Entropy الحروف الإنجليزي:</b> احسبها لو الـ ٢٦ حرف بنفس الاحتمال، وبعدين بتكرارات الحروف الحقيقية. أنهي أعلى وليه؟
+      <details><summary>تلميح / إجابة</summary>نادي <code>entropy([1/26]*26)</code>، لازم تطلع <span class="ltr">log₂ 26 ≈ 4.70</span> bits. التكرارات الحقيقية مش متساوية (حروف زي e وt بتتكرر أكتر)، فالـ entropy لازم تطلع أقل. الـ uniform هو أعلى entropy ممكنة لعدد ثابت من النتائج.</details></li>
+    <li><b>Loss بالإيد:</b> موديل طلّع logits <span class="ltr">[5.0, 2.0, 0.5]</span> والكلاس الصح 1. احسب الـ CE بالإيد واتأكد بالدالة. إيه الـ logits اللي تدي loss صفر؟
+      <details><summary>تلميح / إجابة</summary>softmax الأول، وبعدين <span class="ltr">−ln</span> الاحتمال في index 1. لازم تطلع حوالي <b>3.06</b>. الـ loss بتقرب من صفر بس لما logit الكلاس 1 يبقى أكبر بكتير من الاتنين التانيين (مش بتوصل صفر بالظبط إلا في الـ limit). جربها في معمل ٠٤.</details></li>
+    <li><b>الـ KL مش متماثل:</b> اختار P وQ واحسب الاتجاهين.
+      <details><summary>تلميح / إجابة</summary>جرب <span class="ltr">P = [0.9, 0.1]</span> و<span class="ltr">Q = [0.5, 0.5]</span>. هيطلعوا تقريبًا <span class="ltr">KL(P‖Q) ≈ 0.531</span> و<span class="ltr">KL(Q‖P) ≈ 0.737</span> bits. مختلفين لأن كل اتجاه بيوزن الـ log ratio بتوزيع مختلف (اللي قدام الـ ‖ هو اللي بيوزن).</details></li>
+    <li><b>Perplexity لجملة:</b> دالة تاخد list من <span class="ltr">(true_token_index, predicted_logits)</span> وترجع الـ perplexity.
+      <details><summary>تلميح / إجابة</summary>لكل زوج احسب <code>cross_entropy_loss</code>، خد المتوسط، وابعته لـ <code>perplexity</code> (يعني <code>math.exp</code>). اختبار: logits متساوية على V tokens لازم تدي perplexity = V بالظبط.</details></li>
+    <li><b>إضافة مني · فلتر ثقة لـ RAG/agent:</b> انت عامل classifier بيوجّه سؤال اليوزر لواحد من ٤ tools (search، calculator، calendar، chat). اكتب دالة <code>route(logits, threshold)</code> ترجع اسم الـ tool لو الـ entropy بتاعة الـ softmax أقل من threshold، وإلا ترجع <code>"ask_user"</code> عشان يوضح. جرب logits <span class="ltr">[4, 0, 0, 0]</span> و<span class="ltr">[1, 1, 0.9, 1]</span>.
+      <details><summary>تلميح</summary>أقصى entropy لـ ٤ اختيارات = <span class="ltr">log₂ 4 = 2</span> bits. ابدأ بـ threshold زي 1.0 bit. الأولى entropy صغيرة (واثق ⇐ search)، والتانية قريبة من 2 (محتار ⇐ ask_user). ده نفس المنطق اللي بيستخدموه عشان يقرروا امتى الـ agent يسأل بدل ما يخمّن.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d9-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ما قالهوش صريح</h2></div>
+  <h3>الحدس في جملة</h3>
+  <p>الـ entropy = «قد إيه الدنيا فوضى». الـ cross-entropy = «قد إيه أنا متفاجئ لأن توقعاتي غلط». الـ KL = «الفرق بين الاتنين، يعني تمن غلطي بس». الـ MI = «قد إيه معلومة واحدة بتقصّر عليا الطريق للتانية».</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li><b>تطبيق softmax مرتين:</b> <code>nn.CrossEntropyLoss</code> في PyTorch بياخد logits خام وبيعمل الـ softmax جواه. لو عملت softmax قبله النتيجة بتبقى غلط والتدريب بيبقى أبطأ.</li>
+    <li><b>log(0):</b> لو الموديل إدى احتمال صفر لحاجة حصلت، الـ CE = ما لا نهاية. عشان كده الدالة بترجع <code>inf</code>، وعشان كده الكود الحقيقي بيشتغل على الـ logits (log-softmax) مش على الاحتمالات.</li>
+    <li><b>خلط bits وnats:</b> رقم الـ loss في PyTorch بالـ nats. لو قارنته برقم بالـ bits هتتلخبط (اضرب في 1.4427 للتحويل لـ bits).</li>
+    <li><b>مقارنة perplexity بين tokenizers مختلفة:</b> الـ perplexity لكل token، فموديلين بـ vocab مختلف ومش بيقسموا النص بنفس الطريقة أرقامهم مش قابلة للمقارنة المباشرة.</li>
+    <li><b>عكس اتجاه الـ KL:</b> لأنه مش متماثل، لازم تعرف مين P ومين Q في الكود اللي بتستخدمه.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li><b>Pretraining:</b> كل LLM بيتدرب على cross-entropy للـ next token. الـ loss اللي بتشوفها في الـ logs هي بالظبط ده.</li>
+    <li><b>RLHF / الـ fine-tuning بالـ RL:</b> فيه عادةً عقوبة KL بين الموديل الجديد والموديل المرجعي عشان ميبعدش أوي عنه.</li>
+    <li><b>Distillation:</b> الطالب بيتعلم يقلل الـ KL بينه وبين توزيع المدرّس.</li>
+    <li><b>Sampling:</b> الـ temperature بتغير الـ entropy بتاعة توزيع الـ next token: حرارة أعلى ⇐ entropy أعلى ⇐ كلام أكثر تنوعًا.</li>
+    <li><b>Agents:</b> الـ entropy بتاعة توقعات الموديل ممكن تستخدمها كإشارة ثقة (زي تمرين ٥).</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d9-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d9-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d9-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d9-check">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح المفاجأة والـ entropy بمثال العملة</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فاهم إن cross-entropy = entropy + KL وليه تقليلها بيقلل الـ KL</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> فاهم الـ joint والـ conditional والـ mutual information والعلاقة بينهم</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> لعبت بالـ label smoothing وشفت الـ perplexity بتتغير</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> كتبت الـ ٥ خطوات بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c7" id="d9-ckq"> عديت الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Entropy</td><td>الـ decision trees، الـ temperature في الـ sampling، حدود الضغط</td></tr>
+    <tr><td>Cross-entropy</td><td>loss أي classifier وأي LLM (next-token prediction)</td></tr>
+    <tr><td>KL divergence</td><td>الـ VAEs، الـ distillation، الـ RLHF</td></tr>
+    <tr><td>Mutual information</td><td>اختيار الـ features، الـ information gain في الـ trees</td></tr>
+    <tr><td>Label smoothing</td><td>regularization وcalibration للـ classifiers</td></tr>
+    <tr><td>Perplexity</td><td>تقييم الـ language models</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Dimensionality Reduction. هنشوف إزاي ناخد داتا بأبعاد كتير ونضغطها لأبعاد قليلة من غير ما نضيّع أهم معلومات فيها. هنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F09-information-theory" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/09-information-theory</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI,css=A.css,f=A.fmt,$=id=>document.getElementById(id);
+const log2=x=>Math.log(x)/Math.LN2;
+
+// roadmap
+const rm=$('d9-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===9)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: entropy of a coin ----------
+const ec=$('d9-entC'),ex=A.setupCanvas(ec),EW=+ec.dataset.w,EH=+ec.dataset.h;
+const pad={l:44,r:14,t:16,b:34};
+const X=p=>pad.l+p*(EW-pad.l-pad.r),Ymax=4,Y=v=>EH-pad.b-Math.min(v,Ymax)/Ymax*(EH-pad.t-pad.b);
+let P=0.5,dragE=false;
+const Hb=p=>(p<=0||p>=1)?0:-(p*log2(p)+(1-p)*log2(1-p));
+function drawEnt(){
+  ex.clearRect(0,0,EW,EH);
+  ex.strokeStyle=css('--grid');ex.lineWidth=1;
+  for(let v=0;v<=Ymax;v++){ex.beginPath();ex.moveTo(pad.l,Y(v));ex.lineTo(EW-pad.r,Y(v));ex.stroke()}
+  ex.fillStyle=css('--muted');ex.font='12px JetBrains Mono, monospace';ex.textAlign='right';
+  for(let v=0;v<=Ymax;v++)ex.fillText(v,pad.l-6,Y(v)+4);
+  ex.textAlign='center';[0,0.25,0.5,0.75,1].forEach(p=>ex.fillText(p,X(p),EH-pad.b+16));
+  ex.fillText('p(heads)',X(0.5),EH-4);
+  // surprise curve
+  ex.strokeStyle=css('--vec-a');ex.lineWidth=2;ex.beginPath();
+  for(let i=1;i<=400;i++){const p=i/400;const y=Y(-log2(p));i===1?ex.moveTo(X(p),y):ex.lineTo(X(p),y)}ex.stroke();
+  // entropy curve
+  ex.strokeStyle=css('--vec-b');ex.lineWidth=3;ex.beginPath();
+  for(let i=0;i<=400;i++){const p=i/400;i?ex.lineTo(X(p),Y(Hb(p))):ex.moveTo(X(p),Y(Hb(p)))}ex.stroke();
+  // marker
+  ex.setLineDash([4,4]);ex.strokeStyle=css('--muted');ex.lineWidth=1;ex.beginPath();ex.moveTo(X(P),pad.t);ex.lineTo(X(P),EH-pad.b);ex.stroke();ex.setLineDash([]);
+  [[Y(Hb(P)),css('--vec-b')],[Y(-log2(P)),css('--vec-a')]].forEach(([y,c])=>{ex.fillStyle=c;ex.beginPath();ex.arc(X(P),y,6,0,7);ex.fill()});
+  ex.textAlign='left';ex.font='13px JetBrains Mono, monospace';
+  ex.fillStyle=css('--vec-b');ex.fillText('H(p) entropy',pad.l+8,pad.t+12);
+  ex.fillStyle=css('--vec-a');ex.fillText('-log2 p  surprise(heads)',pad.l+8,pad.t+30);
+  $('d9-pv').textContent=P.toFixed(3);
+  $('d9-sH').textContent=f(-log2(P),3);$('d9-sT').textContent=f(-log2(1-P),3);
+  $('d9-H').textContent=f(Hb(P),4);$('d9-Hn').textContent=f(Hb(P)*Math.LN2,4);
+  $('d9-p').value=P;
+}
+function setPfromEv(e){const [x]=A.evPos(ec,e);P=Math.max(0.001,Math.min(0.999,(x-pad.l)/(EW-pad.l-pad.r)));drawEnt()}
+ec.addEventListener('pointerdown',e=>{dragE=true;ec.setPointerCapture(e.pointerId);setPfromEv(e)});
+ec.addEventListener('pointermove',e=>{if(dragE)setPfromEv(e)});
+ec.addEventListener('pointerup',()=>dragE=false);
+$('d9-p').addEventListener('input',e=>{P=+e.target.value;drawEnt()});
+document.querySelectorAll('[data-d9p]').forEach(b=>b.addEventListener('click',()=>{P=+b.dataset.d9p;drawEnt()}));
+drawEnt();
+
+// ---------- Lab 2: CE & KL with draggable Q bars ----------
+const kc=$('d9-klC'),kx=A.setupCanvas(kc),KW=+kc.dataset.w,KH=+kc.dataset.h;
+const TP=[0.7,0.2,0.1];let Qd=[0.6,0.25,0.15],dragK=-1;
+const kb={l:30,r:10,t:16,b:30};const slot=(KW-kb.l-kb.r)/3,bw=slot*0.32;
+const KY=v=>KH-kb.b-v*(KH-kb.t-kb.b);
+const ent=p=>p.reduce((s,x)=>x>0?s-x*log2(x):s,0);
+const ce=(p,q)=>{let s=0;for(let i=0;i<p.length;i++){if(p[i]>0){if(q[i]<=0)return Infinity;s-=p[i]*log2(q[i])}}return s};
+function normQ(i,v){v=Math.max(0.01,Math.min(0.98,v));const rest=1-v,o=Qd.filter((_,j)=>j!==i),os=o.reduce((a,b)=>a+b,0);
+  Qd=Qd.map((x,j)=>j===i?v:(os>0?x/os*rest:rest/2))}
+function drawKL(){
+  kx.clearRect(0,0,KW,KH);
+  kx.strokeStyle=css('--grid');kx.lineWidth=1;kx.fillStyle=css('--muted');kx.font='12px JetBrains Mono, monospace';kx.textAlign='right';
+  for(let v=0;v<=1.0001;v+=0.25){kx.beginPath();kx.moveTo(kb.l,KY(v));kx.lineTo(KW-kb.r,KY(v));kx.stroke();kx.fillText(v.toFixed(2).replace(/0+$/,'').replace(/\.$/,''),kb.l-4,KY(v)+4)}
+  kx.textAlign='center';
+  for(let i=0;i<3;i++){const cx=kb.l+slot*(i+0.5);
+    kx.fillStyle=css('--vec-a');kx.fillRect(cx-bw-3,KY(TP[i]),bw,KY(0)-KY(TP[i]));
+    kx.fillStyle=css('--vec-b');kx.fillRect(cx+3,KY(Qd[i]),bw,KY(0)-KY(Qd[i]));
+    kx.strokeStyle=css('--ink');kx.lineWidth=2;kx.beginPath();kx.moveTo(cx+3,KY(Qd[i]));kx.lineTo(cx+3+bw,KY(Qd[i]));kx.stroke();
+    kx.fillStyle=css('--ink');kx.fillText('x'+i,cx,KH-10);
+    kx.font='11px JetBrains Mono, monospace';kx.fillText(Qd[i].toFixed(2),cx+3+bw/2,KY(Qd[i])-5);kx.font='12px JetBrains Mono, monospace'}
+  kx.textAlign='left';kx.fillStyle=css('--vec-a');kx.fillText('■ P (true)',KW-150,kb.t+8);kx.fillStyle=css('--vec-b');kx.fillText('■ Q (model)',KW-150,kb.t+24);
+  const h=ent(TP),c=ce(TP,Qd),k1=c-h,k2=ce(Qd,TP)-ent(Qd);
+  $('d9-hp').textContent=f(h,4);$('d9-ce').textContent=f(c,4);$('d9-kl').textContent=f(k1,4);$('d9-klr').textContent=f(k2,4);
+  const v=$('d9-klv');
+  if(k1<0.005){v.textContent='Q ≈ P: الـ KL قرب من صفر والـ CE بقت = الـ entropy';v.style.color=css('--ok')}
+  else if(k1<0.2){v.textContent='قريب: الموديل بيضيّع '+f(k1,3)+' bit زيادة في المتوسط';v.style.color=css('--ink')}
+  else{v.textContent='بعيد: الموديل بيضيّع '+f(k1,2)+' bit زيادة عن الحقيقة';v.style.color=css('--bad')}
+}
+function kPick(e){const [x,y]=A.evPos(kc,e);const i=Math.floor((x-kb.l)/slot);if(i<0||i>2)return -1;return i}
+function kSet(e){const [,y]=A.evPos(kc,e);normQ(dragK,(KH-kb.b-y)/(KH-kb.t-kb.b));drawKL()}
+kc.addEventListener('pointerdown',e=>{dragK=kPick(e);if(dragK<0)return;kc.setPointerCapture(e.pointerId);kSet(e)});
+kc.addEventListener('pointermove',e=>{if(dragK>=0)kSet(e)});
+kc.addEventListener('pointerup',()=>dragK=-1);
+const QP={good:[0.6,0.25,0.15],bad:[0.1,0.1,0.8],match:[0.7,0.2,0.1],uni:[1/3,1/3,1/3]};
+document.querySelectorAll('[data-d9q]').forEach(b=>b.addEventListener('click',()=>{Qd=QP[b.dataset.d9q].slice();drawKL()}));
+drawKL();
+
+// ---------- Lab 3: joint / conditional / MI ----------
+const mc=$('d9-miC'),mx=A.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+function drawMI(){
+  const g=+$('d9-ag').value,a=g/2,b=(1-g)/2,J=[a,b,b,a];
+  const hx=1,hy=1,hxy=ent(J),hyx=hxy-hx,mi=hx+hy-hxy;
+  $('d9-agv').textContent=g.toFixed(2);
+  $('d9-joint').textContent='[['+f(a,3)+', '+f(b,3)+'], ['+f(b,3)+', '+f(a,3)+']]';
+  $('d9-hxy').textContent=f(hxy,4);$('d9-hyx').textContent=f(hyx,4);$('d9-mi').textContent=f(mi,4);
+  mx.clearRect(0,0,MW,MH);
+  const l=110,r=14,S=(MW-l-r)/2; // 2 bits full width
+  const rows=[['H(X)',[[0,hx-mi,css('--vec-a'),1],[hx-mi,hx,css('--ok'),1]]],
+              ['H(Y)',[[hx-mi,hx,css('--ok'),1],[hx,hx+hy-mi,css('--vec-b'),1]]],
+              ['H(X,Y)',[[0,hxy,css('--muted'),0.5]]],
+              ['I(X;Y)',[[hx-mi,hx,css('--ok'),1]]]];
+  mx.font='13px JetBrains Mono, monospace';
+  rows.forEach(([name,segs],i)=>{const y=14+i*50;
+    mx.fillStyle=css('--ink');mx.textAlign='left';mx.fillText(name,8,y+20);
+    mx.fillStyle=css('--soft');mx.fillRect(l,y,MW-l-r,30);
+    segs.forEach(([s,e,c,al])=>{mx.globalAlpha=al;mx.fillStyle=c;mx.fillRect(l+s*S,y,Math.max(0,(e-s)*S),30);mx.globalAlpha=1});
+  });
+  mx.strokeStyle=css('--muted');mx.setLineDash([3,3]);
+  [0,1,2].forEach(v=>{mx.beginPath();mx.moveTo(l+v*S,6);mx.lineTo(l+v*S,MH-18);mx.stroke()});mx.setLineDash([]);
+  mx.fillStyle=css('--muted');mx.textAlign='center';[0,1,2].forEach(v=>mx.fillText(v+' bit',l+v*S,MH-4));
+}
+$('d9-ag').addEventListener('input',drawMI);drawMI();
+
+// ---------- Lab 4: softmax + label smoothing + perplexity ----------
+const sc=$('d9-smC'),sx=A.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+const soft=z=>{const m=Math.max(...z),e=z.map(v=>Math.exp(v-m)),s=e.reduce((a,b)=>a+b,0);return e.map(v=>v/s)};
+function drawSM(){
+  const z=[0,1,2,3].map(i=>+$('d9-z'+i).value);z.forEach((v,i)=>$('d9-z'+i+'v').textContent=f(v,1));
+  const tc=+$('d9-tc').value,eps=+$('d9-eps').value;$('d9-epsv').textContent=eps.toFixed(2);
+  const p=soft(z),t=[0,1,2,3].map(i=>eps/4+(i===tc?1-eps:0));
+  let L=0;for(let i=0;i<4;i++)if(t[i]>0)L-=t[i]*Math.log(p[i]);
+  const ht=t.reduce((s,x)=>x>0?s-x*Math.log(x):s,0);
+  $('d9-loss').textContent=f(L,4);$('d9-ppl').textContent=f(Math.exp(L),3);$('d9-ht').textContent=f(ht,4);
+  $('d9-grad').textContent='['+p.map((v,i)=>f(v-t[i],2)).join(', ')+']';
+  sx.clearRect(0,0,SW,SH);
+  const b={l:34,r:10,t:26,b:28},sl=(SW-b.l-b.r)/4,w=sl*0.3,YY=v=>SH-b.b-v*(SH-b.t-b.b);
+  sx.strokeStyle=css('--grid');sx.fillStyle=css('--muted');sx.font='12px JetBrains Mono, monospace';sx.textAlign='right';
+  [0,0.5,1].forEach(v=>{sx.beginPath();sx.moveTo(b.l,YY(v));sx.lineTo(SW-b.r,YY(v));sx.stroke();sx.fillText(v,b.l-4,YY(v)+4)});
+  sx.textAlign='center';
+  for(let i=0;i<4;i++){const cx=b.l+sl*(i+0.5);
+    sx.fillStyle=css('--vec-b');sx.fillRect(cx-w-2,YY(t[i]),w,YY(0)-YY(t[i]));
+    sx.fillStyle=css('--vec-a');sx.fillRect(cx+2,YY(p[i]),w,YY(0)-YY(p[i]));
+    sx.fillStyle=i===tc?css('--ok'):css('--ink');sx.fillText((i===tc?'★ ':'')+'class '+i,cx,SH-8);
+    sx.fillStyle=css('--ink');sx.font='11px JetBrains Mono, monospace';sx.fillText(p[i].toFixed(3),cx+2+w/2,YY(p[i])-4);sx.font='12px JetBrains Mono, monospace'}
+  sx.textAlign='left';sx.fillStyle=css('--vec-b');sx.fillText('■ target',b.l+4,14);sx.fillStyle=css('--vec-a');sx.fillText('■ softmax(logits)',b.l+90,14);
+}
+['d9-z0','d9-z1','d9-z2','d9-z3','d9-eps','d9-tc'].forEach(id=>$(id).addEventListener('input',drawSM));
+$('d9-tc').addEventListener('change',drawSM);
+drawSM();
+
+// ---------- quiz ----------
+const Q=[
+ ['الـ entropy في نظرية المعلومات بتقيس إيه؟',['عدد الـ bits في رسالة binary','نسبة الأخطاء في قناة اتصال','الطاقة في نظام فيزيائي','متوسط المفاجأة أو عدم اليقين في توزيع احتمالات'],3,'H(P) = −Σ p·log p = متوسط المفاجأة على كل النتائج. entropy عالية = عدم يقين عالي (توزيع uniform)، وواطية = النتيجة متوقعة.'],
+ ['الـ cross-entropy loss بتستخدم عادةً في إيه في الـ neural networks؟',['توليد داتا جديدة','regularization للأوزان عشان الـ overfitting','مهام الـ classification، بتقيس الاحتمالات المتوقعة بعيدة قد إيه عن الـ labels الحقيقية','مهام الـ regression بمخرجات مستمرة'],2,'H(P,Q) = −Σ p·log q بتقيس الفرق بين التوزيع الحقيقي (الـ labels) وتوقعات الموديل. هي الـ loss القياسية للـ classification.'],
+ ['ليه تقليل الـ cross-entropy أثناء التدريب = تقليل الـ KL divergence؟',['لأنهم نفس المعادلة بالظبط','لأن cross-entropy = entropy + KL، والـ entropy بتاعة الـ labels الحقيقية ثابتة، فتقليل الـ CE بيقلل الـ KL','لأن الـ KL دايمًا صفر أثناء التدريب','لأن entropy الموديل بتبقى صفر في الآخر'],1,'H(P,Q) = H(P) + D_KL(P‖Q). P مش بتتغير أثناء التدريب، فـ H(P) ثابتة، وتقليل H(P,Q) هو نفسه تقليل الـ KL: بتزق الموديل ناحية التوزيع الحقيقي.'],
+ ['language model الـ perplexity بتاعه 50 على test set. ده معناه إيه؟',['الموديل فيه 50 layer','الموديل بيغلط 50 غلطة في الجملة','في المتوسط، الموديل محتار كأنه بيختار عشوائي من 50 token متساويين في كل خطوة','الموديل اتدرب 50 epoch'],2,'Perplexity = e^(cross-entropy). 50 يعني عدم اليقين عند كل token يساوي اختيار عشوائي من 50 اختيار متساوي. أقل = أحسن.'],
+ ['الـ mutual information بتختلف عن الـ Pearson correlation في اختيار الـ features إزاي؟',['الـ MI أسرع في الحساب','دايمًا بيدوا نفس الترتيب','الـ Pearson بيشتغل على أي نوع داتا والـ MI على الداتا المستمرة بس','الـ MI بتكتشف أي اعتمادية إحصائية (خطية أو لأ) والـ correlation بتكتشف العلاقات الخطية بس'],3,'I(X;Y) بتمسك كل أنواع الاعتمادية حتى غير الخطية وغير الـ monotonic، أما Pearson فبيقيس العلاقة الخطية بس.'],
+ ['(سؤال مني) الـ KL(P‖Q) لـ P=[0.9,0.1] و Q=[0.5,0.5] حوالي 0.531 bit. الـ KL(Q‖P) هيطلع كام؟',['0.531 بالظبط، الـ KL متماثل','رقم مختلف (حوالي 0.737)، لأن الـ KL مش متماثل','صفر','سالب'],1,'كل اتجاه بيوزن الـ log ratio بتوزيع مختلف، فالنتيجتين مختلفين. عشان كده الـ KL مش «مسافة» حقيقية.'],
+ ['(سؤال مني) كتبت softmax في آخر الموديل وبعدين بعت المخرج لـ nn.CrossEntropyLoss في PyTorch. المشكلة؟',['مفيش مشكلة','الـ loss دي بتاخد logits خام وبتعمل softmax جواها، فانت كده بتعمل softmax مرتين','لازم تستخدم sigmoid بدل softmax','الـ loss دي بتشتغل بالـ bits مش nats'],1,'CrossEntropyLoss = log-softmax + NLL على الـ logits. لو دخلتلها احتمالات بدل logits النتيجة بتبقى غلط والـ gradients بتضعف.']
+];
+A.quiz($('d9-quizBox'),Q,5,()=>{const c=$('d9-ckq');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(9,$('d9-root'));
+
+// redraw on theme change
+A.onTheme(()=>{if(!document.body.contains(ec))return false;drawEnt();drawKL();drawMI();drawSM()});
+})();
+</script>

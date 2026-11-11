@@ -1,0 +1,574 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 55 · Critic Loop</span>
+  <h1>اليوم ٤٨٣: ناقد بيقيّم، ومراجع بيعدّل، ولوب يعرف إمتى يقف</h1>
+  <p class="lede">امبارح بنينا الـ <b>Paper Writer</b> اللي بيطلّع مسودة الورقة. النهاردة هنبني اللوب اللي بيحسّنها: <b>Critic</b> بيدي المسودة درجات على ٥ أبعاد ثابتة، و<b>Reviser</b> بينفّذ اقتراحاته، و<b>Harness</b> بيقرر نكمل ولا نقف. الفكرة الأساسية: الناقد اللي بيقول «تمام» من أول مرة بايظ، واللي دايمًا بيقول «محتاج شغل» بايظ برضه. الناقد المفيد هو اللي بيوصل لنقطة ثبات (converges)، والـ convergence دي لازم إنت تهندسها.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (stdlib بس)</b></span>
+    <span>النوع: <b>Build</b></span>
+    <span>بعده: <b>Iteration Scheduler</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — capstone lessons</span>
+    <div class="roadmap" id="d483-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d483-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر الـ Paper Writer</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه بنبني الـ skeleton الأول قبل أي prose؟</summary>لأن المسودة اللي بتبدأ نص حر بتجمّع «دين هيكلي»: فقرات في المكان الغلط، figure متذكورة قبل ما تتعرّف، ومفاتيح bibliography مكررة. الـ skeleton بيعلن الهيكل كـ data من الأول (sections وfigures وbib keys)، فالـ harness يقدر يتأكد قبل أي كتابة إن كل figure ليها slot وكل citation ليها entry.</details>
+  <details><summary>٢. إيه التلات ضمانات في الـ render contract؟</summary>كل figure بتطلع <code>\begin{figure}</code> بـ label ثابت <code>fig:&lt;id&gt;</code>، وكل section بتطلع <code>\section{}</code> بـ label <code>sec:&lt;id&gt;</code>، والـ <code>references.bib</code> فيه بالظبط الـ entries المعلنة، مش أكتر ولا أقل. أي كسر لده render error مش warning.</details>
+  <details><summary>٣. ليه الـ prose generator معمول كـ callable؟</summary>عشان التست يحط واحد deterministic (الـ <code>MockProseGenerator</code>) والـ production يحط model call، وباقي الـ pipeline ميتغيرش. النهاردة هتشوف نفس الفكرة بالظبط مع الـ Critic والـ Reviser.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>15 min</b>الأبعاد الخمسة وشكل الـ Critique</div>
+    <div><b>15 min</b>قواعد الوقوف وترتيبها + المعامل</div>
+    <div><b>35 min</b>اكتب الكود بإيدك وشغّل التستات</div>
+    <div><b>15 min</b>التمارين</div>
+    <div><b>10 min</b>الكويز والـ checklist</div>
+  </div>
+</section>
+
+<section id="d483-dims">
+  <div class="station-head"><span class="tag">01</span><h2>ليه ٥ أبعاد ثابتة بدل فقرة نقد؟</h2></div>
+  <p>تخيل مدرّس بيرجعلك الموضوع التعبير ومكتوب عليه «محتاج تتحسن شوية». هتعدّل، بس مين يضمن إن التعديل ردّ على النقد؟ محدش، لأن النقد نفسه ملوش شكل. ده بالظبط الـ critic الـ freeform: موديل بيرجّع فقرة اقتراحات، والجولة اللي بعدها بتتعامل معاها كـ «جو عام». مستحيل تتحقق إن الـ rewrite عالج النقد.</p>
+  <p>الحل: درجات على <b>٥ أبعاد ثابتة</b>، كل واحد من 0 لـ 10:</p>
+  <div class="formula">clarity · novelty · evidence · methodology · related_work</div>
+  <p>كده الدرجة بقت <b>vector</b> مش رقم واحد. الـ harness بيراقب كل بُعد لوحده عبر الجولات. لو تعديل رفع الـ clarity بس نزّل الـ evidence، ده <b>regression</b> على الـ evidence والـ convergence check بيشوفه. الـ critic اللي مبني على موديل بس مايقدرش يديك الضمان ده. الأبعاد الخمسة دي هي الـ <b>contract</b> بين الناقد والـ harness.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: كاشف الـ regression</h3>
+      <p>عندك جولتين. حرّك درجات الجولة التانية. لاحظ إن الـ mean ممكن يطلع لفوق وفي نفس الوقت بُعد واحد يقع. الرقم الواحد كان هيخبّي ده، الـ vector بيكشفه.</p>
+      <div class="note"><strong>جرب:</strong> ارفع clarity لـ 9 ونزّل evidence لـ 3. الـ mean هيزيد بس هيظهرلك تحذير regression.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d483-radar" width="520" height="360" aria-label="رسم رادار للأبعاد الخمسة في جولتين"></canvas>
+      <div class="mrow" id="d483-sliders"></div>
+      <div class="readout">
+        <div><small>mean جولة ١</small><b id="d483-m1">0</b></div>
+        <div><small>mean جولة ٢</small><b id="d483-m2">0</b></div>
+        <div><small>Δ mean</small><b id="d483-dm">0</b></div>
+      </div>
+      <div class="verdict" id="d483-regv"></div>
+    </div>
+  </div>
+</section>
+
+<section id="d483-shape">
+  <div class="station-head"><span class="tag">02</span><h2>شكل الـ Critique والـ Suggestion</h2></div>
+  <p>كل جولة الناقد بيرجّع <code>Critique</code> فيه:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحقل</th><th>معناه</th></tr>
+    <tr><td class="ltr">round: int</td><td>رقم الجولة</td></tr>
+    <tr><td class="ltr">scores: dict</td><td>الدرجات الخمسة</td></tr>
+    <tr><td class="ltr">suggestions: list[Suggestion]</td><td>اقتراحات التعديل</td></tr>
+    <tr><td class="ltr">reason: str</td><td>سبب عام، زي <code>"3 below target"</code> أو <code>"fully-met"</code></td></tr>
+  </table></div>
+  <p>وكل <code>Suggestion</code> شايل ٣ حاجات: الـ <b>dimension</b> اللي بيحسّنها، والـ <b>section</b> اللي بيستهدفها (<code>target_section_id</code>)، وتعليمة <b>edit</b> الـ reviser يقدر ينفذها. يعني كل اقتراح «مربوط» بحاجة محددة، مش كلام عائم.</p>
+  <p>الـ <b>Reviser</b> برضه callable. في الدرس فيه reviser deterministic بيفهم الـ edit كعملية «append على section». لو حطيت مكانه reviser بموديل، هيفهم نفس الحقل كـ prompt. الـ contract مابيتغيرش.</p>
+  <div class="note ai"><strong>فصل المسؤوليات:</strong> الـ Harness بيملك عدّاد الجولات والـ trace والـ convergence check. الـ Critic بيملك الدرجة. الـ Reviser بيملك التعديل (diff). محدش فيهم بيلمس state التاني. والـ reviser بياخد <code>(paper, suggestions)</code> بس، ومابيشوفش الدرجات خالص، فتقدر تبدّل أي طرف من غير ما تلمس التاني.</div>
+  <div class="formula">Harness → critique(draft, round) → Critique{scores, suggestions} → revise(draft, suggestions) → convergence check → stop | next round</div>
+</section>
+
+<section id="d483-rules">
+  <div class="station-head"><span class="tag">03</span><h2>قواعد الوقوف، وبالترتيب ده</h2></div>
+  <p>بعد كل جولة، اللوب بيقف لو أي شرط من دول اتحقق، وبيتشيّكوا بالترتيب:</p>
+  <ol class="ex">
+    <li><b>target</b>: <u>كل</u> الأبعاد الخمسة ≥ <code>target_score</code> (الافتراضي <code>8.0</code>). mean عالي وبُعد واحد ضعيف = مش كفاية. النتيجة <code>converged / target</code>.</li>
+    <li><b>plateau</b>: الـ mean بتاع الجولة الحالية مقارنة باللي قبلها زاد أقل من <code>plateau_epsilon</code> (الافتراضي <code>0.1</code>) لمدة <b>جولتين ورا بعض</b>. النتيجة <code>converged / plateau</code>.</li>
+    <li><b>budget</b>: عدد الجولات وصل للسقف <code>max_rounds</code> (الافتراضي <code>5</code>). النتيجة <code>stopped / budget</code>.</li>
+  </ol>
+  <p><b>الترتيب مهم:</b> target يكسب plateau، وplateau يكسب budget. لو جولة ٣ حققت الـ target في نفس الجولة اللي كان هيحصل فيها plateau، النتيجة <code>target</code>. ده بيخلي النتيجة deterministic لما أكتر من شرط يتحقق مع بعض.</p>
+  <h3>ليه الـ plateau على جولتين مش جولة واحدة؟</h3>
+  <p>جولة واحدة مسطحة = noise. حتى الـ scorer الـ deterministic بيطلّع رقم مختلف شوية كل جولة، لأن الدرجة بتعتمد على أنهي اقتراحات اتطبقت وبأي ترتيب. لما تشترط جولتين مسطحين ورا بعض بتفلتر الـ noise ده. فلو الـ harness قال plateau، يبقى المسودة فعلًا بطّلت تتحسن. زي ما تقيس وزنك: يوم واحد ثابت مش معناه إنك وقفت تخس، أسبوعين ثابتين يبقى فيه حاجة.</p>
+  <h3>الـ budget بيحميك من ناقد بايظ</h3>
+  <p>ناقد بيطلّع اقتراحات عمرها ما بتحسّن الدرجة هيحبس اللوب لحد السقف. الـ trace هنا بيوضح ده: ٥ جولات، الدرجات ثابتة، الـ verdict <code>budget</code>. اللي بيقرا ده بيفهم إن المشكلة في الـ critic مش في المسودة. لو كنت بترجّع المسودة النهائية بس، كنت هتخبّي التشخيص. ده معنى <b>trace-first design</b>.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: اسحب الأعمدة وشوف مين يقف اللوب</h3>
+      <p>كل عمود هو الـ mean في جولة (افترضنا هنا إن الأبعاد الخمسة متساوية، فالـ target بيتحقق لما العمود يعدي الخط). اسحب الأعمدة لفوق وتحت، وغيّر الـ epsilon والـ window والـ budget. الجولة اللي اللوب وقف فيها بتنوّر، ومكتوب جنبها السبب.</p>
+      <div class="note"><strong>جرب:</strong> خلّي جولة ٢ و٣ و٤ قريبين من بعض جدًا (فرق أقل من 0.1) وشوف plateau عند جولة ٤ مش ٣. وبعدين خلّي جولة ٤ تعدي الـ target في نفس الوقت: هتلاقي target كسب.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d483-bars" width="520" height="320" aria-label="أعمدة الـ mean لكل جولة قابلة للسحب"></canvas>
+      <div class="mrow">
+        <label>target <span id="d483-tv">8.0</span><input type="range" id="d483-t" min="5" max="10" step="0.1" value="8"></label>
+        <label>plateau_epsilon <span id="d483-ev">0.10</span><input type="range" id="d483-e" min="0" max="1" step="0.01" value="0.1"></label>
+        <label>plateau_window <span id="d483-wv">2</span><input type="range" id="d483-w" min="1" max="4" step="1" value="2"></label>
+        <label>max_rounds <span id="d483-bv">5</span><input type="range" id="d483-b" min="1" max="8" step="1" value="5"></label>
+      </div>
+      <div class="verdict" id="d483-barv"></div>
+      <div class="btns"><button type="button" id="d483-preset-plat">سيناريو plateau</button><button type="button" id="d483-preset-tgt">سيناريو target</button><button type="button" id="d483-preset-stuck">ناقد بايظ</button></div>
+    </div>
+  </div>
+</section>
+
+<section id="d483-det">
+  <div class="station-head"><span class="tag">04</span><h2>الناقد الـ deterministic في الدرس</h2></div>
+  <p>الدرس مابيكلمش أي موديل. الـ critic دالة بتدي درجات من إشارات بسيطة في المسودة، والـ reviser عارف إزاي يرفع كل درجة:</p>
+  <div class="tablewrap"><table>
+    <tr><th>البُعد</th><th>بيزيد إمتى</th><th>المعادلة في الكود</th></tr>
+    <tr><td>clarity</td><td>متوسط طول جسم الـ sections يزيد</td><td class="ltr">min(10, 3 + avg_body/50)</td></tr>
+    <tr><td>novelty</td><td><code>originality_tag</code> يبقى <code>"high"</code></td><td class="ltr">low=3 · medium=6 · high=9</td></tr>
+    <tr><td>evidence</td><td>section فيها figure_refs وcites</td><td class="ltr">min(10, 2 + 2·figs + 1.5·cites)</td></tr>
+    <tr><td>methodology</td><td>فيه section اسمها Method وليها body</td><td class="ltr">9 if has_method else 4</td></tr>
+    <tr><td>related_work</td><td>فيه section اسمها Related Work وليها body</td><td class="ltr">9 if has_related else 4</td></tr>
+  </table></div>
+  <p>والـ reviser بيترجم كل اقتراح لعملية محددة: <code>expand-body</code> بيزود ٨٠ حرف على آخر section، <code>bump-originality</code> بيطلّع الـ tag درجة (low→medium→high)، <code>add-figure-and-cite</code> بيضيف figure وcitation لأول section، و<code>add-method-section</code> و<code>add-related-work-section</code> بيضيفوا الـ section لو مش موجودة أو بيملوا الـ body لو فاضي. بعد أول جولة الدرجة بتطلع لفوق، والتستات بتستغل الخاصية دي عشان تتأكد إن اللوب بيقلّل الفجوة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: شغّل الـ CriticLoop نفسه</h3>
+      <p>ده port بالـ JavaScript لنفس منطق <code>deterministic_critic</code> و<code>deterministic_reviser</code> و<code>CriticLoop.run</code>، على نفس مسودة الـ demo (section واحدة «short intro» والـ originality low). دوس «جولة واحدة» وتابع الخطوط، أو «شغّل للآخر».</p>
+      <p>غيّر الـ target لـ 9: novelty وmethodology وrelated_work سقفهم 9 بالظبط، وclarity بيطلع ~0.5 بس كل جولة، فاللوب بيخلص بـ <code>budget</code>. وبعدين خلّي epsilon = 0.5 مع target 9: الجولات ٣ و٤ و٥ بيزيدوا ~0.1 بس، فهتشوف <code>plateau</code> عند جولة ٥. ولو رجّعت الـ target لـ 8 مع epsilon 0.5، الـ target هيكسب في جولة ٥ قبل الـ plateau.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d483-loop" width="520" height="320" aria-label="خطوط الدرجات الخمسة عبر الجولات"></canvas>
+      <div class="mrow">
+        <label>max_rounds <span id="d483-lmv">6</span><input type="range" id="d483-lm" min="1" max="10" step="1" value="6"></label>
+        <label>target <span id="d483-ltv">8.0</span><input type="range" id="d483-lt" min="6" max="10" step="0.1" value="8"></label>
+        <label>plateau_epsilon <span id="d483-lev">0.10</span><input type="range" id="d483-le" min="0" max="1" step="0.01" value="0.1"></label>
+        <label>originality start <select id="d483-lo"><option>low</option><option>medium</option><option>high</option></select></label>
+      </div>
+      <div class="btns"><button type="button" id="d483-step" class="primary">جولة واحدة</button><button type="button" id="d483-runall">شغّل للآخر</button><button type="button" id="d483-reset">من الأول</button></div>
+      <div class="verdict" id="d483-loopv"></div>
+      <div class="tablewrap"><table id="d483-trace"></table></div>
+    </div>
+  </div>
+</section>
+
+<section id="d483-trace-sec">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Trace: سجل كل جولة</h2></div>
+  <p>كل جولة بتطلّع trace event واحد فيه: رقم الجولة، الـ score vector، الـ mean، عدد الاقتراحات اللي اتطبقت، والـ verdict (<code>continue</code> أو <code>target</code> أو <code>plateau</code> أو <code>budget</code>). الـ trace كله بيرجع مع المسودة النهائية. الـ dashboard يرسمه كـ chart درجة لكل جولة (زي معمل ٣)، والدرس الجاي، الـ <b>Iteration Scheduler</b>، هيقرا الـ trace عشان يقرر الـ branch دي تستاهل نكمل فيها ولا لأ.</p>
+  <h3>إزاي تقرا الكود</h3>
+  <p><code>code/main.py</code> فيه: <code>Critique</code> و<code>Suggestion</code> و<code>Critic</code> protocol و<code>Reviser</code> protocol و<code>CriticLoop</code> وfactory اسمها <code>make_deterministic_critic_pair</code> بترجع الـ critic والـ reviser المتوافق معاه، وشكل <code>MiniPaper</code> بسيط عشان الدرس يقف لوحده. والتستات في <code>code/tests/test_critic_loop.py</code> بتغطي: التحسن بعد أول جولة، الـ convergence على target، كشف الـ plateau بعد جولتين مسطحين، خلصان الـ budget لما مفيش تحسن، تطبيق الاقتراحات، وشكل الـ trace.</p>
+  <h3>Going further من الدرس</h3>
+  <ul class="checklist">
+    <li>• <b>أوزان للأبعاد:</b> ورقة workshop بتدي novelty وزن أعلى من methodology، والـ journal بالعكس. الـ convergence check يبقى weighted mean.</li>
+    <li>• <b>Paired critics:</b> ناقد بيدّي الدرجات، وناقد تاني بيحكم على الاقتراحات قبل ما الـ reviser يشوفها. الاتنين بيركبوا على نفس شكل الـ <code>Critique</code>.</li>
+  </ul>
+  <p>الرهان كله على الـ score vector: أول ما النقد يبقى structured، أي تحسين تاني (قاعدة convergence، dashboard، paired critic) بيدخل من غير ما تغيّر اللوب.</p>
+</section>
+
+<section id="d483-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من الـ root بتاع الريبو شغّل الـ demo والتستات:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/55-critic-loop/code/main.py
+python3 phases/19-capstone-projects/55-critic-loop/code/tests/test_critic_loop.py</pre></div>
+  <p><b>القاعدة:</b> اكتب الكود ده بنفسك في <code>my_critic_loop.py</code>، وارجع للأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الأبعاد وشكل الورقة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import json
+from dataclasses import dataclass, field
+from typing import Protocol
+
+DIMENSIONS = ("clarity", "novelty", "evidence", "methodology", "related_work")  <span class="c"># الـ contract</span>
+
+@dataclass
+class MiniSection:
+    id: str
+    title: str
+    body: str = ""
+    figure_refs: list[str] = field(default_factory=list)
+    cites: list[str] = field(default_factory=list)
+
+@dataclass
+class MiniPaper:
+    title: str
+    abstract: str
+    sections: list[MiniSection] = field(default_factory=list)
+    originality_tag: str = "low"       <span class="c"># low / medium / high</span></pre></div>
+
+  <h3>خطوة ٢: Suggestion وCritique والـ protocols</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class Suggestion:
+    dimension: str                   <span class="c"># البُعد اللي هيتحسن</span>
+    target_section_id: str | None    <span class="c"># الـ section المستهدفة</span>
+    edit: str                        <span class="c"># تعليمة الـ reviser</span>
+
+@dataclass
+class Critique:
+    round: int
+    scores: dict[str, float]
+    suggestions: list[Suggestion]
+    reason: str
+
+    def mean(self) -&gt; float:
+        return sum(self.scores.values()) / len(self.scores) if self.scores else 0.0
+
+class Critic(Protocol):
+    def __call__(self, paper: MiniPaper, round_: int) -&gt; Critique: ...
+
+class Reviser(Protocol):                 <span class="c"># مابياخدش scores خالص</span>
+    def __call__(self, paper: MiniPaper, suggestions: list[Suggestion]) -&gt; MiniPaper: ...
+
+@dataclass
+class LoopTrace:
+    round: int
+    scores: dict[str, float]
+    mean: float
+    suggestions_applied: int
+    verdict: str                     <span class="c"># continue / target / plateau / budget</span></pre></div>
+
+  <h3>خطوة ٣: الـ convergence checks</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class CriticLoop:
+    def __init__(self, critic, reviser, max_rounds=5, target_score=8.0,
+                 plateau_epsilon=0.1, plateau_window=2):
+        if max_rounds &lt; 1:
+            raise ValueError("max_rounds must be &gt;= 1")
+        self.critic, self.reviser = critic, reviser
+        self.max_rounds = max_rounds
+        self.target_score = target_score
+        self.plateau_epsilon = plateau_epsilon
+        self.plateau_window = plateau_window
+
+    def _target_met(self, c: Critique) -&gt; bool:   <span class="c"># كل الأبعاد، مش الـ mean</span>
+        return all(c.scores.get(d, 0.0) &gt;= self.target_score for d in DIMENSIONS)
+
+    def _plateau(self, trace) -&gt; bool:
+        if len(trace) &lt; self.plateau_window + 1:   <span class="c"># محتاج window+1 نقط</span>
+            return False
+        recent = trace[-(self.plateau_window + 1):]
+        for i in range(1, len(recent)):
+            if recent[i].mean - recent[i - 1].mean &gt; self.plateau_epsilon:
+                return False                      <span class="c"># فيه تحسن حقيقي</span>
+        return True</pre></div>
+
+  <h3>خطوة ٤: اللوب نفسه (target ← plateau ← budget)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def run(self, paper):
+        trace, critique = [], None
+        for round_ in range(1, self.max_rounds + 1):
+            critique = self.critic(paper, round_)
+            if self._target_met(critique):                     <span class="c"># ١: target يكسب</span>
+                trace.append(LoopTrace(round_, dict(critique.scores),
+                                       critique.mean(), 0, "target"))
+                return {"status": "converged", "reason": "target",
+                        "rounds_used": round_, "trace": trace}
+            interim = LoopTrace(round_, dict(critique.scores), critique.mean(),
+                                len(critique.suggestions), "continue")
+            trace.append(interim)
+            if self._plateau(trace):                           <span class="c"># ٢: plateau</span>
+                interim.verdict = "plateau"
+                return {"status": "converged", "reason": "plateau",
+                        "rounds_used": round_, "trace": trace}
+            paper = self.reviser(paper, critique.suggestions)  <span class="c"># طبّق التعديل</span>
+        if trace:
+            trace[-1].verdict = "budget"                       <span class="c"># ٣: السقف</span>
+        return {"status": "stopped", "reason": "budget",
+                "rounds_used": self.max_rounds, "trace": trace}</pre></div>
+  <p class="note">الأصل بيرجّع <code>LoopResult</code> dataclass فيه كمان <code>final_scores</code> و<code>final_mean</code> و<code>paper</code>. أنا اختصرت لـ dict عشان تركز على المنطق؛ لما تخلص حوّله لـ dataclass زي الأصل.</p>
+
+  <h3>خطوة ٥: الـ scorer والـ critic الـ deterministic</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def deterministic_score(paper):
+    lens = [len(s.body) for s in paper.sections]
+    avg_body = sum(lens) / len(lens) if lens else 0.0
+    clarity = min(10.0, 3.0 + avg_body / 50.0)
+    novelty = {"high": 9.0, "medium": 6.0}.get(paper.originality_tag, 3.0)
+    figs = sum(len(s.figure_refs) for s in paper.sections)
+    cites = sum(len(s.cites) for s in paper.sections)
+    evidence = min(10.0, 2.0 + 2.0 * figs + 1.5 * cites)
+    has_method = any(s.title.lower().startswith("method") and s.body for s in paper.sections)
+    has_related = any(s.title.lower() == "related work" and s.body for s in paper.sections)
+    return {"clarity": round(clarity, 2), "novelty": novelty, "evidence": round(evidence, 2),
+            "methodology": 9.0 if has_method else 4.0,
+            "related_work": 9.0 if has_related else 4.0}
+
+EDITS = {"clarity": "expand-body", "novelty": "bump-originality",
+         "evidence": "add-figure-and-cite", "methodology": "add-method-section",
+         "related_work": "add-related-work-section"}
+
+def deterministic_critic(paper, round_):
+    scores = deterministic_score(paper)
+    sugg = []
+    for d in DIMENSIONS:
+        if scores[d] &lt; 8.0:                          <span class="c"># اقتراح لكل بُعد تحت 8</span>
+            target = None
+            if d == "clarity" and paper.sections:
+                target = paper.sections[-1].id      <span class="c"># آخر section</span>
+            if d == "evidence":
+                target = paper.sections[0].id if paper.sections else "intro"
+            sugg.append(Suggestion(d, target, EDITS[d]))
+    reason = "fully-met" if not sugg else f"{len(sugg)} below target"
+    return Critique(round_, scores, sugg, reason)</pre></div>
+
+  <h3>خطوة ٦: الـ reviser وتشغيل الـ demo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def deterministic_reviser(paper, suggestions):
+    figs = sum(len(s.figure_refs) for s in paper.sections)
+    cites = sum(len(s.cites) for s in paper.sections)
+    for sug in suggestions:
+        if sug.edit == "expand-body":
+            for sec in paper.sections:
+                if sec.id == sug.target_section_id:
+                    sec.body = (sec.body + " " + "x" * 80).strip()
+                    break
+        elif sug.edit == "bump-originality":
+            paper.originality_tag = {"low": "medium", "medium": "high"}.get(
+                paper.originality_tag, paper.originality_tag)
+        elif sug.edit == "add-figure-and-cite":
+            for sec in paper.sections:
+                if sec.id == sug.target_section_id:
+                    figs += 1; cites += 1
+                    sec.figure_refs.append(f"f{figs}")
+                    sec.cites.append(f"c{cites}")
+                    break
+        elif sug.edit == "add-method-section":
+            if not any(s.title.lower().startswith("method") for s in paper.sections):
+                paper.sections.append(MiniSection("method", "Method",
+                    "A description of the method follows. " + "x" * 200))
+        elif sug.edit == "add-related-work-section":
+            if not any(s.title.lower() == "related work" for s in paper.sections):
+                paper.sections.append(MiniSection("related-work", "Related Work",
+                    "We survey adjacent work. " + "x" * 200))
+    return paper
+
+paper = MiniPaper("Auto-Research Loop", "abstract",
+                  [MiniSection("intro", "Introduction", "short intro")])
+res = CriticLoop(deterministic_critic, deterministic_reviser, max_rounds=6).run(paper)
+print(res["reason"], res["rounds_used"])
+for t in res["trace"]:
+    print(t.round, round(t.mean, 3), t.verdict)</pre></div>
+  <p class="note">الأصل كمان بيملا body الـ Method أو الـ Related Work لو الـ section موجودة وفاضية. ضيفها بنفسك كتمرين صغير.</p>
+  <details><summary>الناتج المتوقع لنسختك (اتحسب بنفس المنطق في معمل ٣)</summary><pre class="term" id="d483-expected"></pre><p>الـ <code>main.py</code> الأصلي بيطبع نفس النتيجة كـ JSON كامل: <code>"status": "converged"</code> و<code>"reason": "target"</code> و<code>"rounds_used": 5</code> ومعاه الـ trace بالدرجات. لو رقم طلعلك مختلف، قارن الـ trace جولة بجولة مع المعمل.</p></details>
+</section>
+
+<section id="d483-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>الدرس مفيهوش قايمة تمارين منفصلة، فدي تمارين مبنية على الـ «Going further» والتستات بتاعته.</p>
+  <ol class="ex">
+    <li><b>Weighted convergence:</b> ضيف <code>weights: dict[str, float]</code> للـ <code>CriticLoop</code> وخلّي الـ plateau يقارن weighted mean. جرّب preset «workshop» (novelty وزن 2) وpreset «journal» (methodology وزن 2).
+      <details><summary>تلميح</summary>اعمل <code>def wmean(scores): return sum(w[d]*scores[d] for d in DIMENSIONS)/sum(w.values())</code> وخزّنه في الـ <code>LoopTrace.mean</code>. الـ target check يفضل per-dimension زي ما هو، الوزن بيأثر على الـ plateau بس.</details></li>
+    <li><b>Paired critic:</b> اكتب <code>adjudicator(critique) -&gt; list[Suggestion]</code> بيشيل أي اقتراح على بُعد درجته أصلًا ≥ target، أو أي اقتراح مكرر لنفس الـ (dimension, section). حطه بين الـ critic والـ reviser.
+      <details><summary>تلميح</summary>الـ adjudicator بياخد الـ Critique كله (عشان يشوف الدرجات)، بس اللي بيعدي للـ reviser لسه <code>list[Suggestion]</code>. كده الـ reviser لسه مابيشوفش الدرجات والـ contract ماتكسرش.</details></li>
+    <li><b>ناقد بايظ:</b> اكتب <code>stuck_critic</code> بيرجّع 4.0 لكل الأبعاد دايمًا مع اقتراح <code>"no-op"</code>، وreviser مابيعملش حاجة. شغّل بـ <code>max_rounds=3</code>. إيه الـ verdict؟
+      <details><summary>الإجابة</summary>الـ mean ثابت، فالفرق 0 ≤ epsilon. مع window=2 محتاج ٣ نقط، فعند جولة ٣ يتحقق plateau قبل ما الـ budget يتحسب. التست الأصلي بيقبل <code>plateau</code> أو <code>budget</code>، والاتنين بيكشفوا إن الناقد بايظ.</details></li>
+    <li><b>Regression flag:</b> ضيف للـ <code>LoopTrace</code> حقل <code>regressions: list[str]</code> فيه الأبعاد اللي درجتها نزلت عن الجولة اللي قبلها (زي معمل ١).
+      <details><summary>تلميح</summary>في <code>run</code> احفظ <code>prev_scores</code> وقارن: <code>[d for d in DIMENSIONS if cur[d] &lt; prev[d]]</code>.</details></li>
+    <li><b>Target يكسب plateau:</b> اكتب تست بيبني critic بيرجّع means: 5.0، 5.05، ثم 9.0 لكل الأبعاد في جولة ٣ مع <code>target_score=9.0</code>. اتأكد إن الـ reason = <code>target</code>.
+      <details><summary>تلميح</summary>بص على <code>test_plateau_detected_when_mean_stable</code> في ملف التستات وعدّل الـ seq. في جولة ٣ الـ target بيتشيّك الأول فبيرجع قبل ما الـ plateau يتحسب أصلًا.</details></li>
+    <li><b>إضافة مني · LLM-as-judge حقيقي:</b> حوّل الـ critic لـ prompt لموديل بيرجّع JSON بالشكل ده بالظبط: <code>{"scores": {...5 أبعاد}, "suggestions": [{"dimension","target_section_id","edit"}]}</code>. اكتب <code>parse_critique(text, round_)</code> بيعمل validation: الخمس أبعاد موجودين، كل درجة بين 0 و10، وكل dimension في الاقتراحات من الـ <code>DIMENSIONS</code>. لو الـ JSON بايظ ارجع Critique بدرجات 0 وreason <code>"parse-error"</code> بدل ما اللوب يقع.
+      <details><summary>تلميح</summary>اختبره الأول بـ fake model (دالة بترجّع string ثابت) قبل أي API، بنفس روح الـ deterministic critic. الـ parse-error هيظهر في الـ trace بدل ما يختفي.</details></li>
+  </ol>
+</section>
+
+<section id="d483-mine">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس مقالوش صراحة</h2></div>
+  <div class="note ai"><strong>الحدس:</strong> اللوب ده هو <b>Evaluator-Optimizer</b> pattern: واحد بيقيّم وواحد بيحسّن. نفس الشكل بتلاقيه في agents بتكتب كود وتشغّل التستات وتصلّح، أو في self-refine للـ LLMs. الفرق إن هنا التقييم structured، فالـ harness هو اللي بيحكم مش الموديل.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li>• <b>تقف على الـ mean بس:</b> ورقة 10/10 في كل حاجة ما عدا evidence 2 هتعدّي. عشان كده الكود بيستخدم <code>all(...)</code>.</li>
+    <li>• <b>تدّي الـ reviser الدرجات:</b> هيبدأ «يلعب» على الأرقام بدل ما ينفذ الاقتراحات، وتفقد القدرة إنك تبدّل أي طرف لوحده.</li>
+    <li>• <b>Goodhart:</b> الناقد الـ deterministic بيكافئ الطول، فالـ reviser بيزود <code>"x"*80</code> والـ clarity بتطلع. ده بيوضح إن الدرجة proxy: لو الـ proxy غلط، اللوب هيحسّن الحاجة الغلط بثقة. في الإنتاج راجع عينات بإيدك.</li>
+    <li>• <b>نفس الموديل ناقد وكاتب:</b> غالبًا بيبقى متساهل مع نفسه. الـ paired critic أو موديل مختلف بيقلل ده.</li>
+    <li>• <b>epsilon صغير جدًا:</b> مع ناقد فيه noise، الـ plateau مش هيتحقق أبدًا وهتصرف الـ budget كله. اختار الـ epsilon على مقاس الـ noise بتاع الناقد.</li>
+  </ul>
+</section>
+
+<section id="d483-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d483-quizbox"></div>
+</section>
+
+<section id="d483-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d483-ck">
+    <li><label><input type="checkbox" data-ck="dims"> أقدر أشرح ليه الـ score vector أحسن من فقرة نقد</label></li>
+    <li><label><input type="checkbox" data-ck="order"> حافظ ترتيب الوقوف: target ← plateau ← budget، وفاهم ليه الـ plateau على جولتين</label></li>
+    <li><label><input type="checkbox" data-ck="labs"> لعبت في المعامل التلاتة وشفت regression وplateau وbudget</label></li>
+    <li><label><input type="checkbox" data-ck="code"> كتبت الـ CriticLoop بإيدي وشغّلت التستات</label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="quiz" id="d483-ckquiz"> جبت ٥ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Score vector بأبعاد ثابتة</td><td>LLM-as-judge rubrics، تقييم الـ RAG (faithfulness، relevance…)</td></tr>
+    <tr><td>Critic / Reviser منفصلين</td><td>Evaluator-Optimizer في الـ agents، self-refine</td></tr>
+    <tr><td>Convergence rules</td><td>early stopping في التدريب، agents بتصلّح كود لحد ما التستات تعدّي</td></tr>
+    <tr><td>Budget cap</td><td>max_iterations / max_turns في أي agent framework</td></tr>
+    <tr><td>Trace لكل جولة</td><td>observability، والـ Iteration Scheduler في الدرس الجاي</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Iteration Scheduler. هنستخدم الـ trace اللي بنيناه النهاردة عشان نقرر أنهي branch من البحث يستاهل نكمل فيه.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F55-critic-loop" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/55-critic-loop</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d483-roadmap').closest('.day');
+const DIMS=['clarity','novelty','evidence','methodology','related_work'];
+const SHORT={clarity:'clar',novelty:'nov',evidence:'evid',methodology:'meth',related_work:'rel'};
+const COLORS=()=>[css('--vec-a'),css('--vec-b'),css('--ok'),css('--bad'),css('--muted')];
+
+// roadmap: phase 19 lesson folder numbers (18 and 19 don't exist in the repo)
+const LESSONS=[];for(let i=1;i<=87;i++)if(i!==18&&i!==19)LESSONS.push(i);
+const rm=$('d483-roadmap');LESSONS.forEach(i=>{const s=document.createElement('span');s.textContent=i;if(i===55)s.className='now';rm.appendChild(s)});
+
+// ---------- Lab 1: regression radar ----------
+const R1=[6,4,5,7,6],R2=[7,6,6,7,6];
+const sl=$('d483-sliders');
+DIMS.forEach((d,i)=>{const l=document.createElement('label');l.innerHTML=d+' <span>'+R2[i]+'</span><input type="range" min="0" max="10" step="0.5" value="'+R2[i]+'">';
+  const inp=l.querySelector('input'),sp=l.querySelector('span');inp.addEventListener('input',()=>{R2[i]=+inp.value;sp.textContent=R2[i];drawRadar()});sl.appendChild(l)});
+const rc=$('d483-radar'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+function drawRadar(){
+  rx.clearRect(0,0,RW,RH);const cx=RW/2,cy=RH/2+8,Rr=135;
+  const pt=(i,v)=>{const a=-Math.PI/2+i*2*Math.PI/5;return[cx+Math.cos(a)*Rr*v/10,cy+Math.sin(a)*Rr*v/10]};
+  rx.strokeStyle=css('--grid');rx.lineWidth=1;
+  for(let k=2;k<=10;k+=2){rx.beginPath();for(let i=0;i<5;i++){const p=pt(i,k);i?rx.lineTo(...p):rx.moveTo(...p)}rx.closePath();rx.stroke()}
+  for(let i=0;i<5;i++){rx.beginPath();rx.moveTo(cx,cy);rx.lineTo(...pt(i,10));rx.stroke()}
+  [[R1,css('--muted')],[R2,css('--vec-a')]].forEach(([S,c])=>{rx.beginPath();S.forEach((v,i)=>{const p=pt(i,v);i?rx.lineTo(...p):rx.moveTo(...p)});rx.closePath();
+    rx.globalAlpha=.18;rx.fillStyle=c;rx.fill();rx.globalAlpha=1;rx.strokeStyle=c;rx.lineWidth=2.5;rx.stroke()});
+  rx.font='13px JetBrains Mono, monospace';rx.textAlign='center';
+  const regs=[];
+  DIMS.forEach((d,i)=>{const p=pt(i,11.6);const bad=R2[i]<R1[i];if(bad)regs.push(d);rx.fillStyle=bad?css('--bad'):css('--ink');rx.fillText(d+(bad?' ↓':''),p[0],p[1]+4)});
+  rx.textAlign='left';rx.fillStyle=css('--muted');rx.fillText('— round 1',10,18);rx.fillStyle=css('--vec-a');rx.fillText('— round 2',10,36);
+  const m1=R1.reduce((a,b)=>a+b)/5,m2=R2.reduce((a,b)=>a+b)/5;
+  $('d483-m1').textContent=f(m1);$('d483-m2').textContent=f(m2);$('d483-dm').textContent=(m2-m1>=0?'+':'')+f(m2-m1);
+  const v=$('d483-regv');
+  if(regs.length){v.textContent=(m2>m1?'الـ mean طلع، بس فيه regression على: ':'regression على: ')+regs.join(', ');v.style.color=css('--bad')}
+  else{v.textContent='مفيش أي بُعد نزل. تحسن نضيف.';v.style.color=css('--ok')}
+}
+drawRadar();
+
+// ---------- Lab 2: draggable round means ----------
+let means=[5,6.5,7.2,7.25,7.3,7.32,7.33,7.34];
+const bc=$('d483-bars'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h,PADL=36,PADB=28,PADT=14;
+const yOf=v=>BH-PADB-(BH-PADB-PADT)*v/10,vOf=y=>Math.max(0,Math.min(10,(BH-PADB-y)/(BH-PADB-PADT)*10));
+function evalBars(){
+  const T=+$('d483-t').value,E=+$('d483-e').value,W=+$('d483-w').value,B=+$('d483-b').value;
+  $('d483-tv').textContent=f(T,1);$('d483-ev').textContent=E.toFixed(2);$('d483-wv').textContent=W;$('d483-bv').textContent=B;
+  const tr=[];
+  for(let r=1;r<=B;r++){const m=means[r-1];
+    if(m>=T)return{r,why:'target',T,B};
+    tr.push(m);
+    if(tr.length>=W+1){const rec=tr.slice(-(W+1));let flat=true;for(let i=1;i<rec.length;i++)if(rec[i]-rec[i-1]>E)flat=false;if(flat)return{r,why:'plateau',T,B}}
+  }
+  return{r:B,why:'budget',T,B};
+}
+function drawBars(){
+  const res=evalBars();bx.clearRect(0,0,BW,BH);
+  const n=8,slot=(BW-PADL-10)/n,bw=slot*.62;
+  bx.strokeStyle=css('--grid');bx.fillStyle=css('--muted');bx.font='11px JetBrains Mono, monospace';
+  for(let k=0;k<=10;k+=2){const y=yOf(k);bx.beginPath();bx.moveTo(PADL,y);bx.lineTo(BW,y);bx.stroke();bx.fillText(k,8,y+4)}
+  for(let i=0;i<n;i++){const x=PADL+i*slot+(slot-bw)/2,y=yOf(means[i]),inB=i<res.B;
+    bx.globalAlpha=inB?1:.25;
+    bx.fillStyle=(i+1===res.r)?(res.why==='target'?css('--ok'):res.why==='plateau'?css('--vec-b'):css('--bad')):(i+1<res.r?css('--vec-a'):css('--muted'));
+    if(i+1>res.r&&inB)bx.globalAlpha=.3;
+    bx.fillRect(x,y,bw,BH-PADB-y);bx.globalAlpha=1;
+    bx.fillStyle=css('--ink');bx.textAlign='center';bx.fillText(f(means[i]),x+bw/2,y-4);bx.fillText('r'+(i+1),x+bw/2,BH-10);bx.textAlign='left'}
+  const ty=yOf(res.T);bx.strokeStyle=css('--ok');bx.setLineDash([6,4]);bx.lineWidth=1.5;bx.beginPath();bx.moveTo(PADL,ty);bx.lineTo(BW,ty);bx.stroke();bx.setLineDash([]);
+  bx.fillStyle=css('--ok');bx.fillText('target',BW-50,ty-4);
+  const v=$('d483-barv'),msg={target:'converged · target: الجولة وصلت للهدف',plateau:'converged · plateau: مفيش تحسن أكبر من epsilon لعدد window من الجولات',budget:'stopped · budget: الجولات خلصت'};
+  v.textContent='وقف عند جولة '+res.r+' → '+msg[res.why];v.style.color=res.why==='target'?css('--ok'):res.why==='plateau'?css('--vec-b'):css('--bad');
+}
+let dragI=-1;
+bc.addEventListener('pointerdown',e=>{const[x,y]=AI.evPos(bc,e);const slot=(BW-PADL-10)/8,i=Math.floor((x-PADL)/slot);if(i<0||i>7)return;dragI=i;bc.setPointerCapture(e.pointerId);means[i]=Math.round(vOf(y)*100)/100;drawBars()});
+bc.addEventListener('pointermove',e=>{if(dragI<0)return;const[,y]=AI.evPos(bc,e);means[dragI]=Math.round(vOf(y)*100)/100;drawBars()});
+bc.addEventListener('pointerup',()=>dragI=-1);
+['d483-t','d483-e','d483-w','d483-b'].forEach(id=>$(id).addEventListener('input',drawBars));
+$('d483-preset-plat').addEventListener('click',()=>{means=[5,6.5,7.2,7.25,7.3,7.32,7.33,7.34];drawBars()});
+$('d483-preset-tgt').addEventListener('click',()=>{means=[4,5.5,6.8,8.2,8.5,8.6,8.7,8.8];drawBars()});
+$('d483-preset-stuck').addEventListener('click',()=>{means=[4,4,4,4,4,4,4,4];$('d483-e').value=0;drawBars()});
+drawBars();
+
+// ---------- Lab 3: port of CriticLoop with deterministic critic/reviser ----------
+const r2=x=>Math.round(x*100)/100;
+function newPaper(orig){return{sections:[{id:'intro',title:'Introduction',body:'short intro',figure_refs:[],cites:[]}],originality_tag:orig||'low'}}
+function score(p){
+  const L=p.sections.map(s=>s.body.length),avg=L.length?L.reduce((a,b)=>a+b,0)/L.length:0;
+  const titles=new Set(p.sections.map(s=>s.title.toLowerCase()));
+  const clarity=Math.min(10,3+avg/50);
+  const novelty=p.originality_tag==='high'?9:p.originality_tag==='medium'?6:3;
+  const figs=p.sections.reduce((a,s)=>a+s.figure_refs.length,0),cites=p.sections.reduce((a,s)=>a+s.cites.length,0);
+  const evidence=Math.min(10,2+2*figs+1.5*cites);
+  const hasM=p.sections.some(s=>s.title.toLowerCase().startsWith('method')&&s.body);
+  const hasR=titles.has('related work')&&p.sections.some(s=>s.title.toLowerCase()==='related work'&&s.body);
+  return{clarity:r2(clarity),novelty:novelty,evidence:r2(evidence),methodology:hasM?9:4,related_work:hasR?9:4};
+}
+function critic(p,round){const s=score(p),sg=[];
+  if(s.clarity<8)sg.push({dimension:'clarity',target:p.sections.length?p.sections[p.sections.length-1].id:null,edit:'expand-body'});
+  if(s.novelty<8)sg.push({dimension:'novelty',target:null,edit:'bump-originality'});
+  if(s.evidence<8)sg.push({dimension:'evidence',target:p.sections.length?p.sections[0].id:'intro',edit:'add-figure-and-cite'});
+  if(s.methodology<8)sg.push({dimension:'methodology',target:null,edit:'add-method-section'});
+  if(s.related_work<8)sg.push({dimension:'related_work',target:null,edit:'add-related-work-section'});
+  return{round,scores:s,suggestions:sg,mean:DIMS.reduce((a,d)=>a+s[d],0)/5}}
+function reviser(p,sg){let fc=0,cc=0;p.sections.forEach(s=>{fc+=s.figure_refs.length;cc+=s.cites.length});
+  sg.forEach(g=>{
+    if(g.edit==='expand-body'){const s=p.sections.find(s=>s.id===g.target);if(s)s.body=(s.body+' '+'x'.repeat(80)).trim()}
+    else if(g.edit==='bump-originality'){p.originality_tag=p.originality_tag==='low'?'medium':p.originality_tag==='medium'?'high':p.originality_tag}
+    else if(g.edit==='add-figure-and-cite'){const s=p.sections.find(s=>s.id===(g.target||(p.sections[0]&&p.sections[0].id)));if(s){fc++;cc++;s.figure_refs.push('f'+fc);s.cites.push('c'+cc)}}
+    else if(g.edit==='add-method-section'){const s=p.sections.find(s=>s.title.toLowerCase().startsWith('method'));const b='A description of the method follows. '+'x'.repeat(200);if(!s)p.sections.push({id:'method',title:'Method',body:b,figure_refs:[],cites:[]});else if(!s.body)s.body=b}
+    else if(g.edit==='add-related-work-section'){const s=p.sections.find(s=>s.title.toLowerCase()==='related work');const b='We survey adjacent work. '+'x'.repeat(200);if(!s)p.sections.push({id:'related-work',title:'Related Work',body:b,figure_refs:[],cites:[]});else if(!s.body)s.body=b}
+  });return p}
+function makeLoop(opt){return{opt,paper:newPaper(opt.orig),trace:[],round:0,done:null}}
+function step(L){
+  if(L.done)return;const o=L.opt;L.round++;const r=L.round,c=critic(L.paper,r);
+  if(DIMS.every(d=>c.scores[d]>=o.target)){L.trace.push({round:r,scores:c.scores,mean:c.mean,applied:0,verdict:'target'});L.done={status:'converged',reason:'target',rounds:r};return}
+  const ev={round:r,scores:c.scores,mean:c.mean,applied:c.suggestions.length,verdict:'continue',sugg:c.suggestions.map(s=>s.edit)};L.trace.push(ev);
+  const W=2;if(L.trace.length>=W+1){const rec=L.trace.slice(-(W+1));let flat=true;for(let i=1;i<rec.length;i++)if(rec[i].mean-rec[i-1].mean>o.eps)flat=false;
+    if(flat){ev.verdict='plateau';L.done={status:'converged',reason:'plateau',rounds:r};return}}
+  L.paper=reviser(L.paper,c.suggestions);
+  if(r>=o.max){ev.verdict='budget';L.done={status:'stopped',reason:'budget',rounds:o.max}}
+}
+function opts(){return{max:+$('d483-lm').value,target:+$('d483-lt').value,eps:+$('d483-le').value,orig:$('d483-lo').value}}
+let LP=makeLoop(opts());
+const lc=$('d483-loop'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+function drawLoop(){
+  const o=LP.opt;$('d483-lmv').textContent=o.max;$('d483-ltv').textContent=f(o.target,1);$('d483-lev').textContent=o.eps.toFixed(2);
+  lx.clearRect(0,0,LW,LH);const pl=34,pb=26,pt=14,pr=70,n=Math.max(o.max,2);
+  const X=r=>pl+(LW-pl-pr)*(r-1)/(n-1),Y=v=>LH-pb-(LH-pb-pt)*v/10;
+  lx.strokeStyle=css('--grid');lx.lineWidth=1;lx.font='11px JetBrains Mono, monospace';lx.fillStyle=css('--muted');
+  for(let k=0;k<=10;k+=2){lx.beginPath();lx.moveTo(pl,Y(k));lx.lineTo(LW-pr,Y(k));lx.stroke();lx.fillText(k,8,Y(k)+4)}
+  for(let r=1;r<=n;r++){lx.fillText('r'+r,X(r)-6,LH-8)}
+  lx.strokeStyle=css('--ok');lx.setLineDash([6,4]);lx.beginPath();lx.moveTo(pl,Y(o.target));lx.lineTo(LW-pr,Y(o.target));lx.stroke();lx.setLineDash([]);
+  const C=COLORS();
+  DIMS.forEach((d,i)=>{if(!LP.trace.length)return;lx.strokeStyle=C[i];lx.fillStyle=C[i];lx.lineWidth=2;lx.beginPath();
+    LP.trace.forEach((t,j)=>{const x=X(t.round),y=Y(t.scores[d])+(i-2)*1.5;j?lx.lineTo(x,y):lx.moveTo(x,y)});lx.stroke();
+    LP.trace.forEach(t=>{lx.beginPath();lx.arc(X(t.round),Y(t.scores[d])+(i-2)*1.5,3,0,7);lx.fill()});
+    lx.fillText(SHORT[d],LW-pr+6,16+i*16)});
+  if(LP.trace.length){lx.strokeStyle=css('--ink');lx.lineWidth=3.5;lx.beginPath();LP.trace.forEach((t,j)=>{j?lx.lineTo(X(t.round),Y(t.mean)):lx.moveTo(X(t.round),Y(t.mean))});lx.stroke();lx.fillStyle=css('--ink');lx.fillText('mean',LW-pr+6,16+5*16)}
+  const tb=$('d483-trace');tb.innerHTML='<tr><th class="ltr">round</th>'+DIMS.map(d=>'<th class="ltr">'+SHORT[d]+'</th>').join('')+'<th class="ltr">mean</th><th class="ltr">applied</th><th class="ltr">verdict</th></tr>'+
+    LP.trace.map(t=>'<tr><td class="ltr">'+t.round+'</td>'+DIMS.map(d=>'<td class="ltr">'+t.scores[d]+'</td>').join('')+'<td class="ltr">'+f(t.mean,3)+'</td><td class="ltr">'+t.applied+'</td><td class="ltr">'+t.verdict+'</td></tr>').join('');
+  const v=$('d483-loopv');
+  if(LP.done){v.textContent=LP.done.status+' · '+LP.done.reason+' · rounds_used = '+LP.done.rounds;v.style.color=LP.done.reason==='target'?css('--ok'):LP.done.reason==='plateau'?css('--vec-b'):css('--bad')}
+  else{const last=LP.trace[LP.trace.length-1];v.textContent=last?'جولة '+last.round+': '+last.applied+' اقتراحات اتطبقت ('+(last.sugg||[]).join(', ')+')':'دوس «جولة واحدة» عشان تبدأ';v.style.color=css('--ink')}
+}
+const resetLoop=()=>{LP=makeLoop(opts());drawLoop()};
+$('d483-step').addEventListener('click',()=>{step(LP);drawLoop()});
+$('d483-runall').addEventListener('click',()=>{let g=0;while(!LP.done&&g++<20)step(LP);drawLoop()});
+$('d483-reset').addEventListener('click',resetLoop);
+['d483-lm','d483-lt','d483-le','d483-lo'].forEach(id=>$(id).addEventListener(id==='d483-lo'?'change':'input',resetLoop));
+drawLoop();
+
+// expected output from the same port (defaults of the demo: max_rounds=6, target=8, eps=0.1)
+(function(){const L=makeLoop({max:6,target:8,eps:.1,orig:'low'});let g=0;while(!L.done&&g++<20)step(L);
+  $('d483-expected').textContent=L.done.reason+' '+L.done.rounds+'\n'+L.trace.map(t=>t.round+' '+f(t.mean,3)+' '+t.verdict).join('\n')})();
+
+// ---------- quiz ----------
+AI.quiz($('d483-quizbox'),[
+ ['ليه الناقد بيدّي درجات على ٥ أبعاد ثابتة بدل ما يرجّع فقرة حرة؟',['لأن الموديلات مش بتعرف تكتب فقرات كويس','لأن الـ reviser بيقبل JSON بس','لأن LaTeX محتاج حقل score','لأن vector ثابت بيخلي الـ harness يكشف الـ regression لكل بُعد عبر الجولات'],3,'الـ vector الثابت بيحوّل النقد لـ data تتقارن عبر الجولات. النقد الحر مايتحققش منه، والـ vectors بتخلي الـ regressions باينة.'],
+ ['اللوب بيشيّك شروط الوقوف بأي ترتيب في آخر كل جولة؟',['plateau، بعدين target، بعدين budget','budget، بعدين plateau، بعدين target','أي واحد يحصل الأول بتعادل عشوائي','target، بعدين plateau، بعدين budget'],3,'الـ target يكسب (الشغل خلص)، بعدين plateau (مفيش تقدم ممكن)، بعدين budget (السقف). الترتيب ده بيخلي النتيجة deterministic لما أكتر من شرط يتحقق.'],
+ ['ليه كشف الـ plateau محتاج جولتين مسطحين ورا بعض مش واحدة؟',['لأن الموديل بيرجّع درجات nondeterministic','لأن حتى الـ scoring الـ deterministic فيه noise كل جولة، وجولة واحدة مش إشارة كفاية','لأن الـ dataclass محتاج list','لأن الـ dashboard محتاج نقطتين'],1,'حتى الـ scorer الـ deterministic الناتج بتاعه بيتغير من جولة للتانية حسب الاقتراحات اللي اتطبقت. شرط الجولتين بيفلتر الـ noise ده.'],
+ ['الـ reviser بياخد إيه كـ input كل جولة؟',['الـ LaTeX source الخام','فقرة طالعة من موديل','الـ Critique كله بالدرجات','الورقة وقايمة الـ Suggestion records'],3,'Reviser.__call__ بياخد (paper, suggestions). كل Suggestion فيه dimension وsection مستهدفة وتعليمة edit. الـ reviser مابيشوفش الدرجات، والفصل ده بيخليك تبدّل أي طرف من غير ما تلمس التاني.'],
+ ['الـ trace فيه إيه لكل جولة؟',['المسودة النهائية بس','الـ verdict بس','الـ prompt والـ completion بتوع الموديل','رقم الجولة، الـ score vector، الـ mean، عدد الاقتراحات المطبقة، والـ verdict'],3,'الـ trace هو سجل الأحداث لكل جولة. الـ dashboards بترسمه كـ chart، والمرحلة اللي بعدها بتقراه عشان تقرر الـ branch يستاهل ولا لأ.'],
+ ['ناقد بيطلّع اقتراحات عمرها ما بتحسّن أي درجة، هيوصل لأنهي verdict نهائي؟',['converged، عشان الاقتراحات اتطبقت','target، عشان الـ budget بيخبّي الباج','plateau أو budget، عشان الـ harness هيلقط إن مفيش تقدم','exception، عشان اللوب بيقع'],2,'يا إما plateau (جولتين مسطحين) يا إما budget (السقف). الاتنين بيكشفوا الباج، واللوب عمره ما بينجح بصمت.'],
+ ['(سؤال مني) ورقة درجاتها: clarity 10، novelty 10، evidence 6، methodology 10، related_work 10 والـ target = 8. إيه اللي هيحصل؟',['converged · target لأن الـ mean = 9.2','اللوب يكمّل لأن evidence تحت الـ target','plateau فورًا','budget فورًا'],1,'الـ target محتاج كل الأبعاد الخمسة ≥ 8. mean عالي مع بُعد ضعيف مش كفاية، فالناقد هيطلّع اقتراح add-figure-and-cite ويكمّل.'],
+ ['(سؤال مني) مع plateau_window = 2، أقل جولة ممكن يتحقق فيها plateau هي؟',['جولة ١','جولة ٢','جولة ٣','جولة ٥'],2,'الـ _plateau محتاج window+1 = 3 نقط في الـ trace عشان يقارن فرقين ورا بعض، فأول فرصة هي جولة ٣.']
+],5,()=>{const c=$('d483-ckquiz');c.checked=true;AI.store.set('aiefs-d483-quiz','1')});
+
+AI.checklist(483,root);
+
+AI.onTheme(()=>{if(!document.body.contains(rc))return false;drawRadar();drawBars();drawLoop()});
+})();
+</script>

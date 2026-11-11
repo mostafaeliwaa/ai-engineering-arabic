@@ -1,0 +1,701 @@
+<div class="day" id="d50-root">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 07 · Regularization</span>
+  <h1>اليوم ٥٠: ازاي تمنع الموديل إنه يحفظ بدل ما يفهم</h1>
+  <p class="lede">موديلك جاب ٩٩٪ على الـ training و٦٠٪ على الـ test؟ يبقى <b>حفظ</b> مش <b>اتعلم</b>. النهاردة هنفهم الـ <b>Regularization</b>: «ضريبة» بنحطها على التعقيد عشان نجبر الموديل يعمّم. هتبني Dropout و Weight Decay و BatchNorm و LayerNorm و RMSNorm بإيدك، وتشوف كل واحد بيعمل إيه في معامل تفاعلية.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Optimizers</b></span>
+    <span>بعده: <b>Weight Initialization</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d50-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d50-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر الـ Optimizers</h2></div>
+  <p>امبارح بنينا SGD و Momentum و Adam و AdamW. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. Adam عبارة عن تجميع لإيه وإيه؟</summary>Momentum (متوسط متحرك للـ gradient نفسه، اللي هو m) + RMSProp (متوسط متحرك لمربع الـ gradient، اللي هو v) عشان كل parameter ياخد learning rate على مقاسه.</details>
+  <details><summary>٢. ليه AdamW أحسن من Adam + L2 في الـ loss؟</summary>لأن في Adam الـ L2 بيعدي على الـ adaptive scaling، فالـ parameters اللي الـ gradient بتاعها متذبذب بتاخد regularization أقل. AdamW بيطرح <span class="ltr">lr·λ·w</span> مباشرة من الوزن بعد خطوة Adam، فكل الأوزان بتتقلص بنفس النسبة. وده هيرجع معانا النهاردة في الـ weight decay.</details>
+  <details><summary>٣. لو التدريب مش ماشي مع Adam، تغيّر إيه الأول؟</summary>الـ learning rate. الـ defaults (lr=0.001, β1=0.9, β2=0.999) شغالة في أغلب الحالات.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>المشكلة: الـ overfitting والـ gap</div>
+    <div><b>20 min</b>Dropout و Weight Decay + المعامل</div>
+    <div><b>15 min</b>BatchNorm / LayerNorm / RMSNorm</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>كويز + تمرين</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d50-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الموديل بيحفظ</h2></div>
+  <p>الـ neural network لو فيها parameters كفاية تقدر تحفظ أي داتا. ده مش كلام نظري: Zhang وزمايله (2017) دربوا شبكات عادية على ImageNet بـ labels <b>عشوائية تمامًا</b>. الشبكات وصلت لـ training loss قريب من الصفر، يعني حفظت مليون زوج input/output مفيهمش أي نمط. الـ training كان مثالي، والـ test كان صفر.</p>
+  <p>تخيل طالب بيحفظ إجابات امتحانات السنين اللي فاتت حرف حرف. لو الامتحان جه بنفس الأسئلة هيقفل، لو اتغير سؤال واحد هيقع. ده بالظبط الـ <b>overfitting</b>.</p>
+  <p>والمشكلة بتكبر مع حجم الموديل: GPT-3 فيه 175 مليار parameter، والداتا حوالي 500 مليار token. بالسعة دي يقدر يحفظ حتت كبيرة من الداتا حرفيًا لو مفيش regularization.</p>
+  <div class="formula">generalization gap = train accuracy − test accuracy</div>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>Train</th><th>Test</th><th>المعنى</th></tr>
+    <tr><td>Underfitting</td><td class="ltr">60%</td><td class="ltr">58%</td><td>الموديل بسيط زيادة عن اللزوم</td></tr>
+    <tr><td>Good fit</td><td class="ltr">95%</td><td class="ltr">92%</td><td>بيعمّم كويس</td></tr>
+    <tr><td>Overfitting</td><td class="ltr">99.9%</td><td class="ltr">65%</td><td>حفظ الـ noise</td></tr>
+  </table></div>
+  <p>كل تقنية النهاردة بتهاجم الـ gap ده من زاوية مختلفة، وكلها بتزق الموديل من ناحية الـ overfitting ناحية النص:</p>
+  <ul class="checklist">
+    <li>• <b>Dropout</b>: متعتمدش على neuron واحد.</li>
+    <li>• <b>Weight decay</b>: مفيش وزن يكبر أوي.</li>
+    <li>• <b>BatchNorm</b>: بينعّم الـ loss landscape فالـ optimizer يلاقي minima أوسع وأحسن في التعميم.</li>
+    <li>• <b>LayerNorm</b>: نفس الفكرة بس بيشتغل في الأماكن اللي BatchNorm بيفشل فيها (batch صغير، sequences أطوالها مختلفة).</li>
+    <li>• <b>RMSNorm</b>: بيعمل نفس الشغل أسرع بحوالي ١٠٪ لأنه بيشيل حساب الـ mean.</li>
+    <li>• <b>Data augmentation</b> و <b>Early stopping</b>: من ناحية الداتا ومن ناحية وقت التدريب.</li>
+  </ul>
+</section>
+
+<!-- STATION 2: L2 lab -->
+<section id="d50-l2">
+  <div class="station-head"><span class="tag">02</span><h2>Weight Decay (L2): ضريبة على الأوزان الكبيرة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>بنضيف لمجموع مربعات الأوزان على الـ loss:</p>
+      <div class="formula">total_loss = task_loss + (λ/2) · Σ wᵢ²</div>
+      <p>الـ gradient بتاع الجزء ده هو <span class="ltr">λ·w</span>. يعني كل خطوة، كل وزن بيتقلص ناحية الصفر بنسبة على قد حجمه: الوزن الكبير بيتعاقب أكتر. فالموديل بيتزق لحلول مفيهاش وزن واحد مسيطر.</p>
+      <p><b>ليه ده بيساعد؟</b> الموديلات اللي عاملة overfit غالبًا أوزانها كبيرة وبتضخّم الـ noise اللي في الداتا. لما الأوزان تفضل صغيرة، السعة الفعلية للموديل بتقل، فيضطر يعتمد على features ثابتة بتعمّم بدل الحاجات الغريبة اللي حفظها.</p>
+      <div class="tablewrap"><table>
+        <tr><th>الحالة</th><th>λ نموذجي</th></tr>
+        <tr><td>AdamW على transformers</td><td class="ltr">0.01</td></tr>
+        <tr><td>SGD على CNNs</td><td class="ltr">1e-4</td></tr>
+        <tr><td>موديل عامل overfit جامد</td><td class="ltr">0.1</td></tr>
+      </table></div>
+      <div class="note"><strong>افتكر امبارح:</strong> الـ weight decay والـ L2 نفس الحاجة في SGD، بس مش نفس الحاجة في Adam. استخدم AdamW دايمًا مع Adam.</div>
+      <div class="note"><strong>جرب بإيدك:</strong> المعمل ده بيعمل fit لـ polynomial درجة ٩ على ١٢ نقطة بس (النقط الزرقا). خلّي λ صغيرة جدًا وشوف المنحنى بيتلوى عشان يعدي على كل نقطة: train error صفر تقريبًا، والـ test (النقط البرتقالي) وحش. علّي λ تدريجيًا وراقب الـ gap. ولو علّيتها أوي هتشوف الـ underfitting.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d50-l2c" width="520" height="340" aria-label="منحنى polynomial مع L2"></canvas>
+      <label style="display:grid;gap:2px">λ = <b class="mono" id="d50-lamv">1e-6</b><input type="range" id="d50-lam" min="-9" max="1" step="0.25" value="-6"></label>
+      <div class="readout">
+        <div><small>Train MSE</small><b id="d50-trm">0</b></div>
+        <div><small>Test MSE</small><b id="d50-tem">0</b></div>
+        <div><small>Σ w²</small><b id="d50-wn">0</b></div>
+      </div>
+      <div class="verdict" id="d50-l2v"></div>
+      <div class="btns"><button type="button" id="d50-reseed">داتا جديدة</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: dropout lab -->
+<section id="d50-drop">
+  <div class="station-head"><span class="tag">03</span><h2>Dropout: اطفي neurons عشوائي</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>أبسط تقنية وأشيكها في التفسير. وقت التدريب، كل neuron بنصفّر الـ output بتاعه باحتمال <b>p</b>:</p>
+      <div class="formula">output = activation(z) · mask    mask[i] ~ Bernoulli(1 − p)</div>
+      <p>مع <span class="ltr">p = 0.5</span> نص الـ neurons بتتطفي في كل forward pass. الشبكة مش عارفة مين هيبقى موجود، فلازم تتعلم تمثيلات فيها احتياطي (redundant). ده بيمنع الـ <b>co-adaptation</b>: إن neuron يتعلم يعتمد على neuron معين تاني يكون موجود.</p>
+      <p><b>تشبيه:</b> فريق كورة المدرب كل ماتش بيقعّد نص اللاعيبة عشوائي. محدش يقدر يبني خطته على «فلان هيمرر لي». كل لاعب لازم يبقى كويس لوحده.</p>
+      <h3>تفسير الـ Ensemble</h3>
+      <p>شبكة فيها N neuron مع dropout فيها <span class="ltr">2ᴺ</span> شبكة فرعية ممكنة (كل تركيبة شغال/مطفي). التدريب بالـ dropout بيدرب تقريبًا الـ <span class="ltr">2ᴺ</span> شبكة مع بعض، كل واحدة على mini-batches مختلفة. وقت الـ test بنشغل كل الـ neurons، وده كأننا بناخد متوسط توقعات <span class="ltr">2ᴺ</span> شبكة: ensemble ضخم من موديل واحد.</p>
+      <h3>Inverted Dropout</h3>
+      <p>عشان القيمة المتوقعة تفضل زي ما هي، الأصل كان نضرب في <span class="ltr">(1 − p)</span> وقت الـ test. عمليًا بنعمل العكس: نقسم على <span class="ltr">(1 − p)</span> وقت التدريب، فكود الـ test ميعرفش حاجة عن الـ dropout أصلًا:</p>
+      <div class="formula">train: output = activation(z) · mask / (1 − p)<br>test:  output = activation(z)</div>
+      <div class="tablewrap"><table>
+        <tr><th>نوع الموديل</th><th>p الافتراضي</th></tr>
+        <tr><td>Transformers</td><td class="ltr">0.1</td></tr>
+        <tr><td>MLPs</td><td class="ltr">0.5</td></tr>
+        <tr><td>CNNs</td><td class="ltr">0.2 – 0.3</td></tr>
+      </table></div>
+      <p>dropout أعلى = regularization أقوى = خطر underfitting أكبر.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d50-dc" width="520" height="300" aria-label="شبكة بالـ dropout"></canvas>
+      <label style="display:grid;gap:2px">p = <b class="mono" id="d50-pv">0.5</b><input type="range" id="d50-p" min="0" max="0.9" step="0.05" value="0.5"></label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d50-inv" checked> inverted scaling (قسمة على 1−p)</label>
+      <div class="readout">
+        <div><small>neurons شغالة</small><b id="d50-act">0</b></div>
+        <div><small>مجموع الـ output</small><b id="d50-sum">0</b></div>
+        <div><small>متوسط آخر الـ passes</small><b id="d50-avg">0</b></div>
+        <div><small>مجموع وقت الـ eval</small><b id="d50-ev">0</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d50-step">forward pass واحد</button>
+        <button type="button" id="d50-run">شغّل ٢٠٠ pass</button>
+        <button type="button" id="d50-evalb">وضع eval</button>
+      </div>
+      <p class="exp" id="d50-dnote" style="font-size:14px;color:var(--muted)"></p>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: norms -->
+<section id="d50-norm">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Normalization: BatchNorm و LayerNorm و RMSNorm</h2></div>
+  <h3>Batch Normalization</h3>
+  <p>بنعمل normalize لـ output كل layer <b>على مستوى الـ batch</b>: لكل feature، ناخد قيمها في كل الـ samples اللي في الـ batch:</p>
+  <div class="formula">μ = (1/B) Σ xᵢ    σ² = (1/B) Σ (xᵢ − μ)²<br>x̂ = (xᵢ − μ) / √(σ² + ε)    y = γ·x̂ + β</div>
+  <p><b>γ و β</b> parameters بتتعلم، وبتدي الشبكة فرصة تلغي الـ normalization لو ده الأحسن. من غيرهم هتجبر كل layer إن الـ output بتاعها mean صفر و variance واحد، وده ممكن ميكونش اللي الشبكة عايزاه.</p>
+  <p><b>Training ضد Inference:</b> وقت التدريب μ و σ بيتحسبوا من الـ mini-batch الحالي. وقت الـ inference بنستخدم <b>running averages</b> اتجمعت أثناء التدريب (exponential moving average بـ momentum = 0.1، يعني ٩٠٪ قديم + ١٠٪ جديد).</p>
+  <div class="note"><strong>ليه BatchNorm شغال؟</strong> لسه فيه نقاش. الورقة الأصلية قالت إنه بيقلل الـ «internal covariate shift» (توزيع مدخلات الـ layer بيتغير لما اللي قبلها تتحدث). Santurkar وزمايله (2018) أثبتوا إن التفسير ده غلط. السبب الحقيقي: BatchNorm بيخلي الـ loss landscape أنعم؛ الـ gradients بتبقى بتتنبأ أحسن، والـ Lipschitz constants أصغر، فالـ optimizer يقدر ياخد خطوات أكبر بأمان. عشان كده BatchNorm بيسمح بـ learning rates أعلى وتقارب أسرع.</div>
+  <p><b>العيب الأساسي:</b> معتمد على إحصائيات الـ batch. لو الـ batch size = 1 الـ mean والـ variance ملهمش معنى. ولو صغير (أقل من 32) الإحصائيات بتبقى noisy وبتضر الأداء. ده بيفرق في object detection (الميموري بتحدد الـ batch) وفي language modeling (أطوال الـ sequences مختلفة).</p>
+
+  <h3>Layer Normalization</h3>
+  <p>نفس المعادلات، بس <b>على مستوى الـ features</b> لكل sample لوحده (D = عدد الـ features). كل sample بيتعمله normalize لوحده، فمفيش أي اعتماد على حجم الـ batch، والحساب واحد في التدريب والـ inference. عشان كده الـ transformers بتستخدم LayerNorm: الـ sequences أطوالها مختلفة، والـ batch غالبًا صغير (أو 1 وقت الـ generation).</p>
+  <p>في الـ transformers بيتحط بعد كل self-attention block وكل feed-forward block (اسمه <b>Post-LN</b>)، أو قبلهم (<b>Pre-LN</b>، وده أكتر استقرارًا في التدريب).</p>
+
+  <h3>RMSNorm</h3>
+  <p>LayerNorm من غير طرح الـ mean (Zhang &amp; Sennrich, 2019):</p>
+  <div class="formula">rms = √( (1/D) Σ xⱼ² )    y = γ · x / rms</div>
+  <p>بس كده. مفيش mean ومفيش β. الملاحظة: إعادة التمركز (طرح الـ mean) في LayerNorm بتساهم بحاجة صغيرة جدًا في الأداء بس بتكلف حساب. شيلها تاخد نفس الدقة بـ overhead أقل بحوالي ١٠٪. LLaMA و LLaMA 2 و LLaMA 3 و Mistral ومعظم الـ LLMs الحديثة بتستخدم RMSNorm، وعلى مقياس مليارات الـ parameters وتريليونات الـ tokens، الـ ١٠٪ دي فرق كبير.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: هو بيعمل normalize على أنهي اتجاه؟</h3>
+      <p>الجدول ده batch فيه 6 samples (صفوف) و 4 features (أعمدة). اختار نوع الـ norm وشوف المستطيل المتلون: ده الجزء اللي بيتحسب منه الـ mean والـ variance مع بعض. دوس على أي خانة عشان تغير الجزء ده.</p>
+      <ul class="checklist">
+        <li>• <b>BatchNorm</b>: عمود (feature واحد على كل الـ batch).</li>
+        <li>• <b>LayerNorm</b>: صف (sample واحد على كل الـ features).</li>
+        <li>• <b>RMSNorm</b>: صف برضه، بس مفيش طرح mean، فلاحظ إن متوسط الـ output مش صفر.</li>
+      </ul>
+      <p>جرّب «batch = 1» مع BatchNorm: كل حاجة بتطلع صفر لأن الـ sample هو نفسه الـ mean. ده بالظبط ليه BatchNorm مينفعش في الـ generation.</p>
+    </div>
+    <div class="instrument">
+      <div class="btns">
+        <button type="button" data-d50n="bn" class="primary">BatchNorm</button>
+        <button type="button" data-d50n="ln">LayerNorm</button>
+        <button type="button" data-d50n="rms">RMSNorm</button>
+        <button type="button" id="d50-b1">batch = 1</button>
+        <button type="button" id="d50-bshuf">batch جديد</button>
+      </div>
+      <canvas id="d50-nc" width="520" height="380" aria-label="جدول batch × features"></canvas>
+      <div class="readout">
+        <div><small>mean (المظلل، قبل)</small><b id="d50-nm0">0</b></div>
+        <div><small>mean (بعد)</small><b id="d50-nm1">0</b></div>
+        <div><small>std / rms (بعد)</small><b id="d50-ns1">0</b></div>
+      </div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>BatchNorm</th><th>LayerNorm</th><th>RMSNorm</th></tr>
+    <tr><td>بيعمل normalize على</td><td>الـ batch لكل feature</td><td>الـ features لكل sample</td><td>الـ features لكل sample، بالـ RMS بس</td></tr>
+    <tr><td>train ضد eval</td><td>مختلفين (running stats)</td><td>نفس الحساب</td><td>نفس الحساب</td></tr>
+    <tr><td>شرطه</td><td>batch أكبر من 32 تقريبًا</td><td>مستقل عن الـ batch</td><td>مستقل عن الـ batch</td></tr>
+    <tr><td>بيتستخدم في</td><td>CNNs</td><td>Transformers</td><td>LLaMA، Mistral</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 5: aug + early stopping -->
+<section id="d50-es">
+  <div class="station-head"><span class="tag">05</span><h2>Data Augmentation و Early Stopping</h2></div>
+  <h3>Data Augmentation</h3>
+  <p>مش تعديل في الموديل، تعديل في الداتا: نغير الـ inputs ونسيب الـ label زي ما هو.</p>
+  <div class="tablewrap"><table>
+    <tr><th>نوع الداتا</th><th>أمثلة</th></tr>
+    <tr><td>صور</td><td>random crop، flip، rotation، color jitter، cutout</td></tr>
+    <tr><td>نص</td><td>synonym replacement، back-translation، random deletion</td></tr>
+    <tr><td>صوت</td><td>time stretch، pitch shift، إضافة noise</td></tr>
+  </table></div>
+  <p>التأثير زي الـ regularization بالظبط: بيكبّر حجم الداتا الفعلي. موديل شاف كل صورة مرة واحدة بشكلها الأصلي يقدر يحفظها. موديل شاف ٥٠ نسخة متعدلة من كل صورة مضطر يتعلم الحاجة الثابتة (invariant) فيها.</p>
+  <h3>Early Stopping</h3>
+  <p>أبسط regularizer: وقّف التدريب لما الـ validation loss يبدأ يطلع. عمليًا: بتتابع الـ validation loss كل epoch، تحفظ أحسن موديل، وتكمل لفترة اسمها <b>patience</b> (غالبًا من 5 لـ 20 epoch). لو الـ loss متحسنش خلال الفترة دي، وقّف وارجع لأحسن موديل محفوظ.</p>
+  <h3>تختار إيه إمتى؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الـ train-test gap</th><th>الجرعة</th><th>الوصفة</th></tr>
+    <tr><td class="ltr">&gt; 10%</td><td>تقيلة</td><td>Dropout 0.3–0.5، weight decay 0.01–0.1، augmentation قوي، early stopping</td></tr>
+    <tr><td class="ltr">5–10%</td><td>متوسطة</td><td>Dropout 0.1–0.2، weight decay 0.001–0.01، BatchNorm أو LayerNorm</td></tr>
+    <tr><td class="ltr">&lt; 5%</td><td>خفيفة</td><td>Dropout 0.05–0.1، weight decay 1e-4</td></tr>
+  </table></div>
+</section>
+
+<!-- CODE -->
+<section id="d50-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو شغّل الملف الأصلي الأول عشان تشوف الصورة الكاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/03-deep-learning-core/07-regularization/code/main.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> اكتب الخطوات دي بنفسك في ملف جديد <code>my_reg.py</code>. متعملش copy-paste؛ بص على الأصل بس لو اتزنقت. كله Python صافي من غير مكتبات.</p>
+
+  <h3>خطوة ١: Dropout (train و eval)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+
+
+class Dropout:
+    def __init__(self, p=0.5):
+        self.p = p
+        self.training = True
+        self.mask = None
+
+    def forward(self, x):
+        if not self.training:          <span class="c"># eval: رجّع زي ما هو</span>
+            return list(x)
+        self.mask = []
+        output = []
+        for val in x:
+            if random.random() &lt; self.p:   <span class="c"># اطفي الـ neuron</span>
+                self.mask.append(0)
+                output.append(0.0)
+            else:                          <span class="c"># inverted scaling</span>
+                self.mask.append(1)
+                output.append(val / (1 - self.p))
+        return output
+
+    def backward(self, grad_output):   <span class="c"># نفس الـ mask ونفس الـ scaling</span>
+        grads = []
+        for g, m in zip(grad_output, self.mask):
+            if m == 0:
+                grads.append(0.0)
+            else:
+                grads.append(g / (1 - self.p))
+        return grads</pre></div>
+
+  <h3>خطوة ٢: L2 Weight Decay</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def l2_regularization(weights, lambda_reg):
+    penalty = 0.0
+    for w in weights:
+        penalty += w * w
+    return lambda_reg * 0.5 * penalty        <span class="c"># (λ/2)·Σw²</span>
+
+def l2_gradient(weights, lambda_reg):
+    return [lambda_reg * w for w in weights]  <span class="c"># λ·w: الكبير بيتعاقب أكتر</span>
+
+weights = [0.5, -1.2, 3.0, 0.1, -2.5]
+print(l2_regularization(weights, 0.01))
+print(l2_gradient(weights, 0.01))</pre></div>
+  <details><summary>الناتج المتوقع (احسبه بإيدك الأول)</summary><pre class="term">Σw² = 0.25 + 1.44 + 9 + 0.01 + 6.25 = 16.95
+penalty = 0.01 × 0.5 × 16.95 = 0.08475
+grads   = [0.005, -0.012, 0.03, 0.001, -0.025]</pre>(ممكن Python يطبع أرقام فيها كسور عشرية طويلة زي <code>0.0050000000000000001</code> بسبب الـ floating point؛ الملف الأصلي بيعمل format بـ 4 خانات.)</details>
+
+  <h3>خطوة ٣: BatchNorm</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class BatchNorm:
+    def __init__(self, num_features, momentum=0.1, eps=1e-5):
+        self.gamma = [1.0] * num_features
+        self.beta = [0.0] * num_features
+        self.eps = eps
+        self.momentum = momentum
+        self.running_mean = [0.0] * num_features
+        self.running_var = [1.0] * num_features
+        self.training = True
+        self.num_features = num_features
+
+    def forward(self, batch):
+        batch_size = len(batch)
+        if self.training:
+            <span class="c"># mean لكل feature على طول الـ batch</span>
+            mean = [0.0] * self.num_features
+            for sample in batch:
+                for j in range(self.num_features):
+                    mean[j] += sample[j]
+            mean = [m / batch_size for m in mean]
+
+            var = [0.0] * self.num_features
+            for sample in batch:
+                for j in range(self.num_features):
+                    var[j] += (sample[j] - mean[j]) ** 2
+            var = [v / batch_size for v in var]
+
+            <span class="c"># running stats: 90% قديم + 10% جديد</span>
+            for j in range(self.num_features):
+                self.running_mean[j] = (1 - self.momentum) * self.running_mean[j] + self.momentum * mean[j]
+                self.running_var[j] = (1 - self.momentum) * self.running_var[j] + self.momentum * var[j]
+        else:
+            mean = list(self.running_mean)     <span class="c"># eval: استخدم المحفوظ</span>
+            var = list(self.running_var)
+
+        self.x_hat = []
+        output = []
+        for sample in batch:
+            normalized = []
+            out_sample = []
+            for j in range(self.num_features):
+                x_h = (sample[j] - mean[j]) / math.sqrt(var[j] + self.eps)
+                normalized.append(x_h)
+                out_sample.append(self.gamma[j] * x_h + self.beta[j])
+            self.x_hat.append(normalized)
+            output.append(out_sample)
+        return output</pre></div>
+
+  <h3>خطوة ٤: LayerNorm و RMSNorm</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class LayerNorm:
+    def __init__(self, num_features, eps=1e-5):
+        self.gamma = [1.0] * num_features
+        self.beta = [0.0] * num_features
+        self.eps = eps
+        self.num_features = num_features
+
+    def forward(self, x):                      <span class="c"># x = sample واحد</span>
+        mean = sum(x) / len(x)
+        var = sum((xi - mean) ** 2 for xi in x) / len(x)
+        self.x_hat = []
+        output = []
+        for j in range(self.num_features):
+            x_h = (x[j] - mean) / math.sqrt(var + self.eps)
+            self.x_hat.append(x_h)
+            output.append(self.gamma[j] * x_h + self.beta[j])
+        return output
+
+
+class RMSNorm:
+    def __init__(self, num_features, eps=1e-6):
+        self.gamma = [1.0] * num_features      <span class="c"># مفيش beta</span>
+        self.eps = eps
+        self.num_features = num_features
+
+    def forward(self, x):
+        rms = math.sqrt(sum(xi * xi for xi in x) / len(x) + self.eps)  <span class="c"># مفيش mean</span>
+        output = []
+        for j in range(self.num_features):
+            output.append(self.gamma[j] * x[j] / rms)
+        return output</pre></div>
+  <p>اختبار سريع: بعد LayerNorm الـ mean لازم يطلع ≈ 0 والـ std ≈ 1. بعد RMSNorm الـ rms ≈ 1 بس الـ mean مش لازم يبقى صفر.</p>
+
+  <h3>خطوة ٥: شبكة بـ Dropout و Weight Decay على داتا الدايرة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sigmoid(x):
+    x = max(-500, min(500, x))
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+def make_circle_data(n=200, seed=42):         <span class="c"># label=1 لو جوه الدايرة</span>
+    random.seed(seed)
+    data = []
+    for _ in range(n):
+        x = random.uniform(-2, 2)
+        y = random.uniform(-2, 2)
+        label = 1.0 if x * x + y * y &lt; 1.5 else 0.0
+        data.append(([x, y], label))
+    return data
+
+
+class RegularizedNetwork:
+    def __init__(self, hidden_size=16, lr=0.05, dropout_p=0.0, weight_decay=0.0):
+        random.seed(0)
+        self.hidden_size = hidden_size
+        self.lr = lr
+        self.dropout_p = dropout_p
+        self.weight_decay = weight_decay
+        self.dropout = Dropout(p=dropout_p) if dropout_p &gt; 0 else None
+        self.w1 = [[random.gauss(0, 0.5) for _ in range(2)] for _ in range(hidden_size)]
+        self.b1 = [0.0] * hidden_size
+        self.w2 = [random.gauss(0, 0.5) for _ in range(hidden_size)]
+        self.b2 = 0.0
+
+    def forward(self, x, training=True):
+        self.x = x
+        self.z1 = []
+        self.h = []
+        for i in range(self.hidden_size):
+            z = self.w1[i][0] * x[0] + self.w1[i][1] * x[1] + self.b1[i]
+            self.z1.append(z)
+            self.h.append(max(0.0, z))              <span class="c"># ReLU</span>
+        if self.dropout:
+            self.dropout.training = training       <span class="c"># dropout بس وقت التدريب</span>
+            self.h = self.dropout.forward(self.h)
+        self.z2 = sum(self.w2[i] * self.h[i] for i in range(self.hidden_size)) + self.b2
+        self.out = sigmoid(self.z2)
+        return self.out
+
+    def backward(self, target):
+        eps = 1e-15
+        p = max(eps, min(1 - eps, self.out))
+        d_loss = -(target / p) + (1 - target) / (1 - p)
+        d_out = d_loss * self.out * (1 - self.out)
+
+        d_h_dropout = [d_out * self.w2[i] for i in range(self.hidden_size)]
+        if self.dropout and self.dropout.mask is not None:   <span class="c"># الـ gradient يعدي من نفس الـ mask</span>
+            d_h_dropout = [g * m / (1 - self.dropout.p) if m else 0.0
+                           for g, m in zip(d_h_dropout, self.dropout.mask)]
+
+        for i in range(self.hidden_size):
+            d_relu = 1.0 if self.z1[i] &gt; 0 else 0.0
+            d_h = d_h_dropout[i] * d_relu
+            <span class="c"># + weight_decay * w = الـ L2 gradient</span>
+            self.w2[i] -= self.lr * (d_out * self.h[i] + self.weight_decay * self.w2[i])
+            for j in range(2):
+                self.w1[i][j] -= self.lr * (d_h * self.x[j] + self.weight_decay * self.w1[i][j])
+            self.b1[i] -= self.lr * d_h
+        self.b2 -= self.lr * d_out</pre></div>
+  <p>وبعدين ضيف <code>evaluate</code> (بتشغل <code>forward(x, training=False)</code> وتحسب الـ loss والـ accuracy) و <code>train_model</code> (loop على الـ epochs وتطبع train_acc و test_acc والـ gap كل 75 epoch). انسخ شكلهم من الملف الأصلي بعد ما تحاول.</p>
+
+  <h3>خطوة ٦: التجربة: ٤ إعدادات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>all_data = make_circle_data(n=300, seed=42)
+train_data, test_data = all_data[:150], all_data[150:]
+
+configs = [
+    ("No regularization", 0.0, 0.0),
+    ("Dropout p=0.3", 0.3, 0.0),
+    ("Weight decay 0.01", 0.0, 0.01),
+    ("Dropout + weight decay", 0.3, 0.01),
+]
+for name, drop_p, wd in configs:
+    print(f"\n--- {name} ---")
+    net = RegularizedNetwork(hidden_size=16, lr=0.05, dropout_p=drop_p, weight_decay=wd)
+    history = net.train_model(train_data, test_data, epochs=300)
+    tr_loss, tr_acc, te_loss, te_acc = history[-1]
+    print(f"  final gap = {tr_acc - te_acc:.1f}%")   <span class="c"># قارن الـ gap مش الـ train acc</span></pre></div>
+  <p>الأرقام بالظبط هتطلع عندك؛ اكتبها في جدول. المهم تبص على عمود الـ <b>Gap</b>. الملف الأصلي في الآخر بيقول إن الـ regularization بيقلل الـ gap، حتى لو الـ training accuracy قلّت.</p>
+
+  <h3>خطوة ٧: نفس الكلام في PyTorch</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+
+model = nn.Sequential(
+    nn.Linear(784, 256), nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.3),
+    nn.Linear(256, 128), nn.BatchNorm1d(128), nn.ReLU(), nn.Dropout(0.3),
+    nn.Linear(128, 10),
+)
+
+model.train()                           <span class="c"># dropout شغال + batch stats</span>
+out_train = model(torch.randn(32, 784))
+
+model.eval()                            <span class="c"># dropout مطفي + running stats</span>
+out_test = model(torch.randn(1, 784))</pre></div>
+  <div class="note"><strong>أشهر bug في الـ deep learning:</strong> تنسى <code>model.eval()</code> قبل الـ inference. الـ test accuracy هتتذبذب عشوائي لأن الـ dropout لسه شغال والـ BatchNorm بيستخدم إحصائيات الـ mini-batch.</div>
+  <p>وفي الـ transformers الشكل مختلف: LayerNorm مش BatchNorm، و dropout 0.1 مش 0.5:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class TransformerBlock(nn.Module):
+    def __init__(self, d_model=512, nhead=8, dropout=0.1):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.GELU(),
+            nn.Linear(d_model * 4, d_model),
+            nn.Dropout(dropout),
+        )
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        attended, _ = self.attention(x, x, x)
+        x = self.norm1(x + self.dropout(attended))   <span class="c"># Post-LN: residual ثم norm</span>
+        x = self.norm2(x + self.ff(x))
+        return x</pre></div>
+  <p>الدرس كمان بيطلّع <code>outputs/prompt-regularization-advisor.md</code>: prompt بيشخّص الـ overfitting ويقترح استراتيجية regularization مناسبة. افتحه واقراه.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d50-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة (أنصح بـ ٤ و ٣).</p>
+  <ol class="ex">
+    <li><b>Spatial dropout:</b> بدل ما تطفي neurons فردية، اطفي «channels» كاملة: اعتبر كل مجموعة features ورا بعض channel واطفيها مع بعض. قارن الـ gap بالـ dropout العادي على داتا الدايرة بـ <code>hidden_size=32</code>.
+      <details><summary>تلميح</summary>قسّم الـ 32 neuron لـ 8 مجموعات × 4. اعمل mask واحد لكل مجموعة: <code>keep = random.random() &gt;= p</code> وكرره ٤ مرات. متنساش القسمة على <span class="ltr">(1−p)</span>، ومتنساش إن الـ backward لازم يستخدم نفس الـ mask المتكرر.</details></li>
+    <li><b>Label smoothing + dropout:</b> رجّع label smoothing من درس الـ loss functions، ودرّب ٤ إعدادات: ولا حاجة، dropout بس، smoothing بس، الاتنين. مين أصغر gap؟
+      <details><summary>تلميح</summary>في binary: <code>y_smooth = y*(1-ε) + 0.5*ε</code> مع ε=0.1 مثلًا، واستخدمه في <code>backward</code> بدل <code>target</code>. احسب الـ accuracy على الـ label الأصلي.</details></li>
+    <li><b>BatchNorm في الشبكة:</b> حط BatchNorm بين الـ hidden layer والـ activation. درّب بـ وبدون عند lr = 0.01 و 0.05 و 0.1. المفروض BatchNorm يخلي التدريب مستقر في الـ lr العالية اللي الشبكة العادية بتنفجر فيها.
+      <details><summary>تلميح</summary>الشبكة الحالية بتدرب sample بـ sample، وBatchNorm محتاج batch. حوّل التدريب لـ mini-batches (مثلًا 32)، واحسب المتوسط على الـ batch. ولو مش عايز تكتب backward كامل للـ BatchNorm، ابدأ بنسخة ثابتة γ=1 و β=0 وخلي الـ gradient يعدي من القسمة على <span class="ltr">√(σ²+ε)</span> بس كتقريب، واذكر إنه تقريب.</details></li>
+    <li><b>Early stopping:</b> تابع الـ test loss كل epoch، احفظ أحسن أوزان (<code>copy.deepcopy</code>)، ووقف لو مفيش تحسن 20 epoch. شغّل لحد 1000 epoch. أنهي epoch كان الأحسن، ووفّرت كام epoch؟
+      <details><summary>تلميح</summary><code>best, wait = inf, 0</code>. لو <code>test_loss &lt; best</code>: حدّث best واحفظ و<code>wait = 0</code>، غير كده <code>wait += 1</code> ولو وصل 20 اكسر الـ loop. التوفير = <code>1000 - epoch_اللي_وقفت_فيه</code>.</details></li>
+    <li><b>LayerNorm ضد RMSNorm:</b> على شبكة 4 layers، نفس الأوزان الابتدائية. درّب 200 epoch وقارن الدقة والوقت لكل epoch (<code>time.perf_counter</code>) وحجم الـ gradients في أول layer. اتأكد إن RMSNorm أسرع بنفس الدقة.
+      <details><summary>تلميح</summary>عشان المقارنة تبقى عادلة: <code>random.seed</code> واحد قبل بناء الشبكتين. في Python صافي الفرق في الوقت ممكن يبان صغير أو فيه noise؛ اعمل متوسط على كذا run.</details></li>
+    <li><b>إضافة مني · تشخيص run حقيقي:</b> عندك fine-tuning لموديل تصنيف نصوص، والـ logs بتقول: epoch 1: train 82% / val 80%، epoch 3: train 94% / val 85%، epoch 6: train 99% / val 81%. اكتب في ٣ أسطر: الـ gap كام في آخر epoch؟ أنهي جرعة من جدول «تختار إيه إمتى» تناسبه؟ وكنت هتعمل إيه بالظبط؟
+      <details><summary>الإجابة</summary>الـ gap = 18% (أكبر من 10%) → جرعة تقيلة. الـ val وصل لأعلى نقطة عند epoch 3 وبعدين نزل، فـ early stopping كان هيرجّع موديل epoch 3. بعدين: زوّد الـ dropout (أو الـ weight decay في AdamW)، وضيف augmentation للنص (back-translation أو synonym replacement). ومتنساش <code>model.eval()</code> وانت بتقيس الـ val.</details></li>
+  </ol>
+</section>
+
+<!-- ADDITION -->
+<section id="d50-mine">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس مقالهوش صريح</h2></div>
+  <h3>إحساس واحد يجمع الكل</h3>
+  <p>كل تقنيات النهاردة بتعمل حاجة واحدة بطرق مختلفة: <b>بتخلي حفظ الداتا أصعب من فهمها</b>. الـ dropout بيبوّظ الطرق المختصرة، الـ weight decay بيغلّي تمن الأوزان الكبيرة، الـ augmentation بيخلي مفيش «سؤال» بيتكرر بنفس الشكل، والـ early stopping بيوقفك قبل ما تبدأ تحفظ.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li>• تنسى <code>model.eval()</code> أو ترجع لـ <code>model.train()</code> بعد الـ evaluation في نص التدريب.</li>
+    <li>• تحط dropout 0.5 في transformer لأنه «الـ default» بتاع الـ MLP.</li>
+    <li>• تستخدم Adam + L2 وانت فاكر إنك عامل weight decay؛ استخدم AdamW.</li>
+    <li>• BatchNorm مع batch size صغير جدًا وتستغرب ليه الأداء وحش.</li>
+    <li>• تحكم على الـ regularization من الـ training accuracy. اللي يهمك الـ gap والـ validation.</li>
+    <li>• في الـ early stopping تقيس على الـ test set نفسه وتعتبر الرقم ده نهائي. الأصح validation set منفصل، والـ test تقيسه مرة واحدة في الآخر.</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <p>لو فتحت كود أي LLM مفتوح من عيلة LLaMA هتلاقي RMSNorm قبل كل attention وكل feed-forward، و AdamW بـ weight decay في الـ training config. ولما تعمل fine-tuning (حتى LoRA) على داتا صغيرة لـ agent معين، الـ overfitting بيبان بسرعة: الموديل يبدأ يكرر أسلوب الأمثلة بالحرف. نفس الأدوات بتنفع هنا: راقب الـ validation loss، وقف بدري، وكتّر تنوع الأمثلة.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d50-quizs">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d50-quiz"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d50-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d50-ck">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الـ overfitting والـ generalization gap لحد تاني</label></li>
+    <li><label><input type="checkbox" data-ck="2"> لعبت بـ λ في المعمل وشفت الـ overfit والـ underfit</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه inverted dropout بيقسم على (1−p)</label></li>
+    <li><label><input type="checkbox" data-ck="4"> أعرف الفرق بين BatchNorm و LayerNorm و RMSNorm وفين كل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكلاسات بإيدي وشغّلت تجربة الـ ٤ إعدادات</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Dropout</td><td>الـ MLPs، الـ attention والـ FFN في الـ transformers (p=0.1)</td></tr>
+    <tr><td>Weight decay</td><td>AdamW في تدريب BERT و GPT و LLaMA و Stable Diffusion</td></tr>
+    <tr><td>BatchNorm</td><td>الـ CNNs في الـ computer vision</td></tr>
+    <tr><td>LayerNorm</td><td>الـ transformers (Pre-LN / Post-LN)</td></tr>
+    <tr><td>RMSNorm</td><td>LLaMA و Mistral ومعظم الـ LLMs الحديثة</td></tr>
+    <tr><td>Data augmentation</td><td>الصور، back-translation في النص، noise في الصوت</td></tr>
+    <tr><td>Early stopping</td><td>أي training loop فيه validation، والـ fine-tuning على داتا صغيرة</td></tr>
+    <tr><td><code>model.eval()</code></td><td>قبل أي inference أو evaluation في PyTorch</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Weight Initialization and Training Stability. هنشوف ليه الأرقام اللي بتبدأ بيها الأوزان ممكن تموّت التدريب قبل ما يبدأ، ونبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F07-regularization" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/07-regularization</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI,css=A.css,f=A.fmt,$=id=>document.getElementById(id);
+const root=$('d50-root');
+
+// roadmap
+const rm=$('d50-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===7)s.className='now';rm.appendChild(s)}
+
+// seeded RNG
+function rng(seed){let s=seed>>>0;return()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296}}
+function gauss(r){let u=0,v=0;while(!u)u=r();while(!v)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+// ---------- Lab 1: L2 polynomial ----------
+const lc=$('d50-l2c'),lx=A.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h,DEG=9;
+let seed=7,tr=[],te=[];
+const truth=x=>Math.sin(Math.PI*x);
+function makeData(){const r=rng(seed);tr=[];te=[];
+  for(let i=0;i<12;i++){const x=-1+2*(i+0.5)/12+(r()-0.5)*0.08;tr.push([x,truth(x)+gauss(r)*0.25])}
+  for(let i=0;i<40;i++){const x=-1+2*r();te.push([x,truth(x)+gauss(r)*0.25])}}
+const feats=x=>{const a=[];for(let k=0;k<=DEG;k++)a.push(Math.pow(x,k));return a};
+function solve(M,b){const n=b.length,A2=M.map((r,i)=>r.concat([b[i]]));
+  for(let c=0;c<n;c++){let p=c;for(let r=c+1;r<n;r++)if(Math.abs(A2[r][c])>Math.abs(A2[p][c]))p=r;[A2[c],A2[p]]=[A2[p],A2[c]];
+    const d=A2[c][c]||1e-12;for(let r=0;r<n;r++){if(r===c)continue;const k=A2[r][c]/d;for(let j=c;j<=n;j++)A2[r][j]-=k*A2[c][j]}}
+  return A2.map((r,i)=>r[n]/(r[i]||1e-12))}
+function fit(lam){const n=DEG+1,XtX=[...Array(n)].map(()=>Array(n).fill(0)),Xty=Array(n).fill(0);
+  tr.forEach(([x,y])=>{const p=feats(x);for(let i=0;i<n;i++){Xty[i]+=p[i]*y;for(let j=0;j<n;j++)XtX[i][j]+=p[i]*p[j]}});
+  for(let i=1;i<n;i++)XtX[i][i]+=lam*tr.length; // لا نعاقب الـ bias
+  XtX[0][0]+=1e-12;return solve(XtX,Xty)}
+const pred=(w,x)=>feats(x).reduce((s,v,i)=>s+v*w[i],0);
+const mse=(w,D)=>D.reduce((s,[x,y])=>s+(pred(w,x)-y)**2,0)/D.length;
+function drawL2(){
+  const e=+$('d50-lam').value,lam=Math.pow(10,e),w=fit(lam);
+  $('d50-lamv').textContent=lam<0.001?lam.toExponential(0):f(lam,3);
+  const sx=x=>(x+1.1)/2.2*LW,sy=y=>LH/2-y*LH/5.2;
+  lx.clearRect(0,0,LW,LH);A.grid(lx,LW,LH,LW/11,sx(0),sy(0));
+  lx.setLineDash([4,4]);lx.strokeStyle=css('--muted');lx.lineWidth=1.5;lx.beginPath();
+  for(let i=0;i<=200;i++){const x=-1+2*i/200;i?lx.lineTo(sx(x),sy(truth(x))):lx.moveTo(sx(x),sy(truth(x)))}lx.stroke();lx.setLineDash([]);
+  lx.save();lx.beginPath();lx.rect(0,0,LW,LH);lx.clip();
+  lx.strokeStyle=css('--ink');lx.lineWidth=2.5;lx.beginPath();
+  for(let i=0;i<=300;i++){const x=-1.05+2.1*i/300;const y=Math.max(-4,Math.min(4,pred(w,x)));i?lx.lineTo(sx(x),sy(y)):lx.moveTo(sx(x),sy(y))}lx.stroke();lx.restore();
+  te.forEach(([x,y])=>{lx.fillStyle=css('--vec-b');lx.globalAlpha=.7;lx.beginPath();lx.arc(sx(x),sy(y),3.5,0,7);lx.fill()});lx.globalAlpha=1;
+  tr.forEach(([x,y])=>{lx.fillStyle=css('--vec-a');lx.beginPath();lx.arc(sx(x),sy(y),6,0,7);lx.fill()});
+  lx.fillStyle=css('--ink');lx.font='12px JetBrains Mono, monospace';lx.fillText('— fit   - - true   ● train   • test',10,16);
+  const a=mse(w,tr),b=mse(w,te),wn=w.slice(1).reduce((s,v)=>s+v*v,0);
+  $('d50-trm').textContent=f(a,3);$('d50-tem').textContent=f(b,3);$('d50-wn').textContent=wn>1e4?wn.toExponential(1):f(wn,2);
+  const v=$('d50-l2v');
+  if(b>0.25&&a<0.04){v.textContent='Overfitting: حفظ النقط والـ test بايظ';v.style.color=css('--bad')}
+  else if(a>0.2){v.textContent='Underfitting: λ كبيرة أوي، المنحنى بقى مسطح';v.style.color=css('--vec-b')}
+  else{v.textContent='منطقة كويسة: الـ gap صغير';v.style.color=css('--ok')}
+}
+$('d50-lam').addEventListener('input',drawL2);
+$('d50-reseed').addEventListener('click',()=>{seed=(seed*31+11)%100000;makeData();drawL2()});
+makeData();drawL2();
+
+// ---------- Lab 2: dropout ----------
+const dc=$('d50-dc'),dx=A.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+const vals=[1,2,3,4,5,6,7,8],trueSum=36;let mask=vals.map(()=>1),evalMode=false,hist=[],timer=null;
+function pass(){const p=+$('d50-p').value,inv=$('d50-inv').checked;evalMode=false;
+  mask=vals.map(()=>Math.random()<p?0:1);
+  const out=vals.map((v,i)=>mask[i]?(inv?v/(1-p):v):0);const s=out.reduce((a,b)=>a+b,0);hist.push(s);if(hist.length>400)hist.shift();return out}
+function drawDrop(out){
+  const p=+$('d50-p').value,inv=$('d50-inv').checked;
+  dx.clearRect(0,0,DW,DH);
+  const inX=60,hX=DW/2,oX=DW-60,inY=[DH*0.3,DH*0.5,DH*0.7],hY=vals.map((_,i)=>30+i*(DH-60)/7);
+  // edges
+  inY.forEach(y=>hY.forEach((hy,i)=>{dx.strokeStyle=css('--line');dx.globalAlpha=mask[i]?.9:.15;dx.lineWidth=1;dx.beginPath();dx.moveTo(inX,y);dx.lineTo(hX,hy);dx.stroke()}));
+  hY.forEach((hy,i)=>{dx.strokeStyle=mask[i]?css('--vec-a'):css('--line');dx.globalAlpha=mask[i]?.8:.15;dx.lineWidth=mask[i]?2:1;dx.beginPath();dx.moveTo(hX,hy);dx.lineTo(oX,DH/2);dx.stroke()});
+  dx.globalAlpha=1;
+  inY.forEach(y=>{dx.fillStyle=css('--muted');dx.beginPath();dx.arc(inX,y,10,0,7);dx.fill()});
+  hY.forEach((hy,i)=>{dx.fillStyle=mask[i]?css('--vec-a'):css('--soft');dx.strokeStyle=css('--line');dx.beginPath();dx.arc(hX,hy,13,0,7);dx.fill();dx.stroke();
+    dx.fillStyle=mask[i]?css('--paper'):css('--muted');dx.font='bold 11px JetBrains Mono, monospace';dx.textAlign='center';dx.fillText(mask[i]?'':'×',hX,hy+4);
+    dx.fillStyle=css('--ink');dx.textAlign='left';dx.font='12px JetBrains Mono, monospace';
+    dx.fillText(vals[i]+' → '+f(out[i],1),hX+22,hy+4)});
+  dx.fillStyle=css('--vec-b');dx.beginPath();dx.arc(oX,DH/2,14,0,7);dx.fill();
+  dx.textAlign='center';dx.fillStyle=css('--ink');dx.fillText('Σ',oX,DH/2-20);dx.textAlign='left';
+  const s=out.reduce((a,b)=>a+b,0),avg=hist.length?hist.reduce((a,b)=>a+b,0)/hist.length:s;
+  $('d50-act').textContent=mask.filter(Boolean).length+' / 8';$('d50-sum').textContent=f(s,1);
+  $('d50-avg').textContent=f(avg,1)+' ('+hist.length+')';$('d50-ev').textContent=trueSum;
+  $('d50-pv').textContent=f(p,2);
+  $('d50-dnote').textContent=evalMode?'وضع eval: مفيش dropout ومفيش scaling، كل الـ neurons شغالة والمجموع = 36.':
+    (inv?'مع الـ inverted scaling متوسط المجموع على passes كتير بيقرب من 36، زي وقت الـ eval بالظبط.':'من غير scaling المتوسط بيقرب من 36×(1−p) = '+f(36*(1-p),1)+'، يعني وقت الـ eval الأرقام هتبقى أكبر من اللي الشبكة اتعودت عليها.');
+}
+let last=vals.slice();
+$('d50-step').addEventListener('click',()=>{last=pass();drawDrop(last)});
+$('d50-run').addEventListener('click',()=>{clearInterval(timer);let k=0;timer=setInterval(()=>{if(!document.body.contains(dc)){clearInterval(timer);return}for(let j=0;j<10;j++)last=pass();drawDrop(last);if(++k>=20)clearInterval(timer)},40)});
+$('d50-evalb').addEventListener('click',()=>{evalMode=true;mask=vals.map(()=>1);last=vals.slice();drawDrop(last)});
+['d50-p','d50-inv'].forEach(id=>$(id).addEventListener('input',()=>{hist=[];drawDrop(last)}));
+$('d50-inv').addEventListener('change',()=>{hist=[];drawDrop(last)});
+drawDrop(last);
+
+// ---------- Lab 3: norms ----------
+const nc=$('d50-nc'),nx=A.setupCanvas(nc),NW=+nc.dataset.w,NH=+nc.dataset.h;
+let mode='bn',B=6,F=4,data=[],selR=0,selC=0,nseed=3;
+function makeBatch(){const r=rng(nseed);data=[];for(let i=0;i<6;i++){const row=[];for(let j=0;j<F;j++)row.push(+(2+j*1.5+gauss(r)*1.5).toFixed(2));data.push(row)}}
+function normed(){const out=data.slice(0,B).map(r=>r.slice()),eps=1e-5;
+  if(mode==='bn'){for(let j=0;j<F;j++){const col=out.map(r=>r[j]),m=col.reduce((a,b)=>a+b,0)/B,v=col.reduce((a,b)=>a+(b-m)**2,0)/B;out.forEach((r,i)=>r[j]=(data[i][j]-m)/Math.sqrt(v+eps))}}
+  else out.forEach((r,i)=>{const m=r.reduce((a,b)=>a+b,0)/F,v=r.reduce((a,b)=>a+(b-m)**2,0)/F,rms=Math.sqrt(r.reduce((a,b)=>a+b*b,0)/F+1e-6);
+    for(let j=0;j<F;j++)r[j]=mode==='ln'?(data[i][j]-m)/Math.sqrt(v+eps):data[i][j]/rms});
+  return out}
+const cellW=52,cellH=40,gx=20,gy=44,gap=40;
+function drawNorm(){
+  if(selR>=B)selR=0;
+  const out=normed();nx.clearRect(0,0,NW,NH);
+  const x2=gx+F*cellW+gap;
+  nx.fillStyle=css('--ink');nx.font='13px JetBrains Mono, monospace';nx.fillText('input x',gx,26);nx.fillText(mode==='bn'?'BatchNorm':mode==='ln'?'LayerNorm':'RMSNorm',x2,26);
+  const hi=(i,j)=>mode==='bn'?j===selC:i===selR;
+  [[data.slice(0,B),gx],[out,x2]].forEach(([M,ox])=>{
+    M.forEach((r,i)=>r.forEach((v,j)=>{const x=ox+j*cellW,y=gy+i*cellH;
+      nx.fillStyle=hi(i,j)?css('--vec-a'):css('--soft');nx.globalAlpha=hi(i,j)?.28:1;nx.fillRect(x+1,y+1,cellW-2,cellH-2);nx.globalAlpha=1;
+      nx.fillStyle=css('--ink');nx.font='12px JetBrains Mono, monospace';nx.textAlign='center';nx.fillText(f(v,2),x+cellW/2,y+cellH/2+4);nx.textAlign='left'}));
+    nx.strokeStyle=css('--vec-a');nx.lineWidth=2.5;
+    if(mode==='bn')nx.strokeRect(ox+selC*cellW,gy,cellW,B*cellH);else nx.strokeRect(ox,gy+selR*cellH,F*cellW,cellH)});
+  nx.fillStyle=css('--muted');nx.font='11px JetBrains Mono, monospace';
+  nx.fillText('rows = samples (B='+B+')   cols = features (D='+F+')',gx,gy+6*cellH+22);
+  A.arrow(nx,gx+F*cellW+6,gy+B*cellH/2,x2-6,gy+B*cellH/2,css('--vec-b'),2);
+  const pick=M=>mode==='bn'?M.map(r=>r[selC]):M[selR];
+  const a=pick(data.slice(0,B)),b=pick(out),mean=z=>z.reduce((s,v)=>s+v,0)/z.length;
+  const mb=mean(b),sd=mode==='rms'?Math.sqrt(b.reduce((s,v)=>s+v*v,0)/b.length):Math.sqrt(b.reduce((s,v)=>s+(v-mb)**2,0)/b.length);
+  $('d50-nm0').textContent=f(mean(a),2);$('d50-nm1').textContent=f(mb,3);$('d50-ns1').textContent=f(sd,3);
+}
+root.querySelectorAll('[data-d50n]').forEach(b=>b.addEventListener('click',()=>{mode=b.dataset.d50n;root.querySelectorAll('[data-d50n]').forEach(x=>x.classList.toggle('primary',x===b));drawNorm()}));
+$('d50-b1').addEventListener('click',e=>{B=B===1?6:1;e.target.textContent=B===1?'batch = 6':'batch = 1';drawNorm()});
+$('d50-bshuf').addEventListener('click',()=>{nseed=(nseed*17+5)%9973;makeBatch();drawNorm()});
+nc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(nc,e);const x2=gx+F*cellW+gap;
+  let col=-1;if(x>=gx&&x<gx+F*cellW)col=Math.floor((x-gx)/cellW);else if(x>=x2&&x<x2+F*cellW)col=Math.floor((x-x2)/cellW);
+  const row=Math.floor((y-gy)/cellH);if(col<0||row<0||row>=B)return;selC=col;selR=row;drawNorm()});
+makeBatch();drawNorm();
+
+// ---------- quiz ----------
+A.quiz($('d50-quiz'),[
+ ['يعني إيه overfitting في الـ neural networks؟',['الموديل صغير ومش قادر يتعلم الداتا','التدريب بطيء','الموديل بيحفظ داتا التدريب بدل ما يتعلم أنماط بتعمّم، وبيبان ده في gap كبير بين الـ train والـ test','الـ loss function غلط'],2,'الموديل بيجيب accuracy عالية في التدريب وضعيفة في الـ test، لأنه حفظ الـ noise مش النمط.'],
+ ['الـ dropout بيعمل regularization إزاي؟',['بيشيل أوحش neurons للأبد','بيقلل الـ learning rate','بيصفّر neurons عشوائي وقت التدريب، فالشبكة تضطر تتعلم تمثيلات فيها احتياطي','بيشيل الـ outliers من الداتا'],2,'كل forward pass بيصفّر outputs باحتمال p، فيمنع الـ co-adaptation، وكأنه بيدرب ensemble من 2^N شبكة فرعية.'],
+ ['ليه الـ transformers بتستخدم LayerNorm مش BatchNorm؟',['BatchNorm بيعمل gradient explosion','LayerNorm أحدث','LayerNorm أسرع في الحساب','LayerNorm بيعمل normalize على الـ features لكل sample لوحده، فمش معتمد على الـ batch وبيشتغل مع sequences أطوالها مختلفة و batches صغيرة'],3,'إحصائيات BatchNorm بتبقى noisy مع batch صغير ومن غير معنى مع batch = 1 (وده شائع وقت الـ generation).'],
+ ['إيه الفرق الأساسي بين RMSNorm و LayerNorm؟',['RMSNorm بيستخدم إحصائيات الـ batch','RMSNorm بيشتغل في CNNs بس','RMSNorm بيشيل طرح الـ mean وبيقسم على الـ RMS بس، فيبقى أسرع بحوالي ١٠٪ بنفس الدقة','RMSNorm بيضيف parameters بتتعلم'],2,'طرح الـ mean بيساهم بحاجة قليلة في الدقة وبيكلف حساب. LLaMA و Mistral ومعظم الـ LLMs الحديثة بتستخدم RMSNorm.'],
+ ['ليه لازم تنادي model.eval() قبل الـ inference في PyTorch؟',['بتسرّع الحساب','بتشغّل حساب الـ gradients','بتطفي الـ dropout وبتخلي BatchNorm يستخدم الـ running statistics بدل إحصائيات الـ batch، فالنتايج تبقى ثابتة','بتفضّي ميموري الـ GPU'],2,'من غيرها الـ dropout بيفضل يصفّر neurons عشوائي في الـ inference، و BatchNorm يستخدم إحصائيات الـ batch الحالي بدل المتوسطات المستقرة.'],
+ ['(سؤال مني) في inverted dropout بـ p=0.2، neuron قيمته 4 ومتطفاش. الـ output وقت التدريب كام، ووقت الـ test كام؟',['4 و 3.2','5 و 4','3.2 و 4','0 و 4'],1,'وقت التدريب: 4 / (1 − 0.2) = 5. وقت الـ test: مفيش أي تغيير، 4. المتوسط المتوقع وقت التدريب = 0.8 × 5 = 4، نفس قيمة الـ test.'],
+ ['(سؤال مني) الـ train-test gap عندك 12%. حسب جدول الدرس، الأنسب إيه؟',['Dropout 0.05 و weight decay 1e-4 بس','جرعة تقيلة: dropout 0.3–0.5، weight decay 0.01–0.1، augmentation قوي، و early stopping','تشيل كل الـ regularization','تكبّر الموديل'],1,'أكتر من 10% = overfitting جامد، فمحتاج الجرعة التقيلة.']
+],5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(50,root);
+
+// theme
+A.onTheme(()=>{if(!document.body.contains(lc))return false;drawL2();drawDrop(last);drawNorm()});
+})();
+</script>

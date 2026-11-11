@@ -1,0 +1,779 @@
+<div class="day" id="d34-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 12 · Hyperparameter Tuning</span>
+  <h1>اليوم ٣٤: إزاي تظبط زراير الموديل من غير ما تحرق أيام GPU</h1>
+  <p class="lede">النهاردة هنتعلم نختار الـ <b>hyperparameters</b> صح: هتشوف بعينك ليه الـ <b>random search</b> بيكسب الـ <b>grid search</b>، وهتشغّل <b>Bayesian optimization</b> بإيدك خطوة بخطوة، وتلعب في الـ learning rate schedulers، وبعدين تكتب الثلاث طرق من الصفر.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Ensemble Methods</b></span>
+    <span>بعده: <b>ML Pipelines</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d34-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d34-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 33) اتكلمنا عن الـ <b>Ensembles</b>: إزاي تجمع موديلات ضعيفة تطلع موديل قوي. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ٢١ classifier كل واحد دقته 60% ومستقلين عن بعض. الـ majority vote دقته تقريبًا كام؟ وإيه الشرط؟</summary>حوالي 74%، ولو بقوا 101 بتوصل لحوالي 84%. الشرط هو <b>التنوع (diversity)</b>: لازم يغلطوا غلطات مختلفة، لو كلهم بيغلطوا نفس الغلطة الجمع مش هيفيد.</details>
+  <details><summary>٢. إيه الفرق بين الـ Bagging والـ Boosting؟</summary>الـ Bagging بيدرّب موديلات بالتوازي كل واحد على bootstrap sample مختلفة وياخد المتوسط/التصويت (بيقلل الـ variance). الـ Boosting بيدرّب موديلات ورا بعض، كل واحد بيصلّح غلطات اللي قبله (بيقلل الـ bias).</details>
+  <details><summary>٣. في الـ Gradient Boosting اللي كتبناه، كان فيه أرقام انت اللي بتختارها قبل التدريب. افتكر منها كام واحد؟</summary><code>n_estimators</code>، <code>learning_rate</code>، <code>max_depth</code>. دي بالظبط الـ hyperparameters اللي هنتعلم نظبطها النهاردة، وكود النهاردة بيستخدم نفس فكرة الـ GBM (كلاس <code>GBMForTuning</code>).</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ Ensembles</div>
+    <div><b>20 min</b>المفاهيم: grid، random، Bayesian، early stopping</div>
+    <div><b>20 min</b>المعامل التفاعلية الثلاثة</div>
+    <div><b>30 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d34-concept">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: ١٥,٦٢٥ تجربة!</h2></div>
+  <p>الـ gradient boosting عنده learning rate، وعدد الأشجار، والـ max depth، والـ min samples per leaf، والـ subsample، والـ column sample. دول ٦ hyperparameters. لو كل واحد ليه ٥ قيم معقولة، يبقى عندك:</p>
+  <div class="formula">5⁶ = 15,625 combinations × 10 sec = ~43 hours</div>
+  <p>يعني يومين تقريبًا كمبيوتر شغال عشان تجرب كل التوليفات. عشان كده لازم نبقى أذكى من «جرّب كله».</p>
+
+  <h3>Parameters ولا Hyperparameters؟</h3>
+  <p>فكّر في فرن بتخبز فيه كيكة. <b>الـ parameters</b> هي اللي بتحصل جوه العجينة وهي بتستوي (الموديل بيتعلمها لوحده: weights، biases، الـ split thresholds في الشجرة). <b>الـ hyperparameters</b> هي الزراير اللي انت بتظبطها <b>قبل</b> ما تحط الكيكة: درجة الحرارة والوقت. هي اللي بتتحكم في <i>إزاي</i> التعلم بيحصل.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Hyperparameter</th><th>بيتحكم في إيه</th><th>المدى المعتاد</th></tr>
+    <tr><td>Learning rate</td><td>حجم الخطوة في كل update</td><td class="ltr">0.001 → 1.0</td></tr>
+    <tr><td>Number of trees/epochs</td><td>التدريب ياخد قد إيه</td><td class="ltr">10 → 10,000</td></tr>
+    <tr><td>Max depth</td><td>تعقيد الموديل</td><td class="ltr">1 → 30</td></tr>
+    <tr><td>Regularization (λ)</td><td>منع الـ overfitting</td><td class="ltr">0.0001 → 100</td></tr>
+    <tr><td>Batch size</td><td>قد إيه الـ gradient فيه noise</td><td class="ltr">16 → 512</td></tr>
+    <tr><td>Dropout rate</td><td>نسبة الـ neurons اللي بتتقفل</td><td class="ltr">0.0 → 0.5</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 2: grid vs random -->
+<section id="d34-gridrand">
+  <div class="station-head"><span class="tag">02</span><h2>Grid Search ضد Random Search</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p><b>الـ Grid search</b> بيجرب كل توليفة من قيم انت محددها. سهل ومفهوم، بس بيكبر <b>أُسّيًا</b> مع عدد الـ hyperparameters.</p>
+      <div class="formula">lr ∈ {0.01, 0.1, 1.0} × depth ∈ {3, 5, 7} = 9 evals</div>
+      <p>المشكلة الكبيرة: لو واحد بس من الاتنين هو اللي فارق، يبقى معظم التجارب ضايعة. من ٩ تجارب انت جربت <b>٣ قيم بس</b> من الـ learning rate المهم.</p>
+      <p><b>الـ Random search</b> بيسحب القيم من توزيع بدل جدول. بنفس الـ ٩ تجارب بتاخد <b>٩ قيم مختلفة</b> لكل hyperparameter.</p>
+      <p>ليه ده بيكسب؟ (Bergstra &amp; Bengio, 2012):</p>
+      <ol class="ex">
+        <li>معظم الـ hyperparameters ليها <b>low effective dimensionality</b>: عادة ١ أو ٢ بس من الـ ٦ هما اللي فارقين في المشكلة دي.</li>
+        <li>الـ grid بيضيّع تجارب على الأبعاد اللي مش مهمة.</li>
+        <li>الـ random بيغطي البعد المهم بكثافة أكبر بنفس الميزانية.</li>
+        <li>بـ ٦٠ تجربة random عندك فرصة ٩٥% إنك تلاقي نقطة في أحسن ٥% من الـ search space (لو موجودة فيه).</li>
+      </ol>
+      <div class="note"><strong>جرب بإيدك:</strong> الخلفية دي «خريطة score» توضيحية: الـ learning rate (المحور الأفقي، log scale) هو اللي فارق جدًا، والـ depth تقريبًا مش فارق. بدّل بين Grid وRandom وبص على العلامات البرتقالي تحت المحور: كل علامة = قيمة lr مختلفة اتجربت. وبعدين فعّل «sample lr linear» وشوف النقط بتتكوّم على اليمين.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d34-c1" width="520" height="400" aria-label="مقارنة grid و random search على خريطة score"></canvas>
+      <div class="btns">
+        <button type="button" id="d34-mGrid" class="primary">Grid</button>
+        <button type="button" id="d34-mRand">Random</button>
+        <button type="button" id="d34-reseed">اسحب random تاني</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d34-lin"> sample lr linear</label>
+      </div>
+      <label style="display:grid;gap:2px">الميزانية (عدد التجارب) = <b class="mono" id="d34-nv">9</b><input type="range" id="d34-n" min="2" max="7" step="1" value="3"></label>
+      <div class="readout">
+        <div><small>قيم lr مختلفة</small><b id="d34-uniq">3</b></div>
+        <div><small>أحسن lr</small><b id="d34-blr">-</b></div>
+        <div><small>أحسن score</small><b id="d34-bs">-</b></div>
+        <div><small>بعيد عن الـ optimum</small><b id="d34-gap">-</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d34-race">سباق: ٢٠٠ seed بنفس الميزانية</button></div>
+      <div class="verdict" id="d34-race-out"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: Bayesian optimization -->
+<section id="d34-bo">
+  <div class="station-head"><span class="tag">03</span><h2>Bayesian Optimization: بحث بيتعلم من اللي فات</h2></div>
+  <p>الـ random search «أعمى»: مبيتعلمش إن الـ learning rate العالي بيبوّظ التدريب، ولا إن depth 3 دايمًا أحسن من 10. الـ Bayesian optimization بيستخدم نتايج التجارب اللي فاتت عشان يقرر يدوّر فين بعد كده.</p>
+  <div class="formula">random init → fit surrogate → acquisition → evaluate → repeat</div>
+  <p>فيه حاجتين أساسيتين:</p>
+  <ul class="checklist">
+    <li><b>الـ Surrogate model:</b> موديل رخيص (عادة <b>Gaussian process</b>) بيقلّد الدالة الغالية (اللي هي «درّب الموديل وقيس الـ score»). في أي نقطة بيديك حاجتين: <b>توقّع</b> (μ) و<b>درجة عدم يقين</b> (σ). تخيله زي خريطة كتبها مستكشف: الأماكن اللي زارها واضحة، والأماكن اللي مزارهاش ضبابية.</li>
+    <li><b>الـ Acquisition function:</b> بتقرر التجربة الجاية فين، بتوازن بين <b>exploitation</b> (دوّر جنب الحتت اللي طلعت حلوة) و<b>exploration</b> (دوّر في الضباب اللي محدش راحه). أشهرها:
+      <ul>
+        <li><b>Expected Improvement (EI):</b> متوقع نتحسن قد إيه عن أحسن نتيجة لحد دلوقتي في النقطة دي؟</li>
+        <li><b>Upper Confidence Bound (UCB):</b> التوقع + مضاعف من عدم اليقين. عالي يعني يا إما واعد يا إما محدش جربه.</li>
+        <li><b>Probability of Improvement (PI):</b> احتمال النقطة دي تكسب أحسن نتيجة إيه؟</li>
+      </ul></li>
+  </ul>
+  <p>الـ Bayesian optimization عادة بيلاقي hyperparameters أحسن من الـ random بعدد تجارب أقل <b>٢ لـ ٥ مرات</b>، وتكلفة فيت الـ surrogate ولا حاجة جنب تدريب الموديل الحقيقي.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <div class="formula">EI = σ · ( z·Φ(z) + φ(z) ),   z = (μ − best) / σ</div>
+      <p>المعمل ده بُعد واحد عشان تشوف كل حاجة: الخط الأزرق هو توقّع الـ GP، والشريط حواليه هو ±2σ (الضباب). اللوحة اللي تحت هي الـ EI، والخط البرتقالي العمودي هو المكان اللي الـ EI عايز يجربه.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> دوس «خطوة BO» كذا مرة. لاحظ في الأول بيروح للأماكن الضبابية (exploration)، وبعدين بيتركّز حوالين القمة (exploitation). قارن بزرار «نقطة random». صغّر الـ length scale وشوف الضباب بيرجع بسرعة بين النقط.</div>
+      <div class="note ai"><strong>ملاحظة:</strong> الكود في الريبو بيعمل نفس الحكاية بس في ٣ أو ٥ أبعاد، وبيختار أحسن نقطة من ٥٠٠ candidate عشوائي بدل grid، وبيستخدم length scale = 0.3 على قيم متطبّعة بين 0 و1.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d34-c2" width="520" height="380" aria-label="Gaussian process و expected improvement"></canvas>
+      <div class="btns">
+        <button type="button" id="d34-boStep" class="primary">خطوة BO (EI)</button>
+        <button type="button" id="d34-boRand">نقطة random</button>
+        <button type="button" id="d34-boReset">Reset</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d34-boTrue" checked> ورّيني الدالة الحقيقية</label>
+      </div>
+      <label style="display:grid;gap:2px">length scale = <b class="mono" id="d34-lsv">0.10</b><input type="range" id="d34-ls" min="0.03" max="0.4" step="0.01" value="0.1"></label>
+      <div class="readout">
+        <div><small>عدد التجارب</small><b id="d34-boN">3</b></div>
+        <div><small>أحسن score لقيته</small><b id="d34-boBest">-</b></div>
+        <div><small>الـ max الحقيقي</small><b id="d34-boMax">-</b></div>
+        <div><small>EI عايز يجرب x =</small><b id="d34-boNext">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: early stopping + hyperband -->
+<section id="d34-early">
+  <div class="station-head"><span class="tag">04</span><h2>Early Stopping و Hyperband: اقفل التجربة الخسرانة بدري</h2></div>
+  <p>مش كل تجربة لازم تكمل للآخر. لو configuration باين إنه وحش بعد ١٠ epochs، اقفله وروح للي بعده. زي مسابقة طبخ: مش لازم تستنى كل طبق يخلص عشان تعرف إن فيه واحد محروق.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الاستراتيجية</th><th>الفكرة</th></tr>
+    <tr><td>Patience-based</td><td>وقّف لو الـ validation loss متحسنش N epochs ورا بعض</td></tr>
+    <tr><td>Median pruning</td><td>وقّف لو نتيجة التجربة في خطوة معينة أوحش من الـ median بتاع التجارب اللي خلصت عند نفس الخطوة</td></tr>
+    <tr><td>Hyperband</td><td>ميزانية صغيرة لتجارب كتير، وبعدين ميزانية أكبر للأحسن بس</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p><b>الـ Hyperband</b> زي بطولة خروج المغلوب: بيبدأ ٨١ configuration كل واحد بـ epoch واحد، يحتفظ بأحسن تلت، يديهم ٣ epochs، يحتفظ بأحسن تلت تاني، وهكذا. الدرس بيقول إنه بيلاقي configurations كويسة أسرع <b>١٠ لـ ٥٠ مرة</b> من إنك تدرّب الكل للآخر.</p>
+      <p>الحاسبة دي بتطبّق القاعدة دي بالظبط (احتفظ بالتلت، اضرب الميزانية × ٣) وتقارن مجموع الـ epochs بإنك تدرّب كل الـ configs بالميزانية الكاملة.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:flex;gap:8px;align-items:center">عدد الـ configs في الأول: <select id="d34-hbN"><option>27</option><option selected>81</option><option>243</option></select></label>
+      <div class="tablewrap"><table id="d34-hbT"></table></div>
+      <div class="readout">
+        <div><small>Hyperband epochs</small><b id="d34-hbA">-</b></div>
+        <div><small>الكل للآخر</small><b id="d34-hbB">-</b></div>
+        <div><small>توفير</small><b id="d34-hbC">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5: schedulers -->
+<section id="d34-sched">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Learning Rate وأشكال الـ Schedulers</h2></div>
+  <p>الـ learning rate تقريبًا دايمًا <b>أهم hyperparameter</b>. وبدل ما يفضل ثابت، الـ scheduler بيغيّره أثناء التدريب: خطوات كبيرة في الأول عشان تقرب، وصغيرة في الآخر عشان تستقر في القاع من غير ما تنطّ حواليه.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Scheduler</th><th>الفكرة</th><th>إمتى</th></tr>
+    <tr><td>Step decay</td><td>اضرب في 0.1 كل N epochs</td><td>تدريب الـ CNN الكلاسيكي</td></tr>
+    <tr><td>Cosine annealing</td><td class="ltr">lr · 0.5 · (1 + cos(πt/T))</td><td>الـ default الحديث</td></tr>
+    <tr><td>Warmup + decay</td><td>زيادة خطية وبعدين cosine decay</td><td>الـ Transformers</td></tr>
+    <tr><td>One-cycle</td><td>يزيد وبعدين يقل في دورة واحدة</td><td>convergence سريع</td></tr>
+    <tr><td>Reduce on plateau</td><td>يقلل بمعامل لما الـ metric يقف</td><td>default آمن</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>ليه log scale؟</h3>
+      <p>الفرق بين 0.001 و0.01 مهم بالظبط زي الفرق بين 0.1 و1.0. لو دوّرت linear، معظم الميزانية هتروح على الناحية الكبيرة (رجّع للمعمل ٠٢ وفعّل «sample lr linear»). عشان كده: <b>learning rate والـ regularization دايمًا log scale</b>. أما الـ batch size فـ 16، 32، 64 كفاية ومتدوّرش عليه log.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> اختار الـ scheduler وحرّك الـ warmup. الخطوط الباهتة هي باقي الأشكال عشان تقارن. الشكل بتاع one-cycle هنا توضيحي (الدرس بيقول بس «يزيد وبعدين يقل»). Reduce on plateau مش مرسوم لأنه بيعتمد على الـ metric نفسه.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d34-c3" width="520" height="260" aria-label="شكل الـ learning rate عبر الـ epochs"></canvas>
+      <div class="btns" id="d34-sBtns">
+        <button type="button" data-s="const">Constant</button>
+        <button type="button" data-s="step">Step</button>
+        <button type="button" data-s="cos" class="primary">Cosine</button>
+        <button type="button" data-s="warm">Warmup+Cosine</button>
+        <button type="button" data-s="one">One-cycle</button>
+      </div>
+      <label style="display:grid;gap:2px">peak lr = <b class="mono" id="d34-lrv">0.01</b><input type="range" id="d34-lr" min="-4" max="0" step="0.1" value="-2"></label>
+      <label style="display:grid;gap:2px">warmup = <b class="mono" id="d34-wv">10%</b><input type="range" id="d34-w" min="0" max="40" step="1" value="10"></label>
+      <div class="readout">
+        <div><small>lr @ epoch 0</small><b id="d34-l0">-</b></div>
+        <div><small>lr @ epoch 50</small><b id="d34-l50">-</b></div>
+        <div><small>lr @ epoch 99</small><b id="d34-l99">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6: importance + strategy + nested CV -->
+<section id="d34-strategy">
+  <div class="station-head"><span class="tag">06</span><h2>مين المهم؟ وإزاي تمشي خطوة بخطوة</h2></div>
+  <h3>أهمية الـ hyperparameters</h3>
+  <p>مش كلهم بنفس الأهمية. أبحاث على الـ random forests (Probst et al., 2019) والـ gradient boosting بتطلّع نمط ثابت:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الأهمية</th><th>الـ hyperparameters</th></tr>
+    <tr><td><b>عالية</b></td><td>Learning rate (ظبطه الأول دايمًا)، عدد الـ estimators/epochs (استخدم early stopping بدل ما تظبطه)، قوة الـ regularization</td></tr>
+    <tr><td><b>متوسطة</b></td><td>Max depth / عدد الطبقات، min samples per leaf / weight decay، subsample ratio</td></tr>
+    <tr><td><b>قليلة</b></td><td>Max features (في الـ random forest)، نوع الـ activation function، الـ batch size (في مدى معقول)</td></tr>
+  </table></div>
+  <p>القاعدة: ظبط المهم الأول، وسيب الباقي على الـ defaults.</p>
+
+  <h3>الاستراتيجية العملية</h3>
+  <ol class="ex">
+    <li><b>ابدأ بالـ defaults بتاعة المكتبة.</b> اللي اختاروها ناس عندهم خبرة، وغالبًا بيوصلوك ٨٠% من الطريق.</li>
+    <li><b>Coarse random search:</b> مدى واسع، ٢٠–٥٠ تجربة، ومعاه early stopping يقفل الوحش بسرعة.</li>
+    <li><b>حلّل النتايج:</b> أنهي hyperparameters مرتبطة بالأداء؟ ضيّق المدى.</li>
+    <li><b>Fine search:</b> Bayesian أو random مركّز في المدى الضيق، ٥٠–١٠٠ تجربة.</li>
+    <li><b>درّب من جديد على كل الـ training data</b> بأحسن hyperparameters.</li>
+  </ol>
+
+  <h3>Nested Cross-Validation</h3>
+  <p>لو ظبطت على validation split واحد بس، ممكن أحسن hyperparameters تكون «حافظة» الـ fold ده بالذات. الحل حلقتين:</p>
+  <ul class="checklist">
+    <li><b>Outer loop (تقييم):</b> بيقسم الداتا لـ train+val و test، وبيدي أداء غير متحيز.</li>
+    <li><b>Inner loop (ضبط):</b> بيقسم الـ train+val لـ train و val، وبيلاقي أحسن hyperparameters.</li>
+  </ul>
+  <p>كل outer fold بيلاقي أحسن hyperparameters بتاعته لوحده، ومتوسط الـ outer scores هو تقدير أمين للأداء. التكلفة عالية: ٥ outer × ٥ inner × ٢٧ نقطة grid = <b>٦٧٥ fit</b>. استخدمه لما تكتب نتايج نهائية (paper) أو لما القرار حساس.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.ensemble import GradientBoostingRegressor
+
+inner_cv = GridSearchCV(                      <span class="c"># الحلقة الداخلية: بتظبط</span>
+    GradientBoostingRegressor(),
+    param_grid={
+        "learning_rate": [0.01, 0.05, 0.1],
+        "max_depth": [2, 3, 5],
+        "n_estimators": [50, 100, 200],
+    },
+    cv=5,
+    scoring="neg_mean_squared_error",
+)
+
+outer_scores = cross_val_score(               <span class="c"># الحلقة الخارجية: بتقيّم</span>
+    inner_cv, X, y, cv=5, scoring="neg_mean_squared_error"
+)
+print(f"Nested CV MSE: {-outer_scores.mean():.4f} +/- {outer_scores.std():.4f}")</pre></div>
+
+  <h3>نصايح عملية من الدرس</h3>
+  <ul class="checklist">
+    <li><b>ابدأ بالـ learning rate:</b> ثبّت الباقي على الـ defaults واعمل sweep للـ lr الأول. lr وحش بيخلّي أي حاجة تانية ملهاش لازمة.</li>
+    <li><b>log-uniform</b> للـ learning rate والـ regularization.</li>
+    <li><b>Early stopping بدل ما تظبط n_estimators:</b> حط رقم كبير وسيب الـ early stopping يقرر. كده شلت hyperparameter من البحث.</li>
+    <li><b>توزيع الميزانية:</b> ٦٠% على أهم ٢ hyperparameters، و٤٠% على الباقي.</li>
+    <li><b>لو مش متأكد:</b> random search بعدد تجارب على الأقل ضعف عدد الـ hyperparameters (٦ hyperparameters = ١٢+ تجربة).</li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>نوع الموديل</th><th>أهم hyperparameters</th><th>البحث المقترح</th><th>الميزانية</th></tr>
+    <tr><td>Random Forest</td><td class="ltr">n_estimators, max_depth, min_samples_leaf</td><td>Random، ٥٠ تجربة</td><td>قليلة (تدريب سريع)</td></tr>
+    <tr><td>Gradient Boosting</td><td class="ltr">learning_rate, n_estimators, max_depth</td><td>Bayesian، ١٠٠ تجربة + early stopping</td><td>متوسطة</td></tr>
+    <tr><td>Neural Network</td><td class="ltr">learning_rate, weight_decay, batch_size</td><td>Bayesian أو random، ١٠٠+</td><td>عالية (تدريب بطيء)</td></tr>
+    <tr><td>SVM</td><td class="ltr">C, gamma (RBF)</td><td>Grid على log scale، ٢٥–٥٠</td><td>قليلة (٢ بس)</td></tr>
+    <tr><td>Lasso/Ridge</td><td class="ltr">alpha</td><td>بحث 1D على log scale، ٢٠</td><td>قليلة جدًا</td></tr>
+    <tr><td>XGBoost</td><td class="ltr">learning_rate, max_depth, subsample, colsample</td><td>Bayesian، ١٠٠–٢٠٠ + early stopping</td><td>متوسطة</td></tr>
+  </table></div>
+
+  <h3>الغلطات المشهورة</h3>
+  <ol class="ex">
+    <li><b>Data leakage من الـ preprocessing:</b> لو عملت fit للـ scaler على الداتا كلها قبل الـ CV، معلومات من الـ validation fold بتسرّب للتدريب. حط الـ preprocessing جوه <code>Pipeline</code> (ده موضوع بكرة).</li>
+    <li><b>Overfitting على الـ validation set:</b> آلاف التجارب = انت فعليًا بتدرّب على الـ validation. استخدم nested CV أو test set منفصل متلمسوش خالص وانت بتظبط.</li>
+    <li><b>مدى ضيق:</b> لو أحسن قيمة طلعت على حافة المدى، يبقى مدوّرتش كفاية. الأحسن ممكن يكون برّه.</li>
+    <li><b>تجاهل التداخل:</b> الـ learning rate وعدد الـ estimators في الـ boosting مرتبطين جامد: lr صغير محتاج أشجار أكتر. ظبطهم مع بعض مش كل واحد لوحده.</li>
+    <li><b>من غير early stopping</b> في الموديلات الـ iterative: حط رقم كبير واستخدم early stopping، ده أحسن دايمًا من إنك تظبط عدد الـ iterations.</li>
+  </ol>
+</section>
+
+<!-- CODE -->
+<section id="d34-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: grid و random و Bayesian من الصفر</h2></div>
+  <p>من جوه فولدر الريبو شغّل الملف الأصلي الأول عشان تشوف الصورة الكاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/12-hyperparameter-tuning/code/tuning.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> متعملش copy-paste. افتح <code>my_tuning.py</code> واكتب الخطوات دي بإيدك، وبص على الأصل بس لو اتزنقت. الملف بيعتمد على <code>numpy</code> بس (و<code>optuna</code> اختياري).</p>
+
+  <h3>خطوة ١: الداتا والموديل اللي هنظبطه</h3>
+  <p>داتا صناعية فيها ٨ features، والـ target معمول من خليط linear وغير linear. بتتقسم 60% train، 20% val، 20% test. والموديل <code>GBMForTuning</code> هو gradient boosting زي بتاع امبارح بس بيقبل hyperparameters أكتر.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+import itertools
+import time
+
+def make_data(n_samples=400, n_features=8, seed=42):
+    rng = np.random.RandomState(seed)
+    X = rng.randn(n_samples, n_features)
+    y = (2.0 * X[:, 0] + np.sin(3 * X[:, 1]) - 0.5 * X[:, 2] ** 2
+         + 0.3 * X[:, 3] * X[:, 4] + rng.normal(0, 0.3, n_samples))
+    split, val_split = int(n_samples * 0.6), int(n_samples * 0.8)   <span class="c"># 60/20/20</span>
+    return (X[:split], y[:split], X[split:val_split], y[split:val_split],
+            X[val_split:], y[val_split:])
+
+class GBMForTuning:
+    def __init__(self, n_estimators=50, learning_rate=0.1, max_depth=3,
+                 min_samples_split=5, subsample=1.0):     <span class="c"># دي كلها hyperparameters</span>
+        ...
+    def fit(self, X, y):
+        rng = np.random.RandomState(42)
+        self.init_pred = np.mean(y)
+        pred = np.full(len(y), self.init_pred)
+        for _ in range(self.n_estimators):
+            residuals = y - pred                           <span class="c"># الغلط اللي فاضل</span>
+            if self.subsample &lt; 1.0:                       <span class="c"># شجرة على جزء عشوائي من الداتا</span>
+                n_sub = max(1, int(len(y) * self.subsample))
+                idx = rng.choice(len(y), n_sub, replace=False)
+                X_sub, r_sub = X[idx], residuals[idx]
+            else:
+                X_sub, r_sub = X, residuals
+            tree = SimpleTree(max_depth=self.max_depth,
+                              min_samples_split=self.min_samples_split)
+            tree.fit(X_sub, r_sub)
+            pred += self.learning_rate * tree.predict(X)   <span class="c"># خطوة صغيرة ناحية الصح</span>
+            self.trees.append(tree)
+
+def neg_mse(model, X, y):          <span class="c"># سالب الـ MSE: كل ما يكبر كل ما أحسن</span>
+    return -np.mean((model.predict(X) - y) ** 2)</pre></div>
+  <p><code>SimpleTree</code> هي regression tree بسيطة (بتدوّر على أحسن split من 10 percentiles لكل feature وبتقلل الـ variance). انسخ فكرتها من الملف الأصلي أو من درس الـ Decision Trees.</p>
+
+  <h3>خطوة ٢: Grid search</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def grid_search(param_grid, X_train, y_train, X_val, y_val):
+    keys = list(param_grid.keys())
+    values = list(param_grid.values())
+    best_score, best_params, history = -float("inf"), None, []
+    for combo in itertools.product(*values):       <span class="c"># كل توليفة ممكنة</span>
+        params = dict(zip(keys, combo))
+        model = GBMForTuning(**params)
+        model.fit(X_train, y_train)
+        score = neg_mse(model, X_val, y_val)       <span class="c"># بنقيس على الـ val مش الـ test</span>
+        history.append((params.copy(), score))
+        if score &gt; best_score:
+            best_score, best_params = score, params.copy()
+    return best_params, best_score, history</pre></div>
+
+  <h3>خطوة ٣: Random search مع توزيعات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sample_param(spec, rng):
+    if isinstance(spec, list):                     <span class="c"># اختيارات محددة</span>
+        return rng.choice(spec)
+    name, low, high = spec[0], spec[1], spec[2]
+    if name == "int":
+        return rng.randint(low, high + 1)
+    if name == "float":
+        return rng.uniform(low, high)
+    if name == "log_float":                        <span class="c"># uniform في الـ log</span>
+        return np.exp(rng.uniform(np.log(low), np.log(high)))
+    return low
+
+def random_search(param_distributions, X_train, y_train, X_val, y_val,
+                  n_iter=50, seed=42):
+    rng = np.random.RandomState(seed)
+    best_score, best_params, history = -float("inf"), None, []
+    for _ in range(n_iter):
+        params = {k: sample_param(v, rng) for k, v in param_distributions.items()}
+        int_params = {k: int(v) if k in ("n_estimators", "max_depth", "min_samples_split")
+                      else v for k, v in params.items()}   <span class="c"># الأعداد الصحيحة لازم int</span>
+        model = GBMForTuning(**int_params)
+        model.fit(X_train, y_train)
+        score = neg_mse(model, X_val, y_val)
+        history.append((int_params.copy(), score))
+        if score &gt; best_score:
+            best_score, best_params = score, int_params.copy()
+    return best_params, best_score, history
+
+param_distributions = {
+    "n_estimators": ("int", 10, 200),
+    "learning_rate": ("log_float", 0.005, 0.5),    <span class="c"># lr دايمًا log</span>
+    "max_depth": ("int", 2, 8),
+    "min_samples_split": ("int", 2, 20),
+    "subsample": ("float", 0.5, 1.0),
+}</pre></div>
+
+  <h3>خطوة ٤: Bayesian optimizer (GP + Expected Improvement)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class SimpleBayesianOptimizer:
+    def __init__(self, param_space, n_initial=10, seed=42):
+        self.param_space = param_space
+        self.n_initial = n_initial                 <span class="c"># أول كام تجربة عشوائي</span>
+        self.rng = np.random.RandomState(seed)
+        self.X_observed, self.y_observed = [], []
+        self.param_names = list(param_space.keys())
+
+    def _sample_random(self):
+        return {k: sample_param(v, self.rng) for k, v in self.param_space.items()}
+
+    def _params_to_vec(self, params):              <span class="c"># كل param يتحول لرقم بين 0 و 1</span>
+        vec = []
+        for k in self.param_names:
+            v, spec = params[k], self.param_space[k]
+            if isinstance(spec, list):
+                vec.append(spec.index(v) / max(1, len(spec) - 1))
+            elif spec[0] == "log_float":
+                vec.append((np.log(v) - np.log(spec[1])) / (np.log(spec[2]) - np.log(spec[1])))
+            else:
+                vec.append((v - spec[1]) / max(1e-10, spec[2] - spec[1]))
+        return np.array(vec)
+
+    def _rbf_kernel(self, X1, X2, length_scale=0.3):   <span class="c"># نقط قريبة = نتايج قريبة</span>
+        dists = np.sum((X1[:, None, :] - X2[None, :, :]) ** 2, axis=2)
+        return np.exp(-0.5 * dists / length_scale ** 2)
+
+    def _predict(self, X_new):                     <span class="c"># الـ GP: توقع μ و عدم يقين var</span>
+        X_obs, y_obs = np.array(self.X_observed), np.array(self.y_observed)
+        y_mean = y_obs.mean()
+        K = self._rbf_kernel(X_obs, X_obs) + 1e-4 * np.eye(len(X_obs))
+        K_star = self._rbf_kernel(X_new, X_obs)
+        L = np.linalg.cholesky(K)
+        alpha = np.linalg.solve(L.T, np.linalg.solve(L, y_obs - y_mean))
+        mu = K_star @ alpha + y_mean
+        v = np.linalg.solve(L, K_star.T)
+        var = np.maximum(1.0 - np.sum(v ** 2, axis=0), 1e-6)
+        return mu, var
+        <span class="c"># (الأصل فيه try/except بيرجع لـ pinv لو الـ cholesky فشل)</span>
+
+    def _expected_improvement(self, mu, var, best_y):
+        sigma = np.sqrt(var)
+        z = (mu - best_y) / (sigma + 1e-10)
+        return sigma * (z * self._norm_cdf(z) + self._norm_pdf(z))
+
+    @staticmethod
+    def _norm_cdf(x):                              <span class="c"># تقريب بالـ tanh</span>
+        return 0.5 * (1 + np.vectorize(lambda v: np.tanh(v * 0.7978845608))(x))
+
+    @staticmethod
+    def _norm_pdf(x):
+        return np.exp(-0.5 * x ** 2) / np.sqrt(2 * np.pi)
+
+    def suggest(self):
+        if len(self.X_observed) &lt; self.n_initial:
+            return self._sample_random()           <span class="c"># لسه بدري: استكشف عشوائي</span>
+        candidates = [self._sample_random() for _ in range(500)]
+        X_cand = np.array([self._params_to_vec(c) for c in candidates])
+        mu, var = self._predict(X_cand)
+        ei = self._expected_improvement(mu, var, max(self.y_observed))
+        return candidates[np.argmax(ei)]           <span class="c"># أعلى EI يكسب</span>
+
+    def observe(self, params, score):
+        self.X_observed.append(self._params_to_vec(params))
+        self.y_observed.append(score)
+
+    def optimize(self, objective, n_iter=50):
+        best_score, best_params, history = -float("inf"), None, []
+        for _ in range(n_iter):
+            params = self.suggest()
+            score = objective(params)
+            self.observe(params, score)
+            history.append((params.copy(), score))
+            if score &gt; best_score:
+                best_score, best_params = score, params.copy()
+        return best_params, best_score, history</pre></div>
+
+  <h3>خطوة ٥: السباق بنفس الميزانية</h3>
+  <p>الـ grid فيه 3 × 4 × 3 = <b>36</b> توليفة، فكل طريقة بتاخد 36 تجربة. و<code>convergence_curve</code> بترسم «أحسن نتيجة لحد التجربة رقم كذا».</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def convergence_curve(history):
+    best_so_far, curve = -float("inf"), []
+    for _, score in history:
+        best_so_far = max(best_so_far, score)       <span class="c"># أحسن حاجة شفناها لحد دلوقتي</span>
+        curve.append(best_so_far)
+    return curve
+
+param_grid = {
+    "n_estimators": [20, 50, 100],
+    "learning_rate": [0.01, 0.05, 0.1, 0.3],
+    "max_depth": [2, 3, 5],
+}
+X_tr, y_tr, X_val, y_val, X_te, y_te = make_data()
+_, grid_score, grid_history = grid_search(param_grid, X_tr, y_tr, X_val, y_val)
+n_grid = len(grid_history)                            <span class="c"># 36</span>
+<span class="c"># ... random_search و optimizer.optimize بنفس n_grid ...</span>
+print(f"  Grid search   best MSE: {-grid_score:.4f}")</pre></div>
+
+  <h3>خطوة ٦: نفس الكلام بـ Optuna (اللي هتستخدمه فعلًا)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import optuna
+
+def objective(trial):
+    lr = trial.suggest_float("learning_rate", 0.005, 0.5, log=True)   <span class="c"># log=True للـ lr</span>
+    n_est = trial.suggest_int("n_estimators", 10, 200)
+    max_depth = trial.suggest_int("max_depth", 2, 8)
+    min_split = trial.suggest_int("min_samples_split", 2, 20)
+    subsample = trial.suggest_float("subsample", 0.5, 1.0)
+    model = GBMForTuning(n_estimators=n_est, learning_rate=lr, max_depth=max_depth,
+                         min_samples_split=min_split, subsample=subsample)
+    model.fit(X_tr, y_tr)
+    return np.mean((model.predict(X_val) - y_val) ** 2)              <span class="c"># MSE</span>
+
+study = optuna.create_study(direction="minimize")                    <span class="c"># عايزين أقل MSE</span>
+study.optimize(objective, n_trials=50)
+print(study.best_params, study.best_value)
+print(optuna.importance.get_param_importances(study))               <span class="c"># مين المهم؟</span></pre></div>
+  <p>وفيه كمان <b>pruning</b>: بتعمل <code>trial.report(value, step)</code> وبعدين <code>if trial.should_prune(): raise optuna.TrialPruned()</code>، ومع <code>MedianPruner(n_startup_trials=10, n_warmup_steps=5)</code> بيقفل أي تجربة أوحش من الـ median عند نفس الخطوة. الدرس بيقول ده عادة بيوفّر ٤٠–٦٠% من الحسابات. وفي sklearn عندك <code>GridSearchCV</code> و<code>RandomizedSearchCV</code> (مع <code>loguniform</code> و<code>randint</code> من scipy) و<code>HalvingRandomSearchCV</code>، و<code>n_jobs=-1</code> بيشغّل على كل الـ cores.</p>
+
+  <details><summary>الناتج المتوقع (الشكل العام)</summary>
+  <p>الأرقام بالظبط هتطلع عندك انت، بس الملف بيطبع الأقسام دي بالترتيب: <code>GRID SEARCH</code> (وفيه <code>Total combinations: 36</code> وأحسن params وTest MSE)، وبعدين <code>RANDOM SEARCH</code> بميزانيات 10 و25 و50 و100، وبعدين <code>BAYESIAN OPTIMIZATION</code> بـ 50 تجربة، وبعدين <code>HEAD-TO-HEAD: GRID vs RANDOM vs BAYESIAN</code> بـ <code>Budget: 36 evaluations each</code> وجدول بالـ MSE عند التجارب 6 و11 و21 و36. لو optuna مش متسطب هيطبع:</p>
+  <pre class="term">  Optuna not installed. Install with: pip install optuna
+  Skipping Optuna demo.</pre>
+  <p>وآخر سطر: <code>All tuning demos complete.</code> الأشجار مكتوبة بـ numpy من الصفر فممكن التشغيل ياخد شوية وقت، استنى عادي.</p></details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d34-exercises">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ١ و٢ و٥ النهاردة على الأقل. ٣ و٤ ممكن يتأجلوا لبكرة.</p>
+  <ol class="ex">
+    <li><b>Grid ضد Random بنفس الميزانية:</b> شغّل الاتنين بميزانية واحدة (مثلًا ٥٠ تجربة) وقارن أحسن score. كرر ١٠ مرات بـ seeds مختلفة. الـ random بيكسب كام مرة؟
+      <details><summary>تلميح</summary>الـ grid نتيجته ثابتة (مفيش عشوائية)، فاحسبه مرة واحدة. لف على <code>seed in range(10)</code> واستدعي <code>random_search(..., seed=seed)</code> وعدّ المرات اللي <code>rand_score &gt; grid_score</code>. زرار «السباق» في المعمل ٠٢ بيعمل نفس الفكرة على دالة توضيحية.</details></li>
+    <li><b>Hyperband من الصفر:</b> ابدأ بـ ٨١ configuration كل واحد epoch واحد. احتفظ بأحسن تلت في كل round وضاعف ميزانيتهم ×٣. قارن مجموع الـ epochs بإنك تدرّب الـ ٨١ بالميزانية الكاملة.
+      <details><summary>تلميح + الحساب</summary>الـ rounds: 81×1، 27×3، 9×9، 3×27، 1×81. كل round = 81 epoch، يعني المجموع <b>405</b>. لو درّبت الـ 81 كلهم 81 epoch = <b>6,561</b>. افتح الحاسبة في المحطة ٠٤ وقارن. في الكود: <code>configs = sorted(configs, key=score)[:len(configs)//3]</code> و<code>budget *= 3</code>.</details></li>
+    <li><b>Cosine annealing للـ GBM بتاع امبارح:</b> بدل الـ learning rate الثابت، خليه يتغير مع رقم الشجرة. بيفرق؟
+      <details><summary>تلميح</summary>جوه لوب الأشجار: <code>lr_t = lr * 0.5 * (1 + np.cos(np.pi * t / T))</code>. خلي بالك: لازم تخزن <code>lr_t</code> لكل شجرة عشان تستخدمه نفسه في <code>predict</code>. قارن الـ val MSE بالـ lr الثابت بنفس عدد الأشجار.</details></li>
+    <li><b>Optuna على داتا حقيقية:</b> ظبط <code>RandomForestClassifier</code> على breast cancer dataset من sklearn، واعرض <code>optuna.visualization.plot_param_importances(study)</code>. الترتيب مطابق لجدول الأهمية في الدرس؟
+      <details><summary>تلميح</summary><code>from sklearn.datasets import load_breast_cancer</code>. خلي الـ objective يرجع <code>cross_val_score(...).mean()</code> و<code>direction="maximize"</code>. ظبط <code>n_estimators</code>، <code>max_depth</code>، <code>min_samples_leaf</code>، <code>max_features</code>. الدرس بيحط max_features في «قليل الأهمية» للـ random forest، شوف النتيجة بتقول إيه عندك.</details></li>
+    <li><b>Expected Improvement وارسمه:</b> اعمل EI بنفسك ووضّح exploration ضد exploitation: ارسم متوسط الـ surrogate وعدم اليقين، ووضح الـ EI هيختار يجرب فين.
+      <details><summary>تلميح</summary>خد دالة 1D، ٣–٤ نقط، واستخدم <code>_predict</code> على <code>np.linspace(0,1,200)[:,None]</code>. ارسم <code>mu</code> و<code>mu ± 2*sqrt(var)</code> بـ <code>fill_between</code>، وتحتها EI. المعمل ٠٣ هو بالظبط الشكل اللي المفروض يطلع.</details></li>
+    <li><b>إضافة مني · ظبط RAG pipeline:</b> في شغل الـ AI الحقيقي كتير بتظبط حاجات زي <code>chunk_size</code> و<code>top_k</code> في الـ retrieval. اعمل random search صغير: <code>chunk_size</code> من [200, 400, 800]، <code>top_k</code> من 1 لـ 10، على ٢٠ سؤال عندك إجابتهم الصح، والـ score = نسبة الأسئلة اللي الـ chunk الصح طلع فيها ضمن الـ top_k. قسّم الأسئلة ١٥ للضبط و٥ للتقييم النهائي ومتلمسش الخمسة غير في الآخر.
+      <details><summary>تلميح</summary>نفس <code>random_search</code> بالظبط، بس <code>model.fit</code> بقت «ابني الـ index بالـ chunk_size ده» و<code>evaluate</code> بقت «recall@top_k». لاحظ إن top_k الكبير دايمًا بيعلّي الـ recall، فلازم تحط تكلفة (مثلًا score = recall − 0.02 × top_k) عشان متاخدش أكبر رقم وخلاص. ده بالظبط «hyperparameter على حافة المدى».</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d34-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مقالوش صريح</h2></div>
+  <div class="note"><strong>الحدس في جملة:</strong> الـ tuning هو نفسه «تعلم» بس على مستوى أعلى. وأي حاجة بتتعلم ممكن تعمل overfitting. عشان كده الـ validation set اللي بتظبط عليه بيبقى «محروق» شوية مع كل تجربة، والـ test set لازم يفضل مقفول.</div>
+  <h3>غلطات شايفها كتير</h3>
+  <ol class="ex">
+    <li><b>الـ noise بيضحك عليك:</b> فرق صغير جدًا في الـ score بين تجربتين ممكن يكون عشوائية الـ seed مش الـ hyperparameter. قبل ما تفرح بالـ winner، شغّله بـ ٢–٣ seeds مختلفة وشوف الفرق لسه موجود ولا لأ.</li>
+    <li><b>بتقارن بميزانيات مختلفة:</b> «Bayesian لقى أحسن» ملهاش معنى لو خد تجارب أكتر. عشان كده الكود بيدي الكل نفس <code>n_grid</code>.</li>
+    <li><b>بتنسى تحفظ التجارب:</b> كل تجربة (الـ params + الـ score + الـ seed) لازم تتسجل. ده اللي <code>history</code> بيعمله في الكود، وفي الشغل بتستخدم أداة tracking أو حتى CSV.</li>
+    <li><b>تحويل الأنواع:</b> الـ sampler بيرجّع float، والموديل عايز int للـ depth. الكود الأصلي بيعمل <code>int(v)</code> لـ <code>n_estimators</code> و<code>max_depth</code> و<code>min_samples_split</code>. لو نسيتها هتاخد error أو سلوك غريب.</li>
+  </ol>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li><b>تدريب الـ Transformers:</b> الدرس نفسه بيقول warmup + decay هو اللي بيتستخدم مع الـ Transformers. لما تيجي تعمل fine-tuning هتلاقي الـ learning rate والـ warmup والـ scheduler أول حاجات في الـ config.</li>
+    <li><b>الـ LoRA:</b> فاكر من Day 1؟ الـ rank <code>r</code> بتاع الـ LoRA هو hyperparameter، بتختاره قبل التدريب ومبيتعلمش.</li>
+    <li><b>Inference knobs:</b> الـ <code>temperature</code> و<code>top_p</code> و<code>max_tokens</code> مش بتتدرّب، بتختارها انت. ظبطها على eval set فيه أمثلة حقيقية، بنفس منطق النهاردة: مدى معقول، تجارب قليلة، وset منفصل للتقييم النهائي.</li>
+    <li><b>Agents وRAG:</b> عدد الـ retrieved chunks، حجم الـ chunk، عدد الخطوات المسموحة للـ agent... كلها hyperparameters للـ system. والتمرين ٦ هو نسخة صغيرة من الشغل ده.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d34-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d34-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d34-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أفرّق بين parameter و hyperparameter بمثال</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فهمت ليه random بيكسب grid (low effective dimensionality) وشفتها في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> شغّلت BO خطوة بخطوة وأقدر أشرح الـ surrogate والـ EI</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> عارف ليه الـ lr بيتدوّر عليه log scale وأشكال الـ schedulers</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> كتبت grid_search و random_search و SimpleBayesianOptimizer بإيدي وشغّلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت ٣ تمارين على الأقل (منهم Hyperband)</label></li>
+    <li><label><input type="checkbox" data-ck="c7" id="d34-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Random search</td><td>أول pass على أي موديل جديد، <code>RandomizedSearchCV</code></td></tr>
+    <tr><td>Bayesian optimization</td><td>Optuna (اللي الدرس بيرشحه)، ضبط الـ XGBoost والـ neural nets</td></tr>
+    <tr><td>Early stopping / pruning</td><td>تدريب الـ boosting والـ neural networks، <code>MedianPruner</code></td></tr>
+    <tr><td>Hyperband</td><td>لما عندك configs كتير والتدريب غالي، <code>HalvingRandomSearchCV</code> في sklearn</td></tr>
+    <tr><td>LR schedulers</td><td>warmup + cosine في تدريب وfine-tuning الـ Transformers</td></tr>
+    <tr><td>Nested CV</td><td>تقارير النتايج النهائية والقرارات الحساسة</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> ML Pipelines. هنحط الـ preprocessing والموديل في <code>Pipeline</code> واحد عشان نقفل باب الـ data leakage اللي اتكلمنا عنه النهاردة. وهنبدأ بتسخين ٥ دقايق على الـ tuning.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F12-hyperparameter-tuning" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/12-hyperparameter-tuning</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d34-root');
+
+// roadmap
+const rm=$('d34-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===12)s.className='now';rm.appendChild(s)}
+
+function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+// ================= Lab 1: grid vs random =================
+const c1=$('d34-c1'),x1=AI.setupCanvas(c1),W1=+c1.dataset.w,H1=+c1.dataset.h;
+const PL=44,PB=40,PT=10,PR=12;
+const score=(u,d)=>10-2.5*(u+2)*(u+2)-0.04*(d-5)*(d-5);   // u=log10(lr) ∈[-4,0], depth ∈[1,10]
+const px=u=>PL+(u+4)/4*(W1-PL-PR),py=d=>H1-PB-(d-1)/9*(H1-PB-PT);
+let mode='grid',seed=7;
+function makePts(k,md,lin,sd){
+  const n=k*k,pts=[];
+  if(md==='grid'){
+    for(let i=0;i<k;i++)for(let j=0;j<k;j++){
+      const t=k>1?i/(k-1):.5;
+      const u=lin?Math.log10(1e-4+(1-1e-4)*t):-4+4*t;
+      const d=Math.round(1+9*(k>1?j/(k-1):.5));
+      pts.push([u,d])}
+  }else{
+    const r=rng(sd);
+    for(let i=0;i<n;i++){const a=r(),b=r();
+      const u=lin?Math.log10(1e-4+(1-1e-4)*a):-4+4*a;
+      pts.push([u,Math.round(1+9*b)])}
+  }
+  return pts;
+}
+const best=pts=>pts.reduce((b,p)=>{const s=score(p[0],p[1]);return s>b[1]?[p,s]:b},[null,-1e9]);
+function draw1(){
+  const k=+$('d34-n').value,lin=$('d34-lin').checked;
+  $('d34-nv').textContent=k*k+(mode==='grid'?' ('+k+'×'+k+')':'');
+  x1.clearRect(0,0,W1,H1);
+  // heatmap
+  const S=8,acc=css('--vec-a');x1.fillStyle=acc;
+  for(let X=PL;X<W1-PR;X+=S)for(let Y=PT;Y<H1-PB;Y+=S){
+    const u=-4+(X+S/2-PL)/(W1-PL-PR)*4,d=1+(H1-PB-(Y+S/2))/(H1-PB-PT)*9;
+    x1.globalAlpha=Math.max(0,(score(u,d)+1)/11)*.55;x1.fillRect(X,Y,S,S)}
+  x1.globalAlpha=1;
+  // axes
+  x1.strokeStyle=css('--muted');x1.lineWidth=1.2;x1.beginPath();x1.moveTo(PL,PT);x1.lineTo(PL,H1-PB);x1.lineTo(W1-PR,H1-PB);x1.stroke();
+  x1.fillStyle=css('--ink');x1.font='12px JetBrains Mono, monospace';x1.textAlign='center';
+  ['1e-4','1e-3','1e-2','1e-1','1'].forEach((t,i)=>x1.fillText(t,px(-4+i),H1-PB+28));
+  x1.fillText('learning rate (log scale)',(PL+W1)/2,H1-2);
+  x1.textAlign='right';[1,4,7,10].forEach(d=>x1.fillText(d,PL-6,py(d)+4));
+  x1.save();x1.translate(12,(H1-PB)/2);x1.rotate(-Math.PI/2);x1.textAlign='center';x1.fillText('max_depth',0,0);x1.restore();
+  const pts=makePts(k,mode,lin,seed);
+  // lr ticks on axis
+  x1.strokeStyle=css('--vec-b');x1.lineWidth=2;
+  pts.forEach(p=>{x1.beginPath();x1.moveTo(px(p[0]),H1-PB+2);x1.lineTo(px(p[0]),H1-PB+14);x1.stroke()});
+  const [bp,bs]=best(pts);
+  pts.forEach(p=>{x1.fillStyle=p===bp?css('--vec-b'):css('--ink');x1.beginPath();x1.arc(px(p[0]),py(p[1]),p===bp?7:4,0,7);x1.fill()});
+  // optimum marker
+  x1.strokeStyle=css('--ok');x1.lineWidth=2;const ox=px(-2),oy=py(5);x1.beginPath();x1.moveTo(ox-7,oy);x1.lineTo(ox+7,oy);x1.moveTo(ox,oy-7);x1.lineTo(ox,oy+7);x1.stroke();
+  const uniq=new Set(pts.map(p=>p[0].toFixed(4))).size;
+  $('d34-uniq').textContent=uniq+' / '+pts.length;
+  $('d34-blr').textContent=Math.pow(10,bp[0]).toExponential(1);
+  $('d34-bs').textContent=f(bs,2);
+  $('d34-gap').textContent=f(10-bs,2);
+}
+function setMode(m){mode=m;$('d34-mGrid').classList.toggle('primary',m==='grid');$('d34-mRand').classList.toggle('primary',m==='rand');$('d34-race-out').textContent='';draw1()}
+$('d34-mGrid').addEventListener('click',()=>setMode('grid'));
+$('d34-mRand').addEventListener('click',()=>setMode('rand'));
+$('d34-reseed').addEventListener('click',()=>{seed=(seed*31+11)%100000;if(mode!=='rand')setMode('rand');else draw1()});
+$('d34-n').addEventListener('input',draw1);$('d34-lin').addEventListener('change',draw1);
+$('d34-race').addEventListener('click',()=>{
+  const k=+$('d34-n').value,lin=$('d34-lin').checked,g=best(makePts(k,'grid',lin,0))[1];let w=0,t=0;
+  for(let s=1;s<=200;s++){const r=best(makePts(k,'rand',lin,s*977))[1];if(r>g+1e-9)w++;else if(Math.abs(r-g)<1e-9)t++}
+  const o=$('d34-race-out');o.textContent='بميزانية '+k*k+' تجربة: الـ random كسب الـ grid في '+w+' من 200 seed ('+Math.round(w/2)+'%)';
+  o.style.color=w>100?css('--ok'):css('--muted');
+});
+draw1();
+
+// ================= Lab 2: Bayesian optimization =================
+const c2=$('d34-c2'),x2=AI.setupCanvas(c2),W2=+c2.dataset.w,H2=+c2.dataset.h;
+const TOP=250,G=200,xs=Array.from({length:G},(_,i)=>i/(G-1));
+const truth=x=>0.5*Math.sin(10*x+1)+0.7*Math.exp(-(x-0.82)*(x-0.82)/0.004)-0.2*x;
+const TV=xs.map(truth),TMAX=Math.max(...TV);
+let obs=[],rnd=rng(3);
+function reset2(){obs=[0.1,0.45,0.6].map(x=>[x,truth(x)]);rnd=rng(3);draw2()}
+function gp(ls){
+  const n=obs.length,X=obs.map(o=>o[0]),Y=obs.map(o=>o[1]),ym=Y.reduce((a,b)=>a+b,0)/n;
+  const k=(a,b)=>Math.exp(-0.5*(a-b)*(a-b)/(ls*ls));
+  const K=X.map((a,i)=>X.map((b,j)=>k(a,b)+(i===j?1e-4:0)));
+  const L=K.map(()=>new Array(n).fill(0));
+  for(let i=0;i<n;i++)for(let j=0;j<=i;j++){let s=K[i][j];for(let q=0;q<j;q++)s-=L[i][q]*L[j][q];
+    if(i===j)L[i][i]=Math.sqrt(Math.max(s,1e-10));else L[i][j]=s/L[j][j]}
+  const fw=b=>{const z=new Array(n);for(let i=0;i<n;i++){let s=b[i];for(let q=0;q<i;q++)s-=L[i][q]*z[q];z[i]=s/L[i][i]}return z};
+  const bw=b=>{const z=new Array(n);for(let i=n-1;i>=0;i--){let s=b[i];for(let q=i+1;q<n;q++)s-=L[q][i]*z[q];z[i]=s/L[i][i]}return z};
+  const alpha=bw(fw(Y.map(y=>y-ym)));
+  const mu=[],va=[];
+  xs.forEach(x=>{const ks=X.map(a=>k(x,a));mu.push(ks.reduce((s,v,i)=>s+v*alpha[i],0)+ym);const v=fw(ks);va.push(Math.max(1-v.reduce((s,t)=>s+t*t,0),1e-6))});
+  return [mu,va];
+}
+function erf(x){const s=Math.sign(x);x=Math.abs(x);const t=1/(1+0.3275911*x);const y=1-((((1.061405429*t-1.453152027)*t+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-x*x);return s*y}
+const Phi=z=>0.5*(1+erf(z/Math.SQRT2)),phi=z=>Math.exp(-0.5*z*z)/Math.sqrt(2*Math.PI);
+let nextX=null;
+function draw2(){
+  const ls=+$('d34-ls').value;$('d34-lsv').textContent=ls.toFixed(2);
+  const [mu,va]=gp(ls),bestY=Math.max(...obs.map(o=>o[1]));
+  const ei=mu.map((m,i)=>{const s=Math.sqrt(va[i]),z=(m-bestY)/(s+1e-10);return s*(z*Phi(z)+phi(z))});
+  let bi=0;ei.forEach((e,i)=>{if(e>ei[bi])bi=i});nextX=xs[bi];
+  const X=x=>14+x*(W2-28),Y=y=>12+(1.3-y)/2.6*(TOP-24);
+  x2.clearRect(0,0,W2,H2);
+  x2.strokeStyle=css('--grid');x2.lineWidth=1;x2.beginPath();x2.moveTo(14,Y(0));x2.lineTo(W2-14,Y(0));x2.stroke();
+  // band
+  x2.fillStyle=css('--vec-a');x2.globalAlpha=.16;x2.beginPath();
+  xs.forEach((x,i)=>{const yy=Y(mu[i]+2*Math.sqrt(va[i]));i?x2.lineTo(X(x),yy):x2.moveTo(X(x),yy)});
+  for(let i=G-1;i>=0;i--)x2.lineTo(X(xs[i]),Y(mu[i]-2*Math.sqrt(va[i])));
+  x2.closePath();x2.fill();x2.globalAlpha=1;
+  if($('d34-boTrue').checked){x2.setLineDash([5,5]);x2.strokeStyle=css('--muted');x2.lineWidth=1.5;x2.beginPath();
+    xs.forEach((x,i)=>{i?x2.lineTo(X(x),Y(TV[i])):x2.moveTo(X(x),Y(TV[i]))});x2.stroke();x2.setLineDash([])}
+  x2.strokeStyle=css('--vec-a');x2.lineWidth=2.5;x2.beginPath();
+  xs.forEach((x,i)=>{i?x2.lineTo(X(x),Y(mu[i])):x2.moveTo(X(x),Y(mu[i]))});x2.stroke();
+  // next line
+  x2.strokeStyle=css('--vec-b');x2.lineWidth=2;x2.beginPath();x2.moveTo(X(nextX),8);x2.lineTo(X(nextX),H2-6);x2.stroke();
+  obs.forEach((o,i)=>{x2.fillStyle=i===obs.length-1&&obs.length>3?css('--vec-b'):css('--ink');x2.beginPath();x2.arc(X(o[0]),Y(o[1]),5,0,7);x2.fill()});
+  // EI panel
+  const B0=TOP+8,BH=H2-B0-14,em=Math.max(...ei)||1;
+  x2.strokeStyle=css('--line');x2.strokeRect(14,B0,W2-28,BH);
+  x2.fillStyle=css('--vec-b');x2.globalAlpha=.35;x2.beginPath();x2.moveTo(X(0),B0+BH);
+  xs.forEach((x,i)=>x2.lineTo(X(x),B0+BH-ei[i]/em*(BH-6)));x2.lineTo(X(1),B0+BH);x2.closePath();x2.fill();x2.globalAlpha=1;
+  x2.fillStyle=css('--ink');x2.font='12px JetBrains Mono, monospace';x2.textAlign='left';
+  x2.fillText('Expected Improvement',20,B0+14);x2.fillText('GP mean ± 2σ',20,22);
+  $('d34-boN').textContent=obs.length;$('d34-boBest').textContent=f(bestY,3);$('d34-boMax').textContent=f(TMAX,3);$('d34-boNext').textContent=f(nextX,3);
+  $('d34-boBest').style.color=TMAX-bestY<0.01?css('--ok'):'';
+}
+function add2(x){if(obs.length>=25)return;obs.push([x,truth(x)]);draw2()}
+$('d34-boStep').addEventListener('click',()=>add2(nextX));
+$('d34-boRand').addEventListener('click',()=>add2(rnd()));
+$('d34-boReset').addEventListener('click',reset2);
+$('d34-ls').addEventListener('input',draw2);$('d34-boTrue').addEventListener('change',draw2);
+reset2();
+
+// ================= Hyperband calculator =================
+function hb(){
+  const N=+$('d34-hbN').value;let n=N,b=1,tot=0;const rows=['<tr><th>Round</th><th>configs</th><th>epochs لكل واحد</th><th>المجموع</th></tr>'];let r=1,maxB=1;
+  while(n>=1){rows.push('<tr><td>'+r+'</td><td class="ltr">'+n+'</td><td class="ltr">'+b+'</td><td class="ltr">'+n*b+'</td></tr>');tot+=n*b;maxB=b;if(n===1)break;n=Math.floor(n/3);b*=3;r++}
+  $('d34-hbT').innerHTML=rows.join('');
+  const full=N*maxB;
+  $('d34-hbA').textContent=tot.toLocaleString('en');$('d34-hbB').textContent=full.toLocaleString('en')+' ('+N+'×'+maxB+')';$('d34-hbC').textContent='×'+f(full/tot,1);
+}
+$('d34-hbN').addEventListener('change',hb);hb();
+
+// ================= Lab 3: schedulers =================
+const c3=$('d34-c3'),x3=AI.setupCanvas(c3),W3=+c3.dataset.w,H3=+c3.dataset.h,T=100;
+let sch='cos';
+function lrAt(s,t,lr,w){
+  const wu=Math.round(w/100*T);
+  if(s==='const')return lr;
+  if(s==='step')return lr*Math.pow(0.1,Math.floor(t/30));
+  if(s==='cos')return lr*0.5*(1+Math.cos(Math.PI*t/T));
+  if(s==='warm'){if(wu>0&&t<wu)return lr*(t+1)/wu;return lr*0.5*(1+Math.cos(Math.PI*(t-wu)/Math.max(1,T-wu)))}
+  if(s==='one'){const pk=Math.round(0.3*T);if(t<pk)return lr/10+(lr-lr/10)*t/pk;return lr*0.5*(1+Math.cos(Math.PI*(t-pk)/(T-pk)))}
+  return lr;
+}
+function draw3(){
+  const lr=Math.pow(10,+$('d34-lr').value),w=+$('d34-w').value;
+  $('d34-lrv').textContent=lr<0.01?lr.toExponential(1):f(lr,3);$('d34-wv').textContent=w+'%';
+  x3.clearRect(0,0,W3,H3);
+  const L=40,R=10,Tp=12,Bt=28,X=t=>L+t/(T-1)*(W3-L-R),Y=v=>H3-Bt-v/lr*(H3-Bt-Tp)/1.05;
+  x3.strokeStyle=css('--muted');x3.lineWidth=1.2;x3.beginPath();x3.moveTo(L,Tp);x3.lineTo(L,H3-Bt);x3.lineTo(W3-R,H3-Bt);x3.stroke();
+  x3.fillStyle=css('--ink');x3.font='12px JetBrains Mono, monospace';x3.textAlign='center';
+  [0,25,50,75,99].forEach(t=>x3.fillText(t,X(t),H3-Bt+16));x3.fillText('epoch',W3/2,H3-1);
+  x3.textAlign='right';x3.fillText('peak',L-4,Y(lr)+4);x3.fillText('0',L-4,H3-Bt+4);
+  ['const','step','cos','warm','one'].forEach(s=>{
+    const on=s===sch;x3.strokeStyle=on?css('--vec-a'):css('--muted');x3.globalAlpha=on?1:.3;x3.lineWidth=on?3:1.5;x3.beginPath();
+    for(let t=0;t<T;t++){const y=Y(lrAt(s,t,lr,w));t?x3.lineTo(X(t),y):x3.moveTo(X(t),y)}x3.stroke()});
+  x3.globalAlpha=1;
+  const fm=v=>v<0.001?v.toExponential(2):f(v,4);
+  $('d34-l0').textContent=fm(lrAt(sch,0,lr,w));$('d34-l50').textContent=fm(lrAt(sch,50,lr,w));$('d34-l99').textContent=fm(lrAt(sch,99,lr,w));
+}
+$('d34-sBtns').querySelectorAll('[data-s]').forEach(b=>b.addEventListener('click',()=>{sch=b.dataset.s;
+  $('d34-sBtns').querySelectorAll('[data-s]').forEach(o=>o.classList.toggle('primary',o===b));draw3()}));
+['d34-lr','d34-w'].forEach(id=>$(id).addEventListener('input',draw3));
+draw3();
+
+// ================= Quiz =================
+const Q=[
+ ['إيه الفرق بين الـ parameter والـ hyperparameter؟',['مفيش فرق، الاتنين نفس المعنى','الـ parameters بتتعلم أثناء التدريب (weights، biases)، والـ hyperparameters بتتحدد قبل التدريب (learning rate، max depth)','الـ parameters للـ neural networks بس، والـ hyperparameters للأشجار','الـ parameters انت اللي بتحددها، والـ hyperparameters بتتعلم أثناء التدريب'],1,'الـ parameters بيتعلمها الـ optimizer أثناء التدريب (زي الـ weights). الـ hyperparameters بتتحدد قبل التدريب وبتتحكم في إزاي التعلم بيحصل (زي الـ learning rate وقوة الـ regularization).'],
+ ['Grid search على ٤ hyperparameters كل واحد ليه ٥ قيم، محتاج كام تجربة؟',['625','20','4','25'],0,'الـ grid بيجرب كل توليفة: 5⁴ = 625. الكبر الأُسّي ده هو اللي بيخلّي الـ grid مش عملي مع hyperparameters كتير.'],
+ ['ليه الـ random search غالبًا بيكسب الـ grid search بنفس الميزانية؟',['الـ random دايمًا بيلاقي الـ global optimum','معظم الـ hyperparameters ليها low effective dimensionality، فالـ random بيغطي المهم منهم بكثافة أكبر','الـ grid مبيعرفش يتعامل مع hyperparameters continuous','الـ random بيستخدم optimization algorithm أحسن'],1,'غالبًا ١ أو ٢ بس هما اللي فارقين. الـ grid بيضيّع تجارب وهو بيغيّر اللي مش مهم، والـ random بيدي قيمة جديدة لكل hyperparameter في كل تجربة.'],
+ ['في الـ Bayesian optimization، الـ acquisition function بتوازن بين إيه وإيه؟',['الـ bias والـ variance في الـ surrogate','سرعة التدريب ودقة الموديل','عدد الـ features وعدد الـ samples','الـ exploitation (جنب النقط الحلوة) والـ exploration (الأماكن اللي مش متأكدين منها)'],3,'بتقرر التجربة الجاية فين: جنب النتايج الكويسة ولا في المناطق اللي الـ surrogate مش متأكد منها. ده اللي بيخلّي البحث أكفأ من العشوائي.'],
+ ['ظبطت الـ hyperparameters على الـ test set وكتبت أحسن test score في التقرير. إيه الغلط؟',['مفيش غلط، ده المعتاد','الـ test set المفروض يتستخدم في التدريب مش الضبط','الـ hyperparameters لازم تبقى integers بس','انت عملت overfitting على الـ test set، والرقم المكتوب متفائل ومش هيتكرر على داتا جديدة'],3,'اخترت hyperparameters بتنجح على العينات دي بالذات، يعني overfitting على الـ test. استخدم validation set للضبط وسيب الـ test للتقييم النهائي بس.'],
+ ['(سؤال مني) بتدوّر على learning rate بين 0.0001 و1 بـ uniform عادي (linear). إيه اللي هيحصل؟',['التوزيع هيبقى متوازن تمامًا','حوالي 90% من التجارب هتقع بين 0.1 و1 والقيم الصغيرة هتتجاهل تقريبًا','الـ random search هيتحول لـ grid','مش هيفرق لأن الـ lr مش مهم'],1,'المدى من 0.1 لـ 1 هو 90% من الطول الكلي. عشان كده الـ lr بيتدوّر عليه log-uniform، وجرّبها في المعمل ٠٢ بـ «sample lr linear».'],
+ ['(سؤال مني) أحسن max_depth طلع 8، والمدى اللي دوّرت فيه كان من 2 لـ 8. تعمل إيه؟',['خلاص لقيت الأحسن','قلل المدى لـ 6–8','وسّع المدى لأن الأحسن على الحافة وممكن يكون برّه','غيّر لـ grid search'],2,'لو الأحسن على حافة المدى، يبقى مدوّرتش كفاية. وسّع المدى وجرّب تاني.']
+];
+AI.quiz($('d34-quizBox'),Q,5,()=>{const c=$('d34-ckq');if(!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(34,root);
+
+AI.onTheme(()=>{if(!document.body.contains(c1))return false;draw1();draw2();draw3()});
+})();
+</script>

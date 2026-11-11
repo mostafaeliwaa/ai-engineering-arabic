@@ -1,0 +1,642 @@
+<div class="day" id="d21-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 21 · Graph Theory for Machine Learning</span>
+  <h1>اليوم ٢١: الداتا اللي فيها علاقات، والـ Graph هو لغتها</h1>
+  <p class="lede">الجداول بتعامل كل صف كإنه لوحده. بس في السوشيال ميديا والجزيئات والـ knowledge graphs، <b>العلاقات نفسها هي الداتا</b>. النهاردة هتحوّل الـ graph لمصفوفات، تمشي فيه بـ BFS وDFS، تشوف الـ <b>Laplacian</b> بيكشف المجموعات لوحده، وتبني أول خطوة <b>message passing</b> زي اللي جوه أي GNN.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python + NumPy</b></span>
+    <span>قبله: <b>The Fourier Transform</b></span>
+    <span>بعده: <b>Stochastic Processes</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d21-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d21-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ Fourier؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ Fourier Transform بيعمل إيه للإشارة ببساطة؟</summary>بيحوّلها من «قيم على الزمن» لـ «كام من كل تردد موجود فيها». نفس الإشارة، بس بنبص عليها من زاوية الترددات.</details>
+  <details><summary>٢. ليه الـ FFT مهم مع إنه بيطلّع نفس نتيجة الـ DFT؟</summary>لأنه أسرع بكتير: <span class="ltr">O(n log n)</span> بدل <span class="ltr">O(n²)</span>. ده اللي بيخلّي تحليل الترددات عملي على إشارات طويلة.</details>
+  <details><summary>٣. الـ convolution في الزمن بتبقى إيه في الترددات؟</summary>ضرب عادي خانة بخانة (convolution theorem). افتكر الفكرة دي: النهاردة هتشوف إن الـ eigenvectors بتاعة الـ Laplacian بتلعب دور «ترددات» على الـ graph، والـ GCN طالعة من نفس المنطق ده.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>15 min</b>الـ graph كمصفوفات: A وD</div>
+    <div><b>15 min</b>BFS وDFS في المعمل ٠١</div>
+    <div><b>20 min</b>الـ Laplacian والـ spectral clustering (معمل ٠٢)</div>
+    <div><b>10 min</b>Message passing (معمل ٠٣)</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 basics -->
+<section id="d21-basics">
+  <div class="station-head"><span class="tag">01</span><h2>الـ Graph: نقط وخطوط بينها</h2></div>
+  <p>الـ graph هو <span class="ltr">G = (V, E)</span>: مجموعة <b>nodes</b> (نقط) <span class="ltr">V</span>، ومجموعة <b>edges</b> (وصلات) <span class="ltr">E</span>، وكل edge بتوصل بين نقطتين.</p>
+  <p><b>ليه نهتم؟</b> تخيل عايز تتوقع اليوزر هيشتري إيه. تاريخ مشترياته مهم، بس مشتريات صحابه ممكن تبقى أهم. في جدول عادي كل صف لوحده والعلاقة دي بتضيع. أو جزيء: الذرات مهمة، بس الأهم مين متربط بمين. <b>الشكل هو الداتا.</b> والـ Graph Neural Networks (GNNs) اللي بتشتغل في اكتشاف الأدوية والـ recommendation وكشف الاحتيال والـ knowledge graphs، كلها مبنية على الأساسيات اللي هتاخدها النهاردة.</p>
+  <p>محتاج ٤ حاجات: طريقة تحول الـ graph لمصفوفة (عشان تضرب)، خوارزميات تمشي بيها في الـ graph، الـ Laplacian، والـ message passing.</p>
+  <h3>أنواع الـ Graphs</h3>
+  <ul>
+    <li><b>Undirected</b>: الوصلة <span class="ltr">(u, v)</span> رايحة جاية، زي الصداقة: لو أنا صاحبك يبقى انت صاحبي.</li>
+    <li><b>Directed</b>: الوصلة سهم من u لـ v بس، زي الـ follow: ممكن تتابعني وأنا ما تابعكش.</li>
+    <li><b>Weighted</b>: كل وصلة عليها رقم (مسافة، تكلفة، قوة العلاقة). <b>Unweighted</b>: الوصلة يا موجودة يا لأ.</li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>مثال</th></tr>
+    <tr><td>Undirected, unweighted</td><td>شبكة صحاب Facebook</td></tr>
+    <tr><td>Directed, unweighted</td><td>شبكة الـ follow في Twitter</td></tr>
+    <tr><td>Undirected, weighted</td><td>خريطة طرق (المسافات)</td></tr>
+    <tr><td>Directed, weighted</td><td>لينكات صفحات الويب (PageRank scores)</td></tr>
+  </table></div>
+
+  <h3>الـ Adjacency Matrix: جدول «مين متوصل بمين»</h3>
+  <p>عندك n نقطة؟ اعمل مصفوفة n×n. الخانة <span class="ltr">A[i][j] = 1</span> لو فيه وصلة من i لـ j، وإلا صفر. لو الـ graph undirected، المصفوفة بتبقى <b>symmetric</b> (<span class="ltr">A[i][j] = A[j][i]</span>). لو weighted، الخانة فيها وزن الوصلة بدل ١.</p>
+  <div class="formula">Triangle: edges (0,1) (1,2) (0,2)
+A = [[0,1,1],
+     [1,0,1],
+     [1,1,0]]</div>
+  <p>الـ adjacency matrix هي الـ input لأي GNN. والجميل إن أي عملية مصفوفات على A بتقابلها عملية على الـ graph نفسه.</p>
+
+  <h3>الـ Degree: كام واحد متوصل بيك</h3>
+  <p>الـ degree بتاع نقطة = عدد الوصلات اللي لامساها. في الـ directed فيه <b>in-degree</b> (اللي داخل) و<b>out-degree</b> (اللي خارج). الـ <b>degree matrix</b> D قطرية: على القطر degree كل نقطة، والباقي أصفار. في المثلث: <span class="ltr">D = diag(2, 2, 2)</span>.</p>
+  <p>الـ degree العالي = نقطة <b>hub</b> مهمة. وتوزيع الـ degrees بيفضح شكل الشبكة: الشبكات الاجتماعية بتمشي على <b>power law</b> (شوية hubs ضخمة وكتير أوي من النقط اللي على الأطراف)، والـ random graphs الـ degrees فيها توزيعها Poisson.</p>
+</section>
+
+<!-- 02 BFS/DFS lab -->
+<section id="d21-trav">
+  <div class="station-head"><span class="tag">02</span><h2>BFS وDFS: طريقتين تلف بيهم الـ graph</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p><b>BFS (Breadth-First Search)</b>: زي ما تدوّر على حد في عمارة دور دور. تزور كل الجيران الأول، وبعدين جيران الجيران. بيستخدم <b>queue</b> (اللي دخل الأول يطلع الأول، FIFO).</p>
+      <p>أهم ميزة: في الـ graph الـ unweighted، أول مرة BFS يلاقي فيها نقطة بيبقى لاقاها بأقصر طريق. يعني المستوى اللي اكتشفها فيه = المسافة (عدد الـ hops). عشان كده بيتستخدم في «بينك وبين فلان كام صاحب».</p>
+      <p><b>DFS (Depth-First Search)</b>: زي ما تمشي في متاهة: كمّل في نفس الطريق لآخره، ولما تتقفل ارجع خطوة وجرب فرع تاني. بيستخدم <b>stack</b> (اللي دخل الآخر يطلع الأول، LIFO) أو recursion.</p>
+      <p>الـ DFS مفيد في: إيجاد الـ connected components (شغّله من كل نقطة لسه ما اتزارتش)، اكتشاف الـ cycles (الـ back edges في شجرة الـ DFS)، والـ topological sort (عكس ترتيب خلاص الـ DFS).</p>
+      <p>الاتنين بيزوروا كل نقطة مرة واحدة: <span class="ltr">O(V + E)</span>.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> ده نفس الـ graph بتاع Demo 1 في كود الدرس. دوس على أي نقطة تبدأ منها، اختار BFS أو DFS، واضغط «خطوة». بص على الـ queue/stack وهي بتتملي وتفضى.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d21-tc" width="520" height="340" aria-label="graph صغير لتجربة BFS و DFS"></canvas>
+      <div class="btns">
+        <button type="button" id="d21-tbfs" class="primary">BFS</button>
+        <button type="button" id="d21-tdfs">DFS</button>
+        <button type="button" id="d21-tstep">خطوة</button>
+        <button type="button" id="d21-tplay">شغّل</button>
+        <button type="button" id="d21-treset">من الأول</button>
+      </div>
+      <div class="readout">
+        <div><small>البداية</small><b id="d21-tstart">0</b></div>
+        <div><small id="d21-tfl">queue</small><b id="d21-tfront">[0]</b></div>
+        <div><small>ترتيب الزيارة</small><b id="d21-torder">[]</b></div>
+      </div>
+      <div class="verdict" id="d21-tmsg">اضغط «خطوة» عشان تبدأ</div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th>الخوارزمية</th><th>الـ data structure</th><th>بتلاقي</th><th>بتتستخدم في</th></tr>
+    <tr><td>BFS</td><td>Queue</td><td>أقصر طريق</td><td>المسافة في السوشيال، التنقل في الـ knowledge graph</td></tr>
+    <tr><td>DFS</td><td>Stack</td><td>الـ components والـ cycles</td><td>الاتصال، الـ topological sort</td></tr>
+  </table></div>
+</section>
+
+<!-- 03 Laplacian -->
+<section id="d21-lap">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Laplacian: أهم مصفوفة في الـ spectral graph theory</h2></div>
+  <div class="formula">L = D − A</div>
+  <p>للمثلث:</p>
+  <div class="formula">D = diag(2,2,2)    A = [[0,1,1],[1,0,1],[1,1,0]]    L = [[2,−1,−1],[−1,2,−1],[−1,−1,2]]</div>
+  <p>تشبيه يساعدك: تخيل كل نقطة فيها درجة حرارة. <span class="ltr">L·x</span> عند كل نقطة = (درجتها × عدد جيرانها) ناقص مجموع درجات جيرانها، يعني «قد إيه النقطة دي مختلفة عن جيرانها». الـ Laplacian بيقيس <b>عدم النعومة</b> على الـ graph.</p>
+  <h3>خواص الـ Laplacian الأربعة</h3>
+  <ol class="ex">
+    <li><b>Positive semi-definite</b>: كل الـ eigenvalues ≥ 0.</li>
+    <li><b>عدد الـ eigenvalues اللي = صفر = عدد الـ connected components.</b> graph متصل له صفر واحد بالظبط. graph مقسوم ٣ حتت مش متوصلة له ٣ أصفار. (السبب: لو حطيت نفس القيمة على كل نقط حتة واحدة، مفيش فرق بين أي نقطة وجيرانها، فـ <span class="ltr">L·x = 0</span>.)</li>
+    <li><b>أصغر eigenvalue مش صفر (Fiedler value) بيقيس الترابط</b>. كبير = الـ graph متماسك. صغير = فيه نقطة ضعف، «كوبري» رفيع لو قطعته الـ graph يتقسم. اسمه كمان algebraic connectivity.</li>
+    <li><b>الـ eigenvector بتاعه (Fiedler vector) بيقولك أحسن تقسيمة</b>: النقط اللي قيمتها موجبة في جروب، والسالبة في جروب تاني. ده هو الـ spectral clustering.</li>
+  </ol>
+  <h3>الـ Spectral Clustering خطوة بخطوة</h3>
+  <ol class="ex">
+    <li>احسب L.</li>
+    <li>هات أصغر k eigenvectors (واتخطى الأول، اللي هو كله قيم متساوية في الـ graph المتصل).</li>
+    <li>استخدمهم كإحداثيات جديدة لكل نقطة.</li>
+    <li>شغّل k-means على الإحداثيات دي. (لو k=2 الإشارة لوحدها كفاية.)</li>
+  </ol>
+  <p><b>ليه بيشتغل؟</b> الـ eigenvectors الصغيرة بتاعة L هي أكتر «دوال ناعمة» ممكنة على الـ graph: النقط المترابطة جامد بتاخد قيم قريبة، والنقط اللي بينهم كوبري رفيع بتاخد قيم مختلفة. يعني الـ eigenvectors بتفصل المجموعات لوحدها، من غير أي optimization متكرر، eigendecomposition واحدة بس.</p>
+  <p><b>علاقة بالـ random walks:</b> الـ normalized Laplacian مرتبط بالمشي العشوائي على الـ graph. الـ stationary distribution للمشي العشوائي متناسب مع الـ degree، وسرعة إن المشي يستقر (mixing time) بتعتمد على الـ <b>spectral gap</b>. (هتشوف المشي العشوائي أكتر بكرة في Stochastic Processes.)</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: شوف الـ eigenvalues بتحس بالكوبري</h3>
+      <p>ده Demo 4 من الكود: مجموعتين كل واحدة فيها ٥ نقط متوصلين ببعض كلهم (clique)، ووصلات بين المجموعتين بتتحكم في عددها بالـ slider.</p>
+      <ul>
+        <li><b>0 وصلات:</b> حتتين منفصلين، فهتلاقي <b>صفرين</b> في الـ eigenvalues.</li>
+        <li><b>1 وصلة (2–7):</b> صفر واحد، والـ Fiedler value صغير (كوبري ضعيف).</li>
+        <li><b>زوّد الوصلات:</b> الـ Fiedler value بيكبر، والتقسيمة بتبقى أقل وضوحًا.</li>
+      </ul>
+      <p>لون كل نقطة = إشارة الـ Fiedler vector. الإشارة نفسها اختيارية (ممكن تتقلب كلها)، المهم مين مع مين.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d21-sc" width="520" height="300" aria-label="مجموعتين متوصلين بكوبري"></canvas>
+      <label style="display:grid;gap:2px">الوصلات بين المجموعتين: <b class="mono" id="d21-scv">1</b><input type="range" id="d21-scr" min="0" max="5" step="1" value="1"></label>
+      <canvas id="d21-se" width="520" height="130" aria-label="الـ eigenvalues كأعمدة"></canvas>
+      <div class="readout">
+        <div><small>أصفار = components</small><b id="d21-sz">1</b></div>
+        <div><small>Fiedler value</small><b id="d21-sf">0.2984</b></div>
+        <div><small>الجروب +</small><b id="d21-sa">-</b></div>
+        <div><small>الجروب −</small><b id="d21-sb">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 message passing -->
+<section id="d21-mp">
+  <div class="station-head"><span class="tag">04</span><h2>Message Passing: النقط بتكلم جيرانها</h2></div>
+  <p>دي العملية الأساسية في أي GNN. كل نقطة بتجمع «رسايل» من جيرانها، تلخصها (aggregate)، وتحدّث حالتها (update):</p>
+  <div class="formula">h_v^(k+1) = UPDATE( h_v^(k), AGGREGATE({ h_u^(k) : u ∈ neighbors(v) }) )</div>
+  <p>في أبسط شكل: الـ AGGREGATE = متوسط، والـ UPDATE = ضرب في مصفوفة weights متعلَّمة W وبعدين activation σ:</p>
+  <div class="formula">h_v^(k+1) = σ( W · mean({ h_u^(k) : u ∈ neighbors(v) }) )</div>
+  <p>ودي في الحقيقة ضرب مصفوفات متنكر. لو H مصفوفة features كل النقط (كل صف نقطة):</p>
+  <div class="formula">H^(k+1) = σ( A_norm · H^(k) · W )      A_norm: كل صف مجموعه = 1</div>
+  <p>تشبيه: إشاعة في قرية. كل يوم كل واحد بيسمع متوسط كلام جيرانه. بعد يوم واحد كل واحد عارف جيرانه المباشرين، بعد يومين عارف جيران الجيران، وبعد K يوم عارف كل اللي على بعد K خطوات (K-hop neighborhood).</p>
+  <p>مثال الدرس: مثلث A=[1,0] وB=[0,1] وC=[1,1]. بعد جولة واحدة: A = متوسط(B,C) = <span class="ltr">[0.5, 1.0]</span>، B = متوسط(A,C) = <span class="ltr">[1.0, 0.5]</span>، C = متوسط(A,B) = <span class="ltr">[0.5, 0.5]</span>.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: شوف المعلومة بتنتشر hop ورا hop</h3>
+      <p>ده الـ graph بتاع Demo 3. دوس على نقطة عشان تحط فيها «إشارة» = 1 والباقي أصفار (one-hot). كل ما تضغط «جولة» بنعمل <span class="ltr">h ← A_norm · h</span>.</p>
+      <p>لاحظ: بعد k جولات، النقط اللي قيمتها مش صفر هي بالظبط اللي على بعد ≤ k من البداية؟ جرّب من غير self-loops ومعاها. من غير self-loops النقطة ممكن «تنسى» نفسها في الجولة الجاية، وده بالظبط ليه الـ GCN بتضيف <span class="ltr">A + I</span> (هتلاقي ده في الإضافة بتاعتي تحت).</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d21-mc" width="520" height="300" aria-label="انتشار الإشارة في الـ graph"></canvas>
+      <div class="btns">
+        <button type="button" id="d21-mstep" class="primary">جولة</button>
+        <button type="button" id="d21-mreset">من الأول</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d21-mself"> ضيف self-loops (A + I)</label>
+      </div>
+      <div class="readout">
+        <div><small>الجولة k</small><b id="d21-mk">0</b></div>
+        <div><small>نقط وصلتها الإشارة</small><b id="d21-mreach">[0]</b></div>
+        <div><small>BFS ≤ k</small><b id="d21-mbfs">[0]</b></div>
+      </div>
+      <div class="verdict" id="d21-mmsg"></div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>الاستخدام في الـ ML</th></tr>
+    <tr><td>Adjacency matrix</td><td>الـ input بتاع الـ GNN</td></tr>
+    <tr><td>Graph Laplacian</td><td>Spectral clustering، community detection</td></tr>
+    <tr><td>BFS/DFS</td><td>التنقل في الـ knowledge graph، إيجاد الطرق</td></tr>
+    <tr><td>Degree distribution</td><td>أهمية النقطة، feature engineering</td></tr>
+    <tr><td>Message passing</td><td>طبقات GNN (GCN, GAT, GraphSAGE)</td></tr>
+    <tr><td>Eigenvalues of L</td><td>Community detection، تقسيم الـ graph</td></tr>
+    <tr><td>Spectral clustering</td><td>تجميع النقط من غير labels</td></tr>
+    <tr><td>PageRank</td><td>أهمية النقطة، البحث في الويب</td></tr>
+  </table></div>
+</section>
+
+<!-- 05 PageRank + GCN -->
+<section id="d21-pr">
+  <div class="station-head"><span class="tag">05</span><h2>PageRank والـ GCN</h2></div>
+  <h3>PageRank</h3>
+  <p>فكرته: الصفحة مهمة لو صفحات مهمة بتشاور عليها. تخيل واحد بيتصفح عشوائي: بنسبة d (عادةً 0.85) بيدوس لينك عشوائي من الصفحة اللي هو فيها، وبنسبة <span class="ltr">1 − d</span> بيقفز لأي صفحة عشوائية. الـ PageRank = نسبة الوقت اللي بيقضيها في كل صفحة.</p>
+  <div class="formula">score(v) = (1 − d)/n + d · Σ score(u) / out_degree(u)    (لكل u بيشاور على v)</div>
+  <p>في كود الدرس، النقطة اللي ملهاش وصلات خارجة (dangling) بتوزّع الـ score بتاعها بالتساوي على الكل، عشان المجموع يفضل 1. وبنكرر لحد ما التغيير يبقى أقل من <span class="ltr">1e-6</span>.</p>
+  <h3>الـ GCN (Kipf &amp; Welling, 2017)</h3>
+  <p>الـ graph convolution في الـ GCN بتضيف self-loops <span class="ltr">Â = A + I</span> عشان كل نقطة تحسب features بتاعتها هي كمان في التجميع:</p>
+  <div class="formula">H^(l+1) = σ( D̂^(−1/2) · Â · D̂^(−1/2) · H^(l) · W^(l) )</div>
+  <p>حيث <span class="ltr">D̂</span> هي degree matrix بتاعة <span class="ltr">Â</span>. ده بالظبط message passing بـ <b>symmetric normalization</b>. والـ Laplacian بيظهر هنا لأن التطبيع ده مرتبط بـ <span class="ltr">L_sym = I − D^(−1/2) A D^(−1/2)</span>. يعني لو فهمت الـ Laplacian، فهمت ليه الـ GCN بتشتغل.</p>
+</section>
+
+<!-- 06 code -->
+<section id="d21-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو (محتاج <code>numpy</code>):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/01-math-foundations/21-graph-theory/code/graph_theory.py</pre></div>
+  <p><b>القاعدة:</b> اكتب الكود بنفسك في ملف <code>my_graph.py</code>، وبص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: كلاس Graph</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+from collections import deque
+
+class Graph:
+    def __init__(self, n_nodes, directed=False):
+        self.n = n_nodes
+        self.directed = directed
+        self.adj = {i: {} for i in range(n_nodes)}   <span class="c"># adjacency list: {جار: وزن}</span>
+
+    def add_edge(self, u, v, weight=1.0):
+        self.adj[u][v] = weight
+        if not self.directed:                        <span class="c"># undirected = رايح جاي</span>
+            self.adj[v][u] = weight
+
+    def neighbors(self, node):
+        return list(self.adj[node].keys())
+
+    def degree(self, node):
+        return len(self.adj[node])
+
+    def weighted_degree(self, node):
+        return sum(self.adj[node].values())
+
+    def adjacency_matrix(self):                      <span class="c"># A</span>
+        A = np.zeros((self.n, self.n))
+        for u in range(self.n):
+            for v, w in self.adj[u].items():
+                A[u][v] = w
+        return A
+
+    def degree_matrix(self):                         <span class="c"># D قطرية</span>
+        D = np.zeros((self.n, self.n))
+        for i in range(self.n):
+            D[i][i] = self.weighted_degree(i)
+        return D
+
+    def laplacian(self):                             <span class="c"># L = D - A</span>
+        return self.degree_matrix() - self.adjacency_matrix()</pre></div>
+  <p>الـ adjacency list بتخزن الجيران بكفاءة، والتحويل لمصفوفة بـ numpy عشان كل العمليات الـ spectral محتاجاه. (الملف الأصلي فيه كمان <code>__repr__</code> بيطبع الـ edges زي <code>0-1</code>.)</p>
+
+  <h3>خطوة ٢: BFS وDFS</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bfs(graph, start):
+    visited = set()
+    order = []
+    distances = {}
+    queue = deque([(start, 0)])          <span class="c"># deque: popleft بـ O(1)</span>
+    visited.add(start)
+    while queue:
+        node, dist = queue.popleft()     <span class="c"># FIFO</span>
+        order.append(node)
+        distances[node] = dist
+        for neighbor in graph.neighbors(node):
+            if neighbor not in visited:
+                visited.add(neighbor)    <span class="c"># علّمه أول ما تكتشفه</span>
+                queue.append((neighbor, dist + 1))
+    return order, distances
+
+def dfs(graph, start):
+    visited = set()
+    order = []
+    stack = [start]
+    while stack:
+        node = stack.pop()               <span class="c"># LIFO</span>
+        if node in visited:
+            continue
+        visited.add(node)
+        order.append(node)
+        for neighbor in reversed(graph.neighbors(node)):   <span class="c"># reversed عشان أول جار يطلع الأول</span>
+            if neighbor not in visited:
+                stack.append(neighbor)
+    return order</pre></div>
+
+  <h3>خطوة ٣: الـ components والـ eigenvalues</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def connected_components(graph):
+    visited = set()
+    components = []
+    for node in range(graph.n):
+        if node not in visited:          <span class="c"># حتة جديدة لسه ما اتلمستش</span>
+            order, _ = bfs(graph, node)
+            visited.update(order)
+            components.append(order)
+    return components
+
+L = g.laplacian()
+eigenvalues = np.linalg.eigvalsh(L)      <span class="c"># للمصفوفات الـ symmetric، بترجع مترتبة تصاعدي</span>
+n_zeros = np.sum(np.abs(eigenvalues) &lt; 1e-8)   <span class="c"># = عدد الـ components</span></pre></div>
+
+  <h3>خطوة ٤: Spectral clustering</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def spectral_clustering(graph, k=2):
+    L = graph.laplacian()
+    eigenvalues, eigenvectors = np.linalg.eigh(L)
+    if k == 2:
+        fiedler = eigenvectors[:, 1]     <span class="c"># تاني أصغر eigenvalue</span>
+        labels = np.zeros(graph.n, dtype=int)
+        labels[fiedler &lt; 0] = 1          <span class="c"># الإشارة هي التقسيمة</span>
+        return labels
+    <span class="c"># k &gt; 2: خد eigenvectors من 1 لـ k، طبّعهم، وشغّل k-means (موجود في الملف الأصلي)</span></pre></div>
+  <p>الملف الأصلي بيتأكد كمان إن <span class="ltr">2 ≤ k ≤ n</span>، ولـ k أكبر من 2 بيعمل k-means بإيده بـ <code>RandomState(42)</code> لحد 100 iteration.</p>
+
+  <h3>خطوة ٥: Message passing وPageRank</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def message_passing(graph, features, weight_matrix):
+    A = graph.adjacency_matrix()
+    row_sums = A.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1          <span class="c"># ما تقسمش على صفر لنقطة معزولة</span>
+    A_norm = A / row_sums                <span class="c"># كل صف مجموعه 1 = متوسط</span>
+    aggregated = A_norm @ features       <span class="c"># AGGREGATE</span>
+    return aggregated @ weight_matrix    <span class="c"># UPDATE (من غير activation هنا)</span>
+
+def pagerank(graph, damping=0.85, max_iter=100, tol=1e-6):
+    n = graph.n
+    scores = np.ones(n) / n
+    for _ in range(max_iter):
+        new_scores = np.ones(n) * (1 - damping) / n
+        dangling_sum = 0.0
+        for u in range(n):
+            out_deg = graph.degree(u)
+            if out_deg &gt; 0:
+                for v in graph.neighbors(u):
+                    new_scores[v] += damping * scores[u] / out_deg
+            else:
+                dangling_sum += scores[u]          <span class="c"># نقطة ملهاش خروج</span>
+        new_scores += damping * dangling_sum / n   <span class="c"># وزّعها على الكل</span>
+        if np.abs(new_scores - scores).sum() &lt; tol:
+            scores = new_scores
+            break
+        scores = new_scores
+    return scores</pre></div>
+
+  <h3>الناتج المتوقع</h3>
+  <p>الأجزاء دي أرقامها محددة بالخوارزمية نفسها، فلازم تطلعلك زي ما هي:</p>
+  <details><summary>Demo 1: BFS وDFS (edges: 0-1, 0-2, 1-3, 2-3, 3-4, 4-5)</summary><pre class="term">Graph: Graph(n=6, edges=[0-1, 0-2, 1-3, 2-3, 3-4, 4-5])
+BFS from node 0:
+  Visit order: [0, 1, 2, 3, 4, 5]
+  Distances:   {0: 0, 1: 1, 2: 1, 3: 2, 4: 3, 5: 4}
+DFS from node 0:
+  Visit order: [0, 1, 3, 2, 4, 5]</pre><p>قارن ده بالمعمل ٠١ وانت بادئ من 0.</p></details>
+  <details><summary>Demo 2: الـ components والأصفار</summary><pre class="term">Connected components: [[0, 1, 2], [3, 4], [5, 6]]
+Eigenvalues: 0, 0, 0, 2, 2, 3, 3   (رياضيًا: المثلث 0,3,3 وكل edge لوحدها 0,2)
+Number of zero eigenvalues: 3
+Number of connected components: 3
+Match: True</pre><p>numpy ممكن يطبع الصفر <code>-0.</code>، عادي.</p></details>
+  <details><summary>Demo 3: Message passing</summary><p>الـ features عشوائية (seed 42) فمش هكتبلك أرقام. اللي هتشوفه: ٥ نقط كل واحدة ليها ٣ features، بعد الجولة الأولى كل نقطة بقى ليها رقمين (لأن W حجمها 3×2)، وبعد الجولة التانية رقمين برضه بس اتخلطت فيهم معلومة جيران الجيران.</p></details>
+  <details><summary>Demo 4: Spectral clustering وPageRank</summary><pre class="term">Cluster 0 / Cluster 1: [0 1 2 3 4] و [5 6 7 8 9]   (الاسمين ممكن يتبدلوا)
+Laplacian eigenvalues: 0, 0.2984, 5 (×7), 6.7016
+Fiedler value (algebraic connectivity): 0.2984</pre><p>الـ PageRank: هتلاقي نقط الكوبري 2 و7 متوسطهم أعلى من متوسط باقي النقط، والسطر الأخير بيقول كده. الأرقام نفسها قارنها باللي عندك.</p></details>
+</section>
+
+<!-- 07 exercises -->
+<section id="d21-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>PageRank من الصفر:</b> ابدأ بـ scores متساوية، وكل خطوة <span class="ltr">score(v) = (1-d)/n + d·Σ score(u)/out_degree(u)</span> لكل u بيشاور على v، بـ <span class="ltr">d = 0.85</span>، لحد ما التغيير &lt; <span class="ltr">1e-6</span>. جربه على web graph صغير.
+      <details><summary>تلميح</summary>النقطة اللي ملهاش وصلات خارجة لازم توزّع الـ score بتاعها بالتساوي على كل النقط، وإلا المجموع هيقل عن 1. اتأكد إن المجموع = 1 بعد كل خطوة، وقارن بـ <code>pagerank(graph)</code>.</details></li>
+    <li><b>Communities بالـ spectral clustering:</b> اعمل مجموعتين cliques بينهم edge واحدة، وشوف هل الخوارزمية بتلاقي التقسيمة الصح. إيه اللي بيحصل لما تزود وصلات بين المجموعتين؟
+      <details><summary>تلميح</summary>ابني الـ cliques بـ <code>add_edge</code> ونادي <code>spectral_clustering(graph, k=2)</code>. اطبع تاني أصغر eigenvalue من <code>laplacian()</code> وانت بتزود الوصلات: هيكبر لما المجموعتين يندمجوا. ده بالظبط اللي شفته في المعمل ٠٢.</details></li>
+    <li><b>Dijkstra</b> لأقصر طريق في graph بأوزان. قارنه بـ BFS على نفس الـ graph بأوزان كلها 1.
+      <details><summary>تلميح</summary>استخدم priority queue بـ <code>heapq</code> وكل مرة وسّع النقطة اللي ليها أصغر مسافة معروفة. لو كل الأوزان 1، كل مسافة لازم تساوي مستوى النقطة في <code>bfs(graph, start)</code>.</details></li>
+    <li><b>شبكة message passing بطبقتين:</b> طبّق message passing مرتين بـ weight matrices مختلفة، وبيّن إن بعد جولتين كل نقطة عندها معلومة من الـ 2-hop neighborhood.
+      <details><summary>تلميح</summary>خلّي <code>features</code> = مصفوفة الوحدة، فكل عمود بيمثل نقطة. بعد جولتين، الخانات اللي مش صفر في صف v بتقولك مين وصل لـ v. قارنها بالنقط اللي على مسافة ≤ 2 بـ BFS. (لاحظ في المعمل ٠٣ إن من غير self-loops الخانة بتاعة النقطة نفسها ممكن تبقى صفر في جولة فردية.)</details></li>
+    <li><b>graph حقيقي:</b> Karate Club (34 نقطة، 78 edge). احسب توزيع الـ degree، الـ eigenvalues بتاعة الـ Laplacian، والـ spectral clustering، وقارن بالتقسيمة الحقيقية.
+      <details><summary>تلميح</summary><code>networkx.karate_club_graph()</code> بيديك الـ edges والتقسيمة الحقيقية في attribute اسمه <code>club</code>. انقل الـ edges لـ <code>Graph</code> بتاعك واتأكد إن فيه 34 نقطة و78 edge. قارن الـ labels مع <code>club</code>، واسمح إن اسمين الـ labels يتبدلوا.</details></li>
+    <li><b>إضافة مني · GraphRAG صغير:</b> اعمل knowledge graph فيه ~10 entities (مثلًا: Python, NumPy, PyTorch, GPU, CUDA, Transformer, Attention, RAG, Embedding, Vector DB) ووصلات بينهم بالعلاقات اللي تعرفها. لكل entity حط جملة وصف. اكتب <code>retrieve(entity, hops=2)</code> بـ BFS ترجع وصف الـ entity وكل اللي على بعد ≤ 2 hops، مترتبين بالمسافة. ده قلب فكرة الـ graph retrieval: بدل ما تجيب أقرب chunks بالـ embedding بس، بتجيب كمان «الحاجات المرتبطة».
+      <details><summary>تلميح</summary>استخدم <code>bfs</code> زي ما هي ووقف لما <code>dist &gt; hops</code>. جرب PageRank على نفس الـ graph عشان ترتب النتايج اللي على نفس المسافة حسب الأهمية.</details></li>
+  </ol>
+</section>
+
+<!-- 08 my addition -->
+<section id="d21-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ما قالوش صراحة</h2></div>
+  <div class="note ai"><strong>الـ Transformer هو GNN على graph كامل.</strong> في الـ self-attention، كل token بيبص على كل التوكنز التانية ويعمل متوسط موزون لقيمهم. ده message passing على graph كل النقط فيه متوصلة ببعض، والأوزان (attention) بتتحسب من الداتا بدل ما تبقى ثابتة من A. الـ causal mask بيشيل الوصلات اللي رايحة للمستقبل. وده نفس فكرة الـ GAT (Graph Attention Networks) اللي في القراءات.</div>
+  <div class="note"><strong>غلطة شائعة ١: نسيان الـ self-loops.</strong> شفتها في المعمل ٠٣: من غير <span class="ltr">A + I</span> النقطة ممكن تفقد الـ features بتاعتها بعد جولة. عشان كده الـ GCN بتضيفها.</div>
+  <div class="note"><strong>غلطة شائعة ٢: الـ over-smoothing.</strong> لو كررت message passing كتير، كل النقط في الحتة الواحدة بتتجه لنفس القيمة (لأن المتوسط المتكرر بيمسح الفروق، وده قريب من فكرة إن الـ eigenvector بتاع صفر كله ثابت). عشان كده أغلب الـ GNNs بيبقى فيها طبقات قليلة. جرب في المعمل ٠٣ مع self-loops واضغط «جولة» كتير: هتلاقي القيم بتقرب من بعض.</div>
+  <div class="note"><strong>غلطة شائعة ٣: Directed وانت فاكره undirected.</strong> الـ Laplacian بخواصه الحلوة (symmetric، eigenvalues حقيقية ≥ 0) مبني على graph undirected. و<code>eigvalsh</code> بتفترض إن المصفوفة symmetric، فلو اديتها مصفوفة مش symmetric هتديك نتيجة غلط من غير ما تشتكي.</div>
+  <div class="note ai"><strong>في الـ Agents:</strong> أي multi-step workflow أو تقسيم مهمة لـ subtasks بيعتمدوا على بعض هو DAG (directed graph من غير cycles)، وترتيب التنفيذ = topological sort (من الـ DFS). والـ agent اللي بيعمل function calls بيدخل في loop لو فيه cycle، والـ DFS هو اللي بيكشفه.</div>
+</section>
+
+<!-- 09 quiz -->
+<section id="d21-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d21-quizbox"></div>
+</section>
+
+<!-- 10 wrap -->
+<section id="d21-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d21-ck">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أكتب الـ adjacency matrix والـ degree matrix لأي graph صغير</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فهمت الفرق بين BFS (queue، أقصر طريق) وDFS (stack، components وcycles)</label></li>
+    <li><label><input type="checkbox" data-ck="3"> شفت في المعمل إن عدد الأصفار = عدد الـ components والـ Fiedler value بيحس بالكوبري</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فهمت إن message passing = <span class="ltr">A_norm · H · W</span></label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود وشغّلت الـ ٤ demos</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Adjacency matrix</td><td>input بتاع GCN وGAT وGraphSAGE</td></tr>
+    <tr><td>Laplacian</td><td>Spectral clustering، فلاتر ChebNet</td></tr>
+    <tr><td>BFS</td><td>التنقل في الـ knowledge graph، أسئلة أقصر طريق، GraphRAG</td></tr>
+    <tr><td>Message passing</td><td>كل طبقة GNN، وبشكل عام الـ attention في الـ Transformers</td></tr>
+    <tr><td>Spectral gap</td><td>ترابط الـ graph، الـ mixing time للمشي العشوائي</td></tr>
+    <tr><td>Degree distribution</td><td>شبكات الـ power-law، features للنقط</td></tr>
+    <tr><td>Connected components</td><td>الـ preprocessing، التعامل مع graphs مقطعة</td></tr>
+    <tr><td>PageRank</td><td>ترتيب أهمية النقط، تهيئة الـ attention</td></tr>
+    <tr><td>DAG / topological sort</td><td>ترتيب خطوات الـ agent workflows (إضافة مني)</td></tr>
+  </table></div>
+  <p><b>للاستزادة:</b> Kipf &amp; Welling (2017) عن الـ GCN، محاضرات Spielman (2012) في الـ Spectral Graph Theory، كتاب Hamilton (2020) Graph Representation Learning، Bronstein et al. (2021) Geometric Deep Learning، وVeličković et al. (2018) Graph Attention Networks.</p>
+  <p><b>بكرة:</b> Stochastic Processes، آخر درس في Phase 1. هنكمل من فكرة المشي العشوائي اللي لمسناها النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F21-graph-theory" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/21-graph-theory</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, f=A.fmt;
+const root=document.getElementById('d21-root');
+
+/* roadmap */
+const rm=document.getElementById('d21-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===21)s.className='now';rm.appendChild(s)}
+
+/* symmetric eigen (Jacobi) */
+function eigSym(M){
+  const n=M.length,a=M.map(r=>r.slice()),V=[];
+  for(let i=0;i<n;i++){V.push(new Array(n).fill(0));V[i][i]=1}
+  for(let sweep=0;sweep<100;sweep++){
+    let off=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)off+=a[i][j]*a[i][j];
+    if(off<1e-20)break;
+    for(let p=0;p<n;p++)for(let q=p+1;q<n;q++){
+      if(Math.abs(a[p][q])<1e-14)continue;
+      const th=(a[q][q]-a[p][p])/(2*a[p][q]);
+      const t=Math.sign(th||1)/(Math.abs(th)+Math.sqrt(th*th+1));
+      const c=1/Math.sqrt(t*t+1),s=t*c;
+      for(let k=0;k<n;k++){const akp=a[k][p],akq=a[k][q];a[k][p]=c*akp-s*akq;a[k][q]=s*akp+c*akq}
+      for(let k=0;k<n;k++){const apk=a[p][k],aqk=a[q][k];a[p][k]=c*apk-s*aqk;a[q][k]=s*apk+c*aqk}
+      for(let k=0;k<n;k++){const vkp=V[k][p],vkq=V[k][q];V[k][p]=c*vkp-s*vkq;V[k][q]=s*vkp+c*vkq}
+    }
+  }
+  const idx=[...Array(n).keys()].sort((i,j)=>a[i][i]-a[j][j]);
+  return {vals:idx.map(i=>a[i][i]),vecs:idx.map(i=>V.map(r=>r[i]))};
+}
+
+function node(ctx,x,y,label,fill,stroke,txt){
+  ctx.fillStyle=fill;ctx.strokeStyle=stroke;ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(x,y,17,0,7);ctx.fill();ctx.stroke();
+  ctx.fillStyle=txt;ctx.font='bold 14px JetBrains Mono, monospace';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(label,x,y+1);ctx.textAlign='left';ctx.textBaseline='alphabetic';
+}
+function edge(ctx,a,b,col,w){ctx.strokeStyle=col;ctx.lineWidth=w||2;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke()}
+
+/* ---------- Lab 1: BFS / DFS ---------- */
+const tc=document.getElementById('d21-tc'),tctx=A.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+const TP=[[80,90],[200,40],[200,250],[320,145],[420,145],[490,260]];
+const TE=[[0,1],[0,2],[1,3],[2,3],[3,4],[4,5]];
+const tadj=TP.map(()=>[]);TE.forEach(([u,v])=>{tadj[u].push(v);tadj[v].push(u)});
+let tmode='bfs',tstart=0,tfront,tvis,torder,tdist,tcur,tdone,ttimer=null;
+function treset(){
+  clearInterval(ttimer);ttimer=null;document.getElementById('d21-tplay').textContent='شغّل';
+  tvis=new Set();torder=[];tdist={};tcur=null;tdone=false;
+  if(tmode==='bfs'){tfront=[[tstart,0]];tvis.add(tstart)}else{tfront=[tstart]}
+  document.getElementById('d21-tmsg').textContent='اضغط «خطوة» عشان تبدأ';tdraw();
+}
+function tstep(){
+  if(tdone)return;
+  const msg=document.getElementById('d21-tmsg');
+  if(tmode==='bfs'){
+    if(!tfront.length){tdone=true;msg.textContent='خلص. الـ distances = مستوى كل نقطة.';tdraw();return}
+    const [n,d]=tfront.shift();torder.push(n);tdist[n]=d;tcur=n;
+    const added=[];tadj[n].forEach(m=>{if(!tvis.has(m)){tvis.add(m);tfront.push([m,d+1]);added.push(m)}});
+    msg.textContent='زرت '+n+' (مسافة '+d+')'+(added.length?' وضفت '+added.join(', ')+' لآخر الـ queue':'، مفيش جيران جداد');
+  }else{
+    let n;
+    while(tfront.length){n=tfront.pop();if(!tvis.has(n))break;n=undefined}
+    if(n===undefined){tdone=true;msg.textContent='خلص. ده ترتيب الـ DFS.';tdraw();return}
+    tvis.add(n);torder.push(n);tcur=n;
+    const added=[];tadj[n].slice().reverse().forEach(m=>{if(!tvis.has(m)){tfront.push(m);added.push(m)}});
+    msg.textContent='زرت '+n+(added.length?' وحطيت '+added.join(', ')+' فوق الـ stack':'، ارجع لورا (backtrack)');
+  }
+  if(!tfront.length&&tmode==='bfs'){tdone=true;msg.textContent+=' · خلص.'}
+  tdraw();
+}
+function tdraw(){
+  tctx.clearRect(0,0,TW,TH);
+  TE.forEach(([u,v])=>edge(tctx,TP[u],TP[v],css('--line'),2.5));
+  const fr=tmode==='bfs'?tfront.map(x=>x[0]):tfront;
+  TP.forEach((p,i)=>{
+    const visited=torder.includes(i),inF=fr.includes(i)&&!visited;
+    let fill=css('--panel'),txt=css('--ink'),st=css('--muted');
+    if(visited){fill=css('--vec-a');txt=css('--paper');st=css('--vec-a')}
+    if(inF){st=css('--vec-b');fill=css('--soft')}
+    if(i===tcur){st=css('--vec-b')}
+    node(tctx,p[0],p[1],String(i),fill,st,txt);
+    if(i===tcur){tctx.strokeStyle=css('--vec-b');tctx.lineWidth=3;tctx.beginPath();tctx.arc(p[0],p[1],23,0,7);tctx.stroke()}
+    if(tmode==='bfs'&&tdist[i]!==undefined){tctx.fillStyle=css('--muted');tctx.font='12px JetBrains Mono, monospace';tctx.fillText('d='+tdist[i],p[0]+20,p[1]-18)}
+    if(visited){tctx.fillStyle=css('--ink');tctx.font='bold 12px JetBrains Mono, monospace';tctx.fillText('#'+(torder.indexOf(i)+1),p[0]-10,p[1]+34)}
+  });
+  document.getElementById('d21-tstart').textContent=tstart;
+  document.getElementById('d21-tfl').textContent=tmode==='bfs'?'queue (أوله شمال)':'stack (قمته يمين)';
+  document.getElementById('d21-tfront').textContent='['+fr.join(', ')+']';
+  document.getElementById('d21-torder').textContent='['+torder.join(', ')+']';
+}
+document.getElementById('d21-tbfs').addEventListener('click',e=>{tmode='bfs';e.target.classList.add('primary');document.getElementById('d21-tdfs').classList.remove('primary');treset()});
+document.getElementById('d21-tdfs').addEventListener('click',e=>{tmode='dfs';e.target.classList.add('primary');document.getElementById('d21-tbfs').classList.remove('primary');treset()});
+document.getElementById('d21-tstep').addEventListener('click',tstep);
+document.getElementById('d21-treset').addEventListener('click',treset);
+document.getElementById('d21-tplay').addEventListener('click',e=>{
+  if(ttimer){clearInterval(ttimer);ttimer=null;e.target.textContent='شغّل';return}
+  if(tdone)treset();
+  e.target.textContent='وقّف';
+  ttimer=setInterval(()=>{if(!document.body.contains(tc)||tdone){clearInterval(ttimer);ttimer=null;e.target.textContent='شغّل';return}tstep()},800);
+});
+tc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(tc,e);TP.forEach((p,i)=>{if(Math.hypot(x-p[0],y-p[1])<22){tstart=i;treset()}})});
+treset();
+
+/* ---------- Lab 2: spectral ---------- */
+const sc=document.getElementById('d21-sc'),sctx=A.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+const se=document.getElementById('d21-se'),sectx=A.setupCanvas(se),EW=+se.dataset.w,EH=+se.dataset.h;
+const SP=[];
+for(let i=0;i<5;i++){const a=-Math.PI/2+i*2*Math.PI/5;SP.push([140+85*Math.cos(a),150+85*Math.sin(a)])}
+for(let i=0;i<5;i++){const a=-Math.PI/2+i*2*Math.PI/5;SP.push([380+85*Math.cos(a),150+85*Math.sin(a)])}
+const CROSS=[[2,7],[0,5],[1,6],[3,8],[4,9]];
+function sdraw(){
+  const c=+document.getElementById('d21-scr').value;document.getElementById('d21-scv').textContent=c;
+  const E=[];for(let i=0;i<5;i++)for(let j=i+1;j<5;j++){E.push([i,j]);E.push([i+5,j+5])}
+  const cross=CROSS.slice(0,c);
+  const L=[...Array(10)].map(()=>new Array(10).fill(0));
+  E.concat(cross).forEach(([u,v])=>{L[u][v]-=1;L[v][u]-=1;L[u][u]+=1;L[v][v]+=1});
+  const {vals,vecs}=eigSym(L);
+  const zeros=vals.filter(v=>Math.abs(v)<1e-8).length;
+  let fv=vecs[1];const piv=fv.reduce((m,v,i)=>Math.abs(v)>Math.abs(fv[m])?i:m,0);
+  if(fv[0]<0||(Math.abs(fv[0])<1e-9&&fv[piv]<0))fv=fv.map(v=>-v);
+  sctx.clearRect(0,0,SW,SH);
+  E.forEach(([u,v])=>edge(sctx,SP[u],SP[v],css('--line'),1.5));
+  cross.forEach(([u,v])=>edge(sctx,SP[u],SP[v],css('--vec-b'),3));
+  SP.forEach((p,i)=>{const pos=fv[i]>=0;node(sctx,p[0],p[1],String(i),pos?css('--vec-a'):css('--vec-b'),css('--ink'),css('--paper'))});
+  sctx.fillStyle=css('--muted');sctx.font='12px JetBrains Mono, monospace';sctx.fillText('clique 0-4',100,290);sctx.fillText('clique 5-9',340,290);
+  /* eigenvalue bars */
+  sectx.clearRect(0,0,EW,EH);
+  const maxv=Math.max(...vals,1),bw=(EW-20)/10;
+  vals.forEach((v,i)=>{
+    const h=Math.max(2,(Math.max(0,v)/maxv)*(EH-40));
+    sectx.fillStyle=Math.abs(v)<1e-8?css('--bad'):(i===zeros?css('--vec-b'):css('--vec-a'));
+    sectx.fillRect(10+i*bw+4,EH-20-h,bw-8,h);
+    sectx.fillStyle=css('--ink');sectx.font='11px JetBrains Mono, monospace';sectx.textAlign='center';
+    sectx.fillText(f(Math.abs(v)<1e-8?0:v,2),10+i*bw+bw/2,EH-20-h-4);
+    sectx.fillStyle=css('--muted');sectx.fillText('λ'+i,10+i*bw+bw/2,EH-5);sectx.textAlign='left';
+  });
+  document.getElementById('d21-sz').textContent=zeros;
+  document.getElementById('d21-sf').textContent=zeros>1?'0 (منفصلين)':f(vals[1],4);
+  const ga=[],gb=[];fv.forEach((v,i)=>(v>=0?ga:gb).push(i));
+  document.getElementById('d21-sa').textContent='['+ga.join(',')+']';
+  document.getElementById('d21-sb').textContent='['+gb.join(',')+']';
+}
+document.getElementById('d21-scr').addEventListener('input',sdraw);sdraw();
+
+/* ---------- Lab 3: message passing ---------- */
+const mc=document.getElementById('d21-mc'),mctx=A.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+const MP=[[80,80],[80,230],[220,155],[350,155],[470,155]];
+const ME=[[0,1],[0,2],[1,2],[2,3],[3,4]];
+const madj=MP.map(()=>[]);ME.forEach(([u,v])=>{madj[u].push(v);madj[v].push(u)});
+let msrc=0,mh,mk;
+function mreset(){mh=MP.map((_,i)=>i===msrc?1:0);mk=0;mdraw()}
+function mround(){
+  const self=document.getElementById('d21-mself').checked;
+  mh=MP.map((_,v)=>{const nb=madj[v].slice();if(self)nb.push(v);return nb.reduce((s,u)=>s+mh[u],0)/nb.length});
+  mk++;mdraw();
+}
+function bfsWithin(s,k){const d={[s]:0},q=[s];while(q.length){const n=q.shift();madj[n].forEach(m=>{if(d[m]===undefined){d[m]=d[n]+1;q.push(m)}})}return Object.keys(d).map(Number).filter(n=>d[n]<=k).sort((a,b)=>a-b)}
+function mdraw(){
+  mctx.clearRect(0,0,MW,MH);
+  ME.forEach(([u,v])=>edge(mctx,MP[u],MP[v],css('--line'),2.5));
+  const mx=Math.max(...mh,1e-9);
+  MP.forEach((p,i)=>{
+    const t=mh[i]/mx;
+    mctx.fillStyle=css('--panel');mctx.beginPath();mctx.arc(p[0],p[1],22,0,7);mctx.fill();
+    mctx.globalAlpha=mh[i]>1e-12?0.15+0.85*t:0;mctx.fillStyle=css('--vec-a');mctx.beginPath();mctx.arc(p[0],p[1],22,0,7);mctx.fill();mctx.globalAlpha=1;
+    mctx.strokeStyle=i===msrc?css('--vec-b'):css('--muted');mctx.lineWidth=i===msrc?3:1.5;mctx.beginPath();mctx.arc(p[0],p[1],22,0,7);mctx.stroke();
+    mctx.fillStyle=css('--ink');mctx.font='bold 14px JetBrains Mono, monospace';mctx.textAlign='center';
+    mctx.fillText(String(i),p[0],p[1]-30);
+    mctx.font='12px JetBrains Mono, monospace';mctx.fillText(f(mh[i],3),p[0],p[1]+40);mctx.textAlign='left';
+  });
+  const reach=mh.map((v,i)=>v>1e-12?i:-1).filter(i=>i>=0);
+  const within=bfsWithin(msrc,mk);
+  document.getElementById('d21-mk').textContent=mk;
+  document.getElementById('d21-mreach').textContent='['+reach.join(',')+']';
+  document.getElementById('d21-mbfs').textContent='['+within.join(',')+']';
+  const m=document.getElementById('d21-mmsg');
+  if(mk===0){m.textContent='الإشارة لسه في النقطة '+msrc+' بس';m.style.color=css('--muted')}
+  else if(reach.join()===within.join()){m.textContent='الإشارة وصلت لكل اللي على بعد ≤ '+mk+' بالظبط';m.style.color=css('--ok')}
+  else{m.textContent='فيه نقط في مدى '+mk+' hops قيمتها صفر دلوقتي (من غير self-loops النقطة بتنسى نفسها). فعّل الـ self-loops.';m.style.color=css('--bad')}
+}
+document.getElementById('d21-mstep').addEventListener('click',mround);
+document.getElementById('d21-mreset').addEventListener('click',mreset);
+document.getElementById('d21-mself').addEventListener('change',mreset);
+mc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(mc,e);MP.forEach((p,i)=>{if(Math.hypot(x-p[0],y-p[1])<26){msrc=i;mreset()}})});
+mreset();
+
+/* ---------- quiz ---------- */
+const Q=[
+ ['الخانة A[i][j] = 1 في الـ adjacency matrix معناها إيه؟',['النقطة i الـ degree بتاعها j','النقطة i والنقطة j ليهم نفس الـ label','أقصر طريق من i لـ j طوله 1','فيه edge من النقطة i للنقطة j'],3,'الـ adjacency matrix هي التمثيل الأساسي للـ graph. A[i][j] = 1 معناها فيه وصلة بين i وj. في الـ undirected المصفوفة symmetric.'],
+ ['الـ BFS بيستخدم أنهي data structure وبيلاقي إيه؟',['Stack؛ بيلاقي الـ connected components','Queue؛ بيلاقي أقصر طريق في graph من غير أوزان','Priority queue؛ بيلاقي الـ minimum spanning tree','Hash map؛ بيلاقي النقط المكررة'],1,'الـ BFS بيستخدم queue (FIFO) وبيخلّص كل النقط على مسافة k قبل ما يروح لـ k+1، فأول مرة يلاقي نقطة بيبقى لاقاها بأقصر طريق.'],
+ ['الـ Laplacian L = D − A لـ graph متصل فيه كام eigenvalue = صفر؟',['ولا واحد','زي عدد النقط','زي عدد الـ edges','واحد بالظبط'],3,'عدد الأصفار = عدد الـ connected components. الـ graph المتصل حتة واحدة، فصفر واحد. لو k حتت منفصلة يبقى k أصفار.'],
+ ['في الـ GNN، المعادلة h_v^(k+1) = σ(W · mean({h_u^(k) : u ∈ neighbors(v)})) بتحسب إيه؟',['الـ PageRank بتاع النقطة v','أقصر طريق من v لكل النقط','feature vector جديد لـ v بتجميع features الجيران، وضربها في weights متعلَّمة، وتطبيق nonlinearity','الـ degree بتاع v في الطبقة k+1'],2,'كل نقطة بتجمع features جيرانها (متوسط)، تضربها في W، وتطبق activation σ. بعد k جولات كل نقطة عندها معلومة من الـ k-hop neighborhood.'],
+ ['الـ spectral clustering بيستخدم الـ Fiedler vector إزاي؟',['النقط اللي قيمها الأكبر في الـ Fiedler vector بتعمل جروب','الـ Fiedler vector بيتستخدم كأوزان للـ edges','النقط اللي قيمتها موجبة في جروب والسالبة في جروب تاني','الـ Fiedler vector بيحدد عدد الجروبات'],2,'الـ Fiedler vector هو أنعم دالة مش ثابتة على الـ graph: النقط المترابطة جامد قيمها قريبة، واللي بينهم كوبري ضعيف إشاراتهم مختلفة. الإشارة هي التقسيمة.'],
+ ['(سؤال مني) graph فيه مثلث (0,1,2) وedge (3,4) وedge (5,6). الـ Laplacian بتاعه فيه كام صفر؟',['1','2','3','7'],2,'٣ حتت منفصلة = ٣ أصفار. ده بالظبط Demo 2 في الكود، والـ eigenvalues هي 0,0,0,2,2,3,3.'],
+ ['(سؤال مني) ليه الـ GCN بتستخدم Â = A + I؟',['عشان المصفوفة تبقى invertible','عشان كل نقطة تحسب الـ features بتاعتها هي كمان مع جيرانها','عشان تسرّع الحساب','عشان تشيل الـ edges الزيادة'],1,'من غير self-loops النقطة بتاخد متوسط جيرانها بس وممكن تفقد معلومتها. الـ self-loop بيخليها جزء من التجميع. شفت ده في المعمل ٠٣.']
+];
+A.quiz(document.getElementById('d21-quizbox'),Q,5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+/* checklist */
+A.checklist(21,root);
+
+/* theme */
+A.onTheme(()=>{if(!document.body.contains(tc))return false;tdraw();sdraw();mdraw()});
+})();
+</script>

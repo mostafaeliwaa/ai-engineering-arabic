@@ -1,0 +1,562 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 03 · Matrix Transformations</span>
+  <h1>اليوم ٣: المصفوفة آلة بتشكّل الفضاء</h1>
+  <p class="lede">النهاردة هتلف وتكبّر وتميّل وتعكس الفضاء بإيدك، وهتشوف ليه الترتيب بيفرق لما تركّب تحويلين. وبعدين أهم فكرة في الدرس: <b>الـ eigenvectors</b>، الاتجاهات اللي المصفوفة مبتلفهاش. دي اللي وراها الـ PCA، واستقرار الـ RNNs، والـ spectral clustering.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia)</span>
+    <span>قبله: <b>Vectors, Matrices &amp; Operations</b></span>
+    <span>بعده: <b>Calculus for ML</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d3-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d3-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <ol class="ex">
+    <li>شكل ناتج <span class="ltr">(4×3) @ (3×1)</span> كام؟ وشكل <span class="ltr">(4×3) @ (4×1)</span>؟
+      <details><summary>الإجابة</summary>الأولى <span class="ltr">(4×1)</span>. التانية إيرور: الأبعاد الداخلية 3 و4 مش زي بعض.</details></li>
+    <li>الـ determinant بتاع <span class="ltr">[[4,7],[2,6]]</span> كام؟ وليها inverse؟
+      <details><summary>الإجابة</summary><span class="ltr">4·6 − 7·2 = 10</span>. مش صفر، يبقى ليها inverse، والمربع اللي مساحته 1 بيبقى مساحته 10.</details></li>
+    <li>إيه الفرق بين <code>A * B</code> و<code>A @ B</code> في NumPy؟
+      <details><summary>الإجابة</summary>النجمة element-wise (خانة في خانة، نفس الشكل). الـ @ ضرب مصفوفات (صف · عمود). النهاردة هنستخدم الـ @ عشان نركّب تحويلات.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٧٥ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>التحويلات الأساسية والتركيب + المعامل</div>
+    <div><b>15 min</b>الـ eigenvectors والاستقرار</div>
+    <div><b>25 min</b>اكتب الكود بإيدك</div>
+    <div><b>10 min</b>الكويز + تمرين</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d3-basis">
+  <div class="station-head"><span class="tag">01</span><h2>التحويل = مكان الـ basis vectors الجديد</h2></div>
+  <p>أي تحويل خطي في 2D ممكن تكتبه كمصفوفة 2×2. والمصفوفة دي بتقولك حاجة واحدة بس: المتجهين <span class="ltr">e1 = [1, 0]</span> و<span class="ltr">e2 = [0, 1]</span> راحوا فين. <b>العمود الأول</b> = مكان e1 الجديد، و<b>العمود التاني</b> = مكان e2. وأي نقطة تانية بتتبعهم لأنها مكتوبة كمزيج منهم.</p>
+  <div class="tablewrap"><table>
+    <tr><th>التحويل</th><th>المصفوفة</th><th>بيعمل إيه</th><th>det</th></tr>
+    <tr><td>Rotation</td><td class="ltr">[[cos θ, −sin θ], [sin θ, cos θ]]</td><td>بيلف كل نقطة على قوس دايرة، بيحافظ على المسافات والزوايا</td><td class="ltr">1</td></tr>
+    <tr><td>Scaling</td><td class="ltr">[[sx, 0], [0, sy]]</td><td>بيمط أو يضغط كل محور لوحده</td><td class="ltr">sx · sy</td></tr>
+    <tr><td>Shear في x</td><td class="ltr">[[1, k], [0, 1]]</td><td>بيزوّد x بمقدار k·y، المستطيل يبقى متوازي أضلاع</td><td class="ltr">1</td></tr>
+    <tr><td>Shear في y</td><td class="ltr">[[1, 0], [k, 1]]</td><td>بيزوّد y بمقدار k·x</td><td class="ltr">1</td></tr>
+    <tr><td>Reflection حوالين محور y</td><td class="ltr">[[−1, 0], [0, 1]]</td><td>مراية: (2,1) تبقى (−2,1)</td><td class="ltr">−1</td></tr>
+    <tr><td>Reflection حوالين محور x</td><td class="ltr">[[1, 0], [0, −1]]</td><td>مراية: (2,1) تبقى (2,−1)</td><td class="ltr">−1</td></tr>
+  </table></div>
+  <p>أمثلة الدرس: لفة 45° لـ <span class="ltr">A(2,1)</span> بتوديها <span class="ltr">(0.71, 2.12)</span>، و<span class="ltr">B(0,2)</span> بتروح <span class="ltr">(−1.41, 1.41)</span>. والتكبير <span class="ltr">sx=2, sy=0.5</span> بيودي <span class="ltr">(2,1)</span> لـ <span class="ltr">(4, 0.5)</span>. والـ shear بـ k=1 بيسيب <span class="ltr">(1,0)</span> مكانها ويودي <span class="ltr">(0,1)</span> لـ <span class="ltr">(1,1)</span>.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ورشة التحويلات</h3>
+      <p>اختار نوع التحويل وحرّك الـ slider. الحرف F موجود عشان تشوف الاتجاه: لو اتقلب زي المراية يبقى det سالب. المربع البرتقالي مساحته الأصلية 1، ومساحته بعد التحويل = |det|.</p>
+      <div class="note"><strong>جرّب:</strong> Rotation بأي زاوية: det دايمًا 1. Shear بأي k: det برضه 1 (الشكل اتمال بس المساحة زي ما هي). Scale بـ 0 في محور: det = 0 والشكل بقى خط.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d3-tCv" width="520" height="420" aria-label="شبكة بتتحول"></canvas>
+      <div class="btns" id="d3-kinds">
+        <button type="button" data-d3k="rot" class="primary">Rotation</button>
+        <button type="button" data-d3k="scale">Scale</button>
+        <button type="button" data-d3k="shear">Shear</button>
+        <button type="button" data-d3k="refy">Reflect y-axis</button>
+        <button type="button" data-d3k="refx">Reflect x-axis</button>
+      </div>
+      <div class="mrow">
+        <label id="d3-l1">θ = <span id="d3-v1">45°</span><input type="range" id="d3-p1" min="-180" max="180" step="5" value="45"></label>
+        <label id="d3-l2">— <span id="d3-v2"></span><input type="range" id="d3-p2" min="-2" max="2" step="0.1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>M</small><b id="d3-tM"></b></div>
+        <div><small>det</small><b id="d3-tDet"></b></div>
+        <div><small>M @ (2,1)</small><b id="d3-tP"></b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2: 3D -->
+<section id="d3-3d">
+  <div class="station-head"><span class="tag">02</span><h2>الدوران في 3D: كل محور ليه مصفوفة</h2></div>
+  <p>في 3D إنت بتلف <b>حوالين محور</b>. المحور اللي بتلف حواليه بيفضل ثابت، والمستوى التاني هو اللي بيلف:</p>
+  <div class="formula">Rz(θ) = [[cos θ, −sin θ, 0], [sin θ, cos θ, 0], [0, 0, 1]]    ← z ثابت، xy بيلف</div>
+  <div class="formula">Rx(θ) = [[1, 0, 0], [0, cos θ, −sin θ], [0, sin θ, cos θ]]    ← x ثابت، yz بيلف</div>
+  <div class="formula">Ry(θ) = [[cos θ, 0, sin θ], [0, 1, 0], [−sin θ, 0, cos θ]]    ← y ثابت، xz بيلف</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: لف مكعب</h3>
+      <p>حرّك الزوايا التلاتة. المكعب بيتلف بـ <span class="ltr">Rz @ Ry @ Rx</span> (يعني x الأول وبعدين y وبعدين z). السهم الأزرق هو النقطة <span class="ltr">(1,0,0)</span>: لفها 90° حوالين z توديها <span class="ltr">(0,1,0)</span>، وحوالين y توديها <span class="ltr">(0,0,−1)</span>، وحوالين x مبتتحركش لأنها على المحور نفسه.</p>
+      <p>الـ det بتاع أي rotation في 3D برضه = 1: الحجم محفوظ.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d3-cubeCv" width="520" height="360" aria-label="مكعب بيلف في 3D"></canvas>
+      <div class="mrow">
+        <label>θx = <span id="d3-vrx">20°</span><input type="range" id="d3-rx" min="-180" max="180" step="5" value="20"></label>
+        <label>θy = <span id="d3-vry">-30°</span><input type="range" id="d3-ry" min="-180" max="180" step="5" value="-30"></label>
+        <label>θz = <span id="d3-vrz">0°</span><input type="range" id="d3-rz" min="-180" max="180" step="5" value="0"></label>
+        <label>(1,0,0) → <b id="d3-p3" class="mono"></b></label>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: composition -->
+<section id="d3-comp">
+  <div class="station-head"><span class="tag">03</span><h2>التركيب: الترتيب بيفرق</h2></div>
+  <p>لو هتطبّق A الأول وبعدين B، ده نفس إنك تضرب <span class="ltr">B @ A</span> وتطبقهم مرة واحدة: <span class="ltr">result = B @ A @ point</span>. لاحظ إن اللي بيتطبق <b>الأول</b> بيتكتب على <b>اليمين</b> (أقرب للنقطة).</p>
+  <div class="formula">(1,0) → Rotate 90 → (0,1) → Scale(2,0.5) → (0, 0.5)      S @ R = [[0, −2], [0.5, 0]]</div>
+  <div class="formula">(1,0) → Scale(2,0.5) → (2,0) → Rotate 90 → (0, 2)      R @ S = [[0, −0.5], [2, 0]]</div>
+  <p>نتيجتين مختلفتين. ضرب المصفوفات <b>مش تبديلي</b> (not commutative). بس فيه حاجة ثابتة: <span class="ltr">det(B @ A) = det(B) · det(A)</span> مهما كان الترتيب.</p>
+  <div class="note"><strong>تشبيه:</strong> «البس الشراب وبعدين الجزمة» غير «البس الجزمة وبعدين الشراب». نفس الخطوتين، ترتيب مختلف، نتيجة مختلفة خالص.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: نفس التحويلين، ترتيبين</h3>
+      <p>اختار التحويل الأول والتاني. الشمال بيطبّق «الأول ثم التاني»، واليمين العكس. دوس «شغّل» وشوف الحرف F ماشي خطوة خطوة في الاتنين.</p>
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">الأول: <select id="d3-cA"></select> التاني: <select id="d3-cB"></select></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d3-cCv" width="520" height="290" aria-label="مقارنة ترتيب التحويلات"></canvas>
+      <div class="readout">
+        <div><small>B @ A (الشمال)</small><b id="d3-cBA"></b></div>
+        <div><small>A @ B (اليمين)</small><b id="d3-cAB"></b></div>
+        <div><small>det للاتنين</small><b id="d3-cDet"></b></div>
+      </div>
+      <div class="btns"><button type="button" id="d3-cPlay" class="primary">شغّل ▶</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: eigen -->
+<section id="d3-eigen">
+  <div class="station-head"><span class="tag">04</span><h2>Eigenvectors: الاتجاهات اللي بتنجو</h2></div>
+  <p>أغلب المتجهات لما المصفوفة تضربها بتلف وتغير اتجاهها. بس فيه اتجاهات مخصوصة المصفوفة <b>بتمطها بس</b> من غير ما تلفها. دي الـ <b>eigenvectors</b>، والرقم اللي اتمطت بيه هو الـ <b>eigenvalue</b> (λ).</p>
+  <div class="formula">A @ v = λ · v</div>
+  <p>مثال الدرس: <span class="ltr">A = [[2, 1], [1, 2]]</span>.</p>
+  <div class="formula" style="white-space:pre-line">A @ [1, 1] = [3, 3] = 3 · [1, 1]       → λ = 3
+A @ [1, −1] = [1, −1] = 1 · [1, −1]   → λ = 1</div>
+  <p>يعني المصفوفة دي بتمط الفضاء 3 مرات في اتجاه <span class="ltr">[1, 1]</span> وسايبة اتجاه <span class="ltr">[1, −1]</span> زي ما هو. وأي اتجاه تاني هو مزيج من الاتنين دول.</p>
+  <h3>إزاي بنحسبهم لـ 2×2؟</h3>
+  <p>للمصفوفة <span class="ltr">[[a, b], [c, d]]</span> الـ eigenvalues هي حلول الـ <b>characteristic equation</b> (اللي جاية من <span class="ltr">det(A − λI) = 0</span>):</p>
+  <div class="formula">λ² − (a + d)·λ + (ad − bc) = 0       يعني  λ² − trace·λ + det = 0</div>
+  <p>معادلة تانية عادية. لو المميز (<span class="ltr">trace² − 4·det</span>) سالب، الحلول بتبقى أعداد مركبة (complex)، وده معناه إن المصفوفة فيها لف، فمفيش اتجاه حقيقي بينجو. أوضح مثال: لفة 90° <span class="ltr">[[0,−1],[1,0]]</span> مالهاش eigenvectors حقيقية خالص.</p>
+  <p>ومعلومة بتنفعك تتأكد من حلك: مجموع الـ eigenvalues = الـ trace، وحاصل ضربهم = الـ det. الـ eigenvalue ممكن تبقى <b>سالبة</b> (المتجه بيتقلب على نفس الخط) أو <b>complex</b> (لف).</p>
+  <h3>Eigendecomposition: فك المصفوفة لأجزائها</h3>
+  <p>لو المصفوفة <span class="ltr">n×n</span> عندها n eigenvectors مستقلين خطيًا، تقدر تكتبها كده:</p>
+  <div class="formula">A = V @ D @ V⁻¹      V: الـ eigenvectors كأعمدة · D: الـ eigenvalues على القطر</div>
+  <p>اقراها من اليمين للشمال: (١) <span class="ltr">V⁻¹</span> بتنقلك لإحداثيات الـ eigenvectors، (٢) <span class="ltr">D</span> بتمط كل محور بالـ eigenvalue بتاعه، (٣) <span class="ltr">V</span> بترجعك. يعني أي مصفوفة من النوع ده هي «مط على محاور مايلة».</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: صيّاد الـ eigenvectors</h3>
+      <p>كل خط رمادي بيوصل نقطة على دايرة الوحدة بمكانها بعد الضرب في A (النقطة الصغيرة). أغلب الأسهم بتلف. الخطوط الملونة هي الـ eigen directions: عليها المتجه والناتج على <b>نفس الخط</b>.</p>
+      <p>اسحب السهم الأسود بنفسك ودوّر على الاتجاه اللي الناتج فيه بيفضل على نفس الخط. وجرّب «Rotation 90» وشوف الخطوط بتختفي.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d3-eCv" width="520" height="420" aria-label="البحث عن الـ eigenvectors"></canvas>
+      <div class="mrow">
+        <label>a = <span id="d3-va">2</span><input type="range" id="d3-ea" min="-3" max="3" step="0.25" value="2"></label>
+        <label>b = <span id="d3-vb">1</span><input type="range" id="d3-eb" min="-3" max="3" step="0.25" value="1"></label>
+        <label>c = <span id="d3-vc">1</span><input type="range" id="d3-ec" min="-3" max="3" step="0.25" value="1"></label>
+        <label>d = <span id="d3-vd">2</span><input type="range" id="d3-ed" min="-3" max="3" step="0.25" value="2"></label>
+      </div>
+      <div class="readout">
+        <div><small>λ₁, λ₂</small><b id="d3-lam"></b></div>
+        <div><small>trace / det</small><b id="d3-td"></b></div>
+        <div><small>السهم v → A@v</small><b id="d3-vv"></b></div>
+      </div>
+      <div class="verdict" id="d3-eVerdict"></div>
+      <div class="btns">
+        <button type="button" data-d3e="2,1,1,2">Symmetric</button>
+        <button type="button" data-d3e="3,1,0,2">Upper triangular</button>
+        <button type="button" data-d3e="3,0,0,2">Scaling</button>
+        <button type="button" data-d3e="0,-1,1,0">Rotation 90</button>
+        <button type="button" data-d3e="4,2,1,3">تمرين ٢</button>
+        <button type="button" data-d3e="1,0,0,-1">Reflection</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5: why eigen matters -->
+<section id="d3-why">
+  <div class="station-head"><span class="tag">05</span><h2>ليه الـ eigenvalues مهمة في الـ ML؟</h2></div>
+  <ul class="checklist">
+    <li><b>PCA:</b> الـ eigenvectors بتاعة الـ covariance matrix هي الـ principal components، والـ eigenvalue بتاعة كل واحد بتقولك قد إيه من الـ variance بيمسكه. رتّب بالـ eigenvalue، خد أكبر k، وده الـ dimensionality reduction. (مثال الكود: covariance <span class="ltr">[[2,1],[1,3]]</span>.)</li>
+    <li><b>الاستقرار:</b> في الـ RNNs والأنظمة الديناميكية، لو eigenvalue حجمها أكبر من 1 الخرج بيـ«ينفجر»، ولو أقل من 1 بيـ«يختفي». ده الـ exploding/vanishing gradient في جملة واحدة.</li>
+    <li><b>Spectral methods:</b> الـ Graph Neural Networks بتستخدم eigenvalues الـ adjacency matrix، والـ spectral clustering بيستخدم eigenvalues الـ Laplacian. الـ eigenvectors بتكشف بنية الـ graph.</li>
+  </ul>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٥: الانفجار والتلاشي</h3>
+      <p>ده RNN متبسط جدًا: <span class="ltr">h(t+1) = W @ h(t)</span> مع W ليها eigenvalues λ₁ وλ₂. الرسم بيورّي طول h على مدار 40 خطوة (المحور الرأسي log).</p>
+      <p>خلي λ₁ = 1.1 وشوف الانفجار. خليها 0.9 وشوف التلاشي. القاعدة: اللي بيحكم هو أكبر |λ|، لأنه بيتضرب في نفسه كل خطوة: <span class="ltr">λ⁴⁰</span>.</p>
+      <div class="note ai"><strong>في الواقع:</strong> نفس الكلام بيحصل للـ gradient وهو راجع لورا عبر الخطوات. ده السبب اللي خلّى الـ LSTM والـ gradient clipping والـ residual connections يتخترعوا.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d3-sCv" width="520" height="260" aria-label="طول المتجه عبر الخطوات"></canvas>
+      <div class="mrow">
+        <label>λ₁ = <span id="d3-vl1">1.1</span><input type="range" id="d3-l1s" min="0.5" max="1.3" step="0.01" value="1.1"></label>
+        <label>λ₂ = <span id="d3-vl2">0.7</span><input type="range" id="d3-l2s" min="0.5" max="1.3" step="0.01" value="0.7"></label>
+      </div>
+      <div class="readout">
+        <div><small>|h(40)| / |h(0)|</small><b id="d3-ratio"></b></div>
+        <div><small>الحالة</small><b id="d3-state" style="font-family:var(--f-display)"></b></div>
+      </div>
+    </div>
+  </div>
+  <h3>الـ Determinant كمعامل تكبير المساحة/الحجم</h3>
+  <div class="tablewrap"><table>
+    <tr><th>det</th><th>المعنى</th><th>مثال</th></tr>
+    <tr><td class="ltr">1</td><td>المساحة محفوظة</td><td>Rotation (دايمًا)، Shear (دايمًا)</td></tr>
+    <tr><td class="ltr">2</td><td>المساحة اتضاعفت</td><td>Scale: <span class="ltr">det = sx · sy</span></td></tr>
+    <tr><td class="ltr">0</td><td>الفضاء اتكبس لبُعد أقل، مفيش رجوع (singular)</td><td class="ltr">[[1,2],[2,4]]</td></tr>
+    <tr><td class="ltr">−1</td><td>المساحة محفوظة بس الاتجاه اتقلب</td><td>Reflection (دايمًا)</td></tr>
+  </table></div>
+</section>
+
+<!-- CODE -->
+<section id="d3-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/01-math-foundations/03-matrix-transformations/code/transformations.py
+<span class="c"># نسخة Julia:</span>
+julia phases/01-math-foundations/03-matrix-transformations/code/transformations.jl</pre></div>
+  <p>افتح <code>my_transforms.py</code> واكتب الخطوات دي بإيدك. بعد كل خطوة شغّل واتأكد من الناتج قبل ما تكمل.</p>
+
+  <h3>خطوة ١: مصفوفات التحويل من الصفر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+def rotation_2d(theta):                  <span class="c"># theta بالـ radians</span>
+    c, s = math.cos(theta), math.sin(theta)
+    return [[c, -s], [s, c]]
+
+def scaling_2d(sx, sy):
+    return [[sx, 0], [0, sy]]
+
+def shearing_2d(kx, ky):                 <span class="c"># kx يميل x، ky يميل y</span>
+    return [[1, kx], [ky, 1]]
+
+def reflection_x():
+    return [[1, 0], [0, -1]]
+
+def reflection_y():
+    return [[-1, 0], [0, 1]]
+
+def mat_vec_mul(matrix, vector):         <span class="c"># كل صف dot مع المتجه</span>
+    return [sum(matrix[i][j] * vector[j] for j in range(len(vector)))
+            for i in range(len(matrix))]
+
+def mat_mul(a, b):
+    rows_a, cols_b, cols_a = len(a), len(b[0]), len(a[0])
+    return [[sum(a[i][k] * b[k][j] for k in range(cols_a)) for j in range(cols_b)]
+            for i in range(rows_a)]
+
+r = mat_vec_mul(rotation_2d(math.pi / 4), [1.0, 0.0])
+print(f"Rotate (1,0) by 45 deg: ({r[0]:.4f}, {r[1]:.4f})")
+print("Scale (1,1) by (2,3):", mat_vec_mul(scaling_2d(2, 3), [1.0, 1.0]))
+print("Shear (1,1) kx=1:", mat_vec_mul(shearing_2d(1, 0), [1.0, 1.0]))
+print("Reflect (2,1) across y:", mat_vec_mul(reflection_y(), [2.0, 1.0]))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Rotate (1,0) by 45 deg: (0.7071, 0.7071)
+Scale (1,1) by (2,3): [2.0, 3.0]
+Shear (1,1) kx=1: [2.0, 1.0]
+Reflect (2,1) across y: [-2.0, 1.0]</pre></details>
+
+  <h3>خطوة ٢: التركيب والترتيب</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>R = rotation_2d(math.pi / 2)
+S = scaling_2d(2, 0.5)
+
+rotate_then_scale = mat_mul(S, R)        <span class="c"># R الأول ← مكتوبة يمين</span>
+scale_then_rotate = mat_mul(R, S)
+
+p1 = mat_vec_mul(rotate_then_scale, [1.0, 0.0])
+p2 = mat_vec_mul(scale_then_rotate, [1.0, 0.0])
+print(f"Rotate 90 then scale: ({p1[0]:.2f}, {p1[1]:.2f})")
+print(f"Scale then rotate 90: ({p2[0]:.2f}, {p2[1]:.2f})")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Rotate 90 then scale: (0.00, 0.50)
+Scale then rotate 90: (0.00, 2.00)</pre><p>لو طبعت بدون تقريب هتلاقي حاجة زي <span class="ltr">1.2e-16</span> مكان الصفر: <span class="ltr">cos(π/2)</span> مش صفر بالظبط في الـ float.</p></details>
+
+  <h3>خطوة ٣: الـ eigenvalues والـ eigenvectors من الصفر (2×2)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def eigenvalues_2x2(matrix):
+    a, b = matrix[0]
+    c, d = matrix[1]
+    trace = a + d
+    det = a * d - b * c
+    discriminant = trace ** 2 - 4 * det           <span class="c"># المميز</span>
+    if discriminant &lt; 0:                          <span class="c"># فيه لف → complex</span>
+        real = trace / 2
+        imag = (-discriminant) ** 0.5 / 2
+        return (complex(real, imag), complex(real, -imag))
+    sqrt_disc = discriminant ** 0.5
+    return ((trace + sqrt_disc) / 2, (trace - sqrt_disc) / 2)
+
+def eigenvector_2x2(matrix, eigenvalue):
+    a, b = matrix[0]
+    c, d = matrix[1]
+    if abs(b) &gt; 1e-10:
+        v = [b, eigenvalue - a]                   <span class="c"># من الصف الأول لـ (A - λI)v = 0</span>
+    elif abs(c) &gt; 1e-10:
+        v = [eigenvalue - d, c]
+    else:                                         <span class="c"># مصفوفة قطرية</span>
+        v = [1, 0] if abs(a - eigenvalue) &lt; 1e-10 else [0, 1]
+    mag = (v[0] ** 2 + v[1] ** 2) ** 0.5
+    return [v[0] / mag, v[1] / mag]               <span class="c"># طوله 1</span>
+
+A = [[2, 1], [1, 2]]
+for val in eigenvalues_2x2(A):
+    vec = eigenvector_2x2(A, val)
+    print(f"lambda={val:.1f}, v={[round(x, 4) for x in vec]}",
+          "A@v =", [round(x, 4) for x in mat_vec_mul(A, vec)])</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">lambda=3.0, v=[0.7071, 0.7071] A@v = [2.1213, 2.1213]
+lambda=1.0, v=[0.7071, -0.7071] A@v = [0.7071, -0.7071]</pre><p><span class="ltr">2.1213 = 3 × 0.7071</span>: المتجه اتمط 3 مرات من غير ما يلف.</p></details>
+
+  <h3>خطوة ٤: الـ determinant كمعامل مساحة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def det_2x2(m):
+    return m[0][0] * m[1][1] - m[0][1] * m[1][0]
+
+print(f"det(rotation 45) = {det_2x2(rotation_2d(math.pi/4)):.4f}")   <span class="c"># 1.0000</span>
+print(f"det(scale 2,3)   = {det_2x2(scaling_2d(2, 3)):.1f}")         <span class="c"># 6.0</span>
+print(f"det(shear kx=1)  = {det_2x2(shearing_2d(1, 0)):.1f}")        <span class="c"># 1.0</span>
+print(f"det(reflect y)   = {det_2x2(reflection_y()):.1f}")           <span class="c"># -1.0</span>
+print(f"det(singular)    = {det_2x2([[1, 2], [2, 4]]):.1f}")         <span class="c"># 0.0 → خط</span></pre></div>
+
+  <h3>خطوة ٥: NumPy والـ eigendecomposition والـ 3D</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+A = np.array([[2, 1], [1, 2]], dtype=float)
+vals, vecs = np.linalg.eig(A)            <span class="c"># الـ eigenvectors أعمدة</span>
+print(vals)                              <span class="c"># [3. 1.]</span>
+for i in range(len(vals)):
+    v = vecs[:, i]
+    print(A @ v, vals[i] * v)            <span class="c"># لازم يبقوا زي بعض</span>
+
+B = np.array([[3, 1], [0, 2]], dtype=float)
+vals, V = np.linalg.eig(B)
+print(V @ np.diag(vals) @ np.linalg.inv(V))   <span class="c"># يرجّع B تاني</span>
+
+def rotation_3d_z(t):
+    c, s = np.cos(t), np.sin(t)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+print(np.round(rotation_3d_z(np.pi / 2) @ np.array([1.0, 0, 0]), 4))   <span class="c"># [0. 1. 0.]</span>
+
+cov = np.array([[2.0, 1.0], [1.0, 3.0]])     <span class="c"># معاينة للـ PCA</span>
+print(np.linalg.eig(cov))                    <span class="c"># أكبر eigenvalue = أهم اتجاه</span></pre></div>
+  <p>الإشارة بتاعة الـ eigenvector اللي NumPy بيطلعها ممكن تبقى مقلوبة (<span class="ltr">−v</span> بدل v). ده مش غلط: أي مضاعف لـ eigenvector هو برضه eigenvector.</p>
+  <div class="note"><strong>Julia:</strong> فيها <code>eigvals(A)</code> و<code>eigvecs(A)</code> و<code>eigen(A)</code> جاهزين في <code>LinearAlgebra</code>، ونسخة Julia من الملف بتختم بـ <code>demo_pca_preview</code> اللي بتطبع نسبة الـ variance اللي PC1 بيمسكها.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d3-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>المربع:</b> طبّق rotation وscaling وshearing على مربع الوحدة <span class="ltr">[0,0], [1,0], [1,1], [0,1]</span> واطبع الأركان. اتأكد إن الـ rotation بتحافظ على المسافات بين الأركان.
+      <details><summary>تلميح</summary>استخدم <code>mat_vec_mul</code> على كل ركن. للـ rotation احسب الـ 4 أضلاع والقطرين قبل وبعد (بـ <code>math.dist</code>): لازم يفضلوا 1 و1 و1 و1 و√2 و√2.</details></li>
+    <li><b>Eigenvalues بإيدك:</b> لاقي eigenvalues المصفوفة <span class="ltr">[[4, 2], [1, 3]]</span> بالورقة والقلم من الـ characteristic equation، وبعدين اتأكد بالدالة بتاعتك وبـ NumPy.
+      <details><summary>الإجابة</summary>trace = 7 وdet = <span class="ltr">4·3 − 2·1 = 10</span>. المعادلة <span class="ltr">λ² − 7λ + 10 = 0</span> → <span class="ltr">(λ − 5)(λ − 2) = 0</span> → λ = 5 و2. مجموعهم 7 = trace وضربهم 10 = det ✓. جرّبها في المعمل ٤ بزرار «تمرين ٢».</details></li>
+    <li><b>تركيب تلاتة:</b> rotate 30° ثم scale <span class="ltr">[1.5, 0.8]</span> ثم shear بـ <span class="ltr">kx = 0.3</span>. طبّقهم على 8 نقط على دايرة واطبع قبل وبعد. واتأكد إن det التركيب = حاصل ضرب الـ dets.
+      <details><summary>تلميح</summary>الترتيب في الضرب: <span class="ltr">M = Sh @ S @ R</span> (اللي بيتطبق الأول على اليمين)، والـ shear <code>shearing_2d(0.3, 0)</code>. النقط <span class="ltr">(cos θ, sin θ)</span> لـ <span class="ltr">θ = k·2π/8</span>. det(R) = 1 وdet(Sh) = 1، فـ <code>det_2x2(M)</code> لازم تطلع <span class="ltr">1.5 × 0.8 = 1.2</span>.</details></li>
+    <li><b>إضافة مني · Data augmentation زي الشغل الحقيقي:</b> عندك 100 نقطة 2D (مثلًا keypoints لجسم في صورة). اكتب <code>augment(points)</code> تختار زاوية عشوائية بين −15° و15° وscale عشوائي بين 0.9 و1.1، وتطبقهم كمصفوفة واحدة. اتأكد إن الـ rotation لوحدها حافظت على المسافة بين أي نقطتين.
+      <details><summary>تلميح</summary>ركّب <span class="ltr">M = S @ R</span> مرة واحدة واضربها في كل النقط: <code>pts @ M.T</code> لو النقط صفوف <span class="ltr">(100, 2)</span>. ده بالظبط اللي مكتبات الـ augmentation بتعمله للصور: مصفوفة تحويل واحدة لكل صورة، مش عملية لكل pixel.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d3-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: الحدس اللي الدرس ما قالوش</h2></div>
+  <ul class="checklist">
+    <li><b>إزاي تقرا أي مصفوفة في ثانية:</b> بص على الأعمدة. العمود الأول = e1 راح فين، والتاني = e2 راح فين. ارسمهم في دماغك وهتعرف التحويل.</li>
+    <li><b>المصفوفة المتماثلة (symmetric) حالة خاصة حلوة:</b> لو <span class="ltr">A = Aᵀ</span> زي <span class="ltr">[[2,1],[1,2]]</span>، الـ eigenvalues دايمًا حقيقية والـ eigenvectors دايمًا متعامدين. الـ covariance matrix والـ Hessian (بكرة) متماثلين، عشان كده الـ PCA شغالة بنضافة.</li>
+    <li><b>غلطة شائعة:</b> تكتب <span class="ltr">A @ B</span> وانت قصدك «A الأول». اللي بيتطبق الأول هو اللي جنب النقطة (على اليمين).</li>
+    <li><b>غلطة تانية:</b> تدي <code>math.cos</code> زاوية بالدرجات. كل الدوال دي بتاخد radians: <span class="ltr">45° = math.pi / 4</span>، أو استخدم <code>math.radians(45)</code>.</li>
+    <li><b>في الـ LLMs:</b> الـ RoPE (rotary position embeddings) اللي في موديلات كتير زي LLaMA بتلف أزواج من أبعاد الـ query والـ key بزاوية بتعتمد على مكان الكلمة. هي حرفيًا مصفوفة rotation 2×2 من النهاردة، ولأن الـ rotation بتحافظ على الأطوال، الـ dot product بين q وk بيبقى معتمد على الفرق بين المكانين.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d3-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d3-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d3-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d3-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أكتب مصفوفة rotation وscale وshear وreflection من دماغي</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه <span class="ltr">S @ R ≠ R @ S</span> ومين بيتطبق الأول</label></li>
+    <li><label><input type="checkbox" data-ck="3"> لقيت الـ eigenvectors بإيدي في المعمل ٤</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم ليه |λ| &gt; 1 بيفجّر الـ RNN</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود وحليت تمرين ٢ بالورقة</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Rotation / Scale / Shear</td><td>الـ data augmentation للصور، الـ computer vision، الـ RoPE</td></tr>
+    <tr><td>Composition</td><td>تركيب الطبقات، الـ graphics pipelines</td></tr>
+    <tr><td>Eigenvectors / Eigenvalues</td><td>الـ PCA، الـ spectral clustering، الـ GNNs</td></tr>
+    <tr><td>|λ| &gt; 1 أو &lt; 1</td><td>الـ exploding/vanishing gradients في الـ RNNs</td></tr>
+    <tr><td>Eigendecomposition</td><td>تحليل الـ covariance، فهم سلوك المصفوفات المتكررة</td></tr>
+    <tr><td>Determinant</td><td>هل التحويل قابل للعكس؟ تغيير الحجم (في الـ normalizing flows مثلًا)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Calculus for ML. الـ derivatives والـ gradient والـ gradient descent: إزاي الموديل يعرف يلف كل «مفتاح» في أي اتجاه عشان يغلط أقل.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F03-matrix-transformations" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/03-matrix-transformations</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=3,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d3-roadmap').closest('.day');
+const rm=$('d3-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===N)s.className='now';rm.appendChild(s)}
+const rad=d=>d*Math.PI/180;
+const mul2=(A,B)=>[A[0]*B[0]+A[1]*B[2],A[0]*B[1]+A[1]*B[3],A[2]*B[0]+A[3]*B[2],A[2]*B[1]+A[3]*B[3]];
+const det2=m=>m[0]*m[3]-m[1]*m[2];
+const mstr=m=>`[[${f(m[0])},${f(m[1])}],[${f(m[2])},${f(m[3])}]]`;
+// draws grid + unit square + F under matrix m into ctx with origin ox,oy, scale S
+function scene(ctx,W,H,S,ox,oy,m,light){
+  const T=(x,y)=>[ox+(m[0]*x+m[1]*y)*S,oy-(m[2]*x+m[3]*y)*S];
+  if(!light){ctx.strokeStyle=css('--vec-a');ctx.globalAlpha=.3;ctx.lineWidth=1;
+    for(let k=-8;k<=8;k++){let p=T(k,-8),q=T(k,8);ctx.beginPath();ctx.moveTo(...p);ctx.lineTo(...q);ctx.stroke();p=T(-8,k);q=T(8,k);ctx.beginPath();ctx.moveTo(...p);ctx.lineTo(...q);ctx.stroke()}ctx.globalAlpha=1}
+  const d=det2(m);ctx.fillStyle=d<0?css('--bad'):css('--vec-b');ctx.globalAlpha=.3;ctx.beginPath();[[0,0],[1,0],[1,1],[0,1]].forEach((p,i)=>{const t=T(...p);i?ctx.lineTo(...t):ctx.moveTo(...t)});ctx.closePath();ctx.fill();ctx.globalAlpha=1;
+  ctx.strokeStyle=css('--ink');ctx.lineWidth=3;ctx.beginPath();[[[1.5,.5],[1.5,2.5]],[[1.5,2.5],[2.7,2.5]],[[1.5,1.5],[2.3,1.5]]].forEach(([a,b])=>{ctx.moveTo(...T(...a));ctx.lineTo(...T(...b))});ctx.stroke();
+  AI.arrow(ctx,ox,oy,...T(1,0),css('--vec-a'),3);AI.arrow(ctx,ox,oy,...T(0,1),css('--vec-b'),3);
+}
+
+// ---------- Lab 1: transformation workshop ----------
+const tc=$('d3-tCv'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+let kind='rot';
+const cfg={rot:{l1:'θ',r1:[-180,180,5],v1:45,l2:null},scale:{l1:'sx',r1:[-2,3,0.1],v1:2,l2:'sy',r2:[-2,3,0.1],v2:0.5},shear:{l1:'kx',r1:[-2,2,0.1],v1:1,l2:'ky',r2:[-2,2,0.1],v2:0},refy:{l1:null},refx:{l1:null}};
+function setKind(k){kind=k;document.querySelectorAll('[data-d3k]').forEach(b=>b.classList.toggle('primary',b.dataset.d3k===k));const c=cfg[k];
+  const p1=$('d3-p1'),p2=$('d3-p2');$('d3-l1').style.display=c.l1?'':'none';$('d3-l2').style.display=c.l2?'':'none';
+  if(c.l1){[p1.min,p1.max,p1.step]=c.r1;p1.value=c.v1;$('d3-l1').firstChild.textContent=c.l1+' = '}
+  if(c.l2){[p2.min,p2.max,p2.step]=c.r2;p2.value=c.v2;$('d3-l2').firstChild.textContent=c.l2+' = '}
+  trans()}
+function tMat(){const a=+$('d3-p1').value,b=+$('d3-p2').value;
+  if(kind==='rot'){const c=Math.cos(rad(a)),s=Math.sin(rad(a));return[c,-s,s,c]}
+  if(kind==='scale')return[a,0,0,b];if(kind==='shear')return[1,a,b,1];if(kind==='refy')return[-1,0,0,1];return[1,0,0,-1]}
+function trans(){const m=tMat();$('d3-v1').textContent=kind==='rot'?$('d3-p1').value+'°':$('d3-p1').value;$('d3-v2').textContent=$('d3-p2').value;
+  tx.clearRect(0,0,TW,TH);AI.grid(tx,TW,TH,40,TW/2,TH/2);scene(tx,TW,TH,40,TW/2,TH/2,m);
+  const P=[m[0]*2+m[1],m[2]*2+m[3]];const pp=[TW/2+P[0]*40,TH/2-P[1]*40];tx.fillStyle=css('--ok');tx.beginPath();tx.arc(pp[0],pp[1],6,0,7);tx.fill();
+  tx.strokeStyle=css('--muted');tx.lineWidth=1.5;tx.beginPath();tx.arc(TW/2+80,TH/2-40,5,0,7);tx.stroke();
+  $('d3-tM').textContent=mstr(m);$('d3-tDet').textContent=f(det2(m));$('d3-tP').textContent=`(${f(P[0])}, ${f(P[1])})`}
+document.querySelectorAll('[data-d3k]').forEach(b=>b.addEventListener('click',()=>setKind(b.dataset.d3k)));
+['d3-p1','d3-p2'].forEach(id=>$(id).addEventListener('input',trans));
+setKind('rot');
+
+// ---------- Lab 2: 3D cube ----------
+const cc=$('d3-cubeCv'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+const m3=(A,B)=>A.map(r=>B[0].map((_,j)=>r.reduce((s,v,k)=>s+v*B[k][j],0)));
+const mv3=(M,v)=>M.map(r=>r[0]*v[0]+r[1]*v[1]+r[2]*v[2]);
+function Rx(t){const c=Math.cos(t),s=Math.sin(t);return[[1,0,0],[0,c,-s],[0,s,c]]}
+function Ry(t){const c=Math.cos(t),s=Math.sin(t);return[[c,0,s],[0,1,0],[-s,0,c]]}
+function Rz(t){const c=Math.cos(t),s=Math.sin(t);return[[c,-s,0],[s,c,0],[0,0,1]]}
+const V=[];for(let i=0;i<8;i++)V.push([i&1?1:-1,i&2?1:-1,i&4?1:-1]);
+const E=[];for(let i=0;i<8;i++)for(let j=i+1;j<8;j++){const d=(i^j);if(d===1||d===2||d===4)E.push([i,j])}
+function cube(){const a=+$('d3-rx').value,b=+$('d3-ry').value,g=+$('d3-rz').value;
+  $('d3-vrx').textContent=a+'°';$('d3-vry').textContent=b+'°';$('d3-vrz').textContent=g+'°';
+  const M=m3(Rz(rad(g)),m3(Ry(rad(b)),Rx(rad(a))));
+  // fixed camera tilt so z is visible
+  const cam=m3(Rx(rad(-20)),Ry(rad(25)));
+  const P=v=>{const w=mv3(cam,v);return[CW/2+w[0]*70,CH/2-w[1]*70]};
+  cx.clearRect(0,0,CW,CH);
+  // world axes
+  [[[2,0,0],'x',css('--muted')],[[0,2,0],'y',css('--muted')],[[0,0,2],'z',css('--muted')]].forEach(([v,l,c])=>{const o=P([0,0,0]),e=P(v);cx.strokeStyle=c;cx.setLineDash([4,4]);cx.lineWidth=1;cx.beginPath();cx.moveTo(...o);cx.lineTo(...e);cx.stroke();cx.setLineDash([]);cx.fillStyle=c;cx.font='13px JetBrains Mono, monospace';cx.fillText(l,e[0]+4,e[1])});
+  const RV=V.map(v=>P(mv3(M,v)));
+  cx.strokeStyle=css('--ink');cx.lineWidth=1.8;E.forEach(([i,j])=>{cx.beginPath();cx.moveTo(...RV[i]);cx.lineTo(...RV[j]);cx.stroke()});
+  const p=mv3(M,[1,0,0]),o=P([0,0,0]);AI.arrow(cx,o[0],o[1],...P(p),css('--vec-a'),3);
+  $('d3-p3').textContent=`(${f(p[0])}, ${f(p[1])}, ${f(p[2])})`;
+}
+['d3-rx','d3-ry','d3-rz'].forEach(id=>$(id).addEventListener('input',cube));cube();
+
+// ---------- Lab 3: composition order ----------
+const OPS={rot90:['Rotate 90°',[0,-1,1,0]],sc:['Scale (2, 0.5)',[2,0,0,0.5]],sh:['Shear kx=1',[1,1,0,1]],ry:['Reflect y-axis',[-1,0,0,1]],rot45:['Rotate 45°',[Math.SQRT1_2,-Math.SQRT1_2,Math.SQRT1_2,Math.SQRT1_2]]};
+const sA=$('d3-cA'),sB=$('d3-cB');Object.entries(OPS).forEach(([k,[n]])=>{[sA,sB].forEach(s=>{const o=document.createElement('option');o.value=k;o.textContent=n;s.appendChild(o)})});sA.value='rot90';sB.value='sc';
+const ccv=$('d3-cCv'),ccx=AI.setupCanvas(ccv),KW=+ccv.dataset.w,KH=+ccv.dataset.h;
+let cT=1,cAnim=null;
+const lerp=(a,b,t)=>a.map((v,i)=>v+(b[i]-v)*t);
+function comp(t){const A=OPS[sA.value][1],B=OPS[sB.value][1],I=[1,0,0,1];
+  const BA=mul2(B,A),AB=mul2(A,B);
+  // t in [0,2]: first half applies first op, second half applies second
+  const left=t<=1?lerp(I,A,t):mul2(lerp(I,B,t-1),A);
+  const right=t<=1?lerp(I,B,t):mul2(lerp(I,A,t-1),B);
+  ccx.clearRect(0,0,KW,KH);const S=26,w=KW/2;
+  [[0,left,'A ثم B'],[w,right,'B ثم A']].forEach(([x0,m,lab])=>{ccx.save();ccx.beginPath();ccx.rect(x0,0,w,KH);ccx.clip();AI.grid(ccx,KW,KH,S,x0+w/2,KH/2);scene(ccx,KW,KH,S,x0+w/2,KH/2,m,true);ccx.restore();
+    ccx.fillStyle=css('--ink');ccx.font='15px "IBM Plex Sans Arabic", sans-serif';ccx.textAlign='center';ccx.fillText(lab,x0+w/2,20);ccx.textAlign='left'});
+  ccx.strokeStyle=css('--line');ccx.lineWidth=2;ccx.beginPath();ccx.moveTo(w,0);ccx.lineTo(w,KH);ccx.stroke();
+  $('d3-cBA').textContent=mstr(BA);$('d3-cAB').textContent=mstr(AB);$('d3-cDet').textContent=f(det2(BA))+' = '+f(det2(AB));
+}
+function playComp(){cancelAnimationFrame(cAnim);const t0=performance.now(),dur=matchMedia('(prefers-reduced-motion:reduce)').matches?0:2400;
+  const st=t=>{if(!document.body.contains(ccv))return;cT=dur?Math.min(2,(t-t0)/dur*2):2;comp(cT);if(cT<2)cAnim=requestAnimationFrame(st)};cAnim=requestAnimationFrame(st)}
+[sA,sB].forEach(s=>s.addEventListener('change',()=>{cT=2;comp(2)}));$('d3-cPlay').addEventListener('click',playComp);cT=2;comp(2);
+
+// ---------- Lab 4: eigen hunter ----------
+const ec=$('d3-eCv'),ex=AI.setupCanvas(ec),EW=+ec.dataset.w,EH=+ec.dataset.h,ES=60,eox=EW/2,eoy=EH/2;
+let EM=[2,1,1,2],probe=[Math.cos(rad(70)),Math.sin(rad(70))],eDrag=false;
+function eig(m){const tr=m[0]+m[3],d=det2(m),disc=tr*tr-4*d;if(disc<-1e-12)return{complex:true,re:tr/2,im:Math.sqrt(-disc)/2};const s=Math.sqrt(Math.max(0,disc));return{l:[(tr+s)/2,(tr-s)/2]}}
+function evec(m,l){const[a,b,c,d]=m;let v;if(Math.abs(b)>1e-10)v=[b,l-a];else if(Math.abs(c)>1e-10)v=[l-d,c];else v=Math.abs(a-l)<1e-10?[1,0]:[0,1];const n=Math.hypot(...v);return[v[0]/n,v[1]/n]}
+function eDraw(){
+  const m=EM,P=(x,y)=>[eox+x*ES,eoy-y*ES];ex.clearRect(0,0,EW,EH);AI.grid(ex,EW,EH,ES,eox,eoy);
+  ex.strokeStyle=css('--line');ex.lineWidth=1;ex.beginPath();ex.arc(eox,eoy,ES,0,7);ex.stroke();
+  for(let k=0;k<24;k++){const t=k*Math.PI/12,v=[Math.cos(t),Math.sin(t)],w=[m[0]*v[0]+m[1]*v[1],m[2]*v[0]+m[3]*v[1]];
+    ex.globalAlpha=.35;
+    ex.strokeStyle=css('--muted');ex.lineWidth=1;ex.beginPath();ex.moveTo(...P(...v));ex.lineTo(...P(...w));ex.stroke();ex.fillStyle=css('--muted');ex.beginPath();ex.arc(...P(...w),2.2,0,7);ex.fill();ex.globalAlpha=1}
+  const e=eig(m),ve=$('d3-eVerdict');
+  if(e.complex){$('d3-lam').textContent=`${f(e.re)} ± ${f(e.im)}i`;ve.textContent='eigenvalues complex: فيه لف، مفيش اتجاه حقيقي بينجو';ve.style.color=css('--bad')}
+  else{$('d3-lam').textContent=`${f(e.l[0])}, ${f(e.l[1])}`;ve.textContent='الخطوط الملونة: هنا A بتمط بس، من غير لف';ve.style.color=css('--ok');
+    const cols=[css('--vec-a'),css('--vec-b')];
+    const uniq=Math.abs(e.l[0]-e.l[1])<1e-9&&Math.abs(m[1])<1e-9&&Math.abs(m[2])<1e-9;
+    if(uniq){ve.textContent='كل اتجاه eigenvector هنا (مضاعف للـ identity)'}
+    else e.l.forEach((l,i)=>{const v=evec(m,l);ex.strokeStyle=cols[i];ex.lineWidth=2;ex.setLineDash([6,4]);ex.beginPath();ex.moveTo(...P(-v[0]*4,-v[1]*4));ex.lineTo(...P(v[0]*4,v[1]*4));ex.stroke();ex.setLineDash([]);
+      AI.arrow(ex,eox,eoy,...P(v[0]*l,v[1]*l),cols[i],3);ex.fillStyle=cols[i];ex.font='bold 13px JetBrains Mono, monospace';const q=P(v[0]*l,v[1]*l);ex.fillText('λ='+f(l),q[0]+6,q[1]-6)})}
+  $('d3-td').textContent=f(m[0]+m[3])+' / '+f(det2(m));
+  const w=[m[0]*probe[0]+m[1]*probe[1],m[2]*probe[0]+m[3]*probe[1]];
+  AI.arrow(ex,eox,eoy,...P(...probe),css('--ink'),3);AI.arrow(ex,eox,eoy,...P(...w),css('--ok'),2.5);
+  const cr=probe[0]*w[1]-probe[1]*w[0],ok=Math.abs(cr)<0.06*Math.max(1e-6,Math.hypot(...w));
+  $('d3-vv').textContent=`[${f(probe[0])},${f(probe[1])}] → [${f(w[0])},${f(w[1])}]`;$('d3-vv').style.color=ok?css('--ok'):'';
+  ['a','b','c','d'].forEach((k,i)=>{$('d3-e'+k).value=EM[i];$('d3-v'+k).textContent=EM[i]});
+}
+['a','b','c','d'].forEach((k,i)=>$('d3-e'+k).addEventListener('input',e=>{EM[i]=+e.target.value;eDraw()}));
+document.querySelectorAll('[data-d3e]').forEach(b=>b.addEventListener('click',()=>{EM=b.dataset.d3e.split(',').map(Number);eDraw()}));
+function eMove(e){if(!eDrag)return;const[x,y]=AI.evPos(ec,e);const v=[(x-eox)/ES,(eoy-y)/ES],n=Math.hypot(...v)||1;probe=[v[0]/n,v[1]/n];eDraw()}
+ec.addEventListener('pointerdown',e=>{eDrag=true;ec.setPointerCapture(e.pointerId);eMove(e)});ec.addEventListener('pointermove',eMove);ec.addEventListener('pointerup',()=>eDrag=false);
+eDraw();
+
+// ---------- Lab 5: stability ----------
+const scv=$('d3-sCv'),sx=AI.setupCanvas(scv),SW=+scv.dataset.w,SH=+scv.dataset.h;
+function stab(){const l1=+$('d3-l1s').value,l2=+$('d3-l2s').value;$('d3-vl1').textContent=f(l1);$('d3-vl2').textContent=f(l2);
+  const T=40,h0=[1,1],norms=[];for(let t=0;t<=T;t++)norms.push(Math.hypot(h0[0]*Math.pow(l1,t),h0[1]*Math.pow(l2,t))/Math.SQRT2);
+  sx.clearRect(0,0,SW,SH);const pad=36,lo=-4,hi=4,Y=v=>{const L=Math.log10(Math.max(1e-6,v));return SH-pad-(L-lo)/(hi-lo)*(SH-2*pad)},X=t=>pad+t/T*(SW-2*pad);
+  sx.strokeStyle=css('--grid');sx.lineWidth=1;sx.font='11px JetBrains Mono, monospace';sx.fillStyle=css('--muted');
+  for(let L=lo;L<=hi;L+=2){const y=Y(Math.pow(10,L));sx.beginPath();sx.moveTo(pad,y);sx.lineTo(SW-pad,y);sx.stroke();sx.fillText('1e'+L,2,y+4)}
+  sx.strokeStyle=css('--muted');sx.setLineDash([4,4]);sx.beginPath();sx.moveTo(pad,Y(1));sx.lineTo(SW-pad,Y(1));sx.stroke();sx.setLineDash([]);
+  const r=norms[T],col=r>1.5?css('--bad'):r<0.5?css('--vec-a'):css('--ok');
+  sx.strokeStyle=col;sx.lineWidth=2.5;sx.beginPath();norms.forEach((v,t)=>{const p=[X(t),Y(v)];t?sx.lineTo(...p):sx.moveTo(...p)});sx.stroke();
+  sx.fillStyle=css('--muted');sx.fillText('t=0',pad,SH-12);sx.fillText('t=40',SW-pad-24,SH-12);
+  $('d3-ratio').textContent=r>1e4?r.toExponential(1):f(r,3);const st=$('d3-state');st.textContent=r>1.5?'انفجار':r<0.5?'تلاشي':'مستقر تقريبًا';st.style.color=col}
+['d3-l1s','d3-l2s'].forEach(id=>$(id).addEventListener('input',stab));stab();
+
+// ---------- quiz ----------
+AI.quiz($('d3-quizBox'),[
+ ['يعني إيه eigenvector لمصفوفة؟',['متجه المصفوفة بتمطه بس (من غير لف) لما تضربه','خانات القطر مكتوبة كمتجه','أكبر صف في المصفوفة','متجه عمودي على كل أعمدة المصفوفة'],0,'الـ eigenvector بيحقق Av = λv: المصفوفة بتمطه بالرقم λ (الـ eigenvalue) من غير ما تغير اتجاهه.'],
+ ['الـ determinant بتاع مصفوفة تحويل 2D بيمثل إيه هندسيًا؟',['عدد الـ eigenvectors','زاوية الدوران','المعامل اللي المصفوفة بتكبّر بيه المساحة','الـ trace'],2,'det = 1 المساحة محفوظة (rotation)، det = 2 اتضاعفت، det = 0 اتكبست لبُعد أقل، det = −1 محفوظة بس الاتجاه اتقلب.'],
+ ['ليه ترتيب التحويلات بيفرق (ليه R @ S غير S @ R)؟',['ترتيب منهم بيطلع مصفوفة أكبر','الـ determinant بيختلف حسب الترتيب','ضرب المصفوفات مش تبديلي: اللف ثم التكبير غير التكبير ثم اللف','جمع المصفوفات مش تبديلي'],2,'لف (1,0) بـ 90° ثم scale (2,0.5) بيدي (0,0.5)، والعكس بيدي (0,2). العمليات الهندسية بتتركب بشكل مختلف.'],
+ ['في RNN، إيه اللي بيحصل لو مصفوفة الأوزان فيها eigenvalues حجمها أكبر من 1؟',['الـ eigenvalues بتقرب من 1 مع التدريب','الشبكة بتبقى أكثر استقرارًا','الخرج بينفجر أُسيًا مع الخطوات (exploding gradient)','الشبكة بتتعلم أسرع'],2,'الضرب المتكرر في المصفوفة بيضخم اتجاهات الـ eigenvalues. أكبر من 1 = نمو أُسي (انفجار)، أقل من 1 = تلاشي أُسي.'],
+ ['A = [[2, 1], [1, 2]] ليها eigenvalues 3 و1. الـ eigendecomposition ‎A = V @ D @ V⁻¹‎ بتكشف إيه؟',['A الـ rank بتاعها 1 وبتودي كل حاجة على خط','A تساوي لفتين','A بتضغط كل المتجهات بمعامل 2','A بتمط الفضاء 3 مرات في اتجاه [1,1] وسايبة اتجاه [1,−1] زي ما هو'],3,'λ=3 مع [1,1] يعني مط 3 مرات على القطر، وλ=1 مع [1,−1] يعني القطر التاني ثابت. D فيها {3,1} وV فيها الـ eigenvectors.'],
+ ['(سؤال مني) عايز تطبّق R الأول وبعدين S على النقطة p. تكتب إيه؟',['R @ S @ p','S @ R @ p','p @ R @ S','R @ p @ S'],1,'اللي بيتطبق الأول بيتكتب أقرب للنقطة (على اليمين). S @ (R @ p).'],
+ ['(سؤال مني) مصفوفة 2×2 الـ trace بتاعها 5 والـ det = 6. الـ eigenvalues؟',['1 و6','2 و3','−2 و−3','5 و6'],1,'λ² − 5λ + 6 = 0 → (λ−2)(λ−3) = 0. مجموعهم 5 = trace وضربهم 6 = det.']
+],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+AI.onTheme(()=>{if(!document.body.contains(tc))return false;trans();cube();comp(cT);eDraw();stab()});
+})();
+</script>

@@ -1,0 +1,790 @@
+<div class="day" id="d22-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 22 · Stochastic Processes</span>
+  <h1>اليوم ٢٢: عشوائية ليها نظام، من الـ random walk لحد الـ diffusion models</h1>
+  <p class="lede">النهاردة آخر درس في الرياضيات. هتشوف إزاي العشوائية لما تمشي <b>خطوة ورا خطوة</b> بتعمل حاجات منظمة جدًا: راجل سكران بيبعد عن مكانه بمعدل <span class="ltr">√n</span>، والطقس بيستقر على نسب ثابتة، والـ LLM بيختار الكلمة الجاية، والـ diffusion model بيطلّع صورة من دوشة. كل ده نفس الفكرة.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python + NumPy</b></span>
+    <span>محتاج: <b>Day 6 و Day 7 (الاحتمالات و Bayes)</b></span>
+    <span>بعده: <b>Phase 2 · What Is Machine Learning</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d22-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d22-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر امبارح (Graph Theory)</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. إزاي بنمثل graph جوه الكمبيوتر عشان نعمل عليه حسابات مصفوفات؟</summary>
+    <p>بالـ <b>adjacency matrix</b>: مصفوفة A فيها <span class="ltr">A[i][j]</span> بيقول في edge (أو وزنه) من node i لـ node j. ولو ماشي على graph كبير ومتناثر بنستخدم adjacency list عشان نوفر ذاكرة.</p></details>
+  <details><summary>٢. لو قسمت كل صف في الـ adjacency matrix على مجموعه، إيه اللي بيطلع؟</summary>
+    <p>بيطلع جدول احتمالات: «لو أنا واقف على node i، احتمال أروح لكل جار». ده بالظبط <b>transition matrix</b> بتاع random walk على الـ graph، وده اللي هنبني عليه النهاردة. فكرة الـ PageRank هي نفسها: فين الماشي العشوائي بيقضي وقته على المدى الطويل.</p></details>
+  <details><summary>٣. الـ GNN بتعمل إيه في كل layer باختصار؟</summary>
+    <p>كل node بتجمع (message passing) معلومات من جيرانها وتحدّث الـ representation بتاعها. يعني المعلومة بتنتشر على الـ graph خطوة خطوة، زي ما الماشي العشوائي بينتشر.</p></details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>Random walk و <span class="ltr">√n</span> و Brownian motion (معمل ٠١)</div>
+    <div><b>15 min</b>Markov chains والـ stationary distribution والـ temperature (معمل ٠٢)</div>
+    <div><b>15 min</b>Langevin و Metropolis-Hastings و diffusion (معمل ٠٣ و٠٤)</div>
+    <div><b>15 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمرين + كويز + checklist</div>
+  </div>
+</section>
+
+<section id="d22-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: عشوائية بتتطور مع الوقت</h2></div>
+  <p>في Day 6 اتكلمنا عن عشوائية «ثابتة»: ترمي زهر مرة وخلاص. النهاردة العشوائية <b>متسلسلة</b>: كل خطوة بتعتمد على اللي قبلها. ده اسمه <b>stochastic process</b>، وموجود في كل حتة في الـ AI:</p>
+  <div class="tablewrap"><table>
+    <tr><th>النظام</th><th>العشوائية المتسلسلة فيه</th></tr>
+    <tr><td>Language model</td><td>بيطلّع توزيع احتمالات للتوكن الجاي، يـ sample منه، ويكمل. كل توكن بيعتمد على الـ context.</td></tr>
+    <tr><td>Diffusion model</td><td>بيضيف noise للصورة خطوة خطوة لحد ما تبقى دوشة (Markov chain)، وبعدين بيتعلم يمشي بالعكس.</td></tr>
+    <tr><td>Reinforcement learning</td><td>الـ agent بياخد action، والعالم بيوديه state جديدة باحتمال معين. ده Markov decision process.</td></tr>
+    <tr><td>MCMC</td><td>بنبني Markov chain التوزيع اللي بتستقر عليه هو الـ posterior اللي عايزين نسحب منه (فاكر Bayes من Day 7؟).</td></tr>
+  </table></div>
+  <p>كل ده مبني على ٤ أفكار: <b>Random walks</b>، <b>Markov chains</b>، <b>Langevin dynamics</b>، و <b>Metropolis-Hastings</b>.</p>
+</section>
+
+<!-- STATION: random walk -->
+<section id="d22-rw">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Random Walk: الماشي السكران</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>ابدأ من 0. كل خطوة ارمي عملة: صورة = <span class="ltr">+1</span> يمين، كتابة = <span class="ltr">−1</span> شمال. بعد n خطوة مكانك هو مجموع n رقم عشوائي <span class="ltr">±1</span>.</p>
+      <p>المتوسط المتوقع للمكان = <b>0</b> (العملة عادلة، مفيش ميل لأي ناحية). بس المسافة المتوقعة من البداية بتكبر زي <span class="ltr">√n</span>. ده غريب: الماشي مش منحاز، ومع ذلك بيتوه أبعد وأبعد.</p>
+      <div class="formula">S_n = X₁ + X₂ + … + X_n ,  Var(X_i) = 1  ⇒  Var(S_n) = n  ⇒  std = √n</div>
+      <p>ليه؟ كل خطوة variance بتاعها 1، والخطوات مستقلة، فالـ variances بتتجمع: <span class="ltr">Var(S_n) = n</span>. والـ standard deviation = <span class="ltr">√n</span>. وبالـ central limit theorem، <span class="ltr">S_n/√n</span> بيقرب من توزيع normal قياسي.</p>
+      <div class="formula">n = 100 → ~10      n = 10000 → ~100</div>
+      <p><b>في 2D</b>: الماشي بيروح فوق/تحت/يمين/شمال بنفس الاحتمال، ونفس قاعدة <span class="ltr">√n</span> بتنطبق على بعده عن نقطة البداية، والمسار بيرسم شكل شبه fractal.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> شغّل ١٠٠ ماشي وشوف الخط المتقطع <span class="ltr">±√n</span>. حوالي ٦٨٪ من الماشيين بيخلصوا جوه الحدود دي (ده رقم التوزيع الطبيعي). جرب 2D وشوف المسار.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d22-rwc" width="520" height="320" aria-label="مسارات random walk"></canvas>
+      <canvas id="d22-rwh" width="520" height="110" aria-label="هيستوجرام المواقع النهائية"></canvas>
+      <div class="mrow">
+        <label>walkers <span id="d22-rwNv">100</span><input type="range" id="d22-rwN" min="1" max="300" step="1" value="100"></label>
+        <label>steps n <span id="d22-rwSv">1000</span><input type="range" id="d22-rwS" min="50" max="4000" step="50" value="1000"></label>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d22-rwRun">شغّل</button>
+        <button type="button" id="d22-rwNew">عشوائية جديدة</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">النوع <select id="d22-rwMode"><option value="1">1D</option><option value="2">2D</option></select></label>
+      </div>
+      <div class="readout">
+        <div><small>√n</small><b id="d22-rwSq">31.6</b></div>
+        <div><small>mean (finals)</small><b id="d22-rwMean">0</b></div>
+        <div><small>std (finals)</small><b id="d22-rwStd">0</b></div>
+        <div><small>جوه ±√n</small><b id="d22-rwIn">0%</b></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>من الـ random walk لـ Brownian motion</h3>
+  <p>خد random walk وخلي حجم الخطوة <span class="ltr">1/√n</span> واعمل n خطوة في كل وحدة زمن. لما n تروح لما لا نهاية، الـ walk بيبقى <b>Brownian motion</b> <span class="ltr">B(t)</span>: process متصل، و <span class="ltr">B(t)</span> توزيعه normal بمتوسط 0 و variance = t. خصائصه التلاتة:</p>
+  <ol class="ex">
+    <li><span class="ltr">B(0) = 0</span></li>
+    <li><span class="ltr">B(t) − B(s)</span> توزيعه normal بمتوسط 0 و variance <span class="ltr">t − s</span> (لما t &gt; s).</li>
+    <li>الزيادات على فترات مش متداخلة مستقلة عن بعض.</li>
+  </ol>
+  <p>المسار متصل بس <b>مش قابل للتفاضل في أي نقطة</b>: بيترعش في كل scale مهما عملت zoom. وفي المستوى الـ fractal dimension بتاعه = 2. بيمثل حركة جزيئات في سائل، وتذبذب أسعار الأسهم، والأهم: الـ noise في الـ diffusion models. في المحاكاة بنقربه كده:</p>
+  <div class="formula">B(t + dt) = B(t) + √dt · z ,   z ~ N(0, 1)</div>
+  <p>لاحظ <b><span class="ltr">√dt</span> مش dt</b>. ده جاي من نفس قاعدة الـ CLT بتاعة الـ random walk.</p>
+
+  <h3>Gambler's ruin: هتوصل للهدف ولا هتفلس؟</h3>
+  <p>ماشي بادئ من مكان k، وفي حيطتين: لو لمس 0 خسر، لو لمس N كسب. احتمال يوصل N قبل 0 في walk عادل:</p>
+  <div class="formula">P(reach N) = k / N</div>
+  <p>بسيطة جدًا. ده مرتبط بفكرة الـ <b>martingale</b>: الـ walk العادل «القيمة المتوقعة للمستقبل = القيمة الحالية»، فلو بدأت عند k من N، فرصتك k/N بالظبط.</p>
+  <div class="note ai"><strong>فين <span class="ltr">√n</span> في الـ ML؟</strong> الـ noise بتاع SGD بيتناسب مع <span class="ltr">1/√batch_size</span>، والـ attention بتقسم على <span class="ltr">√d</span>. الجذر التربيعي هو «إمضاء» جمع حاجات عشوائية مستقلة.</div>
+</section>
+
+<!-- STATION: Markov -->
+<section id="d22-mc">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Markov Chain: ذاكرة سمكة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>نظام بيتنقل بين <b>states</b> باحتمالات ثابتة. الخاصية الأساسية: الخطوة الجاية بتعتمد على <b>الحالة الحالية بس</b>، مش على التاريخ كله. ده اسمه <b>Markov property</b> (memoryless).</p>
+      <div class="formula">P(X_{t+1}=j | X_t=i, X_{t-1}, …) = P(X_{t+1}=j | X_t=i)</div>
+      <p>عشان كده الديناميكا كلها بتتوصف بمصفوفة واحدة <b>P</b> اسمها transition matrix: <span class="ltr">P[i][j]</span> = احتمال تروح من i لـ j. وكل صف مجموعه 1 (لازم تروح حتة).</p>
+      <div class="formula">P = [[0.7, 0.1, 0.2],   ← Sunny
+     [0.3, 0.4, 0.3],   ← Rainy
+     [0.4, 0.2, 0.4]]   ← Cloudy</div>
+      <p>ابدأ من أي حالة. بعد خطوات كتير توزيع الحالات بيستقر على <b>stationary distribution π</b> اللي بتحقق <span class="ltr">πP = π</span>. للطقس ده: حوالي <span class="ltr">[0.55, 0.18, 0.27]</span>، يعني على المدى الطويل الجو مشمس ٥٥٪ من الوقت مهما كانت البداية. (الحل بالظبط <span class="ltr">[6/11, 2/11, 3/11]</span>.)</p>
+      <div class="note"><strong>جرب بإيدك:</strong> ابدأ من Rainy واضغط «١٠٠ خطوة» كذا مرة. الأعمدة الملونة (اللي حصل فعلًا) بتقرب من الخطوط (π). وحرك slider الـ k عشان تشوف الـ power method: <span class="ltr">d·P^k</span>.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d22-mcc" width="520" height="280" aria-label="رسم Markov chain الطقس"></canvas>
+      <canvas id="d22-mch" width="520" height="130" aria-label="التوزيع التجريبي مقابل الثابت"></canvas>
+      <div class="btns">
+        <button type="button" data-d22s="0">ابدأ Sunny</button>
+        <button type="button" data-d22s="1">ابدأ Rainy</button>
+        <button type="button" data-d22s="2">ابدأ Cloudy</button>
+      </div>
+      <div class="btns">
+        <button type="button" id="d22-mc1">خطوة</button>
+        <button type="button" class="primary" id="d22-mc100">١٠٠ خطوة</button>
+        <button type="button" id="d22-mc10k">١٠٠٠٠ خطوة</button>
+      </div>
+      <label style="display:grid;gap:2px">power method: k = <b class="mono" id="d22-mcKv">0</b><input type="range" id="d22-mcK" min="0" max="20" step="1" value="0"></label>
+      <div class="readout">
+        <div><small>خطوات</small><b id="d22-mcN">0</b></div>
+        <div><small>max error (empirical)</small><b id="d22-mcErr">–</b></div>
+        <div><small>d·P^k</small><b id="d22-mcPk">[0, 1, 0]</b></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>إزاي نحسب π؟</h3>
+  <ol class="ex">
+    <li><b>Power method:</b> خد أي توزيع بداية واضربه في P تاني وتالت. بعد كفاية تكرارات بيستقر (ده اللي الـ slider بيعمله).</li>
+    <li><b>Eigenvalue method:</b> π هي الـ <b>left eigenvector</b> بتاع P اللي الـ eigenvalue بتاعه = 1. يعني eigenvector بتاع <span class="ltr">Pᵀ</span> بـ eigenvalue 1 (الـ transpose بيحول left لـ right). افتكر الـ eigenvectors من Day 3 و Day 11.</li>
+  </ol>
+  <h3>إمتى السلسلة بتستقر؟</h3>
+  <p>عشان يبقى فيه π وحيدة والسلسلة توصلها لازم تكون:</p>
+  <ul>
+    <li><b>Irreducible:</b> أي حالة تقدر توصل لأي حالة تانية.</li>
+    <li><b>Aperiodic:</b> مش بتلف في دايرة بفترة ثابتة (زي A→B→A→B للأبد).</li>
+  </ul>
+  <p>أغلب السلاسل اللي هتقابلها في الـ ML بتحقق الشرطين.</p>
+  <h3>Absorbing states و Mixing time</h3>
+  <p><b>Absorbing state:</b> حالة لو دخلتها مش هتطلع تاني (<span class="ltr">P[i][i] = 1</span>). أمثلة: لعبة خلصت، عميل عمل churn، أو توكن الـ end-of-text في LLM.</p>
+  <p><b>Mixing time:</b> كام خطوة لحد ما السلسلة تبقى «قريبة» من π؟ رسميًا: عدد الخطوات لحد ما الـ total variation distance من π تقل عن threshold. في السلاسل الـ reversible اللي بيتحكم فيه هو الـ <b>spectral gap</b> = 1 − أكبر |eigenvalue| بعد الـ 1. الـ gap الكبير = mixing أسرع. تقريبًا: gap = 0.2 → حوالي ٥ خطوات، gap = 0.01 → حوالي ١٠٠ خطوة. افحصه قبل ما تشغل محاكاة طويلة عشان متضيعش compute.</p>
+</section>
+
+<!-- STATION: LLM temperature -->
+<section id="d22-llm">
+  <div class="station-head"><span class="tag">04</span><h2>الـ LLM كـ Markov chain: الـ temperature و top-k و top-p</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>توليد التوكنز في الـ LLM تقريبًا Markov process: بالنسبة للـ context الحالي، الموديل بيطلّع توزيع على التوكن الجاي. والـ <b>temperature</b> بتتحكم في حدة التوزيع ده:</p>
+      <div class="formula">P(token_i) = exp(logit_i / T) / Σ_j exp(logit_j / T)</div>
+      <ul>
+        <li><span class="ltr">T = 1.0</span>: التوزيع العادي.</li>
+        <li><span class="ltr">T &lt; 1</span>: أحد (deterministic أكتر).</li>
+        <li><span class="ltr">T &gt; 1</span>: أفلطح (عشوائي أكتر).</li>
+        <li><span class="ltr">T → 0</span>: argmax يعني greedy.</li>
+      </ul>
+      <p><b>Top-k</b>: خلي أعلى k توكن بس. <b>Top-p (nucleus)</b>: خلي أصغر مجموعة توكنز مجموع احتمالاتها بيعدّي p. الاتنين بيعدلوا احتمالات الـ transition بتاعة السلسلة.</p>
+      <p style="color:var(--muted);font-size:15px">الـ logits في المعمل ده مثال من عندي للتوضيح بس، مش من موديل حقيقي.</p>
+    </div>
+    <div class="instrument">
+      <div style="font-family:var(--f-mono);direction:ltr;font-size:14px">"The cat sat on the ___"</div>
+      <div id="d22-tok" style="display:grid;gap:6px"></div>
+      <label style="display:grid;gap:2px">temperature T = <b class="mono" id="d22-Tv">1.00</b><input type="range" id="d22-T" min="0.05" max="3" step="0.05" value="1"></label>
+      <div class="mrow">
+        <label>top-k <span id="d22-kv">6</span><input type="range" id="d22-k" min="1" max="6" step="1" value="6"></label>
+        <label>top-p <span id="d22-pv">1.00</span><input type="range" id="d22-p" min="0.1" max="1" step="0.05" value="1"></label>
+      </div>
+      <div class="btns"><button type="button" class="primary" id="d22-samp">اسحب ٢٠ توكن</button></div>
+      <div class="mono" id="d22-sampOut" style="direction:ltr;font-size:13px;min-height:24px;overflow-wrap:anywhere"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION: Langevin + MH -->
+<section id="d22-lv">
+  <div class="station-head"><span class="tag">05</span><h2>Langevin Dynamics و Metropolis-Hastings: إزاي تسحب عينات من أي توزيع</h2></div>
+  <h3>Langevin: gradient descent ومعاه رعشة</h3>
+  <p>الـ gradient descent (Day 8) بيدور على أقل نقطة في دالة. الـ Langevin dynamics بتعمل حاجة تانية: بتطلّع عينات من توزيع احتماله متناسب مع <span class="ltr">exp(−U(x)/T)</span>، حيث U دالة طاقة و T حرارة.</p>
+  <div class="formula">x_{t+1} = x_t − dt·∇U(x_t) + √(2·T·dt) · z_t</div>
+  <p>فيه قوتين شغالين على «الكرة»:</p>
+  <ol class="ex">
+    <li><b>قوة الـ gradient</b> <span class="ltr">(−dt·∇U)</span>: بتزقها ناحية الطاقة الأقل، زي gradient descent.</li>
+    <li><b>القوة العشوائية</b> <span class="ltr">(√(2T·dt)·z)</span>: بتزقها في اتجاهات عشوائية (استكشاف).</li>
+  </ol>
+  <p>عند <span class="ltr">T = 0</span> ده gradient descent صافي. عند T عالية تقريبًا random walk. وعند الحرارة المناسبة الكرة بتلف في المكان كله وبتقضي وقت أكتر في الأماكن قليلة الطاقة. تخيلها كورة في وادي والأرض بتتهز: الهزة الصغيرة بتسيبها في نفس الوادي، والكبيرة بتنططها بين الوديان.</p>
+
+  <h3>Metropolis-Hastings: اقترح وبعدين اقبل أو ارفض</h3>
+  <p>ساعات عندك توزيع <span class="ltr">p(x)</span> تقدر تحسب قيمته (لحد ثابت) بس مش عارف تسحب منه مباشرة. المثال الكلاسيكي: الـ posterior في Bayes، عارف likelihood × prior بس الـ normalizing constant مستحيل تحسبه. الخوارزمية بتبني Markov chain التوزيع الثابت بتاعها هو <span class="ltr">p(x)</span>:</p>
+  <ol class="ex">
+    <li>ابدأ من أي x.</li>
+    <li>اقترح <span class="ltr">x'</span> من proposal <span class="ltr">Q(x'|x)</span>.</li>
+    <li>احسب <span class="ltr">a = p(x')·Q(x|x') / (p(x)·Q(x'|x))</span>.</li>
+    <li>اقبل <span class="ltr">x'</span> باحتمال <span class="ltr">min(1, a)</span>، وإلا خليك مكانك.</li>
+    <li>كرر.</li>
+  </ol>
+  <p>لو Q متماثل (زي <span class="ltr">N(x, σ²)</span>) النسبة بتبقى <span class="ltr">a = p(x')/p(x)</span> بس، و<b>الـ normalizing constant بيتلغي</b>. ده سر قوتها.</p>
+  <p><b>ليه بتشتغل؟</b> نسبة القبول بتضمن <b>detailed balance</b>: احتمال تكون عند x وتروح x' = احتمال تكون عند x' وتروح x. والـ detailed balance بيضمن إن <span class="ltr">p(x)</span> هي الـ stationary distribution. فبعد خطوات كفاية العينات بتيجي من <span class="ltr">p(x)</span>.</p>
+  <p>الاقتراح لو صغير قوي السلسلة بتزحف (random walk)، ولو كبير قوي كل حاجة بتترفض. ضبط الـ proposal هو «فن» الـ MCMC.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: وادين (double-well)</h3>
+      <p>الطاقة <span class="ltr">U(x) = (x² − 1)²</span>: واديين عند <span class="ltr">x = ±1</span> وبينهم جبل ارتفاعه 1 عند <span class="ltr">x = 0</span>. الهدف إن الهيستوجرام يطابق المنحنى <span class="ltr">exp(−U/T)</span>.</p>
+      <ul>
+        <li>حرارة واطية (0.05): العينات بتتحبس في وادي واحد.</li>
+        <li>حرارة عالية (1): بتنطط بين الاتنين.</li>
+        <li>في MH: جرب proposal std صغير جدًا (0.05) وكبير جدًا (3) وشوف نسبة القبول.</li>
+      </ul>
+      <div class="note"><strong>عدّاد العبور</strong> بيعد كام مرة إشارة x اتغيرت (عدّت الجبل). ده بالظبط تمرين ٤.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d22-lvc" width="520" height="240" aria-label="الطاقة والهيستوجرام"></canvas>
+      <canvas id="d22-lvt" width="520" height="110" aria-label="مسار x مع الوقت"></canvas>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">الطريقة <select id="d22-lvM"><option value="L">Langevin</option><option value="MH">Metropolis-Hastings</option></select></label>
+        <button type="button" class="primary" id="d22-lvRun">شغّل</button>
+        <button type="button" id="d22-lvReset">امسح</button>
+      </div>
+      <div class="mrow">
+        <label>T <span id="d22-lvTv">0.30</span><input type="range" id="d22-lvT" min="0.02" max="1.5" step="0.01" value="0.3"></label>
+        <label id="d22-lvSL">dt <span id="d22-lvSv">0.010</span><input type="range" id="d22-lvS" min="0.001" max="0.1" step="0.001" value="0.01"></label>
+      </div>
+      <div class="readout">
+        <div><small>samples</small><b id="d22-lvN">0</b></div>
+        <div><small>x &gt; 0</small><b id="d22-lvPos">–</b></div>
+        <div><small>عبور الجبل</small><b id="d22-lvX">0</b></div>
+        <div><small>acceptance</small><b id="d22-lvAcc">–</b></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>نصايح عملية للـ MCMC</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المصطلح</th><th>المعنى</th></tr>
+    <tr><td>Burn-in</td><td>ارمي أول N عينة. السلسلة محتاجة وقت توصل للتوزيع الثابت من نقطة البداية.</td></tr>
+    <tr><td>Thinning</td><td>خد كل k عينة واحدة عشان تقلل الـ autocorrelation.</td></tr>
+    <tr><td>Multiple chains</td><td>شغّل كذا سلسلة من بدايات مختلفة. لو وصلوا لنفس التوزيع، ده دليل على الـ convergence.</td></tr>
+    <tr><td>Acceptance rate</td><td>لـ proposals Gaussian في d أبعاد، النسبة المثالية حوالي 23٪ (Roberts &amp; Rosenthal, 2001). عالية قوي = السلسلة مش بتتحرك. واطية قوي = بترفض كل حاجة. الدرس بيقول ٢٣–٥٠٪ عشان mixing كويس.</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION: diffusion -->
+<section id="d22-df">
+  <div class="station-head"><span class="tag">06</span><h2>الـ Diffusion: Markov chain بتحول الداتا لدوشة (والعكس)</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ forward process في الـ diffusion model:</p>
+      <div class="formula">x_t = √α_t · x_{t−1} + √(1 − α_t) · noise</div>
+      <p>ده Markov chain بيخلط الداتا بالـ noise بالتدريج. بعد خطوات كفاية، <span class="ltr">x_T</span> بيبقى Gaussian noise صافي. في DDPM (Ho et al., 2020) بيكتبوه بـ noise schedule <span class="ltr">β_t</span> (حيث <span class="ltr">α_t = 1 − β_t</span>):</p>
+      <div class="formula">q(x_t | x_{t−1}) = N(x_t ; √(1−β_t)·x_{t−1}, β_t·I)</div>
+      <p>الـ <b>reverse process</b> (من noise لداتا) هو كمان Markov chain، بس احتمالاته <b>متعلّمة</b> بـ neural network بتتوقع الـ noise اللي اتضاف في كل خطوة وتطرحه:</p>
+      <div class="formula">p_θ(x_{t−1} | x_t) = N(x_{t−1} ; μ_θ(x_t, t), σ_t²·I)</div>
+      <p>كل خطوة في التوليد هي خطوة في Markov chain متعلّمة.</p>
+      <div class="note"><strong>جرب:</strong> ده نفس الـ demo بتاع الكود: إشارة <span class="ltr">sin(t) + 0.5·sin(3t)</span> و β من 0.001 لـ 0.05 على ١٠٠ خطوة. حرك t وراقب <span class="ltr">ᾱ_t</span> (حاصل ضرب <span class="ltr">1−β</span>).</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d22-dfc" width="520" height="260" aria-label="الإشارة وهي بتتحول لدوشة"></canvas>
+      <label style="display:grid;gap:2px">الخطوة t = <b class="mono" id="d22-dfTv">0</b><input type="range" id="d22-dfT" min="0" max="100" step="1" value="0"></label>
+      <div class="btns"><button type="button" id="d22-dfNew">noise جديد</button><button type="button" id="d22-dfPlay" class="primary">شغّل من 0 لـ 100</button></div>
+      <div class="readout">
+        <div><small>β_t</small><b id="d22-dfB">–</b></div>
+        <div><small>ᾱ_t</small><b id="d22-dfA">1</b></div>
+        <div><small>√ᾱ_t (وزن الإشارة)</small><b id="d22-dfS">1</b></div>
+        <div><small>correlation</small><b id="d22-dfC">1</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d22-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو (اللي عملتله clone في Day 1)، الملف الأصلي بيتشغل كده:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/01-math-foundations/22-stochastic-processes/code/stochastic.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> اكتب الكود بإيدك في ملف جديد <code>my_stochastic.py</code> خطوة خطوة، وبص على الأصل بس لو اتزنقت. محتاج <code>numpy</code> بس.</p>
+
+  <h3>خطوة ١: الـ random walks</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def random_walk_1d(n_steps, seed=None):
+    rng = np.random.RandomState(seed)
+    steps = rng.choice([-1, 1], size=n_steps)          <span class="c"># كل خطوة +1 أو -1</span>
+    positions = np.concatenate([[0], np.cumsum(steps)])  <span class="c"># المكان = المجموع التراكمي، وبنبدأ من 0</span>
+    return positions
+
+def random_walk_2d(n_steps, seed=None):
+    rng = np.random.RandomState(seed)
+    directions = rng.choice(4, size=n_steps)           <span class="c"># 0 يمين، 1 شمال، 2 فوق، 3 تحت</span>
+    dx = np.zeros(n_steps)
+    dy = np.zeros(n_steps)
+    dx[directions == 0] = 1
+    dx[directions == 1] = -1
+    dy[directions == 2] = 1
+    dy[directions == 3] = -1
+    x = np.concatenate([[0], np.cumsum(dx)])
+    y = np.concatenate([[0], np.cumsum(dy)])
+    return x, y</pre></div>
+
+  <h3>خطوة ٢: كلاس MarkovChain</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MarkovChain:
+    def __init__(self, transition_matrix, state_names=None):
+        self.P = np.array(transition_matrix, dtype=float)
+        self.n_states = len(self.P)
+        self.state_names = state_names or [str(i) for i in range(self.n_states)]
+
+    def step(self, current_state, rng=None):
+        if rng is None:
+            rng = np.random.RandomState()
+        probs = self.P[current_state]                   <span class="c"># الصف بتاع الحالة الحالية بس (Markov)</span>
+        return rng.choice(self.n_states, p=probs)
+
+    def simulate(self, start_state, n_steps, seed=None):
+        rng = np.random.RandomState(seed)
+        states = [start_state]
+        current = start_state
+        for _ in range(n_steps):
+            current = self.step(current, rng)
+            states.append(current)
+        return states
+
+    def stationary_distribution(self):
+        eigenvalues, eigenvectors = np.linalg.eig(self.P.T)  <span class="c"># transpose: left eigenvector</span>
+        idx = np.argmin(np.abs(eigenvalues - 1.0))           <span class="c"># الـ eigenvalue الأقرب لـ 1</span>
+        stationary = np.real(eigenvectors[:, idx])
+        if stationary.sum() &lt; 0:                           <span class="c"># الـ eigenvector ممكن يطلع بإشارة سالبة</span>
+            stationary = -stationary
+        stationary = np.clip(stationary, 0, None)
+        total = stationary.sum()
+        if total &gt; 0:
+            stationary = stationary / total                  <span class="c"># خليه توزيع مجموعه 1</span>
+        return stationary
+
+    def empirical_distribution(self, states):
+        counts = np.zeros(self.n_states)
+        for s in states:
+            counts[s] += 1
+        return counts / len(states)</pre></div>
+
+  <h3>خطوة ٣: Langevin dynamics</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def langevin_dynamics(grad_U, x0, dt, temperature, n_steps, seed=None):
+    rng = np.random.RandomState(seed)
+    x = np.array(x0, dtype=float)
+    trajectory = [x.copy()]
+    for _ in range(n_steps):
+        noise = rng.randn(*x.shape)
+        <span class="c"># زقة الـ gradient + رعشة عشوائية حجمها sqrt(2 T dt)</span>
+        x = x - dt * grad_U(x) + np.sqrt(2 * temperature * dt) * noise
+        trajectory.append(x.copy())
+    return np.array(trajectory)</pre></div>
+
+  <h3>خطوة ٤: Metropolis-Hastings</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def metropolis_hastings(target_log_prob, proposal_std, x0, n_samples, seed=None):
+    if n_samples &lt; 1:
+        raise ValueError("n_samples must be at least 1")
+    rng = np.random.RandomState(seed)
+    x = np.array(x0, dtype=float)
+    samples = [x.copy()]
+    accepted = 0
+    for _ in range(n_samples - 1):
+        x_proposed = x + rng.randn(*x.shape) * proposal_std           <span class="c"># اقتراح Gaussian متماثل</span>
+        log_ratio = target_log_prob(x_proposed) - target_log_prob(x)  <span class="c"># log(p(x')/p(x))، الثابت اتلغى</span>
+        if np.log(rng.rand()) &lt; log_ratio:                          <span class="c"># اقبل باحتمال min(1, ratio)</span>
+            x = x_proposed
+            accepted += 1
+        samples.append(x.copy())                                      <span class="c"># حتى لو رفضت، العينة بتتسجل تاني</span>
+    acceptance_rate = accepted / (n_samples - 1)
+    return np.array(samples), acceptance_rate</pre></div>
+
+  <h3>خطوة ٥: الـ forward diffusion</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def diffusion_forward(signal, n_steps, beta_start=0.0001, beta_end=0.02, seed=None):
+    rng = np.random.RandomState(seed)
+    betas = np.linspace(beta_start, beta_end, n_steps)   <span class="c"># noise schedule خطي</span>
+    trajectory = [signal.copy()]
+    x = signal.copy()
+    for t in range(n_steps):
+        noise = rng.randn(*x.shape)
+        x = np.sqrt(1 - betas[t]) * x + np.sqrt(betas[t]) * noise
+        trajectory.append(x.copy())
+    return np.array(trajectory), betas</pre></div>
+
+  <h3>خطوة ٦: الـ demos</h3>
+  <p>الملف الأصلي فيه ٥ دوال <code>demo_*</code> بتستخدم اللي فوق: ١٠٠٠٠ random walk طول كل واحد ١٠٠٠ خطوة، وسلسلة الطقس، و Langevin بتسحب من Gaussian متوسطها 3 و variance بتاعها 2، و MH على توزيع بقمتين (خليط <span class="ltr">N(−3,1)</span> و <span class="ltr">N(+3,1)</span>)، و diffusion على إشارة sine. انسخ الجزء ده بس من الأصل لو حابب، أو اكتب نسختك:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>P = [[0.7, 0.1, 0.2],
+     [0.3, 0.4, 0.3],
+     [0.4, 0.2, 0.4]]
+mc = MarkovChain(P, state_names=["Sunny", "Rainy", "Cloudy"])
+print(mc.stationary_distribution())
+
+states = mc.simulate(start_state=0, n_steps=100000, seed=42)
+print(mc.empirical_distribution(states))     <span class="c"># لازم يقرب من اللي فوق</span>
+
+def grad_U(x):                                <span class="c"># U = (x-3)^2 / (2*2) → Gaussian(3, 2)</span>
+    return (x - 3.0) / 2.0
+traj = langevin_dynamics(grad_U, np.array([0.0]), dt=0.1, temperature=1.0, n_steps=50000, seed=42)
+s = traj[5000:, 0]                            <span class="c"># burn-in: ارمي أول 5000</span>
+print(s.mean(), s.var())                      <span class="c"># المفروض قريب من 3 و 2</span></pre></div>
+
+  <details><summary>الناتج المتوقع (الأجزاء المحسوبة بالظبط)</summary>
+    <p>الـ stationary distribution رياضيًا = <span class="ltr">[6/11, 2/11, 3/11]</span>، فالسطر ده من الملف الأصلي لازم يطلع كده بالظبط:</p>
+<pre class="term">Stationary distribution (analytical):
+  Sunny: 0.5455
+  Rainy: 0.1818
+  Cloudy: 0.2727</pre>
+    <p>وسطر النظرية في الـ demo الأول: <span class="ltr">Theory: E[position] = 0, std(position) = sqrt(1000) = 31.6</span>. وفي demo الـ diffusion: <span class="ltr">Noise schedule: beta from 0.0010 to 0.0500</span>.</p>
+    <p>باقي الأرقام عشوائية (بتعتمد على الـ seed)، فقارن باللي هيطلعلك بالشكل ده: الـ std بتاع العشرة آلاف walk قريب من 31.62، والتوزيع التجريبي للطقس قريب من π والـ max error بيقل كل ما الخطوات تزيد، و Langevin بيدي متوسط قريب من 3 و variance قريب من 2، و MH بيقسم العينات تقريبًا نص ونص على القمتين ونسبة القبول بتقل كل ما الـ proposal std يكبر، والـ correlation في الـ diffusion بيبدأ من 1 ويقل مع الخطوات.</p>
+  </details>
+
+  <h3>خطوة ٧: التحقق من سرعة الـ mixing</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>P = np.array([[0.9, 0.1], [0.3, 0.7]])
+eigenvalues = np.linalg.eigvals(P)
+spectral_gap = 1 - sorted(np.abs(eigenvalues))[-2]   <span class="c"># 1 - تاني أكبر |eigenvalue|</span>
+print(f"Eigenvalues: {eigenvalues}")
+print(f"Spectral gap: {spectral_gap:.4f}")
+print(f"Approximate mixing time: {1/spectral_gap:.1f} steps")</pre></div>
+  <details><summary>الناتج المتوقع</summary>
+    <p>الـ eigenvalues رياضيًا هي 1 و 0.6 (الـ trace = 1.6 والـ det = 0.6)، فالـ gap = 0.4. ترتيب الـ eigenvalues في السطر الأول ممكن يختلف:</p>
+<pre class="term">Spectral gap: 0.4000
+Approximate mixing time: 2.5 steps</pre>
+  </details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d22-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل تمرين ١ و٤ على الأقل النهاردة (المعامل فوق بتساعدك). التاني في المراجعة.</p>
+  <ol class="ex">
+    <li><b>١٠٠٠ random walk طول كل واحد ١٠٠٠٠ خطوة.</b> ارسم توزيع المواقع النهائية واتأكد إنه تقريبًا Gaussian بمتوسط 0 و std = <span class="ltr">√10000 = 100</span>.
+      <details><summary>تلميح</summary>نادي <code>random_walk_1d(10000, seed=i)</code> لـ ١٠٠٠ seed وخد آخر مكان. المتوسط قريب من 0، الـ std قريب من 100، وحوالي ٦٨٪ من المواقع بين −100 و 100.</details></li>
+    <li><b>مولّد نصوص بـ Markov chain.</b> على corpus صغير: لكل كلمة عدّ الانتقالات للكلمة اللي بعدها، اعمل transition matrix، وولّد جمل بالـ sampling.
+      <details><summary>تلميح</summary>عدّ كل زوج كلمات، وقسّم كل صف على مجموعه عشان يبقى 1. ابعت المصفوفة لـ <code>MarkovChain(transition_matrix, state_names)</code> ونادي <code>simulate</code>. اتأكد إن كل زوج كلمات في الناتج موجود فعلًا في الـ corpus.</details></li>
+    <li><b>Simulated annealing</b> باستخدام Metropolis-Hastings: ابدأ بحرارة عالية (تقبل تقريبًا كل حاجة) وبرّد بالتدريج (تقبل التحسينات بس). استخدمه تلاقي أقل نقطة في دالة فيها local minima كتير.
+      <details><summary>تلميح</summary>اقبل النقطة الأوحش باحتمال <span class="ltr">exp(−Δ/T)</span> واضرب T في معامل زي 0.99 بعد كل خطوة. جرب على دالة عارف أقل نقطة فيها، وقارن إجابتك بـ grid search ناعم.</details></li>
+    <li><b>Langevin على حرارات مختلفة.</b> اسحب من double-well <span class="ltr">U(x) = (x² − 1)²</span>. على حرارة واطية العينات في وادي واحد، وعلى عالية في الاتنين. لاقي الحرارة الحرجة اللي السلسلة بتبدأ فيها تتنقل بين الوديان.
+      <details><summary>تلميح</summary>الـ gradient = <span class="ltr">4x(x² − 1)</span>، ابعته لـ <code>langevin_dynamics(grad_U, x0, dt, temperature, n_steps)</code>. الجبل عند <span class="ltr">x = 0</span> ارتفاعه 1، فعدّ كام مرة إشارة x بتتغير لحرارات من 0.05 لـ 1، ودوّر على الحرارة اللي العدد بيبدأ يطلع فيها بسرعة. معمل ٠٥ بيوريك نفس العدّاد.</details></li>
+    <li><b>الـ forward diffusion.</b> ابدأ بإشارة 1D (sine مثلًا). ضيف noise على ١٠٠ خطوة بـ linear schedule. وريّ الإشارة وهي بتبوظ لحد ما تبقى noise. وبعدين اعمل denoiser بسيط بيعكس العملية (حتى لو ساذج بيطرح الـ noise المتوقع).
+      <details><summary>تلميح</summary>نادي <code>diffusion_forward(signal, 100)</code> واحسب <span class="ltr">ᾱ</span> في آخر خطوة = حاصل ضرب <span class="ltr">(1 − β_t)</span>. لو <span class="ltr">ᾱ</span> بعيد عن 0 يبقى الإشارة لسه مش noise صافي، فعلّي <code>beta_end</code>. اختبر الـ denoiser الأول بالـ noise الحقيقي: ساعتها <span class="ltr">(x_t − √(1−ᾱ_t)·ε) / √ᾱ_t</span> لازم ترجّع الإشارة الأصلية بالظبط.</details></li>
+    <li><b>إضافة مني · sampler لـ LLM:</b> اكتب <code>sample_next(logits, temperature, top_k, top_p, rng)</code>. جربها على logits ثابتة لـ ١٠٠٠ مرة لكل إعداد واطبع: نسبة أكتر توكن اتكرر، وعدد التوكنز المختلفة اللي طلعت. ده بالظبط الكود اللي جوه أي inference server (والـ knobs اللي بتظبطها في الـ API).
+      <details><summary>تلميح</summary>الترتيب: قسّم على T ← softmax (اطرح الـ max الأول عشان الـ stability، فاكر Day 13؟) ← top-k ← رتّب تنازلي وخد الـ cumsum لحد p ← أعد التطبيع ← <code>rng.choice</code>. لو T = 0 رجّع argmax بدل القسمة على صفر.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d22-add">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مقالوش صريح</h2></div>
+  <h3>الـ intuition في سطر</h3>
+  <p>كل الأفكار النهاردة هي نفس الوصفة: <b>قاعدة محلية بسيطة</b> (خطوة واحدة) بتتكرر كتير، فبيطلع <b>سلوك عام ثابت</b> (توزيع). الـ random walk ← Gaussian، والـ Markov chain ← π، والـ MH ← <span class="ltr">p(x)</span>، والـ Langevin ← <span class="ltr">exp(−U/T)</span>. انت بتصمم الخطوة عشان «اللي يستقر عليه» يبقى اللي انت عايزه.</p>
+  <h3>أخطاء شائعة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الغلطة</th><th>ليه بتحصل / الحل</th></tr>
+    <tr><td>صفوف P مجموعها مش 1</td><td><code>rng.choice(p=...)</code> هيضرب error. اعمل normalize واعمل <code>assert np.allclose(P.sum(1), 1)</code>.</td></tr>
+    <tr><td>نسيت الـ transpose في <code>eig</code></td><td>هتطلع الـ right eigenvector (اللي هو كله واحدات) بدل π. لازم <code>P.T</code>.</td></tr>
+    <tr><td>حسبت MH بالاحتمالات مش بالـ log</td><td>في أبعاد كتير <span class="ltr">p(x)</span> بيبقى صغير جدًا ويعمل underflow لصفر (Day 13). عشان كده الكود بيقارن <code>log</code>.</td></tr>
+    <tr><td>استخدمت <span class="ltr">dt</span> بدل <span class="ltr">√dt</span> في الـ noise</td><td>الـ noise هيختفي لما dt تصغر وهتبقى gradient descent. الـ variance بيتناسب مع dt، فالـ std مع <span class="ltr">√dt</span>.</td></tr>
+    <tr><td>مافيش burn-in</td><td>أول عينات لسه متأثرة بنقطة البداية وبتبوّظ المتوسط.</td></tr>
+    <tr><td>فاكر إن الـ diffusion «خلص» بعد ١٠٠ خطوة</td><td>احسب <span class="ltr">ᾱ</span>. مع schedule الـ demo (β من 0.001 لـ 0.05، ١٠٠ خطوة) رياضيًا <span class="ltr">ᾱ₁₀₀ ≈ 0.075</span> فوزن الإشارة <span class="ltr">√ᾱ ≈ 0.27</span>، يعني لسه فيه أثر للإشارة (شوفه في معمل ٠٦). ومع الـ defaults بتاعة الدالة (0.0001 لـ 0.02) على ١٠٠ خطوة <span class="ltr">ᾱ ≈ 0.36</span>. عشان كده DDPM بيستخدم خطوات أكتر بكتير.</td></tr>
+  </table></div>
+  <h3>فين ده في الـ LLMs والـ agents؟</h3>
+  <ul>
+    <li><b>الـ LLM مش Markov على مستوى التوكن الواحد</b>: بيبص على الـ context كله. بس لو اعتبرت «الـ state» = الـ context كله، يبقى Markov. وعشان كده الـ KV cache بيشيل الـ state ده.</li>
+    <li><b>Temperature في الـ API</b>: T واطية لـ extraction و code و tool calls (عايز ثبات)، و T أعلى لـ brainstorming. ده نفس الـ knob اللي لعبت بيه في معمل ٠٤.</li>
+    <li><b>الـ agent loop</b>: state (الـ context) ← action (tool call) ← state جديدة. ده MDP، وهتشوفه تاني في Phase 9 (RL) و Phase 14 (Agents). والـ max-steps limit عندك هو absorbing state صناعي عشان الـ agent مايلفّش للأبد.</li>
+    <li><b>Self-consistency</b>: لما تسحب كذا إجابة بـ T &gt; 0 وتعمل تصويت، انت بتعمل sampling من توزيع وبتاخد الـ mode بتاعه.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d22-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d22-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d22-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d22-check">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح ليه المسافة في الـ random walk بتكبر زي <span class="ltr">√n</span></label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فاهم الـ Markov property والـ stationary distribution والطريقتين لحسابها</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> فاهم الـ temperature و top-k و top-p بتعمل إيه في التوزيع</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت Langevin و Metropolis-Hastings بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> فاهم الـ forward diffusion كـ Markov chain و ᾱ معناها إيه</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c7" id="d22-ckQuiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Random walk</td><td>Node2Vec graph embeddings، الاستكشاف في RL</td></tr>
+    <tr><td>Markov chain</td><td>توليد التوكنز في الـ LLMs، MCMC sampling</td></tr>
+    <tr><td>Brownian motion</td><td>الـ forward diffusion في DDPM، الموديلات المبنية على SDE</td></tr>
+    <tr><td>Langevin dynamics</td><td>Score-based generative models، SGLD</td></tr>
+    <tr><td>Stationary distribution</td><td>هدف الـ MCMC، الـ PageRank</td></tr>
+    <tr><td>Metropolis-Hastings</td><td>Bayesian posterior sampling، simulated annealing</td></tr>
+    <tr><td>Temperature</td><td>LLM sampling، Boltzmann exploration في RL، simulated annealing</td></tr>
+    <tr><td>Mixing time</td><td>سرعة convergence الـ MCMC، تحليل الـ spectral gap</td></tr>
+    <tr><td>Absorbing state</td><td>توكن نهاية الجملة، الـ terminal states في RL</td></tr>
+    <tr><td>Detailed balance</td><td>ضمان صحة الـ MCMC samplers</td></tr>
+  </table></div>
+  <p><b>SGLD</b> كلمة أخيرة: بتجمع mini-batch gradient descent مع noise الـ Langevin. لما الـ learning rate يقل، بتتحول من optimization لـ sampling، فبتاخد عينات تقريبية من الـ Bayesian posterior ببلاش، ودي من أبسط الطرق عشان تطلع uncertainty من neural network.</p>
+  <div class="note ai"><strong>مبروك، خلصت Phase 1 كلها.</strong> ٢٢ درس رياضيات: من المتجهات لحد الـ diffusion. <b>بكرة:</b> Phase 2 بتبدأ بـ What Is Machine Learning، وهتلاقي كل حاجة ذاكرتها هنا بتتحول لأدوات.</div>
+  <p><b>قراءة إضافية من الدرس:</b> Ho, Jain, Abbeel (2020) DDPM · Song &amp; Ermon (2019) score-based · Roberts &amp; Rosenthal (2004) MCMC theory · Norris (1997) Markov Chains · Welling &amp; Teh (2011) SGLD.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F22-stochastic-processes" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/22-stochastic-processes</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, f=A.fmt, $=id=>document.getElementById(id);
+const root=$('d22-root');
+
+/* roadmap */
+const rm=$('d22-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===22)s.className='now';rm.appendChild(s)}
+
+/* seeded PRNG + gaussian */
+function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gaussFn(r){let spare=null;return function(){if(spare!==null){const s=spare;spare=null;return s}let u=0,v=0;while(u===0)u=r();v=r();const m=Math.sqrt(-2*Math.log(u));spare=m*Math.sin(2*Math.PI*v);return m*Math.cos(2*Math.PI*v)}}
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+/* ===== Lab 1: random walks ===== */
+const rwc=$('d22-rwc'),rwx=A.setupCanvas(rwc),RW=+rwc.dataset.w,RH=+rwc.dataset.h;
+const rwh=$('d22-rwh'),rhx=A.setupCanvas(rwh),HW=+rwh.dataset.w,HH=+rwh.dataset.h;
+let rwSeed=7,rwPaths=[],rwShown=0,rwAnim=null;
+function rwBuild(){
+  const N=+$('d22-rwN').value,n=+$('d22-rwS').value,mode=$('d22-rwMode').value,r=mulberry(rwSeed);
+  rwPaths=[];
+  for(let w=0;w<N;w++){
+    if(mode==='1'){const p=new Int32Array(n+1);for(let i=1;i<=n;i++)p[i]=p[i-1]+(r()<.5?-1:1);rwPaths.push(p)}
+    else{const x=new Int32Array(n+1),y=new Int32Array(n+1);for(let i=1;i<=n;i++){const d=Math.floor(r()*4);x[i]=x[i-1]+(d===0?1:d===1?-1:0);y[i]=y[i-1]+(d===2?1:d===3?-1:0)}rwPaths.push([x,y])}
+  }
+}
+function rwDraw(){
+  const n=+$('d22-rwS').value,mode=$('d22-rwMode').value,upto=Math.min(rwShown,n),sq=Math.sqrt(n);
+  $('d22-rwNv').textContent=$('d22-rwN').value;$('d22-rwSv').textContent=n;$('d22-rwSq').textContent=f(sq,1);
+  rwx.clearRect(0,0,RW,RH);
+  const ink=css('--ink'),va=css('--vec-a'),vb=css('--vec-b'),mu=css('--muted');
+  let finals=[];
+  if(mode==='1'){
+    const ymax=3.2*sq,X=i=>10+(RW-20)*i/n,Y=v=>RH/2-v/ymax*(RH/2-10);
+    A.grid(rwx,RW,RH,40,10,RH/2);
+    rwx.lineWidth=1;rwx.strokeStyle=va;rwx.globalAlpha=Math.max(.08,Math.min(.6,6/Math.sqrt(rwPaths.length)));
+    const stride=Math.max(1,Math.floor(n/400));
+    rwPaths.forEach(p=>{rwx.beginPath();rwx.moveTo(X(0),Y(0));for(let i=stride;i<=upto;i+=stride)rwx.lineTo(X(i),Y(p[i]));rwx.lineTo(X(upto),Y(p[upto]));rwx.stroke();finals.push(p[upto])});
+    rwx.globalAlpha=1;
+    [[1,vb,[6,5]],[2,mu,[2,4]]].forEach(([k,c,d])=>{rwx.setLineDash(d);rwx.strokeStyle=c;rwx.lineWidth=2;[1,-1].forEach(sg=>{rwx.beginPath();for(let i=0;i<=n;i+=Math.max(1,Math.floor(n/200))){const yy=Y(sg*k*Math.sqrt(i));i?rwx.lineTo(X(i),yy):rwx.moveTo(X(i),yy)}rwx.stroke()})});
+    rwx.setLineDash([]);
+    rwx.fillStyle=ink;rwx.font='12px JetBrains Mono, monospace';rwx.fillText('+√n',RW-40,Y(sq)-4);rwx.fillText('+2√n',RW-48,Y(2*sq)-4);rwx.fillText('step →',RW-60,RH-6);
+  }else{
+    const sc=(RH/2-10)/(3*sq),ox=RW/2,oy=RH/2;
+    A.grid(rwx,RW,RH,40,ox,oy);
+    rwx.strokeStyle=vb;rwx.setLineDash([6,5]);rwx.lineWidth=2;rwx.beginPath();rwx.arc(ox,oy,sq*sc,0,7);rwx.stroke();rwx.setLineDash([]);
+    const show=rwPaths.slice(0,Math.min(rwPaths.length,12)),stride=Math.max(1,Math.floor(n/800));
+    rwx.lineWidth=1.2;
+    show.forEach((p,k)=>{rwx.strokeStyle=k===0?va:mu;rwx.globalAlpha=k===0?1:.35;rwx.beginPath();rwx.moveTo(ox,oy);for(let i=stride;i<=upto;i+=stride)rwx.lineTo(ox+p[0][i]*sc,oy-p[1][i]*sc);rwx.stroke()});
+    rwx.globalAlpha=1;
+    rwPaths.forEach(p=>finals.push(Math.hypot(p[0][upto],p[1][upto])));
+    rwx.fillStyle=ink;rwx.font='12px JetBrains Mono, monospace';rwx.fillText('circle r = √n',8,16);
+  }
+  // stats
+  const N=finals.length,m=finals.reduce((a,b)=>a+b,0)/N,sd=Math.sqrt(finals.reduce((a,b)=>a+(b-m)*(b-m),0)/N),sqU=Math.sqrt(upto);
+  const inside=finals.filter(v=>Math.abs(v)<=sqU).length/N;
+  $('d22-rwMean').textContent=f(m,2);$('d22-rwStd').textContent=mode==='1'?f(sd,2):'rms '+f(Math.sqrt(finals.reduce((a,b)=>a+b*b,0)/N),1);
+  $('d22-rwIn').textContent=mode==='1'?f(inside*100,0)+'%':'–';
+  // histogram
+  rhx.clearRect(0,0,HW,HH);
+  if(mode==='1'&&upto>0){
+    const lo=-3.2*sq,hi=3.2*sq,B=32,h=new Array(B).fill(0);
+    finals.forEach(v=>{const b=Math.floor((v-lo)/(hi-lo)*B);if(b>=0&&b<B)h[b]++});
+    const mx0=Math.max(1,...h),bw=(HW-20)/B,peak=N*((hi-lo)/B)/(Math.sqrt(upto)*Math.sqrt(2*Math.PI)),mx=Math.max(mx0,peak);
+    rhx.fillStyle=va;h.forEach((c,i)=>{const hh=c/mx*(HH-24);rhx.fillRect(10+i*bw+1,HH-14-hh,bw-2,hh)});
+    // normal curve
+    const s=Math.sqrt(upto),peak0=N*((hi-lo)/B)/(s*Math.sqrt(2*Math.PI));
+    rhx.strokeStyle=vb;rhx.lineWidth=2;rhx.beginPath();
+    for(let k=0;k<=200;k++){const v=lo+(hi-lo)*k/200,d=N*((hi-lo)/B)*Math.exp(-v*v/(2*s*s))/(s*Math.sqrt(2*Math.PI));const yy=HH-14-d/mx*(HH-24);k?rhx.lineTo(10+(HW-20)*k/200,yy):rhx.moveTo(10,yy)}
+    rhx.stroke();
+    rhx.fillStyle=css('--ink');rhx.font='11px JetBrains Mono, monospace';rhx.fillText('final positions  vs  N(0, n)',10,11);
+  }else if(mode==='2'){rhx.fillStyle=css('--muted');rhx.font='13px "IBM Plex Sans Arabic", sans-serif';rhx.textAlign='right';rhx.fillText('في 2D: متوسط مربع المسافة = n، فالـ rms قريب من √n',HW-10,HH/2);rhx.textAlign='left'}
+}
+function rwRun(){
+  cancelAnimationFrame(rwAnim);const n=+$('d22-rwS').value;
+  if(reduce){rwShown=n;rwDraw();return}
+  rwShown=0;const t0=performance.now(),dur=1600;
+  const step=t=>{if(!document.body.contains(rwc))return;rwShown=Math.round(n*Math.min(1,(t-t0)/dur));rwDraw();if(rwShown<n)rwAnim=requestAnimationFrame(step)};rwAnim=requestAnimationFrame(step);
+}
+['d22-rwN','d22-rwS','d22-rwMode'].forEach(id=>$(id).addEventListener('input',()=>{rwBuild();rwShown=+$('d22-rwS').value;rwDraw()}));
+$('d22-rwMode').addEventListener('change',()=>{rwBuild();rwShown=+$('d22-rwS').value;rwDraw()});
+$('d22-rwRun').addEventListener('click',rwRun);
+$('d22-rwNew').addEventListener('click',()=>{rwSeed=Math.floor(Math.random()*1e9);rwBuild();rwRun()});
+rwBuild();rwShown=+$('d22-rwS').value;rwDraw();
+
+/* ===== Lab 2: Markov chain ===== */
+const P=[[0.7,0.1,0.2],[0.3,0.4,0.3],[0.4,0.2,0.4]],names=['Sunny','Rainy','Cloudy'],PI=[6/11,2/11,3/11];
+const mcc=$('d22-mcc'),mcx=A.setupCanvas(mcc),MW=+mcc.dataset.w,MH=+mcc.dataset.h;
+const mch=$('d22-mch'),mhx=A.setupCanvas(mch),BW=+mch.dataset.w,BH=+mch.dataset.h;
+const pos=[[MW/2,52],[110,MH-50],[MW-110,MH-50]];
+let mcState=1,mcCounts=[0,0,0],mcTotal=0,mcStart=1,mcR=mulberry(42),mcLast=-1,mcAnim=null,mcPulse=0;
+function mcStep(){const r=mcR(),p=P[mcState];let c=0,j=0;for(;j<3;j++){c+=p[j];if(r<c)break}mcLast=mcState;mcState=Math.min(j,2);mcCounts[mcState]++;mcTotal++}
+function mcDraw(){
+  mcx.clearRect(0,0,MW,MH);
+  const ink=css('--ink'),va=css('--vec-a'),vb=css('--vec-b'),mu=css('--muted'),pa=css('--panel');
+  mcx.font='12px JetBrains Mono, monospace';mcx.textAlign='center';
+  for(let i=0;i<3;i++)for(let j=0;j<3;j++){
+    if(i===j)continue;
+    const [x1,y1]=pos[i],[x2,y2]=pos[j],dx=x2-x1,dy=y2-y1,L=Math.hypot(dx,dy),nx=-dy/L*9,ny=dx/L*9;
+    const sx=x1+dx/L*36+nx,sy=y1+dy/L*36+ny,ex=x2-dx/L*36+nx,ey=y2-dy/L*36+ny;
+    const hot=mcLast===i&&mcState===j;
+    A.arrow(mcx,sx,sy,ex,ey,hot?vb:mu,hot?3:1.4);
+    mcx.fillStyle=ink;mcx.fillText(P[i][j].toFixed(1),(sx+ex)/2+nx*1.8,(sy+ey)/2+ny*1.8+4);
+  }
+  for(let i=0;i<3;i++){
+    const [x,y]=pos[i],hot=mcState===i;
+    // self loop
+    const ly=i===0?y-34:y+34;
+    mcx.strokeStyle=(mcLast===i&&mcState===i)?vb:mu;mcx.lineWidth=(mcLast===i&&mcState===i)?3:1.4;mcx.beginPath();mcx.arc(x+(i===0?0:(i===1?-30:30)),ly,13,0,7);mcx.stroke();
+    mcx.fillStyle=ink;mcx.fillText(P[i][i].toFixed(1),x+(i===0?26:(i===1?-56:56)),ly+4);
+    mcx.fillStyle=hot?va:pa;mcx.strokeStyle=hot?va:ink;mcx.lineWidth=2;mcx.beginPath();mcx.arc(x,y,30+(hot?mcPulse:0),0,7);mcx.fill();mcx.stroke();
+    mcx.fillStyle=hot?css('--paper'):ink;mcx.font='bold 13px JetBrains Mono, monospace';mcx.fillText(names[i],x,y+4);mcx.font='12px JetBrains Mono, monospace';
+  }
+  mcx.textAlign='left';
+  // bars
+  mhx.clearRect(0,0,BW,BH);
+  const emp=mcTotal?mcCounts.map(c=>c/mcTotal):[0,0,0],cw=(BW-40)/3;
+  mhx.font='12px JetBrains Mono, monospace';
+  for(let i=0;i<3;i++){
+    const x0=20+i*cw,h=emp[i]*(BH-36)/0.7,hp=PI[i]*(BH-36)/0.7;
+    mhx.fillStyle=va;mhx.globalAlpha=.75;mhx.fillRect(x0+cw*.25,BH-18-h,cw*.5,h);mhx.globalAlpha=1;
+    mhx.strokeStyle=vb;mhx.lineWidth=3;mhx.beginPath();mhx.moveTo(x0+cw*.15,BH-18-hp);mhx.lineTo(x0+cw*.85,BH-18-hp);mhx.stroke();
+    mhx.fillStyle=ink;mhx.textAlign='center';mhx.fillText(names[i]+'  '+f(emp[i],3)+' / π '+f(PI[i],3),x0+cw/2,BH-4);
+  }
+  mhx.textAlign='left';
+  $('d22-mcN').textContent=mcTotal.toLocaleString('en');
+  $('d22-mcErr').textContent=mcTotal?f(Math.max(...emp.map((e,i)=>Math.abs(e-PI[i]))),4):'–';
+}
+function mcPk(){
+  const k=+$('d22-mcK').value;let d=[0,0,0];d[mcStart]=1;
+  for(let t=0;t<k;t++){d=[0,1,2].map(j=>d[0]*P[0][j]+d[1]*P[1][j]+d[2]*P[2][j])}
+  $('d22-mcKv').textContent=k;$('d22-mcPk').textContent='['+d.map(v=>f(v,3)).join(', ')+']';
+}
+function mcReset(s){mcStart=s;mcState=s;mcCounts=[0,0,0];mcCounts[s]=1;mcTotal=1;mcLast=-1;mcR=mulberry(42+s);mcPk();mcDraw()}
+function pulse(){if(reduce){mcPulse=0;mcDraw();return}cancelAnimationFrame(mcAnim);const t0=performance.now();const st=t=>{if(!document.body.contains(mcc))return;const k=Math.min(1,(t-t0)/300);mcPulse=6*Math.sin(Math.PI*k);mcDraw();if(k<1)mcAnim=requestAnimationFrame(st)};mcAnim=requestAnimationFrame(st)}
+root.querySelectorAll('[data-d22s]').forEach(b=>b.addEventListener('click',()=>mcReset(+b.dataset.d22s)));
+$('d22-mc1').addEventListener('click',()=>{mcStep();pulse()});
+$('d22-mc100').addEventListener('click',()=>{for(let i=0;i<100;i++)mcStep();pulse()});
+$('d22-mc10k').addEventListener('click',()=>{for(let i=0;i<10000;i++)mcStep();pulse()});
+$('d22-mcK').addEventListener('input',mcPk);
+mcReset(1);
+
+/* ===== Lab: temperature / top-k / top-p ===== */
+const toks=['mat','floor','sofa','roof','table','moon'],logits=[3.0,2.2,1.6,0.9,0.4,-0.8];
+const tokBox=$('d22-tok');
+function dist(){
+  const T=+$('d22-T').value,k=+$('d22-k').value,p=+$('d22-p').value;
+  const z=logits.map(l=>l/T),mx=Math.max(...z),e=z.map(v=>Math.exp(v-mx)),s=e.reduce((a,b)=>a+b,0),pr=e.map(v=>v/s);
+  const order=pr.map((v,i)=>i).sort((a,b)=>pr[b]-pr[a]);
+  const keep=new Set();let cum=0;
+  for(let r=0;r<order.length;r++){if(r>=k)break;keep.add(order[r]);cum+=pr[order[r]];if(cum>=p)break}
+  const ks=[...keep].reduce((a,i)=>a+pr[i],0);
+  return {pr,fin:pr.map((v,i)=>keep.has(i)?v/ks:0)};
+}
+function tokDraw(){
+  $('d22-Tv').textContent=(+$('d22-T').value).toFixed(2);$('d22-kv').textContent=$('d22-k').value;$('d22-pv').textContent=(+$('d22-p').value).toFixed(2);
+  const {pr,fin}=dist();tokBox.innerHTML='';
+  toks.forEach((t,i)=>{
+    const row=document.createElement('div');row.style.cssText='display:grid;grid-template-columns:60px 1fr 54px;gap:8px;align-items:center;direction:ltr;font-family:var(--f-mono);font-size:13px';
+    const cut=fin[i]===0;
+    row.innerHTML='<span style="'+(cut?'text-decoration:line-through;opacity:.5':'')+'"></span><span style="height:12px;border-radius:6px;background:var(--soft);overflow:hidden;position:relative"><i style="position:absolute;inset:0 auto 0 0;background:var(--muted);opacity:.35;width:'+(pr[i]*100)+'%"></i><i style="position:absolute;inset:0 auto 0 0;background:var(--vec-a);width:'+(fin[i]*100)+'%"></i></span><span style="text-align:right"></span>';
+    row.children[0].textContent=t;row.children[2].textContent=(fin[i]*100).toFixed(1)+'%';tokBox.appendChild(row);
+  });
+}
+['d22-T','d22-k','d22-p'].forEach(id=>$(id).addEventListener('input',tokDraw));
+$('d22-samp').addEventListener('click',()=>{const {fin}=dist(),out=[];for(let n=0;n<20;n++){let r=Math.random(),c=0,j=0;for(;j<fin.length;j++){c+=fin[j];if(r<c)break}out.push(toks[Math.min(j,toks.length-1)])}$('d22-sampOut').textContent=out.join(' ')});
+tokDraw();
+
+/* ===== Lab 3: Langevin / MH on double well ===== */
+const lvc=$('d22-lvc'),lvx=A.setupCanvas(lvc),LW=+lvc.dataset.w,LH=+lvc.dataset.h;
+const lvt=$('d22-lvt'),ltx=A.setupCanvas(lvt),TW=+lvt.dataset.w,TH=+lvt.dataset.h;
+const U=x=>(x*x-1)**2,gU=x=>4*x*(x*x-1),XL=-2.2,XR=2.2,NB=60;
+let lv={x:-1,samples:[],hist:new Array(NB).fill(0),cross:0,acc:0,prop:0,running:false,raf:null},lvRand=mulberry(42),lvG=gaussFn(lvRand);
+function lvMode(){return $('d22-lvM').value}
+function lvSyncLabels(){
+  const m=lvMode(),s=$('d22-lvS');
+  $('d22-lvTv').textContent=(+$('d22-lvT').value).toFixed(2);
+  if(m==='L'){s.min='0.001';s.max='0.1';s.step='0.001';if(+s.value>0.1)s.value='0.01';$('d22-lvSL').firstChild.textContent='dt ';$('d22-lvSv').textContent=(+s.value).toFixed(3)}
+  else{s.min='0.05';s.max='3';s.step='0.05';if(+s.value<0.05)s.value='0.5';$('d22-lvSL').firstChild.textContent='proposal std ';$('d22-lvSv').textContent=(+s.value).toFixed(2)}
+}
+function lvReset(){lv.x=-1;lv.samples=[];lv.hist=new Array(NB).fill(0);lv.cross=0;lv.acc=0;lv.prop=0;lvRand=mulberry(42);lvG=gaussFn(lvRand);lvDraw()}
+function lvStepN(n){
+  const T=+$('d22-lvT').value,s=+$('d22-lvS').value,m=lvMode();
+  for(let k=0;k<n;k++){
+    const old=lv.x;
+    if(m==='L'){lv.x=lv.x-s*gU(lv.x)+Math.sqrt(2*T*s)*lvG();if(!isFinite(lv.x)||Math.abs(lv.x)>50)lv.x=Math.sign(lv.x||1)*2}
+    else{const xp=lv.x+lvG()*s;lv.prop++;if(Math.log(lvRand())< -(U(xp)-U(lv.x))/T){lv.x=xp;lv.acc++}}
+    if(Math.sign(old)!==Math.sign(lv.x)&&old!==0)lv.cross++;
+    lv.samples.push(lv.x);if(lv.samples.length>400)lv.samples.shift();
+    const b=Math.floor((lv.x-XL)/(XR-XL)*NB);if(b>=0&&b<NB)lv.hist[b]++;
+  }
+}
+function lvDraw(){
+  const T=+$('d22-lvT').value,ink=css('--ink'),va=css('--vec-a'),vb=css('--vec-b'),mu=css('--muted');
+  lvx.clearRect(0,0,LW,LH);
+  const X=x=>10+(x-XL)/(XR-XL)*(LW-20),base=LH-18;
+  lvx.strokeStyle=mu;lvx.lineWidth=1;lvx.beginPath();lvx.moveTo(0,base);lvx.lineTo(LW,base);lvx.stroke();
+  // target density
+  const xs=[],ds=[];let Z=0;for(let k=0;k<=300;k++){const x=XL+(XR-XL)*k/300,d=Math.exp(-U(x)/T);xs.push(x);ds.push(d);Z+=d*(XR-XL)/300}
+  const tot=lv.hist.reduce((a,b)=>a+b,0),bw=(XR-XL)/NB;
+  const hd=lv.hist.map(c=>tot?c/(tot*bw):0),dmax=Math.max(...ds.map(d=>d/Z),...hd,1e-9);
+  const sc=(base-24)/dmax;
+  lvx.fillStyle=va;lvx.globalAlpha=.6;hd.forEach((h,i)=>{const x0=X(XL+i*bw),x1=X(XL+(i+1)*bw);lvx.fillRect(x0+.5,base-h*sc,x1-x0-1,h*sc)});lvx.globalAlpha=1;
+  lvx.strokeStyle=vb;lvx.lineWidth=2.5;lvx.beginPath();xs.forEach((x,k)=>{const y=base-ds[k]/Z*sc;k?lvx.lineTo(X(x),y):lvx.moveTo(X(x),y)});lvx.stroke();
+  // energy (scaled)
+  lvx.strokeStyle=ink;lvx.setLineDash([4,4]);lvx.lineWidth=1.3;lvx.beginPath();xs.forEach((x,k)=>{const y=base-Math.min(U(x),3)/3*(base-24);k?lvx.lineTo(X(x),y):lvx.moveTo(X(x),y)});lvx.stroke();lvx.setLineDash([]);
+  // particle
+  lvx.fillStyle=css('--bad');lvx.beginPath();lvx.arc(X(Math.max(XL,Math.min(XR,lv.x))),base-Math.min(U(lv.x),3)/3*(base-24),6,0,7);lvx.fill();
+  lvx.fillStyle=ink;lvx.font='11px JetBrains Mono, monospace';lvx.fillText('--- U(x)   ━ exp(-U/T)   ▮ samples',10,12);
+  [-2,-1,0,1,2].forEach(v=>lvx.fillText(String(v),X(v)-4,LH-4));
+  // trace
+  ltx.clearRect(0,0,TW,TH);const Ty=v=>TH/2-v/2.2*(TH/2-6);
+  ltx.strokeStyle=mu;ltx.setLineDash([3,4]);ltx.beginPath();ltx.moveTo(0,Ty(0));ltx.lineTo(TW,Ty(0));ltx.stroke();ltx.setLineDash([]);
+  ltx.strokeStyle=va;ltx.lineWidth=1.3;ltx.beginPath();lv.samples.forEach((v,i)=>{const x=TW*i/400,y=Ty(Math.max(-2.2,Math.min(2.2,v)));i?ltx.lineTo(x,y):ltx.moveTo(x,y)});ltx.stroke();
+  ltx.fillStyle=ink;ltx.font='11px JetBrains Mono, monospace';ltx.fillText('x(t)  last 400',6,12);
+  const pos=tot?lv.hist.slice(NB/2).reduce((a,b)=>a+b,0)/tot:null;
+  $('d22-lvN').textContent=tot.toLocaleString('en');$('d22-lvPos').textContent=pos===null?'–':f(pos*100,1)+'%';$('d22-lvX').textContent=lv.cross;
+  $('d22-lvAcc').textContent=lvMode()==='MH'&&lv.prop?f(lv.acc/lv.prop*100,1)+'%':'–';
+}
+function lvLoop(){if(!document.body.contains(lvc)){lv.running=false;return}lvStepN(reduce?2000:150);lvDraw();const tot=lv.hist.reduce((a,b)=>a+b,0);if(lv.running&&tot<60000)lv.raf=requestAnimationFrame(lvLoop);else{lv.running=false;$('d22-lvRun').textContent='شغّل'}}
+$('d22-lvRun').addEventListener('click',()=>{if(lv.running){lv.running=false;cancelAnimationFrame(lv.raf);$('d22-lvRun').textContent='شغّل';return}lv.running=true;$('d22-lvRun').textContent='وقّف';lvLoop()});
+$('d22-lvReset').addEventListener('click',()=>{lvReset()});
+$('d22-lvM').addEventListener('change',()=>{lvSyncLabels();lvReset()});
+['d22-lvT','d22-lvS'].forEach(id=>$(id).addEventListener('input',()=>{lvSyncLabels();lvReset()}));
+lvSyncLabels();lvReset();
+
+/* ===== Lab 4: forward diffusion ===== */
+const dfc=$('d22-dfc'),dfx=A.setupCanvas(dfc),DW=+dfc.dataset.w,DH=+dfc.dataset.h;
+const NP=200,TS=100,sig=[],betas=[],abar=[1];
+for(let i=0;i<NP;i++){const t=2*Math.PI*i/(NP-1);sig.push(Math.sin(t)+0.5*Math.sin(3*t))}
+for(let t=0;t<TS;t++){betas.push(0.001+(0.05-0.001)*t/(TS-1));abar.push(abar[t]*(1-betas[t]))}
+let traj=[],dfSeed=42,dfAnim=null;
+function dfBuild(){const g=gaussFn(mulberry(dfSeed));traj=[sig.slice()];let x=sig.slice();for(let t=0;t<TS;t++){x=x.map(v=>Math.sqrt(1-betas[t])*v+Math.sqrt(betas[t])*g());traj.push(x)}}
+function corr(a,b){const n=a.length,ma=a.reduce((s,v)=>s+v,0)/n,mb=b.reduce((s,v)=>s+v,0)/n;let sab=0,saa=0,sbb=0;for(let i=0;i<n;i++){sab+=(a[i]-ma)*(b[i]-mb);saa+=(a[i]-ma)**2;sbb+=(b[i]-mb)**2}return sab/Math.sqrt(saa*sbb)}
+function dfDraw(){
+  const t=+$('d22-dfT').value,x=traj[t];
+  dfx.clearRect(0,0,DW,DH);A.grid(dfx,DW,DH,40,10,DH/2);
+  const X=i=>10+(DW-20)*i/(NP-1),Y=v=>DH/2-v/3.2*(DH/2-10);
+  dfx.strokeStyle=css('--muted');dfx.lineWidth=2;dfx.setLineDash([5,4]);dfx.beginPath();sig.forEach((v,i)=>i?dfx.lineTo(X(i),Y(v)):dfx.moveTo(X(i),Y(v)));dfx.stroke();dfx.setLineDash([]);
+  dfx.strokeStyle=css('--vec-a');dfx.lineWidth=1.6;dfx.beginPath();x.forEach((v,i)=>i?dfx.lineTo(X(i),Y(v)):dfx.moveTo(X(i),Y(v)));dfx.stroke();
+  dfx.fillStyle=css('--ink');dfx.font='12px JetBrains Mono, monospace';dfx.fillText('x_'+t+'   (dashed = x_0)',14,16);
+  $('d22-dfTv').textContent=t;$('d22-dfB').textContent=t?f(betas[t-1],4):'–';$('d22-dfA').textContent=f(abar[t],4);$('d22-dfS').textContent=f(Math.sqrt(abar[t]),3);$('d22-dfC').textContent=f(corr(sig,x),3);
+}
+$('d22-dfT').addEventListener('input',dfDraw);
+$('d22-dfNew').addEventListener('click',()=>{dfSeed=Math.floor(Math.random()*1e9);dfBuild();dfDraw()});
+$('d22-dfPlay').addEventListener('click',()=>{cancelAnimationFrame(dfAnim);const s=$('d22-dfT');if(reduce){s.value=100;dfDraw();return}const t0=performance.now();const st=tm=>{if(!document.body.contains(dfc))return;const k=Math.min(1,(tm-t0)/3000);s.value=Math.round(100*k);dfDraw();if(k<1)dfAnim=requestAnimationFrame(st)};dfAnim=requestAnimationFrame(st)});
+dfBuild();dfDraw();
+
+/* ===== quiz ===== */
+const Q=[
+ ['يعني إيه Markov property؟',['كل الحالات ليها نفس الاحتمال في كل خطوة','الحالة الجاية بتعتمد على الحالة الحالية بس، مش على تاريخ الحالات اللي قبلها','الـ process لازم يرجع لنقطة البداية','لازم يكون عدد الحالات محدود'],1,'Memorylessness: المستقبل بيعتمد على انت فين دلوقتي، مش جيت إزاي. وده اللي بيخلينا نوصف كل حاجة بـ transition matrix واحدة.'],
+ ['في random walk في بُعد واحد، المسافة المتوقعة من البداية بتكبر إزاي مع عدد الخطوات n؟',['لوغاريتمي: زي log(n)','زي الجذر التربيعي √n','ثابتة مهما n كبرت','خطي: زي n'],1,'كل خطوة ±1، فالـ variance بعد n خطوة = n، والـ std (المسافة النموذجية) = √n. بعد 10,000 خطوة حوالي 100 مش 10,000.'],
+ ['إيه هي الـ stationary distribution بتاعة Markov chain؟',['التوزيع المنتظم على كل الحالات','توزيع الحالات في البداية','توزيع الحالات بعد انتقال واحد بالظبط','التوزيع اللي مش بيتغير لما تضربه في الـ transition matrix: πP = π'],3,'π بتحقق πP = π. بتمثل نسبة الوقت اللي السلسلة بتقضيه في كل حالة على المدى الطويل، وأي توزيع بداية بيوصلها لو السلسلة irreducible و aperiodic.'],
+ ['في Langevin dynamics: x_{t+1} = x_t − dt·∇U + √(2·T·dt)·z، إيه اللي بيحصل لما T تقرب من 0؟',['الـ process بيـ diverge لما لا نهاية','بيبقى random walk صافي','بيبقى gradient descent صافي (optimization من غير عشوائية)','بيتجمد عند نقطة البداية'],2,'عند T = 0 الـ noise بيختفي ويفضل x − dt·∇U، اللي هو gradient descent. على T عالية الـ noise بيكسب وتبقى random walk تقريبًا.'],
+ ['في الـ diffusion model، الـ forward process بيعمل إيه في العينة على T خطوة؟',['بيوضّح الصورة بإنه يشيل noise كل خطوة','بيضيف Gaussian noise بالتدريج لحد ما العينة تبقى noise صافي، كـ Markov chain','بيصغّر دقة الصورة','بيطبق تحويلات متعلّمة عشان يولّد داتا جديدة'],1,'x_t = √α_t·x_{t−1} + √(1−α_t)·noise. بعد T خطوة x_T تقريبًا N(0, I). والـ reverse process المتعلّم هو اللي بيشيل الـ noise ويولّد.'],
+ ['(سؤال إضافي) ليه Metropolis-Hastings مش محتاج الـ normalizing constant بتاع p(x)؟',['عشان بيحسبه بالـ Monte Carlo الأول','عشان القرار بيعتمد على النسبة p(x\')/p(x)، والثابت بيتلغي','عشان بيفترض إن التوزيع uniform','عشان الـ proposal بيعوّضه'],1,'مع proposal متماثل a = p(x\')/p(x). أي ثابت مضروب في p بيظهر فوق وتحت ويتلغي، وده اللي بيخليه مفيد للـ posterior في Bayes.'],
+ ['(سؤال إضافي) LLM والـ temperature = 0.1 مقارنة بـ 1.5. أنهي صح؟',['T = 0.1 أكثر عشوائية','T = 0.1 أحد وقريب من greedy، و T = 1.5 أفلطح وأكثر تنوع','الاتنين بيدّوا نفس التوزيع بس بسرعة مختلفة','الـ temperature بتأثر على top-k بس'],1,'بنقسم الـ logits على T: T صغيرة بتكبّر الفروق فالتوكن الأعلى يكسب تقريبًا دايمًا، T كبيرة بتقرّب الاحتمالات من بعض.']
+];
+A.quiz($('d22-quizBox'),Q,5,()=>{const c=$('d22-ckQuiz');if(!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+/* ===== checklist ===== */
+A.checklist(22,$('d22-check'));
+
+/* ===== theme ===== */
+A.onTheme(()=>{if(!document.body.contains(rwc))return false;rwDraw();mcDraw();lvDraw();dfDraw()});
+})();
+</script>

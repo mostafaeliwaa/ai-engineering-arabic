@@ -1,0 +1,556 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 04 · Decision Trees and Random Forests</span>
+  <h1>اليوم ٢٦: الشجرة فلوتشارت، والغابة سلاح</h1>
+  <p class="lede">النهاردة هتبني <b>Decision Tree</b> من الصفر: موديل بيسأل أسئلة «أيوه/لأ» لحد ما يوصل لقرار. وبعدين هتزرع منها <b>Random Forest</b>: ميت شجرة كل واحدة شافت الداتا بشكل مختلف، وبيصوّتوا. ده الموديل اللي لسه بيكسب على الـ tabular data لحد النهاردة.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>محتاج: <b>Information Theory و Probability من Phase 1</b></span>
+    <span>بعده: <b>Support Vector Machines</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d26-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d26-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح عملنا Logistic Regression. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ sigmoid بتعمل إيه، و sigmoid(0) بكام؟</summary>بتاخد أي رقم وتعصره بين 0 و1 فيبقى احتمال. <span class="ltr">sigmoid(0) = 0.5</span>، يعني الموديل محتار تمامًا.</details>
+  <details><summary>٢. ليه ما استخدمناش MSE واستخدمنا Binary Cross-Entropy؟</summary>الـ cross-entropy بتعاقب جامد لما الموديل يبقى واثق وغلطان (احتمال 0.99 والإجابة 0)، وبتدي gradient نضيف. الـ MSE مع الـ sigmoid بتدي سطح خسارة مش لطيف للتدريب.</details>
+  <details><summary>٣. الـ decision boundary بتاعة logistic regression شكلها إيه؟</summary>خط مستقيم (أو hyperplane) عند <span class="ltr">w·x + b = 0</span>. النهاردة هتشوف موديل حدوده مش خط واحد، لكن مستطيلات.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>15 min</b>Gini و Entropy و Information Gain</div>
+    <div><b>15 min</b>معمل ١ و٢: شوف الشجرة بتقطّع الفضاء</div>
+    <div><b>15 min</b>Random Forest + معمل ٣</div>
+    <div><b>30 min</b>اكتب الكود بإيدك وشغّله</div>
+    <div><b>15 min</b>تمرينين + الكويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d26-what">
+  <div class="station-head"><span class="tag">01</span><h2>الشجرة = سلسلة أسئلة أيوه/لأ</h2></div>
+  <p>تخيل موظف بنك بيقرر يدي قرض ولا لأ. بيسأل: «سنك أقل من ٣٠؟» لو أيوه: «دخلك فوق ٥٠ ألف؟» لو لأ: «الـ credit score فوق ٧٠٠؟». كل سؤال بيوديك فرع، وفي الآخر بتوصل لورقة (leaf) فيها القرار.</p>
+  <div class="formula">Age &lt; 30? ─yes→ Income &gt; 50k? ─yes→ Approve / ─no→ Deny
+            └─no→ Credit &gt; 700? ─yes→ Approve / ─no→ Deny</div>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>كل <b>node داخلية</b> بتختبر feature واحدة قصاد threshold: <code>x[j] &lt;= t</code>؟</li>
+    <li>كل <b>leaf</b> فيها التوقع.</li>
+    <li>عشان تصنّف نقطة جديدة: ابدأ من الـ root وامشي مع الإجابات لحد ورقة.</li>
+  </ul>
+  <p>هندسيًا، كل سؤال بيقطع الفضاء بخط موازي لمحور. فالشجرة كلها بتقسم الفضاء لـ <b>مستطيلات</b>، وكل مستطيل ليه لون (class). الشجرة بتتبني من فوق لتحت: في كل node بتختار الـ feature والـ threshold اللي بيفصلوا الداتا «أحسن» فصل. طب يعني إيه أحسن؟ ده الجاي.</p>
+  <div class="note"><strong>ليه الأشجار مهمة؟</strong> على الـ tabular data (صفوف وأعمدة) الـ trees والـ forests والـ gradient boosting (XGBoost, LightGBM) بيكسبوا الـ neural networks باستمرار. مسابقات Kaggle على الداتا المنظمة بيكسبها XGBoost و LightGBM مش الـ transformers.</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d26-impurity">
+  <div class="station-head"><span class="tag">02</span><h2>قياس «الخلطة»: Gini و Entropy</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>عايزين كل node بعد التقسيم تبقى <b>نقية</b> (pure)، يعني فيها class واحد تقريبًا. محتاجين رقم يقيس قد إيه الـ node «مخلوطة».</p>
+      <h3>Gini impurity</h3>
+      <p>لو سحبت عينة عشوائية من الـ node وأديتها label عشوائي حسب نسب الـ classes اللي فيها، إيه احتمال إنك تغلط؟</p>
+      <div class="formula">Gini(S) = 1 − Σ p_k²</div>
+      <p>مثال: ٦ قطط و٤ كلاب: <span class="ltr">1 − (0.6² + 0.4²) = 1 − 0.52 = 0.48</span>. node نقية = 0. نص ونص (class اتنين) = 0.5.</p>
+      <h3>Entropy</h3>
+      <p>نفس اللي اتعلمته في Information Theory: قد إيه فيه «لخبطة/مفاجأة».</p>
+      <div class="formula">Entropy(S) = − Σ p_k · log₂(p_k)</div>
+      <p>نفس المثال: <span class="ltr">−(0.6·log₂0.6 + 0.4·log₂0.4) = 0.442 + 0.529 = 0.971 bits</span>. نقية = 0، نص ونص = 1.0. الاتنين: <b>الأقل أحسن</b>.</p>
+      <div class="note"><strong>جرب:</strong> غيّر عدد القطط والكلاب في الـ node. لاحظ إن المنحنيين شكلهم شبه بعض جدًا، والقمة في النص عند 50/50.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d26-impC" width="520" height="300" aria-label="منحنى Gini و Entropy"></canvas>
+      <div class="mrow">
+        <label>cats <span id="d26-catV">6</span><input type="range" id="d26-cat" min="0" max="20" value="6"></label>
+        <label>dogs <span id="d26-dogV">4</span><input type="range" id="d26-dog" min="0" max="20" value="4"></label>
+      </div>
+      <div class="readout">
+        <div><small>p(cat)</small><b id="d26-p">0.6</b></div>
+        <div><small>Gini</small><b id="d26-g">0.48</b></div>
+        <div><small>Entropy</small><b id="d26-e">0.971</b></div>
+      </div>
+      <div class="verdict" id="d26-impV"></div>
+    </div>
+  </div>
+
+  <h3>Information Gain: قد إيه السؤال ده نضّف الدنيا؟</h3>
+  <p>الـ gain = الخلطة قبل التقسيم − متوسط الخلطة بعده (موزون بعدد العينات في كل ابن):</p>
+  <div class="formula">IG = Impurity(parent) − [ n_L/n · Impurity(left) + n_R/n · Impurity(right) ]</div>
+  <p>مثال الريبو: أب فيه ٤ قطط و٣ كلاب و٣ عصافير (Gini = 0.66). تلات طرق للتقسيم:</p>
+  <div class="tablewrap"><table>
+    <tr><th>التقسيم</th><th>IG (Gini)</th><th>IG (Entropy)</th></tr>
+    <tr><td class="ltr">A: [cat,cat,cat,dog] | [cat,dog,dog,bird,bird,bird]</td><td class="ltr">0.1433</td><td class="ltr">0.3710</td></tr>
+    <tr><td class="ltr">B: [cat×4] | [dog×3, bird×3]</td><td class="ltr"><b>0.3600</b></td><td class="ltr"><b>0.9710</b></td></tr>
+    <tr><td class="ltr">C: [cat,cat,dog,bird] | [cat,cat,dog,dog,bird,bird]</td><td class="ltr">0.0100</td><td class="ltr">0.0200</td></tr>
+  </table></div>
+  <p>B فصل القطط كلها لوحدها، فكسب. و C تقريبًا ما عملش حاجة. لاحظ إن المقياسين متفقين على الترتيب.</p>
+
+  <h3>إزاي الشجرة بتدوّر على أحسن سؤال (Greedy)</h3>
+  <ol class="ex">
+    <li>لكل feature: رتّب العينات حسب قيمتها.</li>
+    <li>جرّب كل <b>نقطة نص</b> بين قيمتين متتاليتين مختلفتين كـ threshold، واحسب الـ IG.</li>
+    <li>اختار الـ (feature, threshold) اللي ليهم أعلى IG.</li>
+    <li>قسّم: شمال <code>x[j] &lt;= t</code> ويمين <code>x[j] &gt; t</code>، وكرر على كل ابن (recursion).</li>
+  </ol>
+  <p>ده greedy: بياخد أحسن حاجة دلوقتي من غير ما يبص لقدام، فمش مضمون يطلع أحسن شجرة في الدنيا. لقي أحسن شجرة ممكنة مشكلة NP-hard. بس عمليًا الـ greedy شغال كويس جدًا.</p>
+</section>
+
+<!-- STATION 3 -->
+<section id="d26-depthsec">
+  <div class="station-head"><span class="tag">03</span><h2>معمل: الشجرة بتقطّع الفضاء، والعمق بيبوّظها</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>دي نفس داتا الريبو: نقط في مربع من -3 لـ 3، class 0 جوه دايرة، class 1 فوق الخط المايل، والباقي class 2، مع شوية noise. الشجرة اتبنت بالـ Gini بنفس الخوارزمية اللي فوق.</p>
+      <p>الدواير = train، والمربعات المفرغة = test. حرّك الـ <code>max_depth</code> وبص على حاجتين: المستطيلات بتزيد وبتصغر، والفرق بين دقة الـ train والـ test.</p>
+      <h3>شروط الوقف (Pruning)</h3>
+      <p>من غير وقف، الشجرة هتكبر لحد ما كل ورقة تبقى نقية أو مفيش سؤال يفصل عيناتها، وغالبًا ده معناه عينة واحدة في كل ورقة: حفظت الداتا صم ومش هتعمم.</p>
+      <p><b>Pre-pruning</b> (وقف بدري): <code>max_depth</code>، أقل عدد عينات في الورقة <code>min_samples_leaf</code>، أقل gain مقبول، أقصى عدد أوراق.</p>
+      <p><b>Post-pruning</b> (قص بعدين): تكبّر الشجرة كاملة وبعدين تقص. زي <b>cost-complexity pruning</b> في scikit-learn: غرامة بتزيد مع عدد الأوراق، كل ما تزود الغرامة الشجرة تصغر. أو <b>reduced error pruning</b>: شيل subtree لو الـ validation error ما زادش.</p>
+      <p>الـ pre أسهل وأسرع. الـ post غالبًا بيطلع أشجار أحسن لأنه مش بيوقف تقسيمات ممكن تفتح تقسيمات مفيدة بعدها.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d26-treeC" width="520" height="440" aria-label="مناطق الشجرة"></canvas>
+      <label style="display:grid;gap:2px">max_depth = <b class="mono" id="d26-dV">3</b><input type="range" id="d26-depth" min="1" max="13" value="3"></label>
+      <div class="readout">
+        <div><small>Train acc</small><b id="d26-tr">–</b></div>
+        <div><small>Test acc</small><b id="d26-te">–</b></div>
+        <div><small>leaves</small><b id="d26-lv">–</b></div>
+      </div>
+      <div class="verdict" id="d26-dVerd"></div>
+      <div class="btns"><button type="button" id="d26-reseed">داتا جديدة</button><label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d26-lines" checked> ورّيني خطوط القطع</label></div>
+      <details><summary>شكل الشجرة كنص (لحد عمق ٣)</summary><pre class="term" id="d26-txt"></pre></details>
+    </div>
+  </div>
+  <div class="note"><strong>ملاحظة:</strong> لو max_depth = 13 (تقريبًا من غير حد) هتلاقي train acc = 1.0 والـ test أقل بوضوح. ده الـ overfitting بعينه. الحالة الوسط (3 لـ 5) غالبًا أحسن.</div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d26-reg">
+  <div class="station-head"><span class="tag">04</span><h2>شجرة للـ Regression</h2></div>
+  <p>لو الهدف رقم مش class: الورقة بتتوقع <b>متوسط</b> قيم الـ targets اللي فيها. ومعيار التقسيم بيتغير لـ <b>Variance Reduction</b>:</p>
+  <div class="formula">VR = Var(parent) − [ n_L/n · Var(left) + n_R/n · Var(right) ]</div>
+  <p>يعني اختار السؤال اللي بيخلّي الأرقام في كل ناحية قريبة من بعض. النتيجة: دالة «سلالم» (piecewise constant): الفضاء متقسم مناطق، وفي كل منطقة رقم ثابت. في الريبو بيجرب ده على <span class="ltr">y = sin(x)·x + noise</span>.</p>
+</section>
+
+<!-- STATION 5 -->
+<section id="d26-forest">
+  <div class="station-head"><span class="tag">05</span><h2>Random Forest: حكمة الجماعة</h2></div>
+  <p>الشجرة الواحدة <b>high variance</b>: غيّر الداتا شوية تطلعلك شجرة مختلفة خالص. الحل: ازرع شجر كتير مختلفين وخليهم يصوّتوا (classification) أو خد متوسطهم (regression).</p>
+  <p>الاختلاف بييجي من مصدرين عشوائيين:</p>
+  <ol class="ex">
+    <li><b>Bagging (Bootstrap Aggregating):</b> كل شجرة بتتدرب على <b>bootstrap sample</b>: تسحب n عينة من الداتا <b>مع الإرجاع</b>. نفس الحجم بس فيه تكرار، وحوالي <b>63%</b> بس من العينات الأصلية بتظهر. الباقيين اسمهم <b>out-of-bag</b> وينفعوا validation ببلاش.</li>
+    <li><b>Feature randomization:</b> في كل split الشجرة بتشوف subset عشوائي من الـ features بس. الافتراضي: <span class="ltr">√n_features</span> للـ classification و <span class="ltr">n_features/3</span> للـ regression. ده بيمنع إن كل الشجر يقسم على نفس الـ feature القوية فيبقوا نسخ من بعض.</li>
+  </ol>
+  <div class="note ai"><strong>الفكرة المفتاح:</strong> متوسط شجر كتير <b>مش مترابطين</b> بيقلل الـ variance من غير ما يزود الـ bias. كل شجرة لوحدها ممكن تبقى متوسطة، بس المجموعة قوية.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: زوّد الشجر وشوف الحدود بتنعم</h3>
+      <p>كل شجرة هنا عمقها 5، بتتدرب على bootstrap sample، وبتشوف feature واحدة عشوائية في كل split (<span class="ltr">√2 ≈ 1</span>). اللون الغامق = الشجر متفقين، الباهت = في خلاف.</p>
+      <p>دوس «اسحب bootstrap» عشان تشوف عينة واحدة: النقط اللي عليها دايرة اتسحبت، والباقي out-of-bag. عدّ النسبة.</p>
+      <p>لاحظ في الريبو: test accuracy بتعلى وبعدين بتثبت (plateau) بس <b>ما بتقعش</b> لما تزود الشجر. الغابة مقاومة للـ overfitting.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d26-rfC" width="520" height="440" aria-label="مناطق الـ random forest"></canvas>
+      <label style="display:grid;gap:2px">n_trees = <b class="mono" id="d26-nV">1</b><input type="range" id="d26-n" min="1" max="60" value="1"></label>
+      <div class="readout">
+        <div><small>Forest test acc</small><b id="d26-rfAcc">–</b></div>
+        <div><small>Single tree (depth 5)</small><b id="d26-stAcc">–</b></div>
+        <div><small>unique in bootstrap</small><b id="d26-boot">–</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d26-bootBtn">اسحب bootstrap</button><button type="button" id="d26-bootOff">اخفي</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6 -->
+<section id="d26-imp">
+  <div class="station-head"><span class="tag">06</span><h2>مين الـ feature المهمة؟ MDI و Permutation</h2></div>
+  <p><b>Mean Decrease in Impurity (MDI):</b> لكل feature، اجمع كل الـ impurity اللي نقصتها في كل الـ nodes في كل الشجر، موزونة بنسبة العينات اللي وصلت الـ node:</p>
+  <div class="formula">importance(j) = Σ_(nodes using j) (n_node / n_total) · impurity_decrease</div>
+  <p>الـ features اللي بتعمل تقسيمات كبيرة بدري (قريب من الـ root) بتطلع مهمة. ميزته إنه بيتحسب ببلاش أثناء التدريب. عيبه: <b>منحاز للـ features اللي ليها قيم كتير</b> (high cardinality)، زي ID أو رقم عشوائي بقيم كتير، لأنها بتدي فرص تقسيم كتير فممكن تنقص الـ impurity بالحظ.</p>
+  <p><b>Permutation importance:</b> اخلط (shuffle) قيم feature واحدة بس وشوف الدقة وقعت قد إيه. لو ما وقعتش، الـ feature دي مش فارقة. أدق، بس أبطأ.</p>
+  <p>في الريبو: الـ target هو <span class="ltr">1 if f0 + f1 &gt; 0</span>، و f2 و f3 noise. الغابة بتدي f0 و f1 أغلب الأهمية.</p>
+
+  <h3>إمتى الشجر بيكسب الـ Neural Networks؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>العامل</th><th>Trees</th><th>Neural networks</th></tr>
+    <tr><td>أنواع مختلطة (أرقام + categories)</td><td>بتتعامل معاها طبيعي</td><td>محتاجة encoding</td></tr>
+    <tr><td>داتا صغيرة (أقل من 10k صف)</td><td>شغالة كويس</td><td>بتعمل overfit</td></tr>
+    <tr><td>التفاعل بين الـ features</td><td>بتلاقيه بالتقسيم</td><td>محتاج تصميم architecture</td></tr>
+    <tr><td>الشرح (interpretability)</td><td>شفافة تمامًا</td><td>black box</td></tr>
+    <tr><td>وقت التدريب</td><td>دقايق</td><td>ساعات</td></tr>
+    <tr><td>حساسية الـ hyperparameters</td><td>قليلة</td><td>عالية</td></tr>
+  </table></div>
+  <p>الـ NN بتكسب لما الداتا ليها شكل مكاني أو تسلسلي (صور، نص، صوت). للجداول المسطحة: الشجر هي الافتراضي.</p>
+</section>
+
+<!-- CODE -->
+<section id="d26-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو، شغّل الملف الأصلي الأول عشان تشوف الصورة الكاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/04-decision-trees/code/trees.py</pre></div>
+  <details><summary>أول جزء من الناتج المتوقع</summary><pre class="term">SPLIT CRITERIA: GINI vs ENTROPY
+  Distribution                       Gini  Entropy
+  Pure node [A,A,A,A]              0.0000  -0.0000
+  Balanced [A,A,B,B]               0.5000   1.0000
+  Imbalanced [A,A,A,B]             0.3750   0.8113
+  Three classes [A,A,B,C]          0.6250   1.5000
+  Uniform 4-class                  0.7500   2.0000
+
+  Parent Gini: 0.6600
+  Parent Entropy: 1.5710
+  Feature A ...   0.1433   0.3710
+  Feature B ...   0.3600   0.9710
+  Feature C ...   0.0100   0.0200</pre><p>الـ <code>-0.0000</code> مش غلط: ده «سالب صفر» عشان الدالة بترجع <code>-sum(...)</code> والمجموع صفر. باقي الأقسام (الأعماق، الغابة، الـ importance، الـ regression) أرقامها بتعتمد على الـ random seed، ركز على الاتجاه: العمق الكبير train=1.0 والـ test أقل، والغابة test بتثبت ما بتقعش.</p></details>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_trees.py</code> واكتب الخطوات دي بإيدك. بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: مقاييس الخلطة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math, random
+
+def gini_impurity(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    counts = {}
+    for label in labels:                 <span class="c"># عدّ كل class</span>
+        counts[label] = counts.get(label, 0) + 1
+    return 1.0 - sum((c / n) ** 2 for c in counts.values())
+
+def entropy(labels):
+    n = len(labels)
+    if n == 0:
+        return 0.0
+    counts = {}
+    for label in labels:
+        counts[label] = counts.get(label, 0) + 1
+    return -sum((c / n) * math.log2(c / n) for c in counts.values() if c > 0)
+
+print(gini_impurity(["cat"]*6 + ["dog"]*4))   <span class="c"># 0.48</span>
+print(round(entropy(["cat"]*6 + ["dog"]*4), 3))  <span class="c"># 0.971</span></pre></div>
+
+  <h3>خطوة ٢: Information Gain</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def information_gain(parent, left, right, criterion="gini"):
+    measure = gini_impurity if criterion == "gini" else entropy
+    n, nl, nr = len(parent), len(left), len(right)
+    if nl == 0 or nr == 0:               <span class="c"># تقسيم فاضي = مفيش مكسب</span>
+        return 0.0
+    child = (nl / n) * measure(left) + (nr / n) * measure(right)
+    return measure(parent) - child</pre></div>
+
+  <h3>خطوة ٣: كلاس DecisionTree (القلب: _build)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class DecisionTree:
+    def __init__(self, max_depth=None, min_samples_split=2,
+                 min_samples_leaf=1, criterion="gini", max_features=None):
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
+        self.criterion = criterion
+        self.max_features = max_features
+
+    def fit(self, X, y):
+        self.n_features = len(X[0])
+        self.n_samples = len(X)
+        self.feature_importances_ = [0.0] * self.n_features
+        self.tree = self._build(X, y, depth=0)
+        total = sum(self.feature_importances_)
+        if total > 0:                    <span class="c"># خلّي مجموع الأهمية = 1</span>
+            self.feature_importances_ = [f / total for f in self.feature_importances_]
+
+    def predict(self, X):
+        return [self._predict_one(x, self.tree) for x in X]
+
+    def _build(self, X, y, depth):
+        if len(set(y)) == 1:                         <span class="c"># نقية خلاص</span>
+            return {"leaf": True, "value": y[0]}
+        if self.max_depth is not None and depth &gt;= self.max_depth:
+            return self._make_leaf(y)                <span class="c"># pre-pruning: العمق</span>
+        if len(y) &lt; self.min_samples_split:
+            return self._make_leaf(y)
+        f, t, gain = self._best_split(X, y)
+        if f is None or gain &lt;= 0:
+            return self._make_leaf(y)
+        lX, ly, rX, ry = self._split_data(X, y, f, t)
+        if len(ly) &lt; self.min_samples_leaf or len(ry) &lt; self.min_samples_leaf:
+            return self._make_leaf(y)
+        self.feature_importances_[f] += (len(y) / self.n_samples) * gain   <span class="c"># MDI</span>
+        return {"leaf": False, "feature": f, "threshold": t,
+                "left": self._build(lX, ly, depth + 1),
+                "right": self._build(rX, ry, depth + 1)}
+
+    def _make_leaf(self, y):                         <span class="c"># أغلبية الأصوات</span>
+        counts = {}
+        for label in y:
+            counts[label] = counts.get(label, 0) + 1
+        return {"leaf": True, "value": max(counts, key=counts.get)}</pre></div>
+
+  <h3>خطوة ٤: البحث عن أحسن split + التقسيم + التوقع</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def _best_split(self, X, y):
+        best_f, best_t, best_gain = None, None, -1.0
+        if self.max_features == "sqrt":              <span class="c"># عشوائية الغابة</span>
+            k = max(1, int(math.sqrt(self.n_features)))
+            feats = random.sample(range(self.n_features), k)
+        elif isinstance(self.max_features, int):
+            if self.max_features &lt; 1:
+                raise ValueError("max_features must be at least 1 when given as an integer")
+            k = min(self.max_features, self.n_features)
+            feats = random.sample(range(self.n_features), k)
+        else:
+            feats = list(range(self.n_features))
+        for j in feats:
+            values = sorted(set(row[j] for row in X))
+            for i in range(len(values) - 1):
+                t = (values[i] + values[i + 1]) / 2.0     <span class="c"># نقطة النص</span>
+                ly = [y[k] for k in range(len(X)) if X[k][j] &lt;= t]
+                ry = [y[k] for k in range(len(X)) if X[k][j] &gt; t]
+                if len(ly) &lt; self.min_samples_leaf or len(ry) &lt; self.min_samples_leaf:
+                    continue
+                g = information_gain(y, ly, ry, self.criterion)
+                if g &gt; best_gain:
+                    best_f, best_t, best_gain = j, t, g
+        return best_f, best_t, best_gain
+
+    def _split_data(self, X, y, f, t):
+        lX, ly, rX, ry = [], [], [], []
+        for row, label in zip(X, y):
+            if row[f] &lt;= t:
+                lX.append(row); ly.append(label)
+            else:
+                rX.append(row); ry.append(label)
+        return lX, ly, rX, ry
+
+    def _predict_one(self, x, node):
+        if node["leaf"]:
+            return node["value"]
+        nxt = node["left"] if x[node["feature"]] &lt;= node["threshold"] else node["right"]
+        return self._predict_one(x, nxt)</pre></div>
+
+  <h3>خطوة ٥: RandomForest</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class RandomForest:
+    def __init__(self, n_trees=100, max_depth=None, min_samples_split=2,
+                 max_features="sqrt", criterion="gini"):
+        self.n_trees, self.max_depth = n_trees, max_depth
+        self.min_samples_split = min_samples_split
+        self.max_features, self.criterion = max_features, criterion
+        self.trees = []
+
+    def fit(self, X, y):
+        n = len(X)
+        for _ in range(self.n_trees):
+            idx = [random.randint(0, n - 1) for _ in range(n)]   <span class="c"># bootstrap: مع الإرجاع</span>
+            tree = DecisionTree(max_depth=self.max_depth,
+                                min_samples_split=self.min_samples_split,
+                                max_features=self.max_features,
+                                criterion=self.criterion)
+            tree.fit([X[i] for i in idx], [y[i] for i in idx])
+            self.trees.append(tree)
+
+    def predict(self, X):
+        all_preds = [t.predict(X) for t in self.trees]
+        out = []
+        for i in range(len(X)):
+            votes = {}
+            for preds in all_preds:                              <span class="c"># تصويت</span>
+                votes[preds[i]] = votes.get(preds[i], 0) + 1
+            out.append(max(votes, key=votes.get))
+        return out</pre></div>
+  <p>الملف الكامل فيه كمان <code>task="regression"</code> (الورقة = متوسط، والغابة بتاخد المتوسط بدل التصويت) و <code>variance_reduction</code> و <code>feature_importances()</code> للغابة و <code>print_tree()</code>.</p>
+
+  <h3>خطوة ٦: نفس الكلام بـ scikit-learn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.ensemble import RandomForestClassifier
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
+
+X, y = load_iris(return_X_y=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=42)
+
+rf = RandomForestClassifier(n_estimators=100, random_state=42)
+rf.fit(X_train, y_train)
+print(f"Accuracy: {rf.score(X_test, y_test):.4f}")
+print(f"Feature importances: {rf.feature_importances_}")   <span class="c"># دي MDI</span></pre></div>
+  <p>عمليًا الـ gradient boosted trees (XGBoost, LightGBM, CatBoost) غالبًا أقوى من الـ random forest لأنها بتبني الشجر ورا بعض وكل شجرة بتصلّح غلط اللي قبلها. بس الـ random forest صعب تظبطه غلط ومحتاج tuning قليل جدًا.</p>
+  <div class="note"><strong>Ship It:</strong> الدرس بيطلّع <code>outputs/prompt-tree-interpreter.md</code>: prompt بتديه هيكل شجرة متدربة (العمق، الـ features، الـ thresholds، الدقة) فيترجمها لقواعد بلغة بسيطة لأي حد مش بيقرا كود، ويرتب الأهمية، وينبهك لو فيه overfitting أو leakage.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d26-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة. الباقي كمّله في التسخين بكرة.</p>
+  <ol class="ex">
+    <li><b>ارسم الحدود بإيدك:</b> درّب شجرة على داتا 2D بـ 3 classes، وتتبّع الـ splits وارسم المستطيلات. قارن <code>max_depth=2</code> بـ <code>max_depth=10</code>.
+      <details><summary>تلميح</summary>استخدم <code>print_tree()</code>. كل سطر <code>Feature 0 &lt;= t</code> = خط رأسي عند x=t، و <code>Feature 1</code> = خط أفقي. نفس اللي في المعمل ٣. عند 10 هتلاقي مستطيلات صغيرة حوالين نقط منفردة: دي noise اتحفظت.</details></li>
+    <li><b>Regression tree:</b> اعمل variance reduction، وولّد <span class="ltr">y = sin(x) + noise</span> لـ 200 نقطة، وارسم التوقع قصاد المنحنى الحقيقي.
+      <details><summary>تلميح</summary>بدّل <code>information_gain</code> بـ <code>Var(parent) − weighted Var(children)</code>، والورقة ترجع <code>sum(y)/len(y)</code>. هتشوف سلالم. عمق أكبر = سلالم أصغر لحد ما تمشي ورا الـ noise.</details></li>
+    <li><b>عدد الشجر:</b> غابة بـ 1, 5, 10, 50, 200 شجرة. ارسم train و test accuracy.
+      <details><summary>المتوقع</summary>الـ test بيعلى وبعدين بيثبت، وما بيقعش. زيادة الشجر بتقلل الـ variance بس، فمش بتعمل overfit (بتكلفك وقت بس).</details></li>
+    <li><b>Gini ولا Entropy؟</b> قارنهم على 5 datasets في الدقة والعمق. فسّر ليه النتايج شبه بعض.
+      <details><summary>الإجابة</summary>الاتنين صفر عند النقاء وأقصى قيمة عند التساوي، ومنحنياتهم بنفس الشكل تقريبًا (شوفهم في المعمل ٢)، فبيختاروا نفس الـ splits في أغلب الأحوال. Gini أسرع شوية لأن مفيهوش log.</details></li>
+    <li><b>Permutation importance:</b> اعملها وقارنها بالـ MDI على داتا فيها feature عشوائية بقيم كتير (high cardinality).
+      <details><summary>تلميح</summary>لكل feature: انسخ X_test، اعمل <code>random.shuffle</code> على العمود ده بس، واحسب الدقة. الأهمية = الدقة الأصلية − الدقة بعد الخلط. الـ MDI هيدي الـ noise أهمية ملحوظة، والـ permutation هيديها حوالي صفر.</details></li>
+    <li><b>إضافة مني · فلتر طلبات لـ LLM:</b> عندك log فيه لكل request: طول الـ prompt، عدد الـ tool calls، هل فيه كود (0/1)، والـ label هل اتعمله escalation لموديل أكبر. ولّد 300 صف بقاعدة بسيطة من عندك + noise، ودرّب شجرة عمقها 3، واطبعها كقواعد if/else. ده بالظبط نوع الـ router الرخيص اللي ينفع تحطه قبل الـ LLM وتقدر تشرحه للفريق.
+      <details><summary>تلميح</summary>مثال قاعدة: escalate لو <code>prompt_len &gt; 2000 and has_code == 1</code> أو <code>tool_calls &gt; 3</code>. شوف الشجرة لقت الـ thresholds قريبة من اللي انت حاطتها ولا لأ، وبص على <code>feature_importances_</code>.</details></li>
+  </ol>
+</section>
+
+<!-- MINE -->
+<section id="d26-mine">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>الحدس</h3>
+  <p>الشجرة مش بتحسب «مسافة» ولا «وزن». هي بس بتسأل «أكبر ولا أصغر من كذا؟». عشان كده <b>مش محتاجة scaling</b>: لو ضربت عمود المرتب في 1000 الشجرة هتطلع نفس الأسئلة بأرقام مختلفة. وعشان كده كمان ما بتعرفش تعمل <b>extrapolation</b>: لو كل الأسعار في التدريب أقل من 100، الشجرة عمرها ما هتتوقع 150.</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>تسيب <code>max_depth=None</code> في شجرة واحدة وتفرح بـ train acc = 100%.</li>
+    <li>تصدّق الـ MDI على عمود زي <code>user_id</code> أو timestamp. اتأكد بالـ permutation.</li>
+    <li><b>Leakage:</b> لو الشجرة لقت split واحد بيدي دقة 99%، غالبًا فيه عمود بيسرّب الإجابة (زي «تاريخ الإلغاء» في مشكلة churn).</li>
+    <li>تفتكر الغابة بتحتاج tuning كتير. ابدأ بالافتراضي وبعدين ظبّط.</li>
+  </ul>
+  <h3>بيظهر فين في شغل الـ LLMs والـ Agents؟</h3>
+  <p>الـ LLM مش بيحل كل حاجة. في الـ production كتير بتلاقي موديل شجر خفيف جنب الـ LLM: يتوقع هل الطلب محتاج موديل كبير ولا صغير (routing)، أو يقيّم risk score من features منظمة، أو يرتّب نتايج بـ features زي الـ freshness والـ clicks. والـ gradient boosted trees أداة أساسية في ranking أنظمة البحث اللي الـ RAG بيعتمد عليها.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d26-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d26-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d26-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d26-ck">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أحسب Gini و Entropy و Information Gain بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="2"> شفت في المعمل إزاي العمق الكبير بيعمل overfitting</label></li>
+    <li><label><input type="checkbox" data-ck="3"> أقدر أشرح bagging و feature randomization وليه بيقللوا الـ variance</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت DecisionTree و RandomForest بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Decision tree</td><td>قواعد قابلة للشرح، routers خفيفة قبل الـ LLM</td></tr>
+    <tr><td>Gini / Entropy</td><td>معايير التقسيم في sklearn و XGBoost (والـ entropy نفسها في cross-entropy loss)</td></tr>
+    <tr><td>Random forest / bagging</td><td>baseline قوي لأي tabular data، فكرة الـ ensembles عمومًا</td></tr>
+    <tr><td>Gradient boosted trees</td><td>Kaggle، ranking في محركات البحث، fraud و risk scoring</td></tr>
+    <tr><td>Feature importance</td><td>تفسير الموديلات، اكتشاف الـ leakage</td></tr>
+    <tr><td>Out-of-bag</td><td>validation ببلاش من غير ما تقسم الداتا</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Support Vector Machines. هندوّر على «أعرض شارع» بين class اتنين، ونشوف الـ kernel trick. وهنبدأ بتسخين على الشجر.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F04-decision-trees" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/04-decision-trees</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+const rm=$('d26-roadmap');for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===4)s.className='now';rm.appendChild(s)}
+
+/* seeded rng + data like the repo generator */
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(R){let u=0,v=0;while(!u)u=R();v=R();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function makeData(n,seed){const R=rng(seed),P=[];for(let i=0;i<n;i++){const x=R()*6-3,y=R()*6-3,no=gauss(R)*.3;let c;if(x*x+y*y+no<3)c=0;else if(x+y+no>1)c=1;else c=2;P.push([x,y,c])}return P}
+function split(P,seed){const R=rng(seed+7),idx=P.map((_,i)=>i);for(let i=idx.length-1;i>0;i--){const j=Math.floor(R()*(i+1));[idx[i],idx[j]]=[idx[j],idx[i]]}const k=Math.floor(P.length*.8);return[idx.slice(0,k).map(i=>P[i]),idx.slice(k).map(i=>P[i])]}
+function gini(cs){const n=cs.length;if(!n)return 0;const c=[0,0,0];cs.forEach(v=>c[v]++);return 1-c.reduce((a,v)=>a+(v/n)*(v/n),0)}
+function maj(cs){const c=[0,0,0];cs.forEach(v=>c[v]++);let b=0;for(let i=1;i<3;i++)if(c[i]>c[b])b=i;return b}
+function build(P,depth,maxD,R){
+  const cs=P.map(p=>p[2]);
+  if(new Set(cs).size<=1)return{leaf:1,v:cs[0]};
+  if(depth>=maxD||P.length<2)return{leaf:1,v:maj(cs)};
+  const feats=R?[R()<.5?0:1]:[0,1],pg=gini(cs);let best=null;
+  for(const fi of feats){
+    const S=P.slice().sort((a,b)=>a[fi]-b[fi]),n=S.length,L=[0,0,0],Rt=[0,0,0];S.forEach(p=>Rt[p[2]]++);
+    for(let i=0;i<n-1;i++){L[S[i][2]]++;Rt[S[i][2]]--;if(S[i][fi]===S[i+1][fi])continue;
+      const nl=i+1,nr=n-nl,gl=1-L.reduce((a,v)=>a+(v/nl)**2,0),gr=1-Rt.reduce((a,v)=>a+(v/nr)**2,0);
+      const g=pg-(nl/n*gl+nr/n*gr);if(!best||g>best.g)best={g,f:fi,t:(S[i][fi]+S[i+1][fi])/2}}}
+  if(!best||best.g<=0)return{leaf:1,v:maj(cs)};
+  const l=P.filter(p=>p[best.f]<=best.t),r=P.filter(p=>p[best.f]>best.t);
+  return{leaf:0,f:best.f,t:best.t,l:build(l,depth+1,maxD,R),r:build(r,depth+1,maxD,R)};
+}
+function pred(nd,p){while(!nd.leaf)nd=p[nd.f]<=nd.t?nd.l:nd.r;return nd.v}
+function leaves(nd){return nd.leaf?1:leaves(nd.l)+leaves(nd.r)}
+const acc=(T,P)=>P.reduce((a,p)=>a+(pred(T,p)===p[2]),0)/P.length;
+const clr=()=>[css('--vec-a'),css('--vec-b'),css('--ok')];
+const S=74,ox=260,oy=220,toPx=(x,y)=>[ox+x*S,oy-y*S];
+
+/* ---- Lab 1: impurity curves ---- */
+const ic=$('d26-impC'),ix=AI.setupCanvas(ic),IW=+ic.dataset.w,IH=+ic.dataset.h;
+function H(p){return p<=0||p>=1?0:-(p*Math.log2(p)+(1-p)*Math.log2(1-p))}
+function drawImp(){
+  const c=+$('d26-cat').value,d=+$('d26-dog').value,n=c+d;$('d26-catV').textContent=c;$('d26-dogV').textContent=d;
+  const p=n?c/n:0,g=n?1-p*p-(1-p)*(1-p):0,e=n?H(p):0;
+  $('d26-p').textContent=n?f(p,3):'–';$('d26-g').textContent=f(g,3);$('d26-e').textContent=f(e,3);
+  const v=$('d26-impV');if(!n){v.textContent='الـ node فاضية';v.style.color=css('--muted')}else if(g===0){v.textContent='node نقية: Gini = Entropy = 0 → تبقى leaf';v.style.color=css('--ok')}else if(Math.abs(p-.5)<.01){v.textContent='أقصى خلطة: نص ونص';v.style.color=css('--bad')}else{v.textContent='مخلوطة جزئيًا';v.style.color=css('--ink')}
+  const L=40,R=IW-16,T=16,B=IH-34,X=q=>L+q*(R-L),Y=q=>B-q*(B-T);
+  ix.clearRect(0,0,IW,IH);ix.strokeStyle=css('--grid');ix.lineWidth=1;
+  for(let k=0;k<=4;k++){ix.beginPath();ix.moveTo(L,Y(k/4));ix.lineTo(R,Y(k/4));ix.stroke()}
+  ix.fillStyle=css('--muted');ix.font='12px JetBrains Mono, monospace';ix.textAlign='right';
+  for(let k=0;k<=4;k++)ix.fillText(f(k/4,2),L-6,Y(k/4)+4);ix.textAlign='center';
+  for(let k=0;k<=4;k++)ix.fillText(f(k/4,2),X(k/4),B+16);ix.fillText('p(cat)',X(.5),B+30);ix.textAlign='left';
+  [[q=>H(q),css('--vec-a'),'Entropy'],[q=>2*q*(1-q),css('--vec-b'),'Gini']].forEach(([fn,col,lab],k)=>{ix.strokeStyle=col;ix.lineWidth=2.5;ix.beginPath();for(let i=0;i<=200;i++){const q=i/200;i?ix.lineTo(X(q),Y(fn(q))):ix.moveTo(X(q),Y(fn(q)))}ix.stroke();ix.fillStyle=col;ix.fillText(lab,R-70,T+14+k*16)});
+  if(n){[[e,css('--vec-a')],[g,css('--vec-b')]].forEach(([val,col])=>{ix.fillStyle=col;ix.beginPath();ix.arc(X(p),Y(val),6,0,7);ix.fill()});ix.strokeStyle=css('--muted');ix.setLineDash([4,4]);ix.beginPath();ix.moveTo(X(p),T);ix.lineTo(X(p),B);ix.stroke();ix.setLineDash([])}
+}
+['d26-cat','d26-dog'].forEach(id=>$(id).addEventListener('input',drawImp));drawImp();
+
+/* ---- Lab 2: tree regions vs depth ---- */
+let seed=42,data=makeData(200,seed),[train,test]=split(data,seed),tree=null;
+const tc=$('d26-treeC'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+function drawPts(ctx,P,ring){const C=clr();P.forEach((p,i)=>{const[x,y]=toPx(p[0],p[1]);ctx.fillStyle=C[p[2]];ctx.strokeStyle=css('--paper');ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(x,y,4.2,0,7);ctx.fill();ctx.stroke();if(ring&&ring[i]){ctx.strokeStyle=css('--ink');ctx.lineWidth=1.6;ctx.beginPath();ctx.arc(x,y,7.5,0,7);ctx.stroke()}})}
+function regions(ctx,fn){const C=clr(),cell=8;for(let px=0;px<TW;px+=cell)for(let py=0;py<TH;py+=cell){const x=(px+cell/2-ox)/S,y=(oy-py-cell/2)/S,r=fn([x,y]);ctx.fillStyle=C[r[0]];ctx.globalAlpha=r[1];ctx.fillRect(px,py,cell,cell)}ctx.globalAlpha=1}
+function cuts(nd,x0,x1,y0,y1){if(nd.leaf)return;tx.strokeStyle=css('--ink');tx.lineWidth=1.3;tx.beginPath();if(nd.f===0){const[a,b]=toPx(nd.t,y0),[c,d]=toPx(nd.t,y1);tx.moveTo(a,b);tx.lineTo(c,d);tx.stroke();cuts(nd.l,x0,nd.t,y0,y1);cuts(nd.r,nd.t,x1,y0,y1)}else{const[a,b]=toPx(x0,nd.t),[c,d]=toPx(x1,nd.t);tx.moveTo(a,b);tx.lineTo(c,d);tx.stroke();cuts(nd.l,x0,x1,y0,nd.t);cuts(nd.r,x0,x1,nd.t,y1)}}
+function txt(nd,ind,d){if(nd.leaf)return ind+'Predict: '+nd.v+'\n';if(d>=3)return ind+'...\n';return ind+'Feature '+nd.f+' <= '+nd.t.toFixed(4)+'?\n'+ind+'  Yes:\n'+txt(nd.l,ind+'    ',d+1)+ind+'  No:\n'+txt(nd.r,ind+'    ',d+1)}
+function drawTree(){
+  const d=+$('d26-depth').value;$('d26-dV').textContent=d>=13?'None (13)':d;
+  tree=build(train,0,d,null);
+  tx.clearRect(0,0,TW,TH);regions(tx,p=>[pred(tree,p),.22]);
+  if($('d26-lines').checked)cuts(tree,-3.6,3.6,-3,3);
+  drawPts(tx,train);
+  tx.globalAlpha=.9;test.forEach(p=>{const[x,y]=toPx(p[0],p[1]);tx.strokeStyle=clr()[p[2]];tx.lineWidth=2;tx.strokeRect(x-4,y-4,8,8)});tx.globalAlpha=1;
+  const a=acc(tree,train),b=acc(tree,test);$('d26-tr').textContent=f(a,3);$('d26-te').textContent=f(b,3);$('d26-lv').textContent=leaves(tree);
+  const v=$('d26-dVerd');if(d<=1){v.textContent='underfitting: سؤال واحد مش كفاية';v.style.color=css('--bad')}else if(a-b>.08){v.textContent='overfitting: حفظ الـ train والـ test بيعاني';v.style.color=css('--bad')}else{v.textContent='توازن معقول';v.style.color=css('--ok')}
+  $('d26-txt').textContent=txt(tree,'',0);
+}
+$('d26-depth').addEventListener('input',drawTree);$('d26-lines').addEventListener('change',drawTree);
+$('d26-reseed').addEventListener('click',()=>{seed=Math.floor(Math.random()*1e6);data=makeData(200,seed);[train,test]=split(data,seed);drawTree();forest=[];growTo();drawRF()});
+drawTree();
+
+/* ---- Lab 3: random forest ---- */
+const rc=$('d26-rfC'),rx=AI.setupCanvas(rc);let forest=[],bootRing=null,frng=rng(1234);
+function growTo(){const n=+$('d26-n').value;while(forest.length<n){const B=[];for(let i=0;i<train.length;i++)B.push(train[Math.floor(frng()*train.length)]);forest.push(build(B,0,5,frng))}}
+function vote(T,p){const c=[0,0,0];T.forEach(t=>c[pred(t,p)]++);let b=0;for(let i=1;i<3;i++)if(c[i]>c[b])b=i;return[b,c[b]/T.length]}
+function drawRF(){
+  const n=+$('d26-n').value;$('d26-nV').textContent=n;growTo();const T=forest.slice(0,n);
+  rx.clearRect(0,0,TW,TH);regions(rx,p=>{const[c,a]=vote(T,p);return[c,.06+.3*(a-1/3)/(2/3)]});
+  drawPts(rx,train,bootRing);
+  $('d26-rfAcc').textContent=f(test.reduce((a,p)=>a+(vote(T,p)[0]===p[2]),0)/test.length,3);
+  $('d26-stAcc').textContent=f(acc(build(train,0,5,null),test),3);
+}
+$('d26-n').addEventListener('input',drawRF);
+$('d26-bootBtn').addEventListener('click',()=>{const R=rng(Math.floor(Math.random()*1e6)),hit=new Array(train.length).fill(0);for(let i=0;i<train.length;i++)hit[Math.floor(R()*train.length)]=1;bootRing=hit;const u=hit.reduce((a,b)=>a+b,0);$('d26-boot').textContent=u+'/'+train.length+' = '+f(100*u/train.length,1)+'%';drawRF()});
+$('d26-bootOff').addEventListener('click',()=>{bootRing=null;drawRF()});
+drawRF();
+
+/* ---- quiz ---- */
+const ck=document.querySelector('#d26-ck input[data-ck="6"]');
+AI.quiz($('d26-quizBox'),[
+ ['الـ Gini impurity بتقيس إيه في node في الشجرة؟',['عدد العينات في الـ node','احتمال إنك تصنّف عينة عشوائية غلط لو اديتها label حسب توزيع الـ classes في الـ node','الارتباط بين الـ features','عمق الـ node في الشجرة'],1,'Gini = 1 − Σp². بتقيس قد إيه هتغلط لو اخترت label عشوائي حسب النسب. node نقية = 0.'],
+ ['إيه الميزة الأساسية للموديلات الشجرية على الـ neural networks في الـ tabular data؟',['بتتدرب أسرع على الـ GPU','بتتعامل مع أنواع features مختلطة، محتاجة preprocessing أقل، وأسهل في الشرح','بتعالج صور ونص مباشرة','دايمًا الـ bias بتاعها أقل'],1,'الشجر بتاخد أرقام و categories من غير encoding وبتطلع قواعد مفهومة. الـ NN بتلمع في الداتا المكانية والتسلسلية.'],
+ ['ليه الـ random forest بتستخدم bootstrap sampling و random feature subsets مع بعض؟',['عشان تقلل عمق الشجر','عشان كل شجرة تشوف كل نقطة مرة على الأقل','عشان تسرّع التدريب بتصغير الداتا','عشان تعمل شجر متنوعة مش مترابطة، فالمتوسط يقلل الـ variance من غير ما يزود الـ bias'],3,'من غير عشوائية الـ features كل الشجر هتقسم على نفس الـ feature القوية. التنوع هو اللي بيخلي المتوسط مفيد.'],
+ ['node فيها 8 كلاب و2 قطط. الـ Gini بكام؟',['0.20','0.50','0.32','0.0'],2,'1 − (0.8² + 0.2²) = 1 − 0.68 = 0.32. أغلبها كلاب بس مش نقية.'],
+ ['الـ MDI feature importance منحازة لأنهي نوع features؟',['binary بقيمتين بس','features الـ variance بتاعها قليل','features بقيم كتير (high cardinality) فيها نقط تقسيم كتير','features مرتبطة جامد بالـ target'],2,'قيم كتير = فرص تقسيم أكتر = تنقيص impurity بالحظ. الـ permutation importance أدق.'],
+ ['(سؤال إضافي) ضربت عمود «المرتب» في 1000 قبل ما تدرّب شجرة. إيه اللي هيحصل للتوقعات؟',['هتبوظ تمامًا','مش هتتغير: الشجرة بتقارن بـ thresholds، والترتيب بين القيم ما اتغيرش','هتتحسن','الشجرة هتتجاهل العمود'],1,'الشجر مش حساسة للـ scale. الـ threshold بس هيتضرب في 1000. ده عكس KNN و SVM اللي هتشوفهم الأيام الجاية.'],
+ ['(سؤال إضافي) في bootstrap sample بحجم n من n عينة، تقريبًا كام في المية من العينات الأصلية بيظهر؟',['100%','50%','63%','37%'],2,'احتمال إن عينة ما تتسحبش ولا مرة ≈ (1 − 1/n)ⁿ ≈ 1/e ≈ 37%، فاللي بيظهر ≈ 63%. جربها بزرار «اسحب bootstrap».']
+],5,()=>{if(ck){ck.checked=true;AI.store.set('aiefs-d26-6','1')}});
+AI.checklist(26,$('d26-ck'));
+
+AI.onTheme(()=>{if(!document.body.contains(ic))return false;drawImp();drawTree();drawRF()});
+})();
+</script>

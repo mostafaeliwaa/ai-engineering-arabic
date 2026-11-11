@@ -1,0 +1,606 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 63 · Multimodal Evaluation</span>
+  <h1>اليوم ٤٩١: الـ loss نزل… طب الموديل بيعرف يعمل إيه فعلًا؟</h1>
+  <p class="lede">امبارح درّبت موديل vision-language بـ InfoNCE + LM loss. النهاردة هتبني <b>تلات مقاييس</b> من الصفر تقيس بيها اللي الموديل بيعرف يعمله على داتا عمره ما شافها: <b>Recall@K</b> للـ retrieval، و<b>Exact Match</b> للـ VQA، و<b>BLEU-4</b> للـ captioning. كل مقياس دالة صغيرة، وانت هتكتبها بإيدك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (torch + numpy)</span>
+    <span>قبله: <b>Vision-Language Pretraining</b></span>
+    <span>بعده: <b>Chunking Strategies, Compared</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — 85 lessons · Track E (multimodal) ends here</span>
+    <div class="roadmap" id="d491-roadmap" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d491-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>في InfoNCE على batch فيه N زوج صورة-كابشن، مين الـ positives ومين الـ negatives في مصفوفة الـ similarity؟
+      <details><summary>الإجابة</summary>الـ <b>قطر</b> (N خانة) هو الأزواج الصح = positives. والباقي <span class="ltr">N² − N</span> خانة = negatives. وبنعمل cross-entropy على كل صف (والعمود كمان، عشان الـ loss symmetric) والهدف إن أعلى رقم في الصف i يبقى في العمود i. النهاردة هنستخدم <b>نفس المصفوفة دي بالظبط</b> عشان نحسب Recall@K.</details></li>
+    <li>الـ temperature τ لو صغيرة أوي (0.01) إيه اللي بيحصل؟
+      <details><summary>الإجابة</summary>الـ softmax بيبقى حاد جدًا، فالـ gradient بييجي تقريبًا من أصعب negative بس، والتدريب بيبقى noisy. ولو كبيرة أوي الـ softmax بيتفرد والـ gradient بيختفي. عشان كده CLIP بيتعلمها كـ parameter.</details></li>
+    <li>ليه بنجمع contrastive loss مع LM loss في نفس الموديل؟
+      <details><summary>الإجابة</summary>عشان الموديل يكتسب مهارتين: <b>يرتّب</b> (يلاقي الصورة الصح للكابشن) و<b>يولّد</b> (يكتب كابشن للصورة). ده الـ recipe بتاع CoCa وBLIP. والنهاردة هنقيس المهارتين دول بمقاييس مختلفة.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>Recall@K + المعمل الأول</div>
+    <div><b>10 min</b>VQA exact match و soft-accuracy</div>
+    <div><b>20 min</b>BLEU-4 + معمل الـ n-grams</div>
+    <div><b>25 min</b>اكتب الكود وشغّل الـ before/after</div>
+    <div><b>10 min</b>الكويز والتمارين</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d491-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه الـ training loss مش كفاية؟</h2></div>
+  <p>الإغراء كبير: الـ loss وقف ينزل، يبقى الموديل خلص. بس الـ training loss بيقيس قد إيه الموديل <b>لابس</b> على داتا التدريب. مابيقولكش هل يقدر يرتّب أزواج في batch جديد، ولا يجاوب سؤال، ولا يكتب كابشن بني آدم يقبله.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ loss زي درجاتك في التمارين اللي حليتها قبل كده عشرين مرة. الـ eval زي الامتحان بأسئلة جديدة. ممكن تبقى حافظ التمارين وتسقط في الامتحان.</div>
+  <p>فيه تلات «أسطح تقييم» (eval surfaces) معيارية للموديلات اللي بتشوف وبتتكلم:</p>
+  <div class="tablewrap"><table>
+    <tr><th>السطح</th><th>بيسأل إيه</th><th>المقياس</th><th>بيقيس مهارة</th></tr>
+    <tr><td>Retrieval</td><td>لكابشن معين، الصورة الصح جت في أول K؟</td><td>R@1, R@5, R@10</td><td>الترتيب (contrastive)</td></tr>
+    <tr><td>VQA</td><td>(صورة، سؤال) → الإجابة صح؟</td><td>Exact match accuracy</td><td>الفهم + الـ fusion</td></tr>
+    <tr><td>Captioning</td><td>الكابشن المتولّد شبه المراجع قد إيه؟</td><td>BLEU-4</td><td>التوليد (LM)</td></tr>
+  </table></div>
+  <div class="formula">model → joint embeddings → similarity matrix → R@1 / R@5 / R@10
+model → answer token per question → exact match
+model → generated captions → BLEU-4 vs references</div>
+  <p>كل مقياس دالة صغيرة. الدرس بيبنيهم بالكود عشان الرياضة تبقى ملموسة والتحكم يفضل في إيدك. والـ benchmarks الحقيقية (MS-COCO، VQA v2، GQA، OK-VQA) بتدخل في <b>نفس شكل الدوال</b>.</p>
+</section>
+
+<!-- STATION 2 -->
+<section id="d491-recall">
+  <div class="station-head"><span class="tag">02</span><h2>Recall@K من مصفوفة الـ similarity</h2></div>
+  <p>ابني مصفوفة cosine similarity شكلها <span class="ltr">(N, N)</span> بين embeddings الصور والكابشنز. الصف i = تشابه الصورة i مع كل كابشن. لكل صف، رتّب الأعمدة تنازلي. <b>Recall@K</b> = نسبة الصفوف اللي العمود بتاع القطر (الكابشن الصح) جه في أول K مكان.</p>
+  <div class="formula">R@K = (1/N) · Σᵢ  1[ rank of column i in row i  ≤  K ]</div>
+  <p>ده اتجاه <b>image → text</b> (i2t). الاتجاه التاني <b>text → image</b> (t2i) هو نفس الحسبة على <span class="ltr">sim.T</span>. الاتنين بيتكتبوا في التقرير. مثال: في eval فيه N=100، لو R@1 = 0.6 يبقى 60 كابشن من 100 جابوا صورتهم الصح كأول نتيجة.</p>
+  <div class="note"><strong>تشبيه:</strong> زي ما تدوّر على صورة في جوجل. R@1 = أول نتيجة صح. R@10 = الصح موجودة في الصفحة الأولى. كل ما K تكبر، المقياس بيبقى أسهل.</div>
+  <h3>الـ random baseline</h3>
+  <p>لو الموديل بيرتّب عشوائي، احتمال إن الصح تيجي في أول K = <span class="ltr">K / N</span>. يعني لـ N=50: R@1 = 0.02، R@5 = 0.10، R@10 = 0.20. أي رقم أعلى من كده = الموديل اتعلم إشارة حقيقية.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: مصفوفة الـ similarity وRecall@K</h3>
+      <p>كل خانة = cosine بين صورة (صف) وكابشن (عمود). كل ما اللون أغمق، التشابه أعلى. الخانات اللي عليها إطار هي الـ top-K في كل صف، والقطر لونه <b>أخضر</b> لو جه جوه الـ top-K و<b>أحمر</b> لو برّاه.</p>
+      <ul class="checklist">
+        <li>• حرّك «جودة الموديل» من 0 (عشوائي) لـ 3 (متدرب كويس) وشوف R@K بتطلع فوق الـ baseline.</li>
+        <li>• كبّر K وشوف إن R@K عمرها ما بتقل.</li>
+        <li>• <b>دوس على أي خانة برا القطر</b> عشان تحوّلها hard negative (أعلى شوية من الصح) وشوف R@1 بتقع.</li>
+        <li>• بدّل الاتجاه لـ t2i: نفس المصفوفة، الأعمدة بقت هي الـ queries.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d491-rcv" width="520" height="420" aria-label="مصفوفة similarity مع Recall@K"></canvas>
+      <div class="mrow">
+        <label>model quality = <span id="d491-vq">1.5</span><input type="range" id="d491-q" min="0" max="3" step="0.1" value="1.5"></label>
+        <label>K = <span id="d491-vk">1</span><input type="range" id="d491-k" min="1" max="10" value="1"></label>
+        <label>N = <span id="d491-vn">10</span><input type="range" id="d491-n" min="4" max="14" value="10"></label>
+        <label>direction <button type="button" id="d491-dir">i2t (rows)</button></label>
+      </div>
+      <div class="readout">
+        <div><small>R@K</small><b id="d491-rk">–</b></div>
+        <div><small>random K/N</small><b id="d491-rb">–</b></div>
+        <div><small>MRR</small><b id="d491-mrr">–</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d491-reroll">noise جديدة</button><button type="button" id="d491-perfect">identity مثالية</button><button type="button" id="d491-flip">flipped (القطر = أقل حاجة)</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d491-vqa">
+  <div class="station-head"><span class="tag">03</span><h2>VQA: Exact Match، وأخوه الأرحم soft-accuracy</h2></div>
+  <p>لكل <span class="ltr">(image, question, answer)</span>: اعمل encode للصورة، embed للسؤال، ادمجهم في الـ decoder (الـ cross-attention من درس 61)، واقرا الـ token اللي جاي. لو الـ id المتوقع = الـ id المرجعي يبقى صح. <b>Exact match</b> = متوسط ده على الـ eval كله. بت واحدة لكل عينة: صح أو غلط.</p>
+  <div class="formula">EM = (1/N) · Σ  1[ pred_id == ref_id ]</div>
+  <p>لاحظ إن ده المقياس الوحيد من التلاتة اللي <b>مافيهوش embeddings خالص</b>: مقارنة أرقام صحيحة بعد ما الموديل يطلّع إجابته.</p>
+  <p>في الـ datasets الحقيقية زي VQA v2، كل سؤال جاي معاه إجابات من <b>10 بني آدمين</b>. الإجابة بتاخد 1.0 لو 3 على الأقل قالوها، وأقل من كده بالنسبة. الدرس بيستخدم single-answer EM عشان الوضوح، والـ soft-accuracy تمرين.</p>
+  <div class="formula">soft_acc = min( #humans_who_said(pred) / 3 , 1 )</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: EM ضد soft-accuracy</h3>
+      <p>عندك 5 أسئلة (أمثلة توضيحية). كل سؤال معاه إجابات 10 بني آدمين. اختار إجابة الموديل لكل سؤال وشوف الفرق بين المقياسين. الـ EM بيقارن بالإجابة الأكتر تكرارًا بس.</p>
+      <div class="note ai"><strong>لاحظ:</strong> «maroon» في سؤال الأتوبيس غلط في الـ EM، بس لو 1 من 10 قالها بتاخد ⅓ في الـ soft. ده بيعترف إن البشر نفسهم مختلفين.</div>
+    </div>
+    <div class="instrument">
+      <div id="d491-vqaBox" style="display:grid;gap:8px"></div>
+      <canvas id="d491-vcv" width="520" height="170" aria-label="مقارنة EM وsoft accuracy"></canvas>
+      <div class="readout">
+        <div><small>Exact match</small><b id="d491-em">–</b></div>
+        <div><small>Soft accuracy</small><b id="d491-sa">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d491-bleu">
+  <div class="station-head"><span class="tag">04</span><h2>BLEU-4: قد إيه الكابشن بتاعك بيشبه كابشنز البشر</h2></div>
+  <p>ولّد كابشن، وقارنه بكابشنز مرجعية (عادة أكتر من واحد لنفس الصورة = <b>multi-reference</b>). BLEU-4 هو <b>المتوسط الهندسي</b> لدقة الـ 1-gram لحد الـ 4-gram، مضروب في <b>brevity penalty</b>:</p>
+  <div class="formula">BLEU-4 = BP · exp( mean( log p₁, log p₂, log p₃, log p₄ ) )</div>
+  <h3>الـ modified n-gram precision ‎pₙ‎</h3>
+  <p>عدّ كل n-grams الكابشن المتولّد. لكل n-gram، خد عدده بس «مقصوص» (clipped) بأقصى عدد ظهر بيه في <b>أي</b> مرجع لوحده. اجمع المقصوص واقسمه على إجمالي n-grams المتولّدة.</p>
+  <div class="note"><strong>ليه القص؟</strong> من غيره، كابشن زي «the the the the» هياخد دقة 1-gram = 100% لو المرجع فيه «the» مرة واحدة. القص بيقول: «the» ظهرت مرة واحدة في المرجع، فمش هحسبلك أكتر من مرة.</div>
+  <h3>ليه هندسي مش حسابي؟</h3>
+  <p>المتوسط الهندسي بيبقى <b>صفر</b> لو أي <span class="ltr">pₙ</span> بصفر. ده الصرامة اللي BLEU عايزها: كل رتب الـ n-grams لازم تساهم. لو مفيش ولا 4-gram مطابق، السكور بيقع. وعشان كده محتاجين <b>smoothing</b> في العينات الصغيرة: الكود بيستخدم Chen &amp; Cherry «method 1»: لو الـ count المطابق بصفر، ضيف 1 للبسط و1 للمقام.</p>
+  <h3>الـ Brevity Penalty</h3>
+  <div class="formula">BP = 1                if  g > r
+BP = exp(1 − r/g)     otherwise      (g = generated length, r = closest reference length)</div>
+  <p>من غيرها، كابشن من كلمة واحدة «dog» مطابقة لكلمة في المرجع هياخد precision كاملة. الـ BP بتعاقب الكابشن القصير. والـ r هو طول <b>أقرب</b> مرجع لطول الكابشن (ولو فيه تعادل، الأقصر).</p>
+  <h3>ليه multi-reference بيدّي سكور أعلى؟</h3>
+  <p>كل n-gram في الكابشن عنده فرص أكتر يتطابق مع أي مرجع، فالـ clipped count بيكبر والـ precision بتطلع.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: احسب BLEU-4 بعينك</h3>
+      <p>اكتب كابشن متولّد ولحد 3 مراجع (كلمات مفصولة بمسافات). المعمل بيحسب p₁…p₄ بالقص، والـ BP، والسكور النهائي، بنفس منطق <code>bleu4()</code> في الكود.</p>
+      <ul class="checklist">
+        <li>• جرّب «قصير»: precision عالية بس الـ BP بتسحق السكور.</li>
+        <li>• جرّب «إعادة صياغة»: نفس المعنى بكلمات تانية = سكور واطي. ده أكبر عيب في BLEU.</li>
+        <li>• امسح المرجعين 2 و3 وشوف السكور بيقل.</li>
+        <li>• اقفل الـ smoothing مع «disjoint» وشوف الصفر.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">generated<input id="d491-gen" class="ltr" style="font:inherit;font-family:var(--f-mono);font-size:14px;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)" value="a dog runs on the green grass"></label>
+      <label style="display:grid;gap:2px">reference 1<input id="d491-r1" class="ltr" style="font:inherit;font-family:var(--f-mono);font-size:14px;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)" value="a dog runs on the grass"></label>
+      <label style="display:grid;gap:2px">reference 2<input id="d491-r2" class="ltr" style="font:inherit;font-family:var(--f-mono);font-size:14px;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)" value="a brown dog running on green grass"></label>
+      <label style="display:grid;gap:2px">reference 3<input id="d491-r3" class="ltr" style="font:inherit;font-family:var(--f-mono);font-size:14px;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)" value="the dog is playing in a park"></label>
+      <label><input type="checkbox" id="d491-smooth" checked> smoothing (Chen &amp; Cherry method 1)</label>
+      <canvas id="d491-bcv" width="520" height="210" aria-label="n-gram precisions"></canvas>
+      <div class="readout">
+        <div><small>BP</small><b id="d491-bp">–</b></div>
+        <div><small>g / r</small><b id="d491-gr">–</b></div>
+        <div><small>BLEU-4</small><b id="d491-bl">–</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" data-d491b="exact">مطابق</button>
+        <button type="button" data-d491b="short">قصير</button>
+        <button type="button" data-d491b="para">إعادة صياغة</button>
+        <button type="button" data-d491b="spam">the the the</button>
+        <button type="button" data-d491b="disj">disjoint</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d491-suite">
+  <div class="station-head"><span class="tag">05</span><h2>الـ eval suite الاصطناعي، والـ held-out</h2></div>
+  <p>الدرس بيبني suite من <b>50 عينة</b> في الميموري بنفس شكل الـ mock corpus بتاع درس 62، بس بـ <b>seed مختلف</b> (held-out). يعني الموديل عمره ما شاف الداتا دي في التدريب. تلات ليستات:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الليستة</th><th>فيها إيه</th><th>بيتعمل إزاي في الكود</th></tr>
+    <tr><td><code>retrieval</code></td><td>50 زوج (image, caption_ids)</td><td>من <code>make_mock_corpus(seed=…)</code> مباشرة</td></tr>
+    <tr><td><code>vqa</code></td><td>50 (image, question_ids, answer_id)</td><td>السؤال ids عشوائية بـ seed خاص، والإجابة = أول token في الكابشن</td></tr>
+    <tr><td><code>caps</code></td><td>50 (image, [refs])</td><td>المرجع الأصلي + لحد نسختين «مزحزحتين» (كل id + shift)</td></tr>
+  </table></div>
+  <div class="tablewrap"><table>
+    <tr><th>المقياس</th><th>المدى</th><th>Random baseline (N=50)</th></tr>
+    <tr><td>R@1</td><td>0 → 1</td><td>0.02 (1/N)</td></tr>
+    <tr><td>R@5</td><td>0 → 1</td><td>0.10</td></tr>
+    <tr><td>R@10</td><td>0 → 1</td><td>0.20</td></tr>
+    <tr><td>VQA EM</td><td>0 → 1</td><td>1 / vocab</td></tr>
+    <tr><td>BLEU-4</td><td>0 → 1</td><td>صغير بس مش صفر (بسبب الـ smoothing)</td></tr>
+  </table></div>
+  <p>بعد 50 خطوة تدريب على داتا اصطناعية، الأرقام <b>مش متوقع</b> تبقى عالية. المتوقع إنها تبقى <b>فوق الـ random baseline</b>، وده اللي الديمو بيتأكد منه.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ suite زي بنك أسئلة الامتحان: ثابت (نفس الـ seed = نفس الأسئلة كل مرة) عشان تقارن الموديل قبل وبعد بعدل. ومنفصل عن التمارين عشان مايبقاش غش.</div>
+</section>
+
+<!-- CODE -->
+<section id="d491-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو شغّل الأصل الأول (محتاج <code>torch</code> و<code>numpy</code>، والملف بيستورد الموديل من درس 62 لوحده):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/63-multimodal-eval/code/main.py
+<span class="c"># والتيستات (الملف بيعمل from main import ... فادخل فولدر code الأول):</span>
+cd phases/19-capstone-projects/63-multimodal-eval/code
+python3 -m unittest test_main.py</pre></div>
+  <p><b>القاعدة:</b> افتح <code>my_eval.py</code> واكتب الخطوات دي بإيدك. الـ Copy للمقارنة بس.</p>
+
+  <h3>خطوة ١: Recall@K في الاتجاهين</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import torch
+
+def recall_at_k(sim: torch.Tensor, k: int) -> tuple[float, float]:
+    <span class="c"># sim شكلها (N, N): الصف i = الصورة i مع كل الكابشنز</span>
+    if sim.dim() != 2 or sim.shape[0] != sim.shape[1]:
+        raise ValueError(f"sim must be square (N, N), got {tuple(sim.shape)}")
+    n = sim.shape[0]
+    if k &lt; 1 or k &gt; n:                       <span class="c"># K لازم بين 1 و N</span>
+        raise ValueError(f"k {k} not in [1, N={n}]")
+
+    targets = torch.arange(n, device=sim.device)   <span class="c"># الصح = القطر</span>
+
+    topk_i2t = sim.topk(k, dim=1).indices          <span class="c"># أعلى K عمود في كل صف</span>
+    hits_i2t = (topk_i2t == targets.unsqueeze(1)).any(dim=1).float().mean().item()
+
+    topk_t2i = sim.T.topk(k, dim=1).indices        <span class="c"># نفس الكلام على الـ transpose</span>
+    hits_t2i = (topk_t2i == targets.unsqueeze(1)).any(dim=1).float().mean().item()
+    return hits_i2t, hits_t2i</pre></div>
+
+  <h3>خطوة ٢: VQA exact match</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def vqa_exact_match(predictions: list[int], references: list[int]) -> float:
+    if len(predictions) != len(references):
+        raise ValueError(f"length mismatch: pred {len(predictions)} vs ref {len(references)}")
+    if not predictions:
+        return 0.0
+    hits = sum(1 for p, r in zip(predictions, references) if int(p) == int(r))
+    return hits / len(predictions)               <span class="c"># نسبة الإجابات المطابقة</span></pre></div>
+
+  <h3>خطوة ٣: n-grams والعدّ</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _ngrams(seq: list[int], n: int) -> list[tuple[int, ...]]:
+    if len(seq) &lt; n:
+        return []
+    return [tuple(seq[i:i + n]) for i in range(len(seq) - n + 1)]
+
+def _count(ngrams):
+    out = {}
+    for g in ngrams:
+        out[g] = out.get(g, 0) + 1
+    return out</pre></div>
+
+  <h3>خطوة ٤: BLEU-4 multi-reference مع smoothing</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bleu4(generated: list[int], references: list[list[int]], smoothing: bool = True) -> float:
+    if not references:
+        raise ValueError("bleu4 requires at least one reference")
+    if not generated:
+        return 0.0
+
+    weights = [0.25, 0.25, 0.25, 0.25]
+    log_p_sum = 0.0
+    for n in range(1, 5):
+        gen_counts = _count(_ngrams(generated, n))
+        ref_max_counts = {}                        <span class="c"># أقصى عدد لكل n-gram في أي مرجع</span>
+        for ref in references:
+            for g, c in _count(_ngrams(ref, n)).items():
+                if c &gt; ref_max_counts.get(g, 0):
+                    ref_max_counts[g] = c
+
+        clipped = sum(min(c, ref_max_counts.get(g, 0)) for g, c in gen_counts.items())
+        total = sum(gen_counts.values())
+        if total == 0:                             <span class="c"># الكابشن أقصر من n</span>
+            return 0.0
+        if clipped == 0:
+            if smoothing:                          <span class="c"># Chen &amp; Cherry method 1</span>
+                clipped, total = 1, total + 1
+            else:
+                return 0.0
+        log_p_sum += weights[n - 1] * math.log(clipped / total)
+
+    gen_len = len(generated)
+    ref_len = len(min(references, key=lambda r: (abs(len(r) - gen_len), len(r))))  <span class="c"># أقرب مرجع</span>
+    bp = 1.0 if gen_len &gt; ref_len else math.exp(1.0 - ref_len / max(1, gen_len))
+    return bp * math.exp(log_p_sum)</pre></div>
+
+  <h3>خطوة ٥: جرّب الدوال على حالات التيستات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>print(recall_at_k(torch.eye(10) * 10.0, 1))           <span class="c"># مثالية</span>
+flip = torch.full((6, 6), 10.0); flip.fill_diagonal_(0.0)
+print(recall_at_k(flip, 1))                            <span class="c"># القطر أوطى حاجة</span>
+print(vqa_exact_match([1, 2, 3, 4], [1, 0, 3, 0]))
+gen = [3, 1, 4, 1, 5, 9, 2, 6, 5]
+print(bleu4(gen, [gen]))                               <span class="c"># مطابق</span>
+print(bleu4([1]*8, [[2]*8], smoothing=False))          <span class="c"># disjoint</span>
+print(bleu4([1, 2, 3, 4], [[1, 2, 3, 4, 5, 6, 7, 8]]) &lt; 1.0)   <span class="c"># BP شغالة</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">(1.0, 1.0)
+(0.0, 0.0)
+0.5
+1.0
+0.0
+True</pre><p>المطابق بيطلع 1.0 (التيست بيطلب أكبر من 0.99). والـ BP للقصير = <span class="ltr">exp(1 − 8/4) ≈ 0.37</span>.</p></details>
+
+  <h3>خطوة ٦: <code>evaluate()</code>: إزاي التلاتة بيتحسبوا من الموديل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch.nn.functional as F
+
+def evaluate(model, suite) -> dict:
+    model.eval()
+    with torch.no_grad():
+        <span class="c"># 1) retrieval: embeddings → normalize → cosine matrix</span>
+        images = torch.cat([p.image for p in suite.retrieval], dim=0)
+        captions = torch.cat([p.caption_ids for p in suite.retrieval], dim=0)
+        _, img_emb = model.encode_image(images)
+        txt_emb = model.text_encoder(captions)
+        sim = F.normalize(img_emb, dim=-1) @ F.normalize(txt_emb, dim=-1).T
+        r1_i, r1_t = recall_at_k(sim, 1)
+        r5_i, r5_t = recall_at_k(sim, min(5, sim.shape[0]))
+        r10_i, r10_t = recall_at_k(sim, min(10, sim.shape[0]))
+
+        <span class="c"># 2) VQA: decoder على السؤال، واقرا اللوجِتس عند آخر token مش padding</span>
+        vqa_imgs = torch.cat([t.image for t in suite.vqa], dim=0)
+        vqa_q = torch.cat([t.question_ids for t in suite.vqa], dim=0)
+        vqa_memory, _ = model.encode_image(vqa_imgs)
+        logits = model.decoder(vqa_q, vqa_memory)
+        last = (vqa_q != PAD_ID).sum(dim=1).clamp(min=1) - 1
+        preds = logits[torch.arange(logits.size(0)), last, :].argmax(dim=-1).tolist()
+        vqa_em = vqa_exact_match(preds, [t.answer_id for t in suite.vqa])
+
+        <span class="c"># 3) captioning: greedy decoding لـ 8 tokens بادئين من token 0</span>
+        cap_memory, _ = model.encode_image(torch.cat([c.image for c in suite.caps], dim=0))
+        prompts = torch.zeros(cap_memory.shape[0], 1, dtype=torch.long)
+        gen = [[] for _ in range(cap_memory.shape[0])]
+        for _ in range(min(8, model.cfg.max_text_len - 1)):
+            nxt = model.decoder(prompts, cap_memory)[:, -1, :].argmax(dim=-1)
+            for b, t in enumerate(nxt.tolist()):
+                gen[b].append(int(t))
+            prompts = torch.cat([prompts, nxt.unsqueeze(1)], dim=1)
+        scores = [bleu4(g, c.references) for g, c in zip(gen, suite.caps)]
+
+    return {"R@1_i2t": r1_i, "R@1_t2i": r1_t, "R@5_i2t": r5_i, "R@5_t2i": r5_t,
+            "R@10_i2t": r10_i, "R@10_t2i": r10_t, "vqa_em": vqa_em,
+            "bleu4": sum(scores) / max(1, len(scores))}</pre></div>
+  <p>الـ <code>main()</code> في الملف الأصلي بيعمل الباقي: config صغيرة (<span class="ltr">vocab 128, embed 64, max_len 10</span>)، يبني الـ suite بـ <span class="ltr">seed = cfg.seed + 7777</span>، يقيس <b>قبل</b> التدريب، يدرّب 50 خطوة (Adam، batch 16، contrastive + LM)، ويقيس <b>بعد</b>، ويطبع الفرق لكل مقياس.</p>
+  <details><summary>الناتج المتوقع (الأجزاء الثابتة)</summary><pre class="term">============================================================
+MULTIMODAL EVALUATION
+============================================================
+  text vocab : 128
+  embed dim  : 64
+  steps      : 50
+
+building eval suite (50 samples, held-out seed)...
+  retrieval pairs : 50
+  vqa triples     : 50
+  caption samples : 50
+
+metrics BEFORE training (50-step random init):
+  R@1_i2t      : …
+  ...
+training for 50 steps on the mock corpus...
+  step   0  total …
+metrics AFTER training:
+  ...
+metric deltas (after - before):
+  ...
+done.</pre><p>الأرقام نفسها حسب جهازك. حسب الدرس، المتوقع إن الـ retrieval يتحرك من قريب من العشوائي لفوق، والـ VQA فوق العشوائي، وBLEU-4 يطلع شوية. قارنها بجدول الـ baseline اللي فوق.</p></details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d491-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>ضيف CIDEr</b> لمقاييس الـ captioning. CIDEr بيستخدم وزن TF-IDF على الـ n-grams، فبيكافئ الكلمات اللي فيها معلومة.
+      <details><summary>تلميح</summary>(١) لكل n من 1 لـ 4، ابني متجه TF-IDF لكل كابشن: TF = عدد الـ n-gram في الكابشن ÷ إجمالي n-grams بتاعه، وIDF = <span class="ltr">log(N_images / #images whose refs contain the n-gram)</span>. (٢) cosine بين متجه المتولّد ومتجه كل مرجع، ومتوسطهم. (٣) متوسط على n. كده «a» و«the» بياخدوا وزن قليل لأنهم في كل حتة، و«giraffe» وزن عالي.</details></li>
+    <li><b>Soft-accuracy زي VQA v2:</b> كل سؤال ليه كذا إجابة بشرية، والدقة = <span class="ltr">min(human_count / 3, 1)</span>.
+      <details><summary>الإجابة</summary><pre class="term">def vqa_soft_acc(preds, human_answers):
+    s = 0.0
+    for p, humans in zip(preds, human_answers):
+        s += min(sum(1 for h in humans if h == p) / 3, 1.0)
+    return s / max(1, len(preds))</pre>جرّبها في المعمل ٢ فوق: نفس المنطق.</details></li>
+    <li><b>‎bleu4‎ آمنة من الـ NaN</b> للـ sequences الفاضية.
+      <details><summary>تلميح</summary>الكود الحالي بيرجّع 0.0 لو <code>generated</code> فاضي، بس فكّر في حالات تانية: مرجع فاضي جوه الليستة (<code>[[]]</code>)، أو كابشن أقصر من 4 (الكود بيرجّع 0 حتى مع الـ smoothing). اكتب تيست لكل حالة، وتأكد إن مفيش <code>log(0)</code> ولا قسمة على صفر، وقرر: الكابشن اللي طوله 2 ياخد 0 ولا تحسب على الـ n المتاحة بس؟ وثّق قرارك.</details></li>
+    <li><b>MRR جنب R@K.</b> الـ MRR حساس لمكان الصح حتى لو برّا الـ top-K.
+      <details><summary>الإجابة</summary><pre class="term">def mrr(sim):
+    diag = sim.diag().unsqueeze(1)
+    ranks = (sim &gt; diag).sum(dim=1) + 1      # 1-based rank of the correct column
+    return (1.0 / ranks.float()).mean().item()</pre>المعمل ١ بيعرض MRR: لاحظ إن R@1 ممكن تفضل ثابتة والـ MRR يتحرك لما الصح ينزل من المركز 2 لـ 8.</details></li>
+    <li><b>منحنى التعلم:</b> شغّل الـ eval عند خطوات 0، 10، 20، 30، 40، 50 وارسمه، واتأكد إن المقاييس ماشية مع الـ loss.
+      <details><summary>تلميح</summary>جوه لوب التدريب في <code>main()</code>: <code>if step % 10 == 0: hist.append((step, total.item(), evaluate(model, suite)))</code> وبعد اللوب قيس مرة أخيرة. <b>مهم:</b> <code>evaluate</code> بتعمل <code>model.eval()</code>، فلازم ترجع <code>model.train()</code> بعدها وإلا التدريب هيكمل في وضع eval. ارسم الـ loss ومعاه R@5 وBLEU بـ matplotlib على محورين.</details></li>
+    <li><b>إضافة مني · regression gate زي الشغل الحقيقي:</b> في أي فريق بيشحن موديلات، كل checkpoint جديد بيتقاس على نفس الـ suite وبيترفض لو مقياس وقع. اكتب دالة <code>gate(baseline: dict, new: dict, tol=0.02)</code> ترجع ليستة المقاييس اللي وقعت أكتر من <code>tol</code>، وخلّي السكريبت يطلع بـ exit code 1 لو الليستة مش فاضية (عشان CI يوقف).
+      <details><summary>الإجابة</summary><pre class="term">import json, sys
+def gate(baseline, new, tol=0.02):
+    return [k for k in baseline if new[k] &lt; baseline[k] - tol]
+
+base = json.load(open("baseline_metrics.json"))
+new = evaluate(model, suite)
+bad = gate(base, new)
+if bad:
+    print("REGRESSION:", {k: (base[k], new[k]) for k in bad}); sys.exit(1)</pre>الشرط الأساسي إن الـ suite ثابت (نفس الـ seed) وإلا المقارنة مالهاش معنى. وده بالظبط ليه الدرس بيبنيه deterministic.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d491-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: الحاجات اللي الدرس مقالهاش</h2></div>
+  <ul class="checklist">
+    <li><b>R@K بتعتمد على حجم الـ pool:</b> الـ baseline هو K/N، يعني R@1 على 50 عينة أسهل بكتير من R@1 على 5000. عمرك ما تقارن رقمين R@K اتحسبوا على N مختلف. (جرّب سلايدر N في المعمل ١ وشوف الـ baseline بيتغير.)</li>
+    <li><b>BLEU مابيفهمش المعنى:</b> «a puppy sprinting across a lawn» و«a dog runs on the grass» نفس المعنى وBLEU تقريبًا صفر. عشان كده الـ benchmarks بتحط جنبه CIDEr وMETEOR، والناس بقت تستخدم كمان مقاييس بالـ embeddings أو LLM-as-judge. BLEU مفيد للمقارنة بين نسخ نفس الموديل، مش كحكم مطلق.</li>
+    <li><b>متقيسش على داتا التدريب:</b> الدرس بيستخدم <span class="ltr">seed + 7777</span> للـ suite و<span class="ltr">seed + 1</span> لكوربس التدريب. لو خلطتهم، الأرقام هتطلع حلوة وكدابة (data leakage). نفس الكلام لما تقيس LLM على benchmark ممكن يكون موجود في الـ pretraining data.</li>
+    <li><b>‎model.eval()‎ و ‎torch.no_grad()‎:</b> الأولى بتقفل الـ dropout، والتانية بتوفر ميموري وبتمنع حساب gradients. نسيان أي واحدة غلطة كلاسيكية: الأولى بتخلي النتايج عشوائية، والتانية بتبطّأ وممكن توقع الـ GPU.</li>
+    <li><b>Exact match قاسي على الـ LLMs:</b> موديل generative ممكن يقول «Red.» أو «it's red» والمرجع «red». في الشغل الحقيقي بتعمل normalization (lowercase، شيل الـ punctuation، الأرقام) قبل المقارنة، وإلا هتقيس الـ formatting مش الفهم.</li>
+    <li><b>فين هتشوفه تاني قريب جدًا:</b> الأيام الجاية (Chunking → Hybrid BM25+Dense → Reranker → RAG Eval) كلها retrieval. Recall@K وMRR اللي كتبتهم النهاردة هما نفس المقاييس اللي هتقيس بيها الـ retriever في الـ RAG، بس الـ «صورة» بقت «chunk».</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d491-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d491-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d491-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d491-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه الـ training loss مش كفاية، وإيه التلات eval surfaces</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أحسب R@K في الاتجاهين من مصفوفة similarity، وأعرف الـ baseline بتاعها</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الفرق بين exact match وsoft-accuracy</label></li>
+    <li><label><input type="checkbox" data-ck="4"> أقدر أحسب BLEU-4 بالقص والـ BP والـ smoothing على ورقة</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الدوال بإيدي وشغّلت main.py والتيستات</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Recall@K على similarity matrix</td><td>MS-COCO 5K و Flickr30K retrieval، والـ retriever في أي RAG</td></tr>
+    <tr><td>R@1 على class prompts</td><td>ImageNet zero-shot (top-1 accuracy) بنفس مصفوفة CLIP</td></tr>
+    <tr><td>Exact match / soft-acc</td><td>VQA v2، GQA، OK-VQA</td></tr>
+    <tr><td>BLEU-4 (+ CIDEr، METEOR)</td><td>MS-COCO captioning، NoCaps، Flickr30K captioning</td></tr>
+    <tr><td>Held-out deterministic suite</td><td>regression gates في CI لأي موديل بيتشحن</td></tr>
+    <tr><td>MRR</td><td>تقييم الـ search والـ rerankers</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Chunking Strategies, Compared. بنبدأ track الـ RAG: إزاي تقطّع الوثائق، وليه طريقة التقطيع بتأثر على الـ Recall@K اللي لسه كاتبه.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F63-multimodal-eval" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/63-multimodal-eval</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=491,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d491-roadmap').closest('.day');
+
+// roadmap: phase 19 lesson numbers
+const rm=$('d491-roadmap');
+const L=[];for(let i=1;i<=17;i++)L.push(i);for(let i=20;i<=87;i++)L.push(i);
+L.forEach(i=>{const s=document.createElement('span');s.textContent=i;if(i===63)s.className='now';rm.appendChild(s)});
+const nowEl=rm.querySelector('.now');if(nowEl)rm.scrollLeft=nowEl.offsetLeft-rm.clientWidth/2;
+
+// ---------- Lab 1: Recall@K ----------
+const rc=$('d491-rcv'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+let n=10,noise=[],boost={},dirT=false,mode='normal';
+function mkNoise(){noise=[];for(let i=0;i<14;i++){const r=[];for(let j=0;j<14;j++)r.push(Math.random()*2-1);noise.push(r)}boost={}}
+function simM(){
+  const q=+$('d491-q').value,S=[];
+  for(let i=0;i<n;i++){const r=[];for(let j=0;j<n;j++){let v;
+    if(mode==='perfect')v=i===j?1:0;else if(mode==='flip')v=i===j?-1:0.5;
+    else v=(i===j?q:0)+noise[i][j];
+    if(boost[i+','+j]!==undefined)v=boost[i+','+j];r.push(v)}S.push(r)}
+  if(dirT)return S[0].map((_,j)=>S.map(r=>r[j]));
+  return S;
+}
+let cellGeo=null;
+function drawRecall(){
+  n=+$('d491-n').value;const kEl=$('d491-k');kEl.max=n;if(+kEl.value>n)kEl.value=n;const K=+kEl.value;
+  $('d491-vq').textContent=f(+$('d491-q').value,1);$('d491-vk').textContent=K;$('d491-vn').textContent=n;
+  const S=simM();let mn=Infinity,mx=-Infinity;S.forEach(r=>r.forEach(v=>{mn=Math.min(mn,v);mx=Math.max(mx,v)}));
+  rx.clearRect(0,0,RW,RH);
+  const ox=70,oy=40,cell=Math.floor(Math.min((RW-ox-20)/n,(RH-oy-30)/n));cellGeo={ox,oy,cell};
+  let hits=0,rr=0;
+  rx.font='11px JetBrains Mono, monospace';rx.textAlign='center';rx.fillStyle=css('--muted');
+  for(let j=0;j<n;j++)rx.fillText((dirT?'img':'cap')+j,ox+j*cell+cell/2,oy-8);
+  rx.textAlign='right';
+  for(let i=0;i<n;i++){
+    rx.fillStyle=css('--muted');rx.fillText((dirT?'cap':'img')+i,ox-6,oy+i*cell+cell/2+4);
+    const order=S[i].map((v,j)=>[v,j]).sort((a,b)=>b[0]-a[0]).map(p=>p[1]);
+    const top=new Set(order.slice(0,K));
+    const rank=1+S[i].filter((v,j)=>j!==i&&v>S[i][i]).length;rr+=1/rank;
+    const hit=top.has(i);if(hit)hits++;
+    for(let j=0;j<n;j++){const x=ox+j*cell,y=oy+i*cell,t=(S[i][j]-mn)/((mx-mn)||1);
+      rx.fillStyle=css('--soft');rx.fillRect(x,y,cell-2,cell-2);
+      rx.fillStyle=css('--vec-a');rx.globalAlpha=.08+.85*t;rx.fillRect(x,y,cell-2,cell-2);rx.globalAlpha=1;
+      if(top.has(j)){rx.strokeStyle=css('--ink');rx.lineWidth=2;rx.strokeRect(x+1,y+1,cell-4,cell-4)}
+      if(i===j){rx.strokeStyle=hit?css('--ok'):css('--bad');rx.lineWidth=3;rx.strokeRect(x+2,y+2,cell-6,cell-6)}
+    }
+    rx.textAlign='left';rx.fillStyle=hit?css('--ok'):css('--bad');rx.fillText('#'+rank,ox+n*cell+2,oy+i*cell+cell/2+4);rx.textAlign='right';
+  }
+  rx.textAlign='left';rx.fillStyle=css('--muted');rx.fillText(dirT?'rows = captions (t2i = sim.T)':'rows = images (i2t)',ox,RH-8);
+  $('d491-rk').textContent=f(hits/n,3);$('d491-rb').textContent=f(K/n,3);$('d491-mrr').textContent=f(rr/n,3);
+  $('d491-rk').style.color=hits/n>K/n?css('--ok'):'';
+}
+['d491-q','d491-k','d491-n'].forEach(id=>$(id).addEventListener('input',()=>{if(id==='d491-q')mode='normal';drawRecall()}));
+$('d491-dir').addEventListener('click',e=>{dirT=!dirT;e.target.textContent=dirT?'t2i (sim.T)':'i2t (rows)';drawRecall()});
+$('d491-reroll').addEventListener('click',()=>{mode='normal';mkNoise();drawRecall()});
+$('d491-perfect').addEventListener('click',()=>{mode='perfect';boost={};drawRecall()});
+$('d491-flip').addEventListener('click',()=>{mode='flip';boost={};drawRecall()});
+rc.addEventListener('pointerdown',e=>{if(!cellGeo)return;const [px,py]=AI.evPos(rc,e);const {ox,oy,cell}=cellGeo;
+  let j=Math.floor((px-ox)/cell),i=Math.floor((py-oy)/cell);if(i<0||j<0||i>=n||j>=n||i===j)return;
+  if(dirT){const t=i;i=j;j=t}
+  const S0=(()=>{const d=dirT;dirT=false;const s=simM();dirT=d;return s})();
+  boost[i+','+j]=Math.max(S0[i][i],S0[j][j])+0.15;drawRecall()});
+mkNoise();drawRecall();
+
+// ---------- Lab 2: VQA EM vs soft ----------
+const VQ=[
+ {q:'What color is the bus?',h:{red:7,orange:2,maroon:1},opts:['red','orange','maroon','blue']},
+ {q:'How many dogs are there?',h:{'2':6,'3':3,'1':1},opts:['2','3','1','4']},
+ {q:'Is it raining?',h:{no:9,yes:1},opts:['no','yes']},
+ {q:'What is the man holding?',h:{umbrella:4,phone:3,bag:3},opts:['umbrella','phone','bag','cup']},
+ {q:'Where is the cat?',h:{sofa:5,couch:4,chair:1},opts:['sofa','couch','chair','floor']}
+];
+const pick=[0,1,0,1,1];
+const vb=$('d491-vqaBox');
+VQ.forEach((v,i)=>{const d=document.createElement('div');d.style.cssText='display:grid;gap:2px;direction:ltr;text-align:left;font-size:14px';
+  const hs=Object.entries(v.h).map(([a,c])=>a+'×'+c).join(', ');
+  d.innerHTML='<b class="mono"></b><span style="color:var(--muted)" class="mono"></span>';
+  d.children[0].textContent=(i+1)+'. '+v.q;d.children[1].textContent='humans: '+hs;
+  const sel=document.createElement('select');sel.id='d491-vs'+i;sel.setAttribute('aria-label','model answer '+(i+1));
+  v.opts.forEach((o,k)=>{const op=document.createElement('option');op.value=k;op.textContent='model says: '+o;if(k===pick[i])op.selected=true;sel.appendChild(op)});
+  sel.addEventListener('change',()=>{pick[i]=+sel.value;drawVQA()});d.appendChild(sel);vb.appendChild(d)});
+const vc=$('d491-vcv'),vx=AI.setupCanvas(vc),VW=+vc.dataset.w,VH=+vc.dataset.h;
+function drawVQA(){
+  let em=0,sa=0;const rows=VQ.map((v,i)=>{const p=v.opts[pick[i]];const top=Object.entries(v.h).sort((a,b)=>b[1]-a[1])[0][0];
+    const e=p===top?1:0,s=Math.min((v.h[p]||0)/3,1);em+=e;sa+=s;return [e,s]});
+  vx.clearRect(0,0,VW,VH);const bw=VW/VQ.length,base=VH-26,hh=base-16;
+  vx.font='12px JetBrains Mono, monospace';vx.textAlign='center';
+  rows.forEach(([e,s],i)=>{const x=i*bw+bw/2;
+    vx.fillStyle=css('--soft');vx.fillRect(x-30,16,26,hh);vx.fillRect(x+4,16,26,hh);
+    vx.fillStyle=css('--vec-a');vx.fillRect(x-30,base-hh*e,26,hh*e);
+    vx.fillStyle=css('--vec-b');vx.fillRect(x+4,base-hh*s,26,hh*s);
+    vx.fillStyle=css('--ink');vx.fillText('Q'+(i+1),x,VH-8);
+    vx.fillStyle=css('--muted');vx.fillText(f(s,2),x+17,12)});
+  vx.textAlign='left';vx.fillStyle=css('--vec-a');vx.fillText('■ EM',6,12);vx.fillStyle=css('--vec-b');vx.fillText('■ soft',50,12);
+  $('d491-em').textContent=f(em/VQ.length,3);$('d491-sa').textContent=f(sa/VQ.length,3);
+}
+drawVQA();
+
+// ---------- Lab 3: BLEU-4 ----------
+const bc=$('d491-bcv'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+const tok=s=>s.trim().toLowerCase().split(/\s+/).filter(Boolean);
+const ngr=(s,k)=>{const o=[];for(let i=0;i+k<=s.length;i++)o.push(s.slice(i,i+k).join(' '));return o};
+const cnt=a=>{const o={};a.forEach(g=>o[g]=(o[g]||0)+1);return o};
+function bleu(gen,refs,sm){
+  const P=[];if(!refs.length)return {err:'محتاج مرجع واحد على الأقل',P};
+  if(!gen.length)return {score:0,P,bp:0,g:0,r:0,note:'الكابشن فاضي → 0'};
+  let lp=0,early=null;
+  for(let k=1;k<=4;k++){const gc=cnt(ngr(gen,k)),rm={};
+    refs.forEach(r=>{Object.entries(cnt(ngr(r,k))).forEach(([g,c])=>{if(c>(rm[g]||0))rm[g]=c})});
+    let cl=0,tot=0;Object.entries(gc).forEach(([g,c])=>{cl+=Math.min(c,rm[g]||0);tot+=c});
+    if(tot===0){P.push({cl:0,tot:0,p:0,raw:'—'});early=early||'الكابشن أقصر من '+k+' كلمات → الكود بيرجّع 0';continue}
+    let raw=cl+'/'+tot;
+    if(cl===0){if(sm){cl=1;tot+=1;raw+=' → 1/'+tot}else{P.push({cl:0,tot,p:0,raw});early=early||'p'+k+' = 0 ومفيش smoothing → 0';continue}}
+    P.push({cl,tot,p:cl/tot,raw});if(!early)lp+=.25*Math.log(cl/tot)}
+  const g=gen.length,rl=refs.slice().sort((a,b)=>(Math.abs(a.length-g)-Math.abs(b.length-g))||(a.length-b.length))[0].length;
+  const bp=g>rl?1:Math.exp(1-rl/Math.max(1,g));
+  return {score:early?0:bp*Math.exp(lp),P,bp,g,r:rl,note:early};
+}
+function drawBleu(){
+  const gen=tok($('d491-gen').value),refs=['d491-r1','d491-r2','d491-r3'].map(id=>tok($(id).value)).filter(r=>r.length);
+  const R=bleu(gen,refs,$('d491-smooth').checked);
+  bx.clearRect(0,0,BW,BH);const base=BH-40,hh=base-24,w=70;
+  bx.font='12px JetBrains Mono, monospace';bx.textAlign='center';
+  for(let k=0;k<4;k++){const x=40+k*(w+40),P=R.P[k];
+    bx.fillStyle=css('--soft');bx.fillRect(x,24,w,hh);
+    if(P){bx.fillStyle=css('--vec-a');bx.fillRect(x,base-hh*P.p,w,hh*P.p);
+      bx.fillStyle=css('--ink');bx.fillText(P.raw,x+w/2,base+16);bx.fillText(f(P.p,3),x+w/2,base-hh*P.p-6>30?base-hh*P.p-6:40)}
+    bx.fillStyle=css('--muted');bx.fillText('p'+(k+1),x+w/2,base+32)}
+  bx.textAlign='left';
+  if(R.err||R.note){bx.fillStyle=css('--bad');bx.textAlign='right';bx.fillText(R.err||R.note,BW-8,14);bx.textAlign='left'}
+  $('d491-bp').textContent=R.err?'—':f(R.bp,3);$('d491-gr').textContent=R.err?'—':R.g+' / '+R.r;$('d491-bl').textContent=R.err?'—':f(R.score,4);
+}
+['d491-gen','d491-r1','d491-r2','d491-r3'].forEach(id=>$(id).addEventListener('input',drawBleu));
+$('d491-smooth').addEventListener('change',drawBleu);
+const PRE={exact:['a dog runs on the grass','a dog runs on the grass','a brown dog running on green grass','the dog is playing in a park'],
+ short:['a dog','a dog runs on the grass','a brown dog running on green grass','the dog is playing in a park'],
+ para:['a puppy sprinting across a lawn','a dog runs on the grass','a brown dog running on green grass','the dog is playing in a park'],
+ spam:['the the the the the the','the dog is playing in a park','',''],
+ disj:['red car parked near building','a dog runs on the grass','','']};
+document.querySelectorAll('[data-d491b]').forEach(b=>b.addEventListener('click',()=>{const p=PRE[b.dataset.d491b];
+  ['d491-gen','d491-r1','d491-r2','d491-r3'].forEach((id,i)=>$(id).value=p[i]);drawBleu()}));
+drawBleu();
+
+// ---------- quiz ----------
+AI.quiz($('d491-quizBox'),[
+ ['ليه الـ training loss لوحده مش كفاية لقياس جودة موديل multimodal؟',['الـ loss عبارة عن string','قيم الـ loss عشوائية','الـ training loss بيقيس الـ fit على توزيع التدريب، والـ eval surfaces (retrieval، VQA، captioning) بتقيس هل الموديل بيعمم على مهام held-out','الـ loss صعب يتحسب'],2,'تقليل الـ loss ضروري بس مش كفاية. المقاييس على داتا held-out في التلات أسطح بتقيس الموديل يقدر يعمل إيه فعلًا.'],
+ ['R@5 بيقيس إيه في retrieval eval فيه 100 عينة؟',['نسبة الـ queries اللي الـ match الصح بتاعها جه في أول 5 من الـ 100 candidate','دقة 5%','5 queries في الثانية','الكابشن الخامس دايمًا صح'],0,'R@K = نسبة الـ queries اللي الهدف جه في أول K مرتبين. كل ما يعلى أحسن.'],
+ ['ليه BLEU-4 بياخد المتوسط الهندسي لدقة 1 لـ 4-gram بدل الحسابي؟',['الهندسي أكبر','PyTorch بيدعم الهندسي بس','الحسابي أبطأ','الهندسي بيبقى صفر لو أي n-gram precision بصفر، ودي الصرامة اللي BLEU عايزها، والـ smoothing بيتعامل مع حالة الصفر'],3,'الهندسي بيجبر كل رتب الـ n-grams تساهم. لو دقة الـ 4-gram صفر السكور بيقع قبل الـ smoothing.'],
+ ['الـ brevity penalty في BLEU-4 بتحمي من إيه؟',['تسريب الميموري','إن الكابشنز الطويلة تتعاقب','إن الكابشنز القصيرة تغش وتاخد precision عالية بكلمات آمنة متكررة؛ الـ BP أقل من 1 لما المتولّد أقصر من المرجع','أخطاء الـ tokenizer'],2,'من غير BP، كابشن من كلمة واحدة مطابقة لكلمة في المرجع هياخد 1.0. الـ BP بتصغّر السكور للتوليد القصير.'],
+ ['ليه multi-reference BLEU غالبًا بيطلع أعلى من single-reference على نفس التوليد؟',['كل n-gram في التوليد ممكن يتطابق مع أي مرجع، فالـ clipped count بيكبر لما المراجع تزيد','الـ single-reference بايظ','المراجع بتاخد ميموري زيادة','الرياضة مختلفة'],0,'مراجع أكتر = فرص أكتر للـ n-gram يتطابق، فالـ clipped counts بتكبر والـ precision بتعلى.'],
+ ['أنهي eval surface مابيستخدمش embeddings خالص وبيقارن ids بس؟',['Cosine similarity','BLEU-4','VQA exact match: الـ answer id المتوقع بيتقارن مباشرة بالمرجعي من غير أي خطوة embedding','Retrieval'],2,'الـ VQA EM مقارنة integers بعد ما الموديل يطلّع الـ answer token. مفيش embeddings ولا similarity.'],
+ ['(سؤال مني) موديل جاب R@1 = 0.30 على pool فيه 10 عينات، وموديل تاني جاب R@1 = 0.10 على pool فيه 1000. تقول إيه؟',['الأول أحسن بوضوح','مينفعش تقارنهم: الـ baseline في الأول 0.10 وفي التاني 0.001، فالتاني بعيد عن العشوائي أكتر بكتير','التاني أحسن لأن الـ 1000 أكبر بس','الاتنين زي بعض'],1,'الـ random baseline هو K/N. لازم تقارن على نفس الـ pool، وإلا الرقم مالوش معنى.'],
+ ['(سؤال مني) الكابشن المتولّد «a puppy sprinting across a lawn» والمرجع «a dog runs on the grass». BLEU-4 هيطلع إيه تقريبًا ومعناه إيه؟',['قريب من 1 لأن المعنى واحد','قريب من الصفر، لأن BLEU بيقيس تطابق الكلمات مش المعنى، وده سبب استخدام مقاييس تانية جنبه','بالظبط 0.5','هيرمي error'],1,'BLEU سطحي: كلمة «a» بس مشتركة. عشان كده بيتحط جنبه CIDEr وMETEOR وأحيانًا تقييم بموديل.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(rc))return false;drawRecall();drawVQA();drawBleu()});
+})();
+</script>

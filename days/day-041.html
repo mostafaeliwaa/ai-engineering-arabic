@@ -1,0 +1,951 @@
+<div class="day" id="d41-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 19 · ML System Design — From Problem to Deployed Model</span>
+  <h1>اليوم ٤١: الموديل حتة من سيستم، والتصميم هو اللي بيحدد هينجح ولا لأ</h1>
+  <p class="lede">النهاردة مش هنتعلم algorithm جديد. هنتعلم الأسئلة اللي لازم تتسأل <b>قبل</b> التدريب: الموديل هيتوقع إيه، مين هياخد قرار بالتوقع ده، هيتكلف كام، وإيه اللي يحصل لما حاجة تقع. وهتبني toolkit صغير بيسعّر الـ batch والـ online، ويقارن الموديل بالـ baselines، ويدّي درجة لـ design document.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١١٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (standard library بس)</b></span>
+    <span>النوع: <b>Build</b></span>
+    <span>بعده: <b>مراقبة الموديلات في الـ Production (Drift)</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d41-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d41-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 40) كان عن الـ <b>Feature Selection</b>. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. إيه الفرق بين filter و wrapper و embedded؟</summary>الـ <b>filter</b> بيدّي كل feature درجة لوحدها بمقياس إحصائي من غير موديل (زي variance threshold و mutual information): سريع بس مش شايف التفاعل بين الـ features. الـ <b>wrapper</b> بيدرّب موديل على مجموعات features ويقيس الأداء (زي RFE و forward selection): أدق وأغلى. الـ <b>embedded</b> بيختار وهو بيتدرب (زي L1 و tree importance).</details>
+  <details><summary>٢. ليه الـ mutual information بتمسك علاقات الـ correlation مش شايفاها؟</summary>الـ correlation بتقيس علاقة <b>خطية</b> بس. لو y = x² مثلًا، الـ correlation ممكن تطلع قريبة من صفر، لكن الـ mutual information بتقيس "معرفتي بـ x بتقلل عدم اليقين في y قد إيه" بغض النظر عن شكل العلاقة.</details>
+  <details><summary>٣. الـ L1 بيعمل feature selection إزاي؟</summary>العقوبة بتاعته (مجموع القيم المطلقة للأوزان) بتزق الأوزان اللي مش مفيدة لـ <b>صفر بالظبط</b>، فالـ feature دي بتتشال عمليًا. النهاردة هنستخدم نفس الروح: "أبسط حل يكفي" — بس على مستوى السيستم كله.</details>
+</section>
+
+<section id="d41-plan">
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>15 min</b>من هدف بيزنس لـ ML task، وإمتى ما نستخدمش ML</div>
+    <div><b>15 min</b>المقاييس الأربعة والـ baselines + معمل ٠٢</div>
+    <div><b>20 min</b>الـ budgets و batch ضد online + معمل ٠١</div>
+    <div><b>15 min</b>الـ rollout والـ feedback loops والـ failure modes + معمل ٠٣</div>
+    <div><b>30 min</b>اكتب الكود وشغّله والـ design doc checker</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d41-framing">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: موديل AUC بتاعه 0.91 ومحدش استخدمه</h2></div>
+  <p>شركة subscription طلبت "موديل churn". الـ data scientist درّب gradient-boosted classifier وطلّع <span class="ltr">AUC = 0.91</span>. بعد ٣ شهور، محدش بيستخدمه. ليه؟ ولا سبب له علاقة بالـ algorithm:</p>
+  <ol class="ex">
+    <li>محدش قرر كل score هيشغّل <b>أنهي action</b>.</li>
+    <li>الـ scores بتوصل مرة في الأسبوع، وفريق الـ retention بيكلم العملاء <b>كل يوم</b>.</li>
+    <li>الـ label جه من جدول cancellations كان فيه كمان <b>سبب الإلغاء</b>، فـ feature واحدة كانت فيها الإجابة نفسها (leakage).</li>
+    <li>محدش قارن الموديل بالقاعدة اللي فريق الـ support كان شغال بيها أصلًا: "كلّم أي حد بقاله أسبوعين ما دخلش".</li>
+  </ol>
+  <div class="note"><strong>الفكرة:</strong> كل الأخطاء دي حصلت <b>قبل</b> ما التدريب يبدأ. دي أخطاء تصميم، و design document من صفحة واحدة كان هيسأل عن كل واحدة فيهم. تخيل مهندس بيبني كوبري ممتاز في مكان مفيش فيه طريق — الكوبري سليم، بس محدش هيعدي عليه.</div>
+
+  <h3>من هدف بيزنس لـ ML task: ٤ أسئلة</h3>
+  <ol class="ex">
+    <li>الموديل بيتوقع <b>إيه بالظبط</b>، ولأنهي <b>entity</b> (user، payment، store، item)؟</li>
+    <li>أنهي <b>قرار</b> بيستخدم التوقع، ومين (أو إيه) اللي بياخده؟</li>
+    <li>التوقع محتاجينه <b>إمتى</b>، وإيه الداتا الموجودة في اللحظة دي؟</li>
+    <li>هتعرف إزاي إن القرار <b>بقى أحسن</b>؟</li>
+  </ol>
+  <div class="tablewrap"><table>
+    <tr><th>هدف البيزنس</th><th>التوقع</th><th>القرار اللي بيستخدمه</th><th>الـ ML task</th></tr>
+    <tr><td>نقلل الـ churn</td><td>احتمال إن اليوزر يلغي في الـ ٣٠ يوم الجايين</td><td>نبعت save offer لأعلى ٥٪ كل ليلة</td><td class="ltr">Binary classification</td></tr>
+    <tr><td>نقلل خسارة الـ fraud</td><td>احتمال إن الـ payment دي fraud</td><td>Approve أو review أو block في أقل من 100 ms</td><td class="ltr">Binary classification</td></tr>
+    <tr><td>الرفوف ما تفضاش</td><td>عدد الوحدات اللي هتتباع لكل store لكل يوم الأسبوع الجاي</td><td>كمية الطلب لكل store</td><td class="ltr">Forecasting</td></tr>
+    <tr><td>نعرض حاجات مناسبة</td><td>relevance score لكل زوج (user, item)</td><td>ترتيب العناصر في الـ feed</td><td class="ltr">Ranking</td></tr>
+  </table></div>
+  <p>العمود التاني هو اللي محتاج أكتر تركيز. "اتوقع الـ churn" سايبة الـ horizon والـ entity والـ action مفتوحين. لكن "اتوقع هل اليوزر ده هيلغي في الـ ٣٠ يوم الجايين، عشان job الليلة تختار مين ياخد offer" بتثبّت التلاتة.</p>
+
+  <h3>إمتى ما تستخدمش ML خالص</h3>
+  <p>القاعدة رقم ١ في <span class="ltr">Google's Rules of Machine Learning</span>: ما تخافش تطلّق المنتج من غير ML. الـ ML محتاج داتا، وقاعدة بسيطة كتير بتوصلك جزء من الطريق. ما تستخدمش ML لو:</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>قاعدة قصيرة بتحقق الهدف وبتفضل صح. القاعدة أرخص في التشغيل والاختبار والشرح.</li>
+    <li>معندكش labels ومفيش طريقة عملية تجمعها.</li>
+    <li>محدش بياخد action على التوقع، فتوقع أحسن مش هيغير حاجة.</li>
+    <li>الداتا الموجودة وقت التوقع مفيهاش الـ signal أصلًا.</li>
+    <li>غلطة واحدة مش مقبولة، ومفيش إنسان يقدر يراجع الناتج.</li>
+    <li>بناء وتشغيل السيستم بيتكلف أكتر من قيمة القرارات الأحسن.</li>
+  </ul>
+  <p>لما القاعدة تطول وتبقى هشة، هنا الـ ML بيبدأ يكسب. القاعدة رقم ٣ في نفس الدليل بتفضّل ML على heuristic معقد، لأن الموديل المتعلم أسهل في التحديث والصيانة.</p>
+</section>
+
+<!-- STATION 2 -->
+<section id="d41-metrics">
+  <div class="station-head"><span class="tag">02</span><h2>تلات طبقات مقاييس + حدود (guardrails)، والـ baselines</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الطبقة</th><th>تقدر تقيسها إمتى</th><th>مثال الـ churn</th></tr>
+    <tr><td class="ltr">Offline metric</td><td>قبل الـ launch، على داتا قديمة محجوزة (held-out)</td><td>F1 عند threshold الـ offer، والـ precision في أعلى ٥٪</td></tr>
+    <tr><td class="ltr">Online metric</td><td>أثناء الـ launch، على traffic حقيقي</td><td>نسبة قبول الـ offer، نسبة اليوزرز اللي اتعملهم score، توزيع الـ scores</td></tr>
+    <tr><td class="ltr">Business metric</td><td>بعد أسابيع، بتجربة (experiment)</td><td>معدل الـ churn في ٣٠ يوم للمجموعة اللي اتعاملت مقابل holdout</td></tr>
+    <tr><td class="ltr">Guardrail metric</td><td>طول الوقت</td><td>تكلفة الـ offer لكل يوزر اتنقذ، معدل الـ unsubscribe، الـ p99 latency</td></tr>
+  </table></div>
+  <div class="formula">Offline (held-out) → Online (live traffic) → Business (experiment)      Guardrails ⇢ must not get worse</div>
+  <p>الطبقات دي كتير بتختلف مع بعض: الـ offline بيقيّم الماضي، والماضي ماكانش فيه موديلك. الـ online بيعتمد على رد فعل الناس على القرار. والـ business بيتحرك ببطء وفيه noise من كل حاجة تانية في الشركة.</p>
+  <div class="note"><strong>اختار الـ offline metric اللي بيطابق القرار:</strong> لو الـ job بتكلم أعلى ٥٪، قيس الـ precision في أعلى ٥٪. الـ AUC بيعمل متوسط على كل الـ thresholds، حتى اللي عمرك ما هتستخدمها. والقاعدة رقم ٢ في دليل جوجل: صمم المقاييس ونفّذها الأول، قبل ما تقرر السيستم هيعمل إيه.</div>
+
+  <h3>الـ Baselines: الرقم لوحده ملوش معنى</h3>
+  <p>F1 = 0.56 يبقى حلو لو أحسن بديل بيجيب 0.30، ويبقى وحش لو قاعدة بتجيب 0.60. قارن أي موديل بـ ٣ أنواع:</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>Trivial baseline:</b> دايمًا توقّع الـ majority class، أو دايمًا متوسط التدريب (زي ما عملنا في درس الـ model evaluation).</li>
+    <li><b>Heuristic baseline:</b> قاعدة من خبرة المجال، أو threshold على feature واحدة بتعمله fit على داتا التدريب.</li>
+    <li><b>Current system:</b> اللي بياخد القرار النهاردة، حتى لو بني آدم معاه spreadsheet.</li>
+  </ul>
+  <div class="formula">lift = model_score − score(strongest baseline)</div>
+  <p>حدد <b>أقل lift مقبول قبل ما تبص على النتايج</b>، وخليه كبير كفاية يغطي تكلفة السيستم الزيادة. الـ trivial غالبًا ضعيف؛ الـ heuristic هو اللي صعب تغلبه.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: هل الموديل يستاهل؟</h3>
+      <p>المعمل ده بيولّد داتا churn صناعية بنفس معادلة الدرس:</p>
+      <div class="formula">z = −2.6 + a·days_idle + b·tickets + c·tenure</div>
+      <p>وبيدرّب logistic regression صغير (في المتصفح)، وبيعمل fit لقاعدة <span class="ltr">days_idle &gt; threshold</span>، ويقارن بالـ majority والـ random at base rate. كل الأرقام F1 على test set منفصل.</p>
+      <div class="note"><strong>جرب:</strong> صفّر معامل الـ tickets والـ tenure. الموديل مبقاش عنده معلومة زيادة عن days_idle، فالـ lift بيقرب من صفر وممكن القاعدة تكسب. ساعتها <b>القاعدة هي السيستم الصح</b>. (الأرقام مش هتطابق 0.564 بالظبط لأن الـ random generator غير بتاع Python.)</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d41-baseCanvas" width="520" height="260" aria-label="مقارنة F1 للموديل والـ baselines"></canvas>
+      <div class="mrow">
+        <label>a (days_idle) <span id="d41-va">0.12</span><input type="range" id="d41-ca" min="0" max="0.25" step="0.01" value="0.12"></label>
+        <label>b (tickets) <span id="d41-vb">0.45</span><input type="range" id="d41-cb" min="0" max="1" step="0.05" value="0.45"></label>
+        <label>c (tenure) <span id="d41-vc">-0.035</span><input type="range" id="d41-cc" min="-0.1" max="0" step="0.005" value="-0.035"></label>
+        <label>min lift <span id="d41-vl">0.02</span><input type="range" id="d41-cl" min="0" max="0.1" step="0.01" value="0.02"></label>
+      </div>
+      <div class="readout">
+        <div><small>model F1</small><b id="d41-rm">–</b></div>
+        <div><small>strongest baseline</small><b id="d41-rbest">–</b></div>
+        <div><small>lift</small><b id="d41-rlift">–</b></div>
+      </div>
+      <div class="verdict" id="d41-bverdict"></div>
+      <div class="btns"><button type="button" id="d41-bdefault">قيم الدرس</button><button type="button" id="d41-bweak">features ضعيفة</button><button type="button" id="d41-bseed">داتا جديدة (seed)</button></div>
+    </div>
+  </div>
+
+  <h3>متطلبات الداتا والـ labels (جاوبها قبل التدريب)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>السؤال</th><th>يعني إيه</th></tr>
+    <tr><td><b>Label source</b></td><td>أنهي جدول أو event بيعرّف الـ label، ومين صاحبه؟</td></tr>
+    <tr><td><b>Label delay</b></td><td>النتيجة الحقيقية بتوصل بعد التوقع بقد إيه؟ الـ chargebacks في الـ fraud ممكن توصل بعد أسابيع، والـ churn label بيوصل في آخر الـ ٣٠ يوم.</td></tr>
+    <tr><td><b>Label quality</b></td><td>مين بيحط الـ label، وبيغلط قد إيه؟</td></tr>
+    <tr><td><b>Availability at prediction time</b></td><td>كل feature موجودة في لحظة التوقع؟ feature السيستم بيكتبها <b>بعد</b> النتيجة = بتسرّب الـ label جوه التدريب.</td></tr>
+    <tr><td><b>Volume per class</b></td><td>عندك كام مثال positive؟ ٢٠٠ positive بس = موديلات بسيطة بس.</td></tr>
+    <tr><td><b>Time split</b></td><td>احجز آخر فترة زمنية للاختبار، زي ما عملنا في درس الـ time series.</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d41-serving">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Budgets، و Batch ضد Online</h2></div>
+  <p>تلات أرقام بتحدد أي تصميم serving:</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>Latency budget:</b> الـ <span class="ltr">p99</span> هو الوقت اللي ٩٩ من كل ١٠٠ request بيخلصوا تحته. فحص payment ممكن يحتاج 50 ms؛ تقرير ليلي ممكن ياخد ساعات.</li>
+    <li><b>Peak throughput:</b> صمم على أزحم دقيقة، مش المتوسط اليومي. الـ peak QPS كتير بيبقى أضعاف المتوسط.</li>
+    <li><b>Cost budget:</b> اكتبه دولار في اليوم أو دولار لكل ١٠٠٠ توقع، عشان تقدر تقارن التصميمات.</li>
+  </ul>
+  <p><b>Little's law</b> بيربط الأولين: عدد الـ requests اللي شغالة في نفس اللحظة = الـ throughput × الـ latency.</p>
+  <div class="formula">in_flight = 400 req/s × 0.050 s = 20 requests</div>
+  <p>تخيلها زي طابور كاشير: لو ٤٠٠ زبون بيدخلوا في الثانية وكل واحد بياخد نص عُشر ثانية، هتلاقي دايمًا حوالي ٢٠ واقفين.</p>
+
+  <h3>طريقتين تقدّم بيهم التوقعات</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>Batch inference:</b> job مجدولة بتعمل score لكل الـ entities وتكتبهم في جدول أو key-value store. الأبلكيشن بيقرا الـ score المتخزن وقت الـ request. (زي فرن بيخبز العيش كله الفجر.)</li>
+    <li><b>Online inference:</b> الأبلكيشن بيبعت الـ features لـ model service وقت الـ request ويستنى الـ score. (زي مطعم بيطبخ لما تطلب.)</li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>الخاصية</th><th>Batch</th><th>Online</th></tr>
+    <tr><td>Freshness</td><td>قديم قد آخر run + وقت الـ run</td><td>بيستخدم داتا الـ request نفسه</td></tr>
+    <tr><td>Request latency</td><td>قراية key-value واحدة، كام ms</td><td>جلب الـ features + وقت الموديل</td></tr>
+    <tr><td>محرك التكلفة</td><td>عدد الـ entities × عدد الـ runs في اليوم</td><td>replicas متظبطة على الـ peak QPS</td></tr>
+    <tr><td>Entities جديدة</td><td>مفيش score لحد الـ run الجاي</td><td>بتاخد score من أول request</td></tr>
+    <tr><td>لما يقع</td><td>الـ scores القديمة لسه تتقري</td><td>الـ requests بتفشل أو تعمل timeout</td></tr>
+  </table></div>
+  <p>تكلفة الـ batch بتكبر مع عدد الـ entities وعدد الـ runs؛ وحد staleness أقصر = runs أكتر. تكلفة الـ online بتكبر مع الـ peak، لأنك بتدفع في replicas قاعدة فاضية بين الـ peaks. و<b>batch job بتاخد ساعة مستحيل تحقق staleness أقل من ساعة بأي فلوس</b>.</p>
+  <p>التصميم الـ <b>hybrid</b> منتشر: batch ليلي لليوزرز المعروفين، و online path لليوزرز الجداد والـ requests اللي محتاجة داتا طازة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: سعّر الـ serving بنفسك</h3>
+      <p>نفس معادلات <code>batch_plan</code> و <code>online_plan</code> في الكود بالأسعار الافتراضية بتاعة <code>CostModel</code> (أرقام تقريبية للتمرين، مش أسعار vendor حقيقية):</p>
+      <div class="formula" style="white-space:pre;text-align:left">runs/day = 24 / (staleness − 1h)
+batch $ = entities·runs·0.40/1M + requests·0.25/1M
+online $ = max(2, ⌈peak/200⌉) · 0.50 · 24</div>
+      <p>المنحنى البرتقالي = تكلفة الـ batch حسب الـ staleness (المحور الأفقي log)، والخط الأزرق = online. المنطقة الرمادية: الـ batch مستحيل. الخط المتقطع = الـ staleness اللي انت مختارها.</p>
+      <div class="note"><strong>جرب:</strong> اختار "fraud check" — الـ staleness ٣ دقايق، فالـ batch مستحيل. وبعدين نزّل الـ latency budget تحت 35 ms: حتى الـ online مبقاش ينفع، فلازم تغيّر الـ budgets.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d41-costCanvas" width="520" height="300" aria-label="تكلفة batch و online حسب الـ staleness"></canvas>
+      <div class="mrow">
+        <label>entities <span id="d41-ve">2,000,000</span><input type="range" id="d41-se" min="0" max="100" step="1"></label>
+        <label>requests/day <span id="d41-vr">300,000</span><input type="range" id="d41-sr" min="0" max="100" step="1"></label>
+        <label>peak QPS <span id="d41-vq">40</span><input type="range" id="d41-sq" min="0" max="100" step="1"></label>
+        <label>staleness (h) <span id="d41-vs">24</span><input type="range" id="d41-ss" min="0" max="100" step="1"></label>
+        <label>latency p99 (ms) <span id="d41-vt">100</span><input type="range" id="d41-st" min="1" max="300" step="1" value="100"></label>
+      </div>
+      <div class="readout">
+        <div><small>batch $/day</small><b id="d41-rb">–</b></div>
+        <div><small>online $/day</small><b id="d41-ro">–</b></div>
+        <div><small>runs/day</small><b id="d41-rruns">–</b></div>
+        <div><small>replicas</small><b id="d41-rrep">–</b></div>
+        <div><small>in-flight (Little)</small><b id="d41-rlit">–</b></div>
+      </div>
+      <div class="verdict" id="d41-cverdict"></div>
+      <div class="btns">
+        <button type="button" data-d41w="0">nightly churn</button>
+        <button type="button" data-d41w="1">feed ranking 2h</button>
+        <button type="button" data-d41w="2">fraud check</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d41-rollout">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Rollout، والـ Feedback loops، والـ Failure modes</h2></div>
+  <h3>الموديل الجديد بيوصل لليوزرز على مراحل</h3>
+  <ol class="ex">
+    <li><b>Shadow:</b> الموديل الجديد بياخد نسخة من الـ traffic الحقيقي. السيستم بيسجّل توقعاته و<b>عمره ما بيستخدمها</b>. بتقارن الـ latency والـ error rate وتوزيع التوقعات مع الموديل الحالي. (زي طيار متدرب قاعد في الكابينة بيقول كان هيعمل إيه، بس مش ماسك الدركسيون.)</li>
+    <li><b>Canary:</b> الموديل الجديد بياخد قرارات حقيقية لجزء صغير من الـ traffic، غالبًا ١ لـ ٥٪. بتوسّع النسبة على خطوات، وترجع (rollback) لو guardrail اتكسر.</li>
+    <li><b>A/B test:</b> تقسيم عشوائي لليوزرز، كل مجموعة بتشوف موديل. بتقيس الـ business metric باختبار إحصائي، ومحتاج traffic ووقت كفاية تشوف الفرق.</li>
+  </ol>
+  <div class="note"><strong>كل مرحلة محتاجة rollback بياخد دقايق:</strong> خلي نسخة الموديل القديم deployed، وحوّل الـ traffic بالـ configuration. (نفس الأنماط دي هتشوفها تاني للـ LLMs في Phase 17.)</div>
+
+  <h3>الـ Feedback loops: الموديل بيغيّر الداتا اللي هيتدرب عليها</h3>
+  <p>Sculley et al. حطوا الـ feedback loops المباشرة والمخفية من أهم مصادر الـ technical debt في أنظمة الـ ML. ٣ حالات مشهورة:</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>التدخل بيخبي الـ label:</b> موديل churn بيبعت offers، والـ offers بتخلّي ناس تفضل. الشهر الجاي اليوزرز الـ high-risk شكلهم loyal، والموديل الجديد بيتعلم إن الـ features بتاعتهم مش بتتوقع churn.</li>
+    <li><b>الـ actions الممنوعة ملهاش نتيجة:</b> موديل fraud بيعمل block لـ payment، فالـ payment دي عمرها ما هتاخد chargeback label. الموديلات الجاية بتشوف أمثلة fraud أقل من المنطقة اللي اتعملها block.</li>
+    <li><b>الـ exposure بيحدد الـ feedback:</b> موديل ranking بيعرض أحسن items عنده، فهي بس اللي بتجمع clicks.</li>
+  </ul>
+  <p>العلاج فكرته واحدة: <b>احتفظ بداتا الموديل ما أثّرش فيها</b>. اعمل holdout صغير عشوائي عمره ما ياخد التدخل. ادّي جزء صغير من الـ traffic قرار عشوائي. وسجّل الـ score والقرار مع كل مثال، عشان التدريب بعدين يفرّق بين الداتا المتأثرة والنضيفة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: شوف الـ feedback loop وهو بيبوّظ الموديل</h3>
+      <p>عندنا ١٠ شرايح risk (deciles). الخط = معدل الـ churn الحقيقي لكل شريحة. كل شهر الموديل بيرتّب الشرايح حسب اللي <b>شافه</b> الشهر اللي فات، ويبعت offers لأعلى شرايح. الـ offer بينقذ نسبة منهم، فالـ churn <b>المتسجل</b> عندهم بيقل.</p>
+      <p>شغّل الشهور وشوف: الشريحة الأخطر بتبان "آمنة"، فالموديل يسيبها الشهر الجاي ويستهدف ناس أقل خطر. فعّل الـ holdout (الموديل يتعلم من الداتا النضيفة بس) وشوف الترتيب بيثبت.</p>
+      <div class="note ai"><strong>نفس الفكرة في الـ LLMs:</strong> لو بتدرّب على الـ thumbs up/down بتاعة اليوزرز، فانت بتتعلم بس من الإجابات اللي الموديل اختار يقولها.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d41-fbCanvas" width="520" height="280" aria-label="محاكاة feedback loop على شرايح الـ risk"></canvas>
+      <label style="display:grid;gap:2px">الشرايح المستهدفة (top k) = <b class="mono" id="d41-vk">2</b><input type="range" id="d41-fk" min="1" max="5" step="1" value="2"></label>
+      <label style="display:grid;gap:2px">نسبة اللي الـ offer بينقذهم = <b class="mono" id="d41-vsv">60%</b><input type="range" id="d41-fs" min="0" max="90" step="5" value="60"></label>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="d41-fh"> اتعلّم من random holdout نضيف (مش متأثر بالـ offers)</label>
+      <div class="readout">
+        <div><small>الشهر</small><b id="d41-rmonth">0</b></div>
+        <div><small>المستهدفين</small><b id="d41-rtarget">–</b></div>
+        <div><small>churners اتنقذوا / 1000</small><b id="d41-rsaved">–</b></div>
+      </div>
+      <div class="btns"><button type="button" class="primary" id="d41-fstep">الشهر الجاي ←</button><button type="button" id="d41-fplay">شغّل ٦ شهور</button><button type="button" id="d41-freset">من الأول</button></div>
+    </div>
+  </div>
+
+  <h3>الـ Failure modes والـ safe defaults</h3>
+  <p>كل جزء في السيستم هيقع في يوم. قرر الـ default لكل فشل <b>في التصميم</b>، مش وقت الـ incident:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الفشل</th><th>النتيجة من غير خطة</th><th>الـ Safe default</th></tr>
+    <tr><td>الـ model service عمل timeout</td><td>الـ request بيفشل</td><td>استخدم الـ heuristic baseline</td></tr>
+    <tr><td>الـ batch job الليلي وقع</td><td>الـ scores ناقصة أو قديمة</td><td>قدّم آخر scores سليمة لفترة محددة، وبعدين القاعدة</td></tr>
+    <tr><td>Feature ناقصة أو برة النطاق</td><td>الموديل بيقيّم input بايظ</td><td>استخدم الـ default الموثّق وسجّل الحدث</td></tr>
+    <tr><td>Entity جديدة ملهاش تاريخ</td><td>مفيش score</td><td>القاعدة أو متوسط الـ population</td></tr>
+    <tr><td>توزيع الـ scores اتحرك فجأة</td><td>قرارات غلط على نطاق واسع</td><td>وقّف الـ actions الأوتوماتيك ونبّه إنسان</td></tr>
+  </table></div>
+  <div class="note"><strong>لاحظ:</strong> الـ heuristic baseline اللي في قسم المقاييس هو نفسه الـ default لمعظم الأعطال. عشان كده <b>ابنيه الأول</b>.</div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d41-doc">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Design Document ومعمل الـ checker</h2></div>
+  <p>الـ design doc بيسجّل كل القرارات اللي فاتت في مكان واحد، قبل التدريب. الـ checker في الدرس بيدّي درجة لنسخة JSON منه: ١٨ بند، كل بند <b>blocking</b> وزنه 2 والباقي وزنه 1 (المجموع 24). الحكم "ready for review" بس لو الدرجة ≥ 0.85 <b>ومفيش ولا بند blocking ساقط</b>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>القسم</th><th>السؤال اللي بيجاوبه</th><th>Blocking</th></tr>
+    <tr><td>Problem</td><td>بنتوقع إيه، أنهي قرار بيستخدمه، وليه القواعد مش كفاية؟</td><td>القرار</td></tr>
+    <tr><td>Metrics</td><td>أنهي offline و online و business و guardrail؟</td><td>الـ business metric</td></tr>
+    <tr><td>Baselines</td><td>trivial و heuristic و current-system؟</td><td>heuristic أو current</td></tr>
+    <tr><td>Data</td><td>الـ labels منين، متأخرة قد إيه، وكل feature موجودة وقت التوقع؟</td><td>مفيش leakage</td></tr>
+    <tr><td>Budgets and serving</td><td>latency و peak QPS و cost و staleness، وأنهي serving mode مناسب؟</td><td>لأ</td></tr>
+    <tr><td>Rollout</td><td>shadow و canary و A/B، وإزاي ترجع؟</td><td>shadow أو canary + rollback</td></tr>
+    <tr><td>Feedback loops</td><td>الموديل ممكن يغيّر داتاه إزاي، وإيه اللي بيحافظ على داتا نضيفة؟</td><td>لأ</td></tr>
+    <tr><td>Failure modes</td><td>إيه الـ default لكل فشل؟</td><td>default لكل فشل</td></tr>
+    <tr><td>Monitoring</td><td>هتراقب إيه بعد الـ launch؟</td><td>لأ</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٤: الـ checker بإيدك</h3>
+      <p>علّم البنود اللي الـ doc بتاعك بيعديها. الدرجة والحكم بيتحسبوا بنفس قواعد <code>review_design_doc</code>. جرب "WEAK_DOC" وشوف ليه بياخد 0.17 ومعاه ٦ بنود blocking.</p>
+      <div class="btns"><button type="button" id="d41-dweak">WEAK_DOC</button><button type="button" id="d41-dstrong">STRONG_DOC</button><button type="button" id="d41-dnofail">STRONG بس failure default فاضي</button></div>
+    </div>
+    <div class="instrument">
+      <canvas id="d41-docCanvas" width="520" height="70" aria-label="درجة الـ design doc"></canvas>
+      <div class="readout">
+        <div><small>score</small><b id="d41-rscore">–</b></div>
+        <div><small>blocking ساقطين</small><b id="d41-rblock">–</b></div>
+      </div>
+      <div class="verdict" id="d41-dverdict"></div>
+      <ul class="checklist" id="d41-doclist" style="font-size:14px;direction:ltr;text-align:left"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d41-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الـ toolkit</h2></div>
+  <p>من الـ repo root (اللي عملتله clone يوم ١). الكود كله standard library، مفيش pip install:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/02-ml-fundamentals/19-ml-system-design/code/main.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> متعملش copy-paste. افتح ملف جديد <code>my_ml_design.py</code> واكتب الخطوات دي بنفسك، وارجع للأصل لو اتزنقت بس.</p>
+
+  <h3>خطوة ١: الـ workload والأسعار</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import json, math, random, sys
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Workload:                       <span class="c"># أرقام الـ traffic والـ budgets</span>
+    name: str
+    entities: int
+    requests_per_day: int
+    peak_qps: float
+    max_staleness_hours: float
+    latency_budget_ms: float
+
+@dataclass(frozen=True)
+class CostModel:                      <span class="c"># أسعار تقريبية للتمرين، مش vendor quotes</span>
+    batch_dollars_per_million: float = 0.40
+    batch_job_hours: float = 1.0
+    lookup_dollars_per_million: float = 0.25
+    lookup_latency_ms: float = 4.0
+    replica_dollars_per_hour: float = 0.50
+    replica_qps: float = 200.0
+    min_replicas: int = 2
+    online_latency_ms: float = 35.0
+
+@dataclass(frozen=True)
+class ServingPlan:
+    mode: str
+    feasible: bool
+    dollars_per_day: float
+    latency_ms: float
+    worst_staleness_hours: float
+    predictions_per_day: float
+    reason: str</pre></div>
+
+  <h3>خطوة ٢: سعّر الـ batch والـ online واختار الأرخص الممكن</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def batch_plan(workload: Workload, costs: CostModel) -> ServingPlan:
+    refresh_hours = workload.max_staleness_hours - costs.batch_job_hours
+    if refresh_hours &lt;= 0:            <span class="c"># الـ job أطول من حد الـ staleness = مستحيل</span>
+        return ServingPlan("batch", False, math.inf, costs.lookup_latency_ms, math.inf, 0.0,
+                           "staleness limit is shorter than one batch job")
+    runs_per_day = 24.0 / refresh_hours
+    predictions = workload.entities * runs_per_day   <span class="c"># كل run بيقيّم كل الـ entities</span>
+    dollars = (predictions / 1e6 * costs.batch_dollars_per_million
+               + workload.requests_per_day / 1e6 * costs.lookup_dollars_per_million)
+    feasible = costs.lookup_latency_ms &lt;= workload.latency_budget_ms
+    reason = f"{runs_per_day:.1f} runs per day over {workload.entities:,} entities"
+    if not feasible:
+        reason = "key-value lookup is slower than the latency budget"
+    return ServingPlan("batch", feasible, dollars, costs.lookup_latency_ms,
+                       workload.max_staleness_hours, predictions, reason)
+
+def online_plan(workload: Workload, costs: CostModel) -> ServingPlan:
+    <span class="c"># replicas كفاية للـ peak، وأقل حاجة ٢ عشان الـ availability</span>
+    replicas = max(costs.min_replicas, math.ceil(workload.peak_qps / costs.replica_qps))
+    dollars = replicas * costs.replica_dollars_per_hour * 24.0
+    feasible = costs.online_latency_ms &lt;= workload.latency_budget_ms
+    reason = f"{replicas} replicas sized for {workload.peak_qps:g} peak QPS"
+    if not feasible:
+        reason = "model latency is slower than the latency budget"
+    return ServingPlan("online", feasible, dollars, costs.online_latency_ms, 0.0,
+                       float(workload.requests_per_day), reason)
+
+def choose_serving(workload, costs=CostModel()):
+    plans = [batch_plan(workload, costs), online_plan(workload, costs)]
+    feasible = [p for p in plans if p.feasible]
+    best = min(feasible, key=lambda p: p.dollars_per_day) if feasible else None   <span class="c"># None = غيّر الـ budgets</span>
+    return best, plans</pre></div>
+
+  <h3>خطوة ٣: المقاييس والـ baselines والـ lift</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def check_lengths(y_true, y_pred):
+    if len(y_true) != len(y_pred):
+        raise ValueError(f"y_true has {len(y_true)} values and y_pred has {len(y_pred)}")
+    if not y_true:
+        raise ValueError("a metric needs at least one value")
+
+def f1_score(y_true, y_pred):
+    check_lengths(y_true, y_pred)
+    tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
+    fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
+    fn = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 0)
+    return 0.0 if tp == 0 else 2 * tp / (2 * tp + fp + fn)
+
+def mean_absolute_error(y_true, y_pred):
+    check_lengths(y_true, y_pred)
+    return sum(abs(t - p) for t, p in zip(y_true, y_pred)) / len(y_true)
+
+def majority_baseline(y_train, n):            <span class="c"># trivial: أكتر class متكررة</span>
+    top = max(sorted(set(y_train)), key=y_train.count)
+    return [top] * n
+
+def mean_baseline(y_train, n):
+    return [sum(y_train) / len(y_train)] * n
+
+def base_rate_baseline(y_train, n, seed=0):   <span class="c"># عشوائي بنفس نسبة الـ positives</span>
+    rate = sum(y_train) / len(y_train)
+    rng = random.Random(seed)
+    return [1 if rng.random() &lt; rate else 0 for _ in range(n)]
+
+def apply_rule(rows, feature, threshold):
+    return [1 if row[feature] > threshold else 0 for row in rows]
+
+def fit_rule(rows, labels, feature):          <span class="c"># heuristic: جرب كل قيمة كـ threshold</span>
+    candidates = sorted(set(row[feature] for row in rows))
+    best_threshold, best_score = candidates[0], -1.0
+    for threshold in candidates:
+        score = f1_score(labels, apply_rule(rows, feature, threshold))
+        if score > best_score:
+            best_threshold, best_score = threshold, score
+    return best_threshold
+
+@dataclass(frozen=True)
+class BaselineReport:
+    metric: str
+    scores: dict
+    best_baseline: str
+    lift: float
+    min_lift: float
+    @property
+    def beats_baselines(self) -> bool:
+        return self.lift >= self.min_lift
+
+def compare_to_baselines(y_true, model_pred, baselines, metric, metric_name,
+                         higher_is_better=True, min_lift=0.02):
+    if not baselines:
+        raise ValueError("a model needs at least one baseline")
+    scores = {name: metric(y_true, pred) for name, pred in baselines.items()}
+    pick = max if higher_is_better else min
+    best_name = pick(scores, key=scores.get)  <span class="c"># الأقوى، مش الأضعف</span>
+    model_score = metric(y_true, model_pred)
+    lift = model_score - scores[best_name] if higher_is_better else scores[best_name] - model_score
+    return BaselineReport(metric_name, {"model": model_score, **scores}, best_name, lift, min_lift)</pre></div>
+
+  <h3>خطوة ٤: داتا churn صناعية وموديل logistic صغير</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>FEATURES = ("days_idle", "tickets", "tenure_months")
+
+def make_churn_data(n, seed):
+    rng = random.Random(seed)
+    rows, labels = [], []
+    for _ in range(n):
+        idle = rng.expovariate(1 / 10)
+        tickets = rng.choice([0, 0, 0, 1, 1, 2, 3, 5])
+        tenure = rng.uniform(1, 60)
+        z = -2.6 + 0.12 * idle + 0.45 * tickets - 0.035 * tenure   <span class="c"># الحقيقة المخفية</span>
+        labels.append(1 if rng.random() &lt; 1 / (1 + math.exp(-z)) else 0)
+        rows.append({"days_idle": idle, "tickets": tickets, "tenure_months": tenure})
+    return rows, labels
+
+class LogisticModel:
+    def __init__(self, epochs=300, lr=0.5):
+        self.epochs, self.lr = epochs, lr
+        self.means, self.stds = {}, {}
+        self.weights = [0.0] * len(FEATURES)
+        self.bias = 0.0
+        self.threshold = 0.5
+
+    def _vector(self, row):                   <span class="c"># standardize</span>
+        return [(row[k] - self.means[k]) / self.stds[k] for k in FEATURES]
+
+    def fit(self, rows, labels):
+        n = len(rows)
+        for k in FEATURES:
+            self.means[k] = sum(r[k] for r in rows) / n
+            spread = math.sqrt(sum((r[k] - self.means[k]) ** 2 for r in rows) / n)
+            self.stds[k] = spread or 1.0
+        vectors = [self._vector(r) for r in rows]
+        for _ in range(self.epochs):          <span class="c"># gradient descent عادي</span>
+            grad_w = [0.0] * len(FEATURES); grad_b = 0.0
+            for x, y in zip(vectors, labels):
+                error = self._sigmoid(x) - y
+                for j, xj in enumerate(x):
+                    grad_w[j] += error * xj
+                grad_b += error
+            self.weights = [w - self.lr * g / n for w, g in zip(self.weights, grad_w)]
+            self.bias -= self.lr * grad_b / n
+        probabilities = [self._sigmoid(x) for x in vectors]
+        grid = [t / 100 for t in range(5, 96, 5)]   <span class="c"># اختار الـ threshold اللي بيكبّر F1</span>
+        self.threshold = max(grid, key=lambda t: f1_score(labels, [1 if p >= t else 0 for p in probabilities]))
+        return self
+
+    def _sigmoid(self, x):
+        z = sum(w * xj for w, xj in zip(self.weights, x)) + self.bias
+        return 1 / (1 + math.exp(-max(-50.0, min(50.0, z))))
+
+    def predict(self, rows):
+        return [1 if self._sigmoid(self._vector(r)) >= self.threshold else 0 for r in rows]</pre></div>
+
+  <h3>خطوة ٥: الـ design-doc checker</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>ML_TASKS = {"binary_classification", "multiclass_classification", "regression",
+            "ranking", "forecasting", "anomaly_detection", "clustering"}
+STRONG_BASELINE_KINDS = {"heuristic", "current_system"}
+
+def get_path(doc, path):                      <span class="c"># "problem.decision" → doc["problem"]["decision"]</span>
+    node = doc
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+def _text(doc, path):
+    v = get_path(doc, path); return isinstance(v, str) and v.strip() != ""
+def _items(doc, path):
+    v = get_path(doc, path); return isinstance(v, list) and len(v) > 0
+def _positive(doc, path):                     <span class="c"># رقم حقيقي موجب، مش bool ومش inf</span>
+    v = get_path(doc, path)
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
+def _choice(doc, path, allowed):
+    v = get_path(doc, path); return isinstance(v, str) and v in allowed
+
+def check_baselines(doc):
+    b = get_path(doc, "baselines")
+    if not isinstance(b, list):
+        return False
+    return any(isinstance(x, dict) and isinstance(x.get("kind"), str)
+               and x["kind"] in STRONG_BASELINE_KINDS for x in b)
+
+def check_rollout(doc):
+    stages = get_path(doc, "rollout.stages")
+    if not isinstance(stages, list) or not all(isinstance(s, str) for s in stages):
+        return False
+    return bool({"shadow", "canary"} &amp; set(stages)) and _text(doc, "rollout.rollback")
+
+def check_failure_modes(doc):
+    modes = get_path(doc, "failure_modes")
+    if not isinstance(modes, list) or not modes:
+        return False
+    return all(isinstance(m, dict) and str(m.get("default_action", "")).strip() for m in modes)
+
+def workload_from_doc(doc):
+    needed = {"entities": "serving.entities", "requests_per_day": "serving.requests_per_day",
+              "peak_qps": "budgets.peak_qps", "max_staleness_hours": "serving.max_staleness_hours",
+              "latency_budget_ms": "budgets.latency_ms_p99"}
+    values = {k: get_path(doc, p) for k, p in needed.items()}
+    for v in values.values():
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v &lt; 0:
+            return None
+    return Workload(name=str(get_path(doc, "title") or "design doc"), **values)
+
+def check_serving_fit(doc, costs=CostModel()):  <span class="c"># بيعيد استخدام الـ cost model</span>
+    workload = workload_from_doc(doc)
+    mode = get_path(doc, "serving.mode")
+    budget = get_path(doc, "budgets.max_dollars_per_day")
+    if workload is None or not isinstance(mode, str) or not _positive(doc, "budgets.max_dollars_per_day"):
+        return False
+    _, plans = choose_serving(workload, costs)
+    chosen = {p.mode: p for p in plans}.get(mode)   <span class="c"># "hybrid" مش موجود → False</span>
+    return chosen is not None and chosen.feasible and chosen.dollars_per_day &lt;= budget
+
+@dataclass(frozen=True)
+class CheckItem:
+    key: str
+    weight: int
+    blocking: bool
+    message: str
+    check: object
+
+CHECKLIST = [
+    CheckItem("business_goal", 1, False, "state the business goal in one sentence", lambda d: _text(d, "problem.business_goal")),
+    CheckItem("ml_task", 1, False, "name the ML task type", lambda d: _choice(d, "problem.ml_task", ML_TASKS)),
+    CheckItem("decision", 2, True, "name the action that uses each prediction", lambda d: _text(d, "problem.decision")),
+    CheckItem("why_not_rules", 1, False, "explain why a rule or lookup is not enough", lambda d: _text(d, "problem.why_not_rules")),
+    CheckItem("offline_metric", 1, False, "list the offline metrics", lambda d: _items(d, "metrics.offline")),
+    CheckItem("online_metric", 1, False, "list the online metrics", lambda d: _items(d, "metrics.online")),
+    CheckItem("business_metric", 2, True, "list the business metric the model must move", lambda d: _items(d, "metrics.business")),
+    CheckItem("guardrails", 1, False, "list guardrail metrics that must not get worse", lambda d: _items(d, "metrics.guardrails")),
+    CheckItem("baselines", 2, True, "add a heuristic or current-system baseline", check_baselines),
+    CheckItem("label_source", 1, False, "say where the labels come from", lambda d: _text(d, "data.label_source")),
+    CheckItem("label_delay", 1, False, "give the label delay in days", lambda d: isinstance(get_path(d, "data.label_delay_days"), (int, float))),
+    CheckItem("no_leakage", 2, True, "confirm every feature exists at prediction time", lambda d: get_path(d, "data.features_available_at_prediction_time") is True),
+    CheckItem("budgets", 1, False, "set latency, peak QPS, and daily cost budgets", lambda d: all(_positive(d, p) for p in ("budgets.latency_ms_p99", "budgets.peak_qps", "budgets.max_dollars_per_day"))),
+    CheckItem("serving_fit", 1, False, "pick a serving mode that meets the staleness, latency, and cost budgets", check_serving_fit),
+    CheckItem("rollout", 2, True, "plan a shadow or canary stage and a rollback", check_rollout),
+    CheckItem("feedback_loop", 1, False, "describe the feedback loop risk and its mitigation", lambda d: _text(d, "feedback_loop.risk") and _text(d, "feedback_loop.mitigation")),
+    CheckItem("failure_modes", 2, True, "give every failure mode a default action", check_failure_modes),
+    CheckItem("monitoring", 1, False, "list what you monitor after launch", lambda d: _items(d, "monitoring")),
+]
+
+@dataclass(frozen=True)
+class Review:
+    score: float
+    verdict: str
+    passed: list
+    failed: list
+
+def review_design_doc(doc, ready_score=0.85):
+    total = sum(i.weight for i in CHECKLIST)
+    passed, failed, earned = [], [], 0
+    for item in CHECKLIST:
+        if item.check(doc):
+            passed.append(item.key); earned += item.weight
+        else:
+            failed.append((item.key, item.blocking, item.message))
+    score = earned / total
+    blocked = any(b for _, b, _ in failed)
+    verdict = "ready for review" if score >= ready_score and not blocked else "revise"
+    failed.sort(key=lambda e: (not e[1], e[0]))   <span class="c"># الـ blocking الأول</span>
+    return Review(score, verdict, passed, failed)</pre></div>
+  <p>الـ <code>WEAK_DOC</code> و <code>STRONG_DOC</code> و <code>SCENARIOS</code> ودوال الطباعة و <code>main</code> انقلهم من الملف الأصلي (هما داتا وطباعة، مش منطق جديد). الـ main لو اديته path لملف JSON بيعمل review ليه بس:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/19-ml-system-design/code/main.py my_design_doc.json</pre></div>
+
+  <h3>خطوة ٦: شغّل وقارن</h3>
+  <details open><summary>الناتج المتوقع (من الدرس)</summary><pre class="term">=== Batch versus online serving ===
+
+nightly churn scores
+  ok batch        $0.91/day      4 ms  1.0 runs per day over 2,000,000 entities
+  ok online      $24.00/day     35 ms  2 replicas sized for 40 peak QPS
+  choose: batch
+
+feed ranking, 2-hour freshness
+  ok batch       $48.50/day      4 ms  24.0 runs per day over 5,000,000 entities
+  ok online      $24.00/day     35 ms  2 replicas sized for 120 peak QPS
+  choose: online
+
+fraud check at payment
+  no batch              n/a      4 ms  staleness limit is shorter than one batch job
+  ok online      $24.00/day     35 ms  2 replicas sized for 60 peak QPS
+  choose: online
+
+=== Model versus baselines (churn, metric F1) ===
+  model                    0.564
+  days_idle > 12.8688      0.500
+  random at base rate      0.232
+  majority class           0.000
+  model beats the strongest baseline (days_idle > 12.8688) by +0.064
+
+=== Design doc review ===
+
+Churn model v1: score 0.17, verdict: revise
+  BLOCKING baselines: add a heuristic or current-system baseline
+  BLOCKING business_metric: list the business metric the model must move
+  BLOCKING decision: name the action that uses each prediction
+  BLOCKING failure_modes: give every failure mode a default action
+  BLOCKING no_leakage: confirm every feature exists at prediction time
+  BLOCKING rollout: plan a shadow or canary stage and a rollback
+  missing  budgets: set latency, peak QPS, and daily cost budgets
+  ...
+
+Churn save-offer model: score 1.00, verdict: ready for review</pre></details>
+  <p class="note">سطر الـ fraud وتفاصيل الـ review أنا حسبتهم من الكود (الدرس عرض أول سيناريوهين بس)، فلو لقيت فرق مسافات بسيط ده طبيعي. المهم: الـ weak doc بياخد 4 من 24 = 0.17، و٦ بنود blocking.</p>
+  <p>والـ tests (٢٣ test):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/19-ml-system-design/code/tests/test_main.py</pre></div>
+  <p>الـ majority baseline بياخد F1 = 0 لأنه عمره ما بيتوقع churn. القاعدة المتعلمة هي المنافس الحقيقي، والموديل غلبها بـ 0.064 فاستاهل مكانه. لو الـ features أضعف، القاعدة ممكن تكسب، وساعتها القاعدة هي اللي تتعمل deploy.</p>
+
+  <h3>نفس الكلام بأدوات الـ production</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.dummy import DummyClassifier, DummyRegressor
+from sklearn.metrics import f1_score
+
+majority = DummyClassifier(strategy="most_frequent").fit(X_train, y_train)          <span class="c"># = majority_baseline</span>
+base_rate = DummyClassifier(strategy="stratified", random_state=0).fit(X_train, y_train)  <span class="c"># = base_rate_baseline</span>
+mean_value = DummyRegressor(strategy="mean").fit(X_train, y_reg_train)
+
+print(f1_score(y_test, majority.predict(X_test)))</pre></div>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>أدوات حقيقية</th></tr>
+    <tr><td>Baselines</td><td>scikit-learn <span class="ltr">DummyClassifier / DummyRegressor</span>. مفيش heuristic baseline جاهز لأن الـ heuristic بييجي من مجالك.</td></tr>
+    <tr><td>Batch serving</td><td>scheduler زي Apache Airflow أو Dagster بيشغّل الـ job، والـ scores في warehouse أو Redis أو DynamoDB</td></tr>
+    <tr><td>Online serving</td><td>KServe، BentoML، NVIDIA Triton، TorchServe — أو web service عادي فيه الموديل للموديلات الصغيرة</td></tr>
+    <tr><td>Rollouts</td><td>Argo Rollouts للـ canary على Kubernetes؛ GrowthBook و Statsig للـ A/B</td></tr>
+    <tr><td>Design review</td><td>الـ ML Test Score (Breck et al.): ٢٨ test لجاهزية الـ production. الـ checker بتاعنا أصغر وبيسأل الأسئلة اللي قبلهم.</td></tr>
+  </table></div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d41-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Hybrid plan:</b> ضيف plan تالت في <code>choose_serving</code>: known users بالـ batch، والجداد online. قارن التكلفة اليومية.
+      <details><summary>تلميح</summary>محتاج تعرف نسبة الـ requests من يوزرز جداد (ضيفها كـ field في الـ Workload، مثلًا <code>new_share</code>). التكلفة ≈ تكلفة batch على الـ known entities + replicas متظبطة على <span class="ltr">peak_qps × new_share</span> (بحد أدنى ٢). الـ latency = أكبر من الاتنين، والـ feasible لازم الاتنين. بعدها test <code>test_hybrid_mode_fails_without_a_hybrid_plan</code> هيفشل — وده المقصود، عدّله.</details></li>
+    <li><b>خلي الموديل يخسر:</b> غيّر داتا الـ churn لحد ما الموديل ما يغلبش القاعدة. اكتب أصغر تغيير في معامل بيشيل الـ lift.
+      <details><summary>تلميح</summary>جرّبه الأول في معمل ٠٢: نزّل معامل tickets و tenure ناحية الصفر. في الكود، عدّل السطر <code>z = ...</code> في <code>make_churn_data</code> واعمل loop على قيم المعامل وسجّل الـ lift لكل قيمة. الـ lift بيقرب من الصفر لما days_idle تبقى هي المعلومة الوحيدة تقريبًا.</details></li>
+    <li><b>بند cost per 1k:</b> ضيف <code>budgets.max_dollars_per_1k_predictions</code> للـ checklist، واكتب test بيفشل من غيره.
+      <details><summary>تلميح</summary><code>CheckItem("cost_per_1k", 1, False, "...", lambda d: _positive(d, "budgets.max_dollars_per_1k_predictions"))</code>. الـ test: <code>deepcopy(STRONG_DOC)</code> من غير الـ field → <code>"cost_per_1k"</code> لازم يبقى في الـ failed. خلي بالك: STRONG_DOC نفسه لازم تضيفله الـ field عشان <code>test_strong_doc_is_ready</code> يفضل ناجح.</details></li>
+    <li><b>Design doc لـ fraud:</b> اكتب JSON لفحص payment fraud، شغّل الـ checker، وصلّح كل بند blocking.
+      <details><summary>تلميح</summary>الـ decision: approve/review/block في أقل من 100 ms. الـ serving: online (الـ staleness دقايق). الـ label_delay_days: أسابيع (chargebacks). الـ feedback loop: الـ payments اللي اتعملها block ملهاش label → random holdout صغير أو review بشري لعينة. الـ failure default: لو الـ service عمل timeout → القاعدة. خلي <code>max_dollars_per_day</code> ≥ 24 عشان الـ online plan بتاعه $24.</details></li>
+    <li><b>حاكي الـ feedback loop:</b> شيل labels اليوزرز اللي أخدوا offer، أعد التدريب، وقيس التغيير في F1.
+      <details><summary>تلميح</summary>درّب موديل أول، خد أعلى ٥٪ في الـ scores، واقلب labels نسبة منهم لـ 0 (أنقذهم الـ offer). أعد التدريب على الداتا دي وقيّم على test set <b>نضيف</b>. هتلاقي F1 نزل، وده بالظبط اللي شفته في معمل ٠٣.</details></li>
+    <li><b>إضافة مني · design doc لـ LLM feature:</b> عندك فريق support عايز LLM يصنّف الـ tickets (billing / bug / account) ويوجّهها. اكتب JSON بنفس الـ schema: الـ baseline؟ الـ guardrails؟ الـ rollout؟ وشغّل الـ checker.
+      <details><summary>إجابة مقترحة</summary>الـ decision: الـ ticket يروح أنهي queue تلقائيًا. الـ ml_task: <code>multiclass_classification</code>. baselines: majority class (trivial) + قاعدة keywords زي "refund/invoice → billing" (heuristic) + الـ routing اليدوي الحالي (current_system). الـ offline: accuracy/F1 لكل class على tickets قديمة متصنّفة. الـ online: نسبة الـ tickets اللي اتحولت لـ queue تانية بعد كده. الـ business: وقت أول رد. الـ guardrails: تكلفة الـ API لكل ticket والـ p99 latency. الـ rollout: shadow الأول (الـ LLM يصنّف والبشر يكملوا يدوي) وبعدين canary ٥٪. الـ failure default: لو الـ API وقع أو رجع class مش معروف → قاعدة الـ keywords. الـ feedback loop: لو الـ agents بطلوا يصلّحوا التوجيه الغلط، الـ labels الجديدة هتطابق الموديل وخلاص — احتفظ بعينة عشوائية تتصنّف يدوي.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d41-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>الحدس: التصميم = عقد مكتوب قبل الشغل</h3>
+  <p>فكّر في الـ design doc زي "عقد" بينك وبين الفريق: بنقيس بإيه، هنغلب مين، وهنعمل إيه لو حاجة وقعت. لما تكتبه قبل التدريب، بتمنع نفسك إنك تختار المقياس اللي يخلّي نتيجتك شكلها حلو بعد ما تشوفها. نفس فكرة "حدد الـ min lift قبل ما تبص".</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>تقارن بالأضعف:</b> "الموديل أحسن من الـ majority بـ 0.56!" — ده ملوش قيمة. دايمًا الأقوى.</li>
+    <li><b>تصمم على المتوسط:</b> ٤٠ QPS متوسط ممكن يبقوا ٢٠٠ في ساعة الذروة، والسيستم يقع بالظبط في الوقت اللي محتاجه فيه.</li>
+    <li><b>Feature بتتكتب بعد النتيجة:</b> زي "سبب الإلغاء" أو "عدد مكالمات الـ retention". اسأل لكل feature: كانت موجودة الساعة كام بالظبط؟</li>
+    <li><b>مفيش rollback جاهز:</b> لو الـ rollback محتاج deploy جديد، هو مش rollback.</li>
+    <li><b>تنسى الـ label delay:</b> الـ churn label بيوصل بعد ٣٠ يوم، يعني أي canary لازم يستنى عشان تعرف النتيجة الحقيقية؛ في الأول هتعتمد على الـ online metrics بس.</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>في عالم الـ LLMs / Agents</th></tr>
+    <tr><td>Heuristic baseline</td><td>regex أو keyword router أو قالب ثابت قبل ما تحط LLM؛ وموديل صغير رخيص كـ baseline لموديل كبير</td></tr>
+    <tr><td>Guardrails</td><td>تكلفة الـ tokens لكل request، الـ p99 latency، نسبة الـ refusals أو الـ hallucinations</td></tr>
+    <tr><td>Batch vs online</td><td>تلخيص documents بالليل بالـ batch APIs (أرخص) مقابل chat لحظي</td></tr>
+    <tr><td>Shadow</td><td>تشغيل prompt أو موديل جديد على نفس الـ requests وتسجيل الإجابات للـ eval من غير ما تتعرض</td></tr>
+    <tr><td>Feedback loop</td><td>التدريب على thumbs up/down أو على مخرجات الـ agent نفسه = بتتعلم من اللي الموديل اختار يعمله بس</td></tr>
+    <tr><td>Safe default</td><td>لو الـ LLM API عمل timeout → رد ثابت أو تحويل لإنسان أو قاعدة</td></tr>
+  </table></div>
+</section>
+
+<!-- QUIZ -->
+<section id="d41-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d41-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d41-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d41-checklist">
+    <li><label><input type="checkbox" data-ck="frame"> أقدر أحوّل هدف بيزنس لـ ML task بالـ ٤ أسئلة (توقع، قرار، توقيت، قياس)</label></li>
+    <li><label><input type="checkbox" data-ck="metrics"> أفرّق بين offline و online و business و guardrail، وأعرف أحسب الـ lift ضد الأقوى</label></li>
+    <li><label><input type="checkbox" data-ck="serving"> لعبت في معمل التكلفة وفهمت إمتى الـ batch مستحيل</label></li>
+    <li><label><input type="checkbox" data-ck="loop"> شفت الـ feedback loop في معمل ٠٣ وأعرف علاجه (holdout)</label></li>
+    <li><label><input type="checkbox" data-ck="code"> كتبت الـ toolkit بإيدي وشغّلته والـ tests نجحت</label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت تمرينين على الأقل (والأحسن: الـ fraud design doc)</label></li>
+    <li><label><input type="checkbox" data-ck="quiz"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Problem framing</td><td>أي مشروع ML أو LLM feature قبل سطر كود واحد</td></tr>
+    <tr><td>Baselines و lift</td><td>قرار "نعمل deploy للموديل ولا القاعدة"، مقارنة موديل كبير بموديل صغير</td></tr>
+    <tr><td>Batch vs online</td><td>recommendations ليلية، fraud checks لحظية، batch APIs للـ LLMs</td></tr>
+    <tr><td>Little's law</td><td>تقدير عدد الـ replicas والـ concurrency في أي model server</td></tr>
+    <tr><td>Shadow / canary / A/B</td><td>إطلاق أي موديل أو prompt جديد (Phase 17)</td></tr>
+    <tr><td>Feedback loops</td><td>churn offers، fraud blocks، ranking، التدريب على feedback اليوزرز</td></tr>
+    <tr><td>Safe defaults</td><td>أي سيستم production بيعتمد على model service</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Monitoring Models in Production — الموديل اتعمله deploy، بس الدنيا بتتغير: data drift و concept drift، وإزاي تكتشفهم قبل ما يبوّظوا القرارات. هنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F19-ml-system-design" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/19-ml-system-design</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,F=AI.fmt;
+const $=id=>document.getElementById(id);
+const root=$('d41-root');
+
+// roadmap
+const rm=$('d41-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===19)s.className='now';rm.appendChild(s)}
+
+// ---------- seeded RNG ----------
+function rng(seed){let a=seed>>>0;return function(){a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296}}
+const sig=z=>1/(1+Math.exp(-Math.max(-50,Math.min(50,z))));
+function f1(y,p){let tp=0,fp=0,fn=0;for(let i=0;i<y.length;i++){if(y[i]===1&&p[i]===1)tp++;else if(y[i]===0&&p[i]===1)fp++;else if(y[i]===1&&p[i]===0)fn++}return tp===0?0:2*tp/(2*tp+fp+fn)}
+
+// ---------- Lab 02: baselines ----------
+const TICK=[0,0,0,1,1,2,3,5];
+function makeData(n,seed,co){const r=rng(seed),X=[],Y=[];for(let i=0;i<n;i++){const idle=-Math.log(1-r())*10,t=TICK[Math.floor(r()*8)],ten=1+r()*59;const z=-2.6+co[0]*idle+co[1]*t+co[2]*ten;Y.push(r()<sig(z)?1:0);X.push([idle,t,ten])}return[X,Y]}
+function trainLR(X,Y,epochs,lr){const n=X.length,d=3,mu=[0,0,0],sd=[0,0,0];
+  for(let j=0;j<d;j++){let s=0;for(const x of X)s+=x[j];mu[j]=s/n;let v=0;for(const x of X)v+=(x[j]-mu[j])**2;sd[j]=Math.sqrt(v/n)||1}
+  const V=X.map(x=>x.map((v,j)=>(v-mu[j])/sd[j]));let w=[0,0,0],b=0;
+  for(let e=0;e<epochs;e++){const g=[0,0,0];let gb=0;for(let i=0;i<n;i++){const x=V[i],err=sig(w[0]*x[0]+w[1]*x[1]+w[2]*x[2]+b)-Y[i];g[0]+=err*x[0];g[1]+=err*x[1];g[2]+=err*x[2];gb+=err}
+    for(let j=0;j<d;j++)w[j]-=lr*g[j]/n;b-=lr*gb/n}
+  const P=V.map(x=>sig(w[0]*x[0]+w[1]*x[1]+w[2]*x[2]+b));let bt=.5,bs=-1;
+  for(let t=5;t<=95;t+=5){const s=f1(Y,P.map(p=>p>=t/100?1:0));if(s>bs){bs=s;bt=t/100}}
+  return X2=>X2.map(x=>{const v=x.map((q,j)=>(q-mu[j])/sd[j]);return sig(w[0]*v[0]+w[1]*v[1]+w[2]*v[2]+b)>=bt?1:0})}
+function fitRule(X,Y){// sweep thresholds on days_idle, predict 1 if > thr
+  const idx=X.map((x,i)=>i).sort((a,b)=>X[b][0]-X[a][0]);const P=Y.reduce((a,b)=>a+b,0);
+  let tp=0,fp=0,best=-1,thr=X[idx[0]][0];
+  // threshold = largest value -> predicts none positive
+  for(let k=0;k<idx.length;k++){const i=idx[k];if(Y[i])tp++;else fp++;const next=k+1<idx.length?X[idx[k+1]][0]:-Infinity;if(next===X[i][0])continue;
+    const fn=P-tp,s=tp===0?0:2*tp/(2*tp+fp+fn);if(s>best){best=s;thr=next}}
+  return thr}
+let seed=1,BR=null;
+const bc=$('d41-baseCanvas'),bctx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+function runBase(){
+  const co=[+$('d41-ca').value,+$('d41-cb').value,+$('d41-cc').value];
+  $('d41-va').textContent=co[0];$('d41-vb').textContent=co[1];$('d41-vc').textContent=co[2];
+  const [Xtr,Ytr]=makeData(2000,seed,co),[Xte,Yte]=makeData(1000,seed+1,co);
+  const model=trainLR(Xtr,Ytr,150,.5),thr=fitRule(Xtr,Ytr);
+  const rate=Ytr.reduce((a,b)=>a+b,0)/Ytr.length,r=rng(seed+7);
+  const cnt1=Ytr.filter(v=>v===1).length,maj=cnt1>Ytr.length-cnt1?1:0;
+  const scores=[['model',f1(Yte,model(Xte))],['days_idle > '+F(thr,2),f1(Yte,Xte.map(x=>x[0]>thr?1:0))],['random at base rate',f1(Yte,Yte.map(()=>r()<rate?1:0))],['majority class',f1(Yte,Yte.map(()=>maj))]];
+  BR={scores,rate};drawBase()}
+function drawBase(){if(!BR)return;
+  const s=BR.scores,minLift=+$('d41-cl').value;$('d41-vl').textContent=minLift;
+  const base=s.slice(1),best=base.reduce((a,b)=>b[1]>a[1]?b:a),lift=s[0][1]-best[1];
+  bctx.clearRect(0,0,BW,BH);const L=150,R=BW-60,top=20,rowH=50;
+  bctx.font='13px JetBrains Mono, monospace';bctx.textBaseline='middle';
+  s.forEach((e,i)=>{const y=top+i*rowH,w=(R-L)*e[1];
+    bctx.fillStyle=css('--ink');bctx.textAlign='right';bctx.fillText(e[0],L-8,y+14);
+    bctx.fillStyle=i===0?css('--vec-a'):(e===best?css('--vec-b'):css('--muted'));bctx.globalAlpha=i===0||e===best?1:.45;
+    bctx.fillRect(L,y+4,Math.max(1,w),20);bctx.globalAlpha=1;
+    bctx.fillStyle=css('--ink');bctx.textAlign='left';bctx.fillText(F(e[1],3),L+w+6,y+14)});
+  // required line
+  const need=best[1]+minLift,x=L+(R-L)*Math.min(1,need);
+  bctx.strokeStyle=css('--bad');bctx.setLineDash([4,4]);bctx.lineWidth=1.5;bctx.beginPath();bctx.moveTo(x,10);bctx.lineTo(x,top+4*rowH-10);bctx.stroke();bctx.setLineDash([]);
+  bctx.fillStyle=css('--bad');bctx.textAlign='center';bctx.fillText('needed',x,top+4*rowH);bctx.textAlign='left';
+  $('d41-rm').textContent=F(s[0][1],3);$('d41-rbest').textContent=F(best[1],3);
+  const rl=$('d41-rlift');rl.textContent=(lift>=0?'+':'')+F(lift,3);
+  const v=$('d41-bverdict');
+  if(lift>=minLift){v.textContent='الموديل بيغلب أقوى baseline ('+best[0]+') وعدّى الـ min lift: يستاهل مكانه';v.style.color=css('--ok')}
+  else{v.textContent='الموديل ما عدّاش الـ min lift ضد '+best[0]+': اعمل deploy للقاعدة';v.style.color=css('--bad')}}
+let bT=0;const schedBase=()=>{cancelAnimationFrame(bT);bT=requestAnimationFrame(runBase)};
+['d41-ca','d41-cb','d41-cc'].forEach(id=>$(id).addEventListener('input',schedBase));
+$('d41-cl').addEventListener('input',drawBase);
+const setCo=(a,b,c)=>{$('d41-ca').value=a;$('d41-cb').value=b;$('d41-cc').value=c;runBase()};
+$('d41-bdefault').addEventListener('click',()=>{seed=1;setCo(.12,.45,-.035)});
+$('d41-bweak').addEventListener('click',()=>setCo(.12,0,0));
+$('d41-bseed').addEventListener('click',()=>{seed+=2;runBase()});
+runBase();
+
+// ---------- Lab 01: serving cost ----------
+const C={bpm:.4,job:1,lpm:.25,lookup:4,rep:.5,rq:200,minr:2,onl:35};
+const logMap=(v,lo,hi)=>lo*Math.pow(hi/lo,v/100),logInv=(x,lo,hi)=>Math.round(100*Math.log(x/lo)/Math.log(hi/lo));
+const RG={e:[1e4,5e7],r:[1e4,1e8],q:[1,2000],s:[.05,48]};
+const SC=[[2e6,3e5,40,24,100],[5e6,2e6,120,2,80],[1e7,8e5,60,.05,50]];
+const nice=v=>v>=1000?Math.round(v).toLocaleString('en'):(v>=10?Math.round(v):F(v,2));
+function W(){return{e:Math.round(logMap(+$('d41-se').value,...RG.e)),r:Math.round(logMap(+$('d41-sr').value,...RG.r)),q:logMap(+$('d41-sq').value,...RG.q),s:logMap(+$('d41-ss').value,...RG.s),t:+$('d41-st').value}}
+const batchCost=(w,s)=>{const rh=s-C.job;if(rh<=0)return Infinity;return w.e*(24/rh)/1e6*C.bpm+w.r/1e6*C.lpm};
+const reps=w=>Math.max(C.minr,Math.ceil(w.q/C.rq));
+const cc=$('d41-costCanvas'),cctx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+function drawCost(){
+  const w=W();
+  $('d41-ve').textContent=w.e.toLocaleString('en');$('d41-vr').textContent=w.r.toLocaleString('en');$('d41-vq').textContent=nice(w.q);$('d41-vs').textContent=F(w.s,2);$('d41-vt').textContent=w.t;
+  const bc_=batchCost(w,w.s),rp=reps(w),oc=rp*C.rep*24;
+  const bOK=isFinite(bc_)&&C.lookup<=w.t,oOK=C.onl<=w.t;
+  $('d41-rb').textContent=isFinite(bc_)?'$'+F(bc_,2):'n/a';$('d41-ro').textContent='$'+F(oc,2);
+  $('d41-rruns').textContent=isFinite(bc_)?F(24/(w.s-C.job),1):'—';$('d41-rrep').textContent=rp;
+  $('d41-rlit').textContent=F(w.q*C.onl/1000,2);
+  const v=$('d41-cverdict');let choice=null;
+  if(bOK&&oOK)choice=bc_<=oc?'batch':'online';else if(bOK)choice='batch';else if(oOK)choice='online';
+  v.textContent=choice?'choose: '+choice+(choice==='batch'?' (أرخص وبيحقق الحدود)':' (الوحيد/الأرخص اللي بيحقق الحدود)'):'none — غيّر الـ budgets';
+  v.style.color=choice?css('--ok'):css('--bad');
+  // plot
+  const L=56,R=CW-12,T=14,B=CH-34,xs=s=>L+(R-L)*Math.log(s/.05)/Math.log(48/.05),ylo=.1,yhi=1e5,ys=c=>B-(B-T)*Math.log(Math.max(ylo,Math.min(yhi,c))/ylo)/Math.log(yhi/ylo);
+  cctx.clearRect(0,0,CW,CH);
+  cctx.fillStyle=css('--muted');cctx.globalAlpha=.18;cctx.fillRect(L,T,xs(C.job)-L,B-T);cctx.globalAlpha=1;
+  cctx.font='11px JetBrains Mono, monospace';cctx.strokeStyle=css('--grid');cctx.lineWidth=1;cctx.fillStyle=css('--muted');
+  [.1,1,10,100,1000,1e4,1e5].forEach(c=>{const y=ys(c);cctx.beginPath();cctx.moveTo(L,y);cctx.lineTo(R,y);cctx.stroke();cctx.textAlign='right';cctx.fillText('$'+(c>=1000?(c/1000)+'k':c),L-4,y+4)});
+  [.05,.25,1,2,6,24,48].forEach(s=>{const x=xs(s);cctx.beginPath();cctx.moveTo(x,T);cctx.lineTo(x,B);cctx.stroke();cctx.textAlign='center';cctx.fillText(s+'h',x,B+14)});
+  cctx.fillText('max staleness (log)',(L+R)/2,B+28);
+  cctx.save();cctx.translate(12,(T+B)/2);cctx.rotate(-Math.PI/2);cctx.fillText('$/day (log)',0,0);cctx.restore();
+  // batch curve
+  cctx.strokeStyle=css('--vec-b');cctx.lineWidth=2.5;cctx.globalAlpha=C.lookup<=w.t?1:.3;cctx.beginPath();let st=false;
+  for(let i=0;i<=200;i++){const s=.05*Math.pow(48/.05,i/200);const c=batchCost(w,s);if(!isFinite(c)){st=false;continue}const x=xs(s),y=ys(c);st?cctx.lineTo(x,y):cctx.moveTo(x,y);st=true}cctx.stroke();
+  // online line
+  cctx.strokeStyle=css('--vec-a');cctx.globalAlpha=oOK?1:.3;cctx.beginPath();cctx.moveTo(L,ys(oc));cctx.lineTo(R,ys(oc));cctx.stroke();cctx.globalAlpha=1;
+  cctx.textAlign='left';cctx.fillStyle=css('--vec-a');cctx.fillText('online'+(oOK?'':' (too slow)'),L+6,ys(oc)-6);
+  cctx.fillStyle=css('--vec-b');cctx.fillText('batch'+(C.lookup<=w.t?'':' (too slow)'),R-80,ys(batchCost(w,40))-8);
+  cctx.fillStyle=css('--muted');cctx.fillText('batch impossible',L+4,T+12);
+  // current
+  const x=xs(w.s);cctx.strokeStyle=css('--ink');cctx.setLineDash([5,4]);cctx.lineWidth=1.5;cctx.beginPath();cctx.moveTo(x,T);cctx.lineTo(x,B);cctx.stroke();cctx.setLineDash([]);
+  if(isFinite(bc_)){cctx.fillStyle=css('--vec-b');cctx.beginPath();cctx.arc(x,ys(bc_),5,0,7);cctx.fill()}
+  cctx.fillStyle=css('--vec-a');cctx.beginPath();cctx.arc(x,ys(oc),5,0,7);cctx.fill();
+}
+function setW(i){const s=SC[i];$('d41-se').value=logInv(s[0],...RG.e);$('d41-sr').value=logInv(s[1],...RG.r);$('d41-sq').value=logInv(s[2],...RG.q);$('d41-ss').value=logInv(s[3],...RG.s);$('d41-st').value=s[4];drawCost()}
+['d41-se','d41-sr','d41-sq','d41-ss','d41-st'].forEach(id=>$(id).addEventListener('input',drawCost));
+root.querySelectorAll('[data-d41w]').forEach(b=>b.addEventListener('click',()=>setW(+b.dataset.d41w)));
+setW(0);
+
+// ---------- Lab 03: feedback loop ----------
+const TRUE=[.02,.03,.04,.05,.07,.09,.12,.16,.22,.35];
+let month=0,target=[],observed=TRUE.slice(),playT=null;
+const fc=$('d41-fbCanvas'),fctx=AI.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+const topK=(est,k)=>est.map((v,i)=>[v,i]).sort((a,b)=>b[0]-a[0]).slice(0,k).map(e=>e[1]);
+function fbReset(){month=0;observed=TRUE.slice();target=topK(TRUE,+$('d41-fk').value);fbDraw()}
+function fbStep(){const save=+$('d41-fs').value/100,hold=$('d41-fh').checked;
+  // this month: offers go to target; record outcomes
+  observed=TRUE.map((p,i)=>target.includes(i)?p*(1-save):p);
+  month++;
+  // retrain: estimate per decile from observed (or clean holdout)
+  const est=hold?TRUE.slice():observed.slice();
+  target=topK(est,+$('d41-fk').value);fbDraw()}
+function fbDraw(){
+  const k=+$('d41-fk').value,save=+$('d41-fs').value/100;
+  $('d41-vk').textContent=k;$('d41-vsv').textContent=Math.round(save*100)+'%';
+  $('d41-rmonth').textContent=month;$('d41-rtarget').textContent=target.slice().sort((a,b)=>a-b).map(i=>'D'+(i+1)).join(' ');
+  $('d41-rsaved').textContent=F(target.reduce((a,i)=>a+TRUE[i]*save*100,0),1);
+  const L=40,R=FW-10,T=16,B=FH-30,bw=(R-L)/10,ys=v=>B-(B-T)*v/.4;
+  fctx.clearRect(0,0,FW,FH);fctx.font='11px JetBrains Mono, monospace';
+  fctx.strokeStyle=css('--grid');fctx.fillStyle=css('--muted');fctx.lineWidth=1;fctx.textAlign='right';
+  [0,.1,.2,.3,.4].forEach(v=>{fctx.beginPath();fctx.moveTo(L,ys(v));fctx.lineTo(R,ys(v));fctx.stroke();fctx.fillText(Math.round(v*100)+'%',L-4,ys(v)+4)});
+  fctx.textAlign='center';
+  TRUE.forEach((p,i)=>{const x=L+i*bw;const tg=target.includes(i);
+    fctx.fillStyle=tg?css('--vec-b'):css('--vec-a');fctx.globalAlpha=tg?.9:.45;
+    fctx.fillRect(x+6,ys(observed[i]),bw-12,B-ys(observed[i]));fctx.globalAlpha=1;
+    fctx.fillStyle=css('--ink');fctx.fillText('D'+(i+1),x+bw/2,B+14);
+    if(tg){fctx.fillStyle=css('--vec-b');fctx.fillText('offer',x+bw/2,B+26)}});
+  fctx.strokeStyle=css('--ink');fctx.lineWidth=2;fctx.beginPath();
+  TRUE.forEach((p,i)=>{const x=L+i*bw+bw/2;i?fctx.lineTo(x,ys(p)):fctx.moveTo(x,ys(p))});fctx.stroke();
+  TRUE.forEach((p,i)=>{fctx.fillStyle=css('--ink');fctx.beginPath();fctx.arc(L+i*bw+bw/2,ys(p),3,0,7);fctx.fill()});
+  fctx.textAlign='left';fctx.fillStyle=css('--ink');fctx.fillText('— true churn',L+6,T+4);fctx.fillStyle=css('--muted');fctx.fillText('bars = observed last month',L+110,T+4);
+}
+$('d41-fstep').addEventListener('click',fbStep);
+$('d41-freset').addEventListener('click',()=>{clearInterval(playT);fbReset()});
+$('d41-fplay').addEventListener('click',()=>{clearInterval(playT);let n=0;const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  if(reduce){for(let i=0;i<6;i++)fbStep();return}
+  playT=setInterval(()=>{if(!document.body.contains(fc)||++n>6){clearInterval(playT);return}fbStep()},700)});
+['d41-fk','d41-fs'].forEach(id=>$(id).addEventListener('input',fbReset));
+$('d41-fh').addEventListener('change',fbReset);
+fbReset();
+
+// ---------- Lab 04: design doc checker ----------
+const ITEMS=[['business_goal',1,0],['ml_task',1,0],['decision',2,1],['why_not_rules',1,0],['offline_metric',1,0],['online_metric',1,0],['business_metric',2,1],['guardrails',1,0],['baselines',2,1],['label_source',1,0],['label_delay',1,0],['no_leakage',2,1],['budgets',1,0],['serving_fit',1,0],['rollout',2,1],['feedback_loop',1,0],['failure_modes',2,1],['monitoring',1,0]];
+const WEAK=['business_goal','ml_task','offline_metric','label_source'];
+const dl=$('d41-doclist');
+ITEMS.forEach(([k,w,b])=>{const li=document.createElement('li');li.innerHTML='<label><input type="checkbox" value="'+k+'"> <span class="mono">'+k+'</span> <small style="color:var(--muted)">w='+w+(b?' · BLOCKING':'')+'</small></label>';dl.appendChild(li)});
+const dc=$('d41-docCanvas'),dctx=AI.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+function docEval(){const on=new Set([...dl.querySelectorAll('input:checked')].map(i=>i.value));
+  let tot=0,earn=0,blk=0;ITEMS.forEach(([k,w,b])=>{tot+=w;if(on.has(k))earn+=w;else if(b)blk++});
+  const sc=earn/tot,ready=sc>=.85&&!blk;
+  $('d41-rscore').textContent=F(sc,2);$('d41-rblock').textContent=blk;
+  const v=$('d41-dverdict');v.textContent='verdict: '+(ready?'ready for review':'revise');v.style.color=ready?css('--ok'):css('--bad');
+  dctx.clearRect(0,0,DW,DH);const L=10,R=DW-10,y=22,h=22;
+  dctx.fillStyle=css('--soft');dctx.fillRect(L,y,R-L,h);
+  dctx.fillStyle=ready?css('--ok'):(blk?css('--bad'):css('--vec-b'));dctx.fillRect(L,y,(R-L)*sc,h);
+  const x=L+(R-L)*.85;dctx.strokeStyle=css('--ink');dctx.lineWidth=2;dctx.beginPath();dctx.moveTo(x,y-8);dctx.lineTo(x,y+h+8);dctx.stroke();
+  dctx.fillStyle=css('--ink');dctx.font='12px JetBrains Mono, monospace';dctx.textAlign='center';dctx.fillText('0.85',x,y-11);dctx.textAlign='left';dctx.fillText(earn+' / '+tot,L,y+h+18)}
+function setDoc(keys){dl.querySelectorAll('input').forEach(i=>i.checked=keys.includes(i.value));docEval()}
+dl.addEventListener('change',docEval);
+$('d41-dweak').addEventListener('click',()=>setDoc(WEAK));
+$('d41-dstrong').addEventListener('click',()=>setDoc(ITEMS.map(e=>e[0])));
+$('d41-dnofail').addEventListener('click',()=>setDoc(ITEMS.map(e=>e[0]).filter(k=>k!=='failure_modes')));
+setDoc(WEAK);
+
+// ---------- quiz ----------
+const Q=[
+ ['فريق قال إن AUC بتاع موديل الـ churn offline = 0.91. إيه الناقص قبل ما حد يقول إن الموديل مفيد؟',['القرار اللي بيستخدم كل score، و baseline نقارن بيه','موديل gradient-boosted أكبر فيه trees أكتر و learning rate متظبط','AUC فوق 0.95، لأن أنظمة الـ production بترفض أقل من كده','GPU server، لأن موديلات الـ churn محتاجة accelerators'],0,'المقياس الـ offline لوحده مش بيقول حاجة عن القيمة. التصميم محتاج الـ action اللي كل score بيشغّلها، وأقوى baseline لازم الموديل يغلبه.'],
+ ['يعني إيه guardrail metric؟',['مقياس فريق الـ security بس اللي يقدر يقراه','المقياس اللي قيمته أكبر حاجة على الـ validation set','المقياس الـ offline اللي التدريب بيقلله في كل batch','مقياس لازم ما يبقاش أسوأ لما الموديل الجديد ينزل'],3,'الـ guardrails بتحمي أجزاء السيستم اللي الموديل مش بيحاول يحسنها، زي التكلفة والـ latency ونسبة الشكاوى.'],
+ ['الـ scores لازم ما تكونش أقدم من ٣٠ دقيقة، والـ batch run الكامل بياخد ساعة. النتيجة؟',['الـ batch لسه ينفع لو شغلت الـ job ضعف المرات في اليوم','الـ online مش هينفع لأنه أبطأ من قراية key-value','الـ batch ينفع لو زودت replicas للـ key-value store','الـ batch مستحيل يحقق الحد، فالتصميم محتاج online scoring'],3,'أي batch score عمره على الأقل قد run واحد. لما حد الـ staleness أقصر من الـ job، مفيش جدول يحققه.'],
+ ['موديل churn جاب F1 = 0.56. الـ majority جاب 0.00 وقاعدة على feature واحدة جابت 0.46. الـ lift كام؟',['0.51، متوسط المكسب على الاتنين','0.10، مقاس على القاعدة لأنها أقوى baseline','0.56، مقاس على الـ majority اللي جاب صفر','0.00، لأن الـ lift بيتعرف بس ضد السيستم الحالي'],1,'الـ lift هو الفرق مع أقوى baseline. لو قارنت بالأضعف، أي موديل هيبان كويس.'],
+ ['موديل fraud بيعمل block للـ payments الخطيرة، والفريق بيعيد تدريبه كل شهر على الـ payments المتصنّفة. ده بيعمل مشكلة إيه؟',['الـ payments اللي اتعملها block عمرها ما بتاخد fraud label، فالداتا بتخسر أمثلة','إعادة التدريب الشهرية بتخلي الموديل overfit على آخر شهر','الـ block بيرفع الـ p99 latency فوق الـ budget','الـ labels بتسرّب لأنها في نفس الجدول'],0,'ده feedback loop: قرارات الموديل بتشيل نتايج من داتا التدريب الجاية. احتفظ بـ random holdout صغير الموديل ما يعملوش block.'],
+ ['أنهي مرحلة rollout بتخلي الموديل الجديد يقيّم traffic حقيقي ومحدش بيستخدم ناتجه؟',['Canary release','A/B test مع holdout','Shadow deployment','Full rollout مع rollback'],2,'في الـ shadow السيستم بيسجّل توقعات الموديل الجديد ويقارنها بالحالي، واليوزرز بيشوفوا قرارات الموديل الحالي بس.'],
+ ['(إضافة مني) peak = 400 requests/s والـ model service بياخد 50 ms للـ request. حسب Little\'s law، كام request شغالين في نفس اللحظة تقريبًا؟',['8','20','400','8000'],1,'in-flight = throughput × latency = 400 × 0.05 = 20. ده بيساعدك تقدّر الـ concurrency والـ replicas.'],
+ ['(إضافة مني) الـ model service عمل timeout في نص الليل. إيه أحسن تصميم؟',['الـ request يفشل لحد ما حد يصحى يصلحه','نرجع score عشوائي','نستخدم الـ heuristic baseline كـ default ونسجّل الحدث','نعيد المحاولة لحد ما ينجح مهما طوّل'],2,'الـ safe default بيتقرر في التصميم مش وقت الـ incident، والـ heuristic baseline هو الـ default الطبيعي لمعظم الأعطال.']
+];
+AI.quiz($('d41-quizBox'),Q,6,()=>{const c=root.querySelector('input[data-ck="quiz"]');if(c){c.checked=true;AI.store.set('aiefs-d41-quiz','1')}});
+
+// ---------- checklist ----------
+AI.checklist(41,$('d41-checklist'));
+
+// theme
+AI.onTheme(()=>{if(!document.body.contains(bc))return false;drawBase();drawCost();fbDraw();docEval()});
+})();
+</script>

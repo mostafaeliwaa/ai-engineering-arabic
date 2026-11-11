@@ -1,0 +1,570 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 80 · Sharded Checkpoint and Atomic Resume</span>
+  <h1>اليوم ٥٠٨: احفظ كل حاجة بالتوازي، وما تسيبش checkpoint نصّه مكتوب</h1>
+  <p class="lede">job تدريب لموديل 70B بيقف كل كام ساعة عشان node وقعت. شكل الـ checkpoint هو اللي بيحدد هتخسر ٣٠ دقيقة ولا ٣٠ ساعة. النهاردة هتبني <b>sharded checkpoint</b>: كل rank بيكتب الـ shard بتاعه في ملف لوحده بالتوازي، و<b>manifest</b> بيسجّل مين ماسك إيه، و<b>atomic write</b> بيمنع إن crash في النص يسمّم الـ resume اللي بعده.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> + PyTorch</span>
+    <span>قبله: <b>Pipeline Parallel and Bubble Analysis</b></span>
+    <span>بعده: <b>End-to-End Distributed Training</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d508-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d508-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح قطّعت الموديل stages وشغّلته كخط إنتاج. جاوب في دماغك، وبعدين افتح.</p>
+  <ol class="ex">
+    <li>N=4 stages و M=8 microbatches. الـ bubble كام؟ ولو M بقت 64؟
+      <details><summary>الإجابة</summary><span class="ltr">(N−1)/(M+N−1)</span>: عند M=8 تبقى <span class="ltr">3/11 ≈ 27.27%</span>، وعند M=64 تبقى <span class="ltr">3/67 ≈ 4.48%</span>. كتّر الـ microbatches والـ bubble يتخبّى.</details></li>
+    <li>1F1B بيكسب إيه على GPipe؟
+      <details><summary>الإجابة</summary>نفس الـ bubble، بس ذاكرة الـ activations محدودة بعمق الـ pipeline (حوالي N) بدل عدد الـ microbatches (M)، لأن الـ backward بيبدأ بدري وبيفضّي الـ activations.</details></li>
+    <li>ليه بنوازن الـ stages بالـ FLOPs مش بعدد الـ parameters؟ وإيه اللي بيعمل deadlock في الـ send/recv؟
+      <details><summary>الإجابة</summary>أبطأ stage بتحكم كل cycle، والـ embedding فيها params كتير وحساب قليل. والـ deadlock بيحصل لو كل الـ stages عملت send قبل recv؛ الحل: الزوجي يبعت الأول والفردي يستقبل الأول.</details></li>
+  </ol>
+  <div class="note ai"><strong>الربط بالنهاردة:</strong> بعد ZeRO وبعد الـ pipeline، الحالة بقت <b>متقطّعة</b> على الـ ranks: كل واحد ماسك shard من الـ optimizer أو stage من الموديل. يبقى الـ checkpoint لازم يحفظ «مين ماسك إيه»، وإلا الحالة اللي اتحفظت مش هتتقري وقت الـ restart.</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>المشكلة: gather-then-write (معمل ١)</div>
+    <div><b>25 min</b>الـ manifest والـ atomic write (معمل ٢)</div>
+    <div><b>15 min</b>الـ ٣ failure modes (معمل ٣)</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 PROBLEM -->
+<section id="d508-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: كل حاجة بتعدّي من باب واحد</h2></div>
+  <p>الـ checkpoint التقليدي بيجمّع كل الـ parameters والـ optimizer state على rank 0، وبعدين rank 0 يكتب ملف واحد. لموديل 70B ده <b>1.1 TB</b> من الحالة بتعدّي من network port واحد. وطول ما rank 0 بيكتب، باقي الـ ranks قاعدين مستنيين الـ gather. سرعة الكتابة بقت سرعة أبطأ link لـ GPU واحدة، مش مجموع الـ cluster.</p>
+  <p>زي مول فيه ٦٤ محل، وكل المحلات لازم تطلّع بضاعتها من باب واحد بس. على cluster حقيقي، خطوة الـ gather-then-write ممكن تاخد أطول من ساعة التدريب اللي قبلها، يعني الـ job بيلحق يعمل أقل من checkpoint واحد في يوم التدريب.</p>
+  <p>الـ <b>sharded checkpoint</b> بيقلب الفكرة: كل rank بيكتب الـ shard بتاعه في ملفه بالتوازي، والـ manifest بيسجّل مين كان ماسك أنهي shard عشان الـ resume يرجّع كل حاجة مكانها. سرعة الكتابة الإجمالية بتكبر مع حجم الـ cluster: checkpoint حجمه 1 TB كان بياخد ٤ ساعات من rank واحد، بياخد حوالي ٤ دقايق من ٦٤ rank.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: باب واحد ولا ٦٤ باب؟</h3>
+      <p>اختار حجم الحالة وعدد الـ ranks وسرعة الكتابة لكل rank، ودوس «اكتب» وشوف الاتنين بيتسابقوا.</p>
+      <div class="note"><strong>تبسيط:</strong> المعمل بيفترض إن الـ storage يستحمل الكتابة المتوازية كلها. في الحقيقة الـ filesystem له حد، وعشان كده الـ parallel filesystems زي Lustre و GPFS بتعمل striping. الافتراضي هنا قريب من مثال الدرس: 1 TB في حوالي ٤ ساعات من rank واحد.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d508-bw" width="520" height="170" aria-label="سباق الكتابة: rank واحد ضد كل الـ ranks"></canvas>
+      <label style="display:grid;gap:2px">حجم الحالة = <b class="mono" id="d508-szv">1.0 TB</b><input type="range" id="d508-sz" min="0.1" max="2" step="0.1" value="1"></label>
+      <label style="display:grid;gap:2px">عدد الـ ranks N = <b class="mono" id="d508-nv">64</b><input type="range" id="d508-n" min="1" max="256" value="64"></label>
+      <label style="display:grid;gap:2px">سرعة الكتابة لكل rank = <b class="mono" id="d508-bv">70 MB/s</b><input type="range" id="d508-b" min="10" max="2000" step="10" value="70"></label>
+      <div class="readout">
+        <div><small>gather-then-write</small><b id="d508-t1">3.97 h</b></div>
+        <div><small>sharded</small><b id="d508-t2">3.72 min</b></div>
+        <div><small>أسرع بـ</small><b id="d508-x">64×</b></div>
+      </div>
+      <div class="btns"><button type="button" class="primary" id="d508-race">اكتب</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- 02 MANIFEST + ATOMIC -->
+<section id="d508-manifest">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Manifest: عقد بين الكاتب والقارئ</h2></div>
+  <p>الـ shard files لوحدها مجرد bytes. الـ manifest هو اللي بيقول للـ loader «اتوقّع إيه» قبل ما يلمس الحالة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>{
+  "world_size": 4,
+  "step": 1234,
+  "wall_clock_seconds": 4521,
+  "shards": [
+    {"rank": 0, "path": "rank0.bin", "sha256": "...", "param_shard_offset": 0, "param_shard_numel": 65536},
+    {"rank": 1, "path": "rank1.bin", "sha256": "...", "param_shard_offset": 65536, "param_shard_numel": 65536}
+  ],
+  "schema_version": 1
+}</pre></div>
+  <p>فيه ٣ حقول شايلة الشغل كله:</p>
+  <ul>
+    <li><code>world_size</code>: لو حاولت تعمل resume على عدد ranks مختلف، يفشل بصوت عالي بدل ما يبوّظ الحالة في السكوت.</li>
+    <li><code>sha256</code> لكل shard: بيمسك الكتابة الناقصة أو الملف البايظ.</li>
+    <li><code>param_shard_offset</code> و <code>param_shard_numel</code>: بيخلّوا الـ loader يحط كل shard في مكانه الصح جوه الـ flat parameter tensor.</li>
+  </ul>
+
+  <h3>الـ Atomic write: اكتب في .tmp، وبعدين rename</h3>
+  <p>الترتيب: اكتب كل shard في <code>&lt;name&gt;.tmp</code>، اكتب الـ manifest في <code>manifest.json.tmp</code>، اعمل fsync لكل واحد، اعمل rename للـ shards، و<b>الـ manifest آخر واحد</b>.</p>
+  <p>الـ rename الواحد في POSIX على نفس الـ filesystem <b>atomic</b>: يا الملف الجديد موجود كامل، يا القديم لسه موجود. بس <b>مجموعة renames مش transaction</b>. عشان كده rename الـ manifest هو «لحظة الـ commit»، والـ loader بيراجع كل shard على الـ hashes اللي في الـ manifest.</p>
+  <p>والنقطة اللي ناس كتير بتغلط فيها: اكتب كل checkpoint في <b>فولدر خاص بالـ step بتاعه</b> (<code>step_0200/</code>). كده لو حصل crash قبل rename الـ manifest، الـ checkpoint اللي قبله يفضل هو الشغال. لو استخدمت نفس الفولدر كل مرة، الضمان ده بيتكسر: الـ shard renames بتبدّل الـ shards القديمة قبل ما الـ manifest الجديد يوصل.</p>
+  <p>زي إنك بتكتب مذكرة جديدة في كشكول جديد، وتقطع الصفحة القديمة من الفهرس بس لما الجديدة تخلص. لو كتبت فوق القديمة على طول وانقطعت الكهربا، مش هيبقى معاك لا القديم ولا الجديد.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: اقطع الكهربا في أي لحظة</h3>
+      <p>فيه checkpoint سليم عند step 100، وإنت بتحفظ step 200. اختار الطريقة، وحرّك «الـ crash بعد خطوة» لأي نقطة، وشوف الـ resume هيلاقي إيه.</p>
+      <div class="note"><strong>جرب:</strong> (١) «فولدر لكل step» مع crash في أي نقطة: دايمًا فيه checkpoint سليم. (٢) «نفس الفولدر + tmp»: crash بعد rename الـ shard الأول = مفيش ولا checkpoint سليم. (٣) «كتابة مباشرة» واقفل فحص الـ sha256: الـ resume بيعدّي وهو بايظ.</div>
+      <ol class="ex" id="d508-ops" style="font-size:14px;direction:ltr;text-align:left"></ol>
+    </div>
+    <div class="instrument">
+      <label style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">الطريقة: <select id="d508-mode"><option value="step">tmp + rename في فولدر لكل step</option><option value="same">tmp + rename في نفس الفولدر</option><option value="direct">كتابة مباشرة فوق القديم</option></select></label>
+      <label style="display:grid;gap:2px">الـ crash بعد خطوة = <b class="mono" id="d508-cv">0</b><input type="range" id="d508-crash" min="0" max="10" value="4"></label>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="d508-sha" checked> الـ loader بيتأكد من sha256</label>
+      <canvas id="d508-fs" width="520" height="250" aria-label="حالة الملفات على الديسك بعد الـ crash"></canvas>
+      <div class="verdict" id="d508-res">—</div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 FAILURE MODES -->
+<section id="d508-fail">
+  <div class="station-head"><span class="tag">03</span><h2>٣ failure modes لازم الـ schema يصدّهم</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المشكلة</th><th>العَرَض</th><th>الدفاع</th></tr>
+    <tr><td>World-size اتغير</td><td>resume على N=8 بـ manifest من N=4</td><td>عدم تطابق <code>world_size</code> في الـ manifest، افشل بصوت عالي</td></tr>
+    <tr><td>عدد الـ shards مش مظبوط</td><td>الـ resume لاقى ملفات <code>rank*.bin</code> أقل من اللي في الـ manifest</td><td>لف على كل الـ shards واتأكد إن كل واحد موجود</td></tr>
+    <tr><td>Partial write</td><td>ملف shard اتقطع في نص الـ flush</td><td>تحقق sha256 وقت التحميل</td></tr>
+  </table></div>
+  <p>كل دفاع بيرفض التحميل البايظ <b>بدري</b>. البديل: فساد صامت بيظهر بعد ١٠٠ step لما الـ loss يبقى NaN، ووقتها مش هتعرف السبب منين.</p>
+  <h3>ليه ملف لكل rank مش ملف واحد كبير</h3>
+  <p>الكتابة المتزامنة في ملف واحد بـ <code>O_APPEND</code> بتشتغل على POSIX للكتابات المحاذية على مستوى الـ byte، بس عمليًا الـ offsets جوه الـ shard الواحد بتغطي مناطق بالـ MB، والـ locking بيبقى هو المتحكم. الملف لكل rank مفيهوش تزاحم خالص، وبيستفيد من الـ striping لو الـ filesystem متوازي (Lustre, GPFS). عشان كده DeepSpeed و FSDP و NeMo كلهم بيستخدموا ملف لكل rank.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: إنت الـ loader</h3>
+      <p>عندك checkpoint سليم بـ ٤ shards. بوّظه بالطريقة اللي تحبها ودوس «حمّل». الفحوصات بتمشي بنفس ترتيب <code>load_sharded</code> في الكود، وأول فحص يفشل بيرمي <code>CheckpointError</code> بنفس الرسالة.</p>
+      <div style="display:grid;gap:6px">
+        <label style="display:flex;gap:6px;align-items:center">resume على world size: <select id="d508-ws"><option>4</option><option>8</option><option>2</option></select></label>
+        <label><input type="checkbox" id="d508-f-schema"> الـ manifest مكتوب بـ schema_version = 2</label>
+        <label><input type="checkbox" id="d508-f-drop"> الـ manifest ناقصه entry لـ rank 3</label>
+        <label><input type="checkbox" id="d508-f-dup"> entry مكرر لـ rank 1 (بدل rank 2)</label>
+        <label><input type="checkbox" id="d508-f-path"> path الـ rank 2 بقى <code>../evil.bin</code></label>
+        <label><input type="checkbox" id="d508-f-miss"> ملف <code>rank2.bin</code> اتمسح</label>
+        <label><input type="checkbox" id="d508-f-trunc"> ملف <code>rank1.bin</code> اتقطع في النص</label>
+      </div>
+    </div>
+    <div class="instrument">
+      <div class="btns"><button type="button" class="primary" id="d508-load">حمّل</button><button type="button" id="d508-fix">رجّعه سليم</button></div>
+      <ol class="checklist" id="d508-checks" style="font-size:14px"></ol>
+      <pre class="term" id="d508-err" style="white-space:pre-wrap">اضغط حمّل</pre>
+    </div>
+  </div>
+</section>
+
+<!-- 04 PRODUCTION -->
+<section id="d508-prod">
+  <div class="station-head"><span class="tag">04</span><h2>٣ حاجات بتخلّي الـ checkpoint يتشحن</h2></div>
+  <ol class="ex">
+    <li><b>Async write.</b> الـ production بيبعت الكتابة على thread أو process منفصل عشان التدريب يكمّل. الحاجز عند الـ checkpoint اللي بعده: ما تبدأش save جديد قبل ما اللي قبله يخلص. الـ flag <code>async_io</code> في DeepSpeed بيعمل كده. الدرس بيخلّي الكتابة synchronous عشان الخطوات تبان.</li>
+    <li><b>ديسك محلي سريع الأول، وبعدين upload في الخلفية.</b> اكتب على NVMe محلي، وارفع async على S3 أو GCS. كده الـ checkpoint جوه الـ cluster سريع للـ resume، وفيه نسخة دايمة بره للأرشيف. الـ manifest بيشيل المسار المحلي، و upload manifest بيشيل المسار البعيد.</li>
+    <li><b>الـ Rotation.</b> احتفظ بآخر K checkpoints (غالبًا ٣ لـ ٥) وامسح الأقدم. من غيرها الديسك بيتملي في نص الـ run والـ checkpoint اللي بعده يفشل.</li>
+  </ol>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>جرب الـ rotation</h3>
+      <p>كل «save» بيعمل فولدر <code>step_NNNN</code> جديد، وبعده <code>rotate_checkpoints(keep_last=K)</code> بيرتّب الفولدرات بالـ mtime ويمسح الأقدم. K=0 بيمسح الكل.</p>
+      <label style="display:grid;gap:2px">keep_last K = <b class="mono" id="d508-kv">5</b><input type="range" id="d508-k" min="0" max="8" value="5"></label>
+      <div class="btns"><button type="button" class="primary" id="d508-save">save + rotate</button><button type="button" id="d508-rreset">من الأول</button></div>
+    </div>
+    <div class="instrument">
+      <div id="d508-dirs" style="display:flex;flex-wrap:wrap;gap:6px;direction:ltr;min-height:40px"></div>
+      <div id="d508-rlog" class="mono" style="font-size:13px;color:var(--muted)">deleted: []</div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th>الأداة</th><th>إزاي بتعمل sharded checkpoint</th></tr>
+    <tr><td>DeepSpeed</td><td><code>deepspeed.save_checkpoint(tag=step)</code> بيكتب ملفات لكل rank وملف <code>latest</code> بيشاور على الـ tag الشغال</td></tr>
+    <tr><td>PyTorch FSDP</td><td><code>torch.distributed.checkpoint</code> بيحفظ state مقسّم بـ <code>Planner</code> بيقرر الـ layout لكل rank</td></tr>
+    <tr><td>NeMo</td><td>بيغلّف DeepSpeed و FSDP بـ API موحّد <code>save_to_checkpoint</code> وبيضيف metadata</td></tr>
+  </table></div>
+</section>
+
+<!-- 05 CODE -->
+<section id="d508-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: الكود خطوة بخطوة</h2></div>
+  <p>من جذر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/80-checkpoint-sharded-resume/code/main.py</pre></div>
+  <p><b>القاعدة:</b> اكتبها بنفسك في <code>my_ckpt.py</code>. ابدأ بالـ dataclasses، وكل دالة اختبرها قبل اللي بعدها.</p>
+
+  <h3>خطوة ١: الـ schema كـ dataclasses</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>SCHEMA_VERSION = 1
+MANIFEST_NAME = "manifest.json"
+
+@dataclass
+class ShardEntry:
+    rank: int
+    path: str
+    sha256: str
+    param_shard_offset: int
+    param_shard_numel: int
+
+@dataclass
+class ShardManifest:
+    world_size: int
+    step: int
+    wall_clock_seconds: float
+    shards: list
+    schema_version: int = SCHEMA_VERSION
+
+    def to_json(self):
+        return json.dumps({
+            "world_size": self.world_size, "step": self.step,
+            "wall_clock_seconds": self.wall_clock_seconds,
+            "schema_version": self.schema_version,
+            "shards": [asdict(s) for s in self.shards],
+        }, indent=2, sort_keys=True)          <span class="c"># sort_keys = ناتج ثابت</span>
+
+    @classmethod
+    def from_json(cls, text):
+        d = json.loads(text)
+        return cls(world_size=int(d["world_size"]), step=int(d["step"]),
+                   wall_clock_seconds=float(d["wall_clock_seconds"]),
+                   schema_version=int(d["schema_version"]),
+                   shards=[ShardEntry(**s) for s in d["shards"]])
+
+class CheckpointError(Exception):
+    """بيترمي لما الـ manifest أو الـ shard يفشل في الفحص"""</pre></div>
+
+  <h3>خطوة ٢: أدوات صغيرة: hash و fsync و serialize</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+def _fsync_dir(path):
+    <span class="c"># fsync للفولدر نفسه عشان الـ rename يوصل للديسك؛ ولو مش مدعوم يعدّي</span>
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+def _serialize_state(state):
+    buf = io.BytesIO()
+    torch.save(state, buf, pickle_protocol=4)
+    return buf.getvalue()
+
+def _deserialize_state(data):
+    return torch.load(io.BytesIO(data), weights_only=False)</pre></div>
+
+  <h3>خطوة ٣: save_sharded بالـ tmp + rename</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def save_sharded(per_rank_state, dest_dir, step, wall_clock_seconds=0.0):
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    shards, tmp_paths, offset = [], [], 0
+    for rank, state in enumerate(per_rank_state):
+        payload = _serialize_state(state)
+        sha = _sha256_bytes(payload)              <span class="c"># الـ hash على الـ bytes اللي هتتكتب</span>
+        tmp_path = dest / f"rank{rank}.bin.tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())                  <span class="c"># اتأكد إن الـ bytes نزلت الديسك</span>
+        tmp_paths.append((tmp_path, dest / f"rank{rank}.bin"))
+        ps = state.get("param_shard")
+        numel = ps.numel() if isinstance(ps, torch.Tensor) else 0
+        shards.append(ShardEntry(rank, f"rank{rank}.bin", sha, offset, numel))
+        offset += numel                           <span class="c"># الـ shard اللي بعده يبدأ هنا</span>
+    manifest = ShardManifest(len(per_rank_state), step, wall_clock_seconds, shards)
+    manifest_tmp = dest / (MANIFEST_NAME + ".tmp")
+    with open(manifest_tmp, "w") as f:
+        f.write(manifest.to_json())
+        f.flush()
+        os.fsync(f.fileno())
+    for tmp, final in tmp_paths:
+        os.replace(tmp, final)                    <span class="c"># rename atomic لكل shard</span>
+    os.replace(manifest_tmp, dest / MANIFEST_NAME) <span class="c"># لحظة الـ commit: الـ manifest آخر واحد</span>
+    _fsync_dir(dest)
+    return manifest</pre></div>
+
+  <h3>خطوة ٤: load_sharded: افحص كل حاجة قبل ما تلمس الحالة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def load_sharded(src_dir, expected_world_size):
+    src = Path(src_dir)
+    mp = src / MANIFEST_NAME
+    if not mp.exists():
+        raise CheckpointError(f"manifest missing at {mp}")
+    m = ShardManifest.from_json(mp.read_text())
+    if m.world_size != expected_world_size:                 <span class="c"># failure mode ١</span>
+        raise CheckpointError(f"world_size mismatch: manifest={m.world_size}, expected={expected_world_size}")
+    if m.schema_version != SCHEMA_VERSION:
+        raise CheckpointError(f"schema_version mismatch: manifest={m.schema_version}, expected={SCHEMA_VERSION}")
+    if len(m.shards) != m.world_size:                        <span class="c"># failure mode ٢</span>
+        raise CheckpointError(f"shard count != world_size: {len(m.shards)} vs {m.world_size}")
+    per_rank, seen, src_resolved = [None] * m.world_size, set(), src.resolve()
+    for s in m.shards:
+        if not (0 &lt;= s.rank &lt; m.world_size):
+            raise CheckpointError(f"shard rank {s.rank} out of range [0,{m.world_size})")
+        if s.rank in seen:
+            raise CheckpointError(f"duplicate shard for rank {s.rank}")
+        seen.add(s.rank)
+        <span class="c"># أمان: ممنوع path مطلق أو فيه / أو .. عشان محدش يخلّيك تقرا ملف بره الفولدر</span>
+        if os.path.isabs(s.path) or os.sep in s.path or "/" in s.path or s.path in ("", ".", ".."):
+            raise CheckpointError(f"unsafe shard path: {s.path!r}")
+        shard_path = (src / s.path).resolve()
+        try:
+            shard_path.relative_to(src_resolved)
+        except ValueError as exc:
+            raise CheckpointError(f"shard path escapes checkpoint dir: {s.path!r}") from exc
+        if not shard_path.exists():
+            raise CheckpointError(f"shard file missing: {shard_path}")
+        payload = shard_path.read_bytes()
+        actual = _sha256_bytes(payload)
+        if actual != s.sha256:                               <span class="c"># failure mode ٣</span>
+            raise CheckpointError(f"sha256 mismatch on rank {s.rank}: "
+                                  f"recorded={s.sha256[:12]}..., actual={actual[:12]}...")
+        per_rank[s.rank] = _deserialize_state(payload)
+    if len(seen) != m.world_size:
+        missing = sorted(set(range(m.world_size)) - seen)
+        raise CheckpointError(f"manifest missing ranks: {missing}")
+    return m, per_rank</pre></div>
+
+  <h3>خطوة ٥: rotate_checkpoints</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def rotate_checkpoints(parent_dir, keep_last=5):
+    if keep_last &lt; 0:
+        raise ValueError(f"keep_last must be >= 0, got {keep_last}")
+    parent = Path(parent_dir)
+    if not parent.exists():
+        return []
+    children = sorted(
+        [c for c in parent.iterdir() if c.is_dir() and c.name.startswith("step_")],
+        key=lambda c: (c.stat().st_mtime, c.name),   <span class="c"># الأقدم الأول</span>
+    )
+    if keep_last == 0:
+        to_delete = children
+    elif len(children) > keep_last:
+        to_delete = children[:-keep_last]
+    else:
+        to_delete = []
+    for c in to_delete:
+        shutil.rmtree(c, ignore_errors=True)
+    return [c.name for c in to_delete]</pre></div>
+
+  <h3>خطوة ٦: الـ demo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_demo_state(rank, world_size):
+    torch.manual_seed(31 + rank)
+    return {"rank": rank, "world_size": world_size,
+            "param_shard": torch.randn(1024) + rank,
+            "m_shard": torch.zeros(1024),
+            "v_shard": torch.ones(1024) * 1e-6, "step": 100}
+
+<span class="c"># main: احفظ 4 ranks في step_0100 ← حمّل وقارن بـ torch.equal</span>
+<span class="c"># ← جرّب world_size=8 (لازم يترفض) ← بوّظ rank0.bin بإضافة bytes (لازم يترفض)</span>
+<span class="c"># ← اكتب 8 checkpoints step_0000..0007 واعمل rotate بـ keep_last=5</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">workdir: /tmp/aie_ckpt_xxxx
+saving sharded checkpoint...
+manifest: world_size=4, step=100, shards=4
+  rank 0: rank0.bin sha256=xxxxxxxxxxxx... numel=1024
+  rank 1: rank1.bin sha256=xxxxxxxxxxxx... numel=1024
+  rank 2: rank2.bin sha256=xxxxxxxxxxxx... numel=1024
+  rank 3: rank3.bin sha256=xxxxxxxxxxxx... numel=1024
+
+resuming...
+byte-equal round-trip verified for every rank
+
+testing failure mode: wrong world size...
+  rejected as expected: world_size mismatch: manifest=4, expected=8
+
+testing failure mode: tampered shard...
+  rejected as expected: sha256 mismatch on rank 0: recorded=..., actual=...
+
+testing rotation: write 8 checkpoints, keep 5...
+  rotated 4 oldest: [...]</pre><p>اسم الـ workdir والـ hashes هيختلفوا عندك. الـ rotation بيمسح ٤ لأن فيه ٩ فولدرات (step_0100 + الـ ٨ الجداد)، و step_0100 غالبًا أول واحد يتمسح لأنه الأقدم في الـ mtime.</p></details>
+  <p>والـ tests:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 -m unittest discover -s phases/19-capstone-projects/80-checkpoint-sharded-resume/tests -v</pre></div>
+</section>
+
+<!-- 06 EXERCISES -->
+<section id="d508-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Async write:</b> ابدأ الـ save في thread وخلّي التدريب يكمّل، وامنع الـ save اللي بعده لحد ما اللي قبله يخلص.
+      <details><summary>تلميح</summary>خد snapshot الأول (<code>{k: v.clone()}</code>) عشان التدريب ما يغيّرش الـ tensors وهي بتتكتب. خزّن الـ <code>threading.Thread</code> في متغير، وقبل أي save جديد اعمل <code>prev.join()</code>.</details></li>
+    <li><b>Rotation بـ last_5_steps:</b> احتفظ بآخر ٥ وامسح الأقدم قبل ما تحفظ الجديد.
+      <details><summary>تلميح</summary><code>rotate_checkpoints(parent, keep_last=4)</code> قبل الـ save يسيب مكان للجديد، فيبقى المجموع ٥. خد بالك: لو الـ save الجديد فشل، هيبقى معاك ٤ بس. فكّر: تمسح قبل ولا بعد؟</details></li>
+    <li><b>فحص سريع بـ CRC</b> للـ reload في الـ inner loop بدل sha256 الكامل.
+      <details><summary>تلميح</summary><code>zlib.crc32(payload)</code> أسرع بكتير. سجّل الاتنين في الـ manifest، واستخدم الـ CRC في المسار السريع والـ sha256 في الـ resume الحقيقي. الـ CRC بيمسك الـ corruption العشوائي، بس مش معمول ضد التلاعب المقصود.</details></li>
+    <li><b>Load على world size مختلف:</b> rebalance من N=4 لـ N=8.
+      <details><summary>تلميح</summary>رتّب الـ shards بالـ <code>param_shard_offset</code>، اعمل <code>torch.cat</code> لكل نوع (param, m, v)، وبعدين <code>chunk(8)</code> مع padding لو الطول مش بيقبل القسمة. اكتبه كدالة منفصلة صريحة، مش جوه <code>load_sharded</code>، عشان الرفض العالي يفضل هو الافتراضي.</details></li>
+    <li><b>Upload لـ fake S3</b> (فولدر تاني) واكتب upload manifest، ودافع عن سياسة التخزين على مستويين.
+      <details><summary>تلميح</summary>انسخ الملفات للفولدر التاني بنفس الـ tmp + rename، واكتب <code>upload_manifest.json</code> فيه المسار البعيد والـ sha256. الدفاع: المحلي سريع للـ resume، والبعيد بيعيش لو الـ node نفسها ماتت.</details></li>
+    <li><b>إضافة مني · <code>latest</code> + أحدث checkpoint سليم:</b> اكتب ملف <code>latest</code> (atomic برضه) فيه اسم آخر فولدر خلص، واكتب <code>find_latest_valid(parent, world_size)</code> تبدأ منه وترجع لورا لحد ما تلاقي checkpoint يعدّي <code>load_sharded</code>. ده بالظبط اللي بتحتاجه في الـ auto-restart script بتاع أي job تدريب.
+      <details><summary>تلميح</summary>رتّب الفولدرات <code>step_*</code> تنازلي. لكل واحد جرّب <code>load_sharded</code> جوه <code>try/except CheckpointError</code>، واطبع سبب الرفض في الـ log. ما تمسحش الفولدر البايظ أوتوماتيك؛ سيبه للتحقيق.</details></li>
+  </ol>
+</section>
+
+<!-- 07 EXTRA -->
+<section id="d508-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> الـ checkpoint الكويس مش اللي «بيتحفظ»، ده اللي <b>بيرفض يتحمّل وهو بايظ</b>. كل حقل في الـ manifest موجود عشان يدّي الـ loader سبب يقول «لأ».</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b><code>torch.load(weights_only=False)</code> = pickle.</b> الكود بيعمل كده عشان الـ state فيه أنواع عادية. ده تمام لملفات إنت كاتبها، بس pickle ممكن ينفّذ كود وقت التحميل. أي checkpoint جاي من بره (من النت مثلًا) حمّله بـ <code>weights_only=True</code> أو بصيغة زي safetensors. فحص الـ path اللي في الدرس بيحميك من قراية ملف بره الفولدر، لكن مش من pickle خبيث.</li>
+    <li><b>الـ tmp لازم يكون على نفس الـ filesystem.</b> الـ rename atomic بس جوه نفس الـ filesystem. لو كتبت الـ tmp في <code>/tmp</code> والنهائي على ديسك تاني، العملية بتبقى copy + delete ومش atomic. الدرس حاطط الـ tmp جنب الملف النهائي، وده الصح.</li>
+    <li><b>الأوزان لوحدها مش resume كامل.</b> عشان التدريب يكمّل «كأن مفيش حاجة حصلت» محتاج كمان: رقم الـ step، حالة الـ LR scheduler، مكان الـ dataloader في الداتا، وحالة الـ RNG. الـ demo فيه <code>step</code> بس؛ في شغل حقيقي ضيف الباقي في نفس الـ state dict.</li>
+    <li><b>إنك تنسى fsync للفولدر.</b> الـ fsync للملف بيضمن الـ bytes، لكن الـ rename نفسه metadata في الفولدر. عشان كده فيه <code>_fsync_dir</code> في الآخر.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents</h3>
+  <p>أي تدريب طويل لـ LLM بيعيش على الـ checkpoints دي. ونفس الأفكار (اكتب في tmp، commit في الآخر، افحص قبل ما تحمّل، احتفظ بآخر K) بتظهر في الـ agents اللي بتحفظ حالتها بعد كل خطوة عشان تكمّل لو اتقطعت، وفي أي service بتكتب ملفات حالة على الديسك.</p>
+</section>
+
+<!-- 08 QUIZ -->
+<section id="d508-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d508-quizBox"></div>
+</section>
+
+<!-- 09 DONE -->
+<section id="d508-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه gather-then-write مش بيكبر مع الـ cluster</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أعرف الـ ٣ حقول المهمة في الـ manifest وكل واحد بيصدّ إيه</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه الـ manifest آخر rename، وليه فولدر لكل step (جربت معمل ٢)</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كسرت الـ checkpoint بكل الطرق في معمل ٣</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت save و load و rotate بإيدي والـ tests عدّت</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Sharded checkpoint</td><td>DeepSpeed، FSDP <code>torch.distributed.checkpoint</code>، NeMo</td></tr>
+    <tr><td>Manifest + sha256</td><td>أي resume بعد crash، وأي artifact بتنزّله وعايز تتأكد منه</td></tr>
+    <tr><td>tmp + rename</td><td>كتابة أي ملف حالة أو config بأمان، مش في الـ ML بس</td></tr>
+    <tr><td>Rotation</td><td>الـ runs الطويلة اللي ميزانية الديسك فيها ثابتة</td></tr>
+    <tr><td>Two-tier storage</td><td>NVMe محلي + S3/GCS للأرشيف</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> End-to-End Distributed Training. هتجمّع DDP + ZeRO-1 + الـ checkpoint ده في run واحد على GPT صغير.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F80-checkpoint-sharded-resume" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/80-checkpoint-sharded-resume</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N0=508,LESSON=80,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d508-roadmap').closest('.day');
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+const rm=$('d508-roadmap');for(let i=1;i<=87;i++){if(i===18||i===19)continue;const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)}
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+const human=s=>s>=3600?f(s/3600)+' h':s>=60?f(s/60)+' min':f(s,1)+' s';
+
+// ---------- Lab 1: bandwidth race ----------
+const wc=$('d508-bw'),wx=AI.setupCanvas(wc),WW=+wc.dataset.w,WH=+wc.dataset.h;let prog=1,ra=null;
+function bwVals(){const sz=+$('d508-sz').value,n=+$('d508-n').value,b=+$('d508-b').value;
+  const bytes=sz*1e12,t1=bytes/(b*1e6),t2=bytes/(n*b*1e6);return{sz,n,b,t1,t2}}
+function drawBW(){const v=bwVals();
+  $('d508-szv').textContent=f(v.sz,1)+' TB';$('d508-nv').textContent=v.n;$('d508-bv').textContent=v.b+' MB/s';
+  $('d508-t1').textContent=human(v.t1);$('d508-t2').textContent=human(v.t2);$('d508-x').textContent=v.n+'×';
+  wx.clearRect(0,0,WW,WH);const LX=130,W=WW-LX-14;wx.font='12px JetBrains Mono, monospace';wx.textBaseline='middle';
+  const rows=[['gather → rank 0',v.t1,css('--bad')],['sharded × '+v.n,v.t2,css('--ok')]];
+  rows.forEach(([l,t],i)=>{const y=30+i*70;wx.fillStyle=css('--ink');wx.textAlign='left';wx.fillText(l,4,y+16);
+    wx.fillStyle=css('--soft');wx.fillRect(LX,y,W,32);
+    const elapsed=prog*v.t1,done=Math.min(1,elapsed/t);wx.fillStyle=rows[i][2];wx.fillRect(LX,y,W*done,32);
+    wx.fillStyle=css('--ink');wx.fillText(done>=1?'✓ '+human(t):Math.round(done*100)+'%',LX+6,y+16)});
+  wx.fillStyle=css('--muted');wx.fillText('elapsed: '+human(prog*v.t1),LX,WH-10)}
+['d508-sz','d508-n','d508-b'].forEach(id=>$(id).addEventListener('input',()=>{cancelAnimationFrame(ra);prog=1;drawBW()}));
+$('d508-race').addEventListener('click',()=>{cancelAnimationFrame(ra);if(reduce){prog=1;drawBW();return}prog=0;const t0=performance.now();
+  const st=t=>{if(!document.body.contains(wc))return;prog=Math.min(1,(t-t0)/4000);drawBW();if(prog<1)ra=requestAnimationFrame(st)};ra=requestAnimationFrame(st)});
+drawBW();
+
+// ---------- Lab 2: crash simulator ----------
+const fc=$('d508-fs'),fx=AI.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+function opsFor(mode){const o=[];
+  if(mode==='direct'){for(let r=0;r<4;r++)o.push({t:'write',dir:'ckpt',name:'rank'+r+'.bin'});o.push({t:'write',dir:'ckpt',name:'manifest.json'});}
+  else{const d=mode==='step'?'step_0200':'ckpt';for(let r=0;r<4;r++)o.push({t:'write',dir:d,name:'rank'+r+'.bin.tmp'});o.push({t:'write',dir:d,name:'manifest.json.tmp'});
+    for(let r=0;r<4;r++)o.push({t:'rename',dir:d,from:'rank'+r+'.bin.tmp',name:'rank'+r+'.bin'});o.push({t:'rename',dir:d,from:'manifest.json.tmp',name:'manifest.json'})}
+  return o}
+function simulate(){
+  const mode=$('d508-mode').value,ops=opsFor(mode),sl=$('d508-crash');sl.max=ops.length;if(+sl.value>ops.length)sl.value=ops.length;
+  const k=+sl.value;$('d508-cv').textContent=k+' / '+ops.length;
+  // initial disk: old checkpoint at step 100
+  const disk={};const od=mode==='step'?'step_0100':'ckpt';disk[od]={};
+  for(let r=0;r<4;r++)disk[od]['rank'+r+'.bin']={ver:100,ok:true};disk[od]['manifest.json']={ver:100,ok:true};
+  // apply ops; op k (index k) is "in progress" -> partial write if write
+  for(let i=0;i<ops.length&&i<=k;i++){const o=ops[i];disk[o.dir]=disk[o.dir]||{};const D=disk[o.dir];
+    if(i<k){if(o.t==='write')D[o.name]={ver:200,ok:true};else{D[o.name]=D[o.from];delete D[o.from]}}
+    else if(i===k&&k<ops.length&&o.t==='write'){D[o.name]={ver:200,ok:false}}}
+  // ops list
+  const ol=$('d508-ops');ol.innerHTML='';ops.forEach((o,i)=>{const li=document.createElement('li');
+    li.textContent=(o.t==='write'?'write '+o.dir+'/'+o.name:'rename '+o.from+' → '+o.name);
+    li.style.opacity=i<k?1:.45;if(i===k)li.style.color=css('--bad');if(i===k)li.textContent+='   ⚡ crash';ol.appendChild(li)});
+  if(k===ops.length){const li=document.createElement('li');li.textContent='(no crash: save finished)';li.style.color=css('--ok');ol.appendChild(li)}
+  // loader: newest dir with manifest.json, verify
+  const useSha=$('d508-sha').checked;
+  const dirs=Object.keys(disk).sort().reverse();let res=null;
+  for(const d of dirs){const D=disk[d],man=D['manifest.json'];if(!man||!man.ok){continue}
+    let bad=null,mixed=false;for(let r=0;r<4;r++){const s=D['rank'+r+'.bin'];if(!s){bad='shard file missing: '+d+'/rank'+r+'.bin';break}
+      if(!s.ok||s.ver!==man.ver){mixed=true;if(useSha){bad='sha256 mismatch on rank '+r;break}}}
+    res={d,ver:man.ver,bad,mixed};break}
+  const v=$('d508-res');
+  if(!res){v.textContent='مفيش manifest سليم: مفيش checkpoint تعمل منه resume ✗';v.style.color=css('--bad')}
+  else if(res.bad){v.textContent='الـ loader فتح '+res.d+' (step '+res.ver+') ورفضه: '+res.bad+'. مفيش checkpoint سليم ✗ (اتكشف بس اتخسر)';v.style.color=css('--bad')}
+  else if(res.mixed){v.textContent='الـ resume عدّى من '+res.d+' بس الملفات خليط/ناقصة: فساد صامت! هيظهر كـ NaN بعدين ✗';v.style.color=css('--bad')}
+  else{v.textContent='resume سليم من '+res.d+' عند step '+res.ver+(res.ver===100&&k<ops.length?' (رجعنا للقديم، مخسرناش غير الـ save ده) ✓':' ✓');v.style.color=css('--ok')}
+  drawFS(disk)}
+function drawFS(disk){fx.clearRect(0,0,FW,FH);fx.font='12px JetBrains Mono, monospace';fx.textBaseline='middle';fx.textAlign='left';
+  const dirs=Object.keys(disk).sort();const cw=(FW-10)/Math.max(1,dirs.length);
+  dirs.forEach((d,i)=>{const x=6+i*cw;fx.fillStyle=css('--ink');fx.fillText(d+'/',x,14);
+    Object.keys(disk[d]).sort().forEach((n,j)=>{const s=disk[d][n],y=32+j*24;
+      fx.fillStyle=!s.ok?css('--bad'):s.ver===200?css('--vec-a'):css('--muted');fx.globalAlpha=.18;fx.fillRect(x,y,cw-12,20);fx.globalAlpha=1;
+      fx.fillStyle=!s.ok?css('--bad'):css('--ink');fx.fillText(n+'  @'+s.ver+(s.ok?'':' (partial)'),x+4,y+10)})});
+  fx.fillStyle=css('--muted');fx.fillText('@100 = قديم سليم   @200 = جديد',6,FH-10)}
+['d508-mode','d508-crash','d508-sha'].forEach(id=>$(id).addEventListener('input',simulate));
+simulate();
+
+// ---------- Lab 3: loader validator ----------
+const FLAGS=['schema','drop','dup','path','miss','trunc'];
+function load(){
+  const ws=+$('d508-ws').value,F={};FLAGS.forEach(k=>F[k]=$('d508-f-'+k).checked);
+  const man={world_size:4,schema_version:F.schema?2:1,shards:[0,1,2,3].map(r=>({rank:r,path:'rank'+r+'.bin',sha:'sha'+r}))};
+  if(F.dup)man.shards[2].rank=1;if(F.path)man.shards[2].path='../evil.bin';if(F.drop)man.shards=man.shards.slice(0,3);
+  const files={'rank0.bin':'sha0','rank1.bin':F.trunc?'shaX':'sha1','rank2.bin':'sha2','rank3.bin':'sha3'};if(F.miss)delete files['rank2.bin'];
+  const steps=[];let err=null;const chk=(label,ok,msg)=>{if(err)return;steps.push([label,ok]);if(!ok)err=msg};
+  chk('manifest.json موجود',true);
+  chk('world_size: manifest=4 / expected='+ws,man.world_size===ws,'world_size mismatch: manifest=4, expected='+ws);
+  chk('schema_version = 1',man.schema_version===1,'schema_version mismatch: manifest='+man.schema_version+', expected=1');
+  chk('عدد الـ shards = world_size',man.shards.length===man.world_size,'shard count != world_size: '+man.shards.length+' vs '+man.world_size);
+  const seen=new Set();
+  for(const s of man.shards){if(err)break;
+    chk('rank '+s.rank+' في المدى',s.rank>=0&&s.rank<4,'shard rank '+s.rank+' out of range [0,4)');
+    chk('rank '+s.rank+' مش مكرر',!seen.has(s.rank),'duplicate shard for rank '+s.rank);seen.add(s.rank);
+    chk('path آمن: '+s.path,!(s.path.includes('/')||s.path===''||s.path==='.'||s.path==='..'),"unsafe shard path: '"+s.path+"'");
+    chk(s.path+' موجود',s.path in files,'shard file missing: /ckpt/step_0100/'+s.path);
+    chk('sha256 '+s.path,files[s.path]===s.sha,'sha256 mismatch on rank '+s.rank+': recorded=<أول 12 حرف>..., actual=<أول 12 حرف>...')}
+  chk('كل الـ ranks موجودة',seen.size===4,'manifest missing ranks: '+[0,1,2,3].filter(r=>!seen.has(r)).join(', '));
+  const ol=$('d508-checks');ol.innerHTML='';steps.forEach(([l,ok])=>{const li=document.createElement('li');li.textContent=(ok?'✓ ':'✗ ')+l;li.style.color=ok?css('--ok'):css('--bad');ol.appendChild(li)});
+  const e=$('d508-err');e.textContent=err?'CheckpointError: '+err:'OK: الـ ٤ shards اتحمّلوا ومتطابقين byte-for-byte';e.style.color=err?css('--bad'):css('--ok')}
+$('d508-load').addEventListener('click',load);
+$('d508-fix').addEventListener('click',()=>{FLAGS.forEach(k=>$('d508-f-'+k).checked=false);$('d508-ws').value='4';load()});
+
+// ---------- rotation ----------
+let dirs=[],nextStep=0,lastDel=[];
+function drawRot(){const box=$('d508-dirs');box.innerHTML='';
+  dirs.forEach(d=>{const s=document.createElement('span');s.className='chip ready';s.textContent=d;box.appendChild(s)});
+  lastDel.forEach(d=>{const s=document.createElement('span');s.className='chip wait';s.style.textDecoration='line-through';s.textContent=d;box.appendChild(s)});
+  $('d508-rlog').textContent='deleted: ['+lastDel.map(d=>"'"+d+"'").join(', ')+']';$('d508-kv').textContent=$('d508-k').value}
+$('d508-save').addEventListener('click',()=>{dirs.push('step_'+String(nextStep++).padStart(4,'0'));const k=+$('d508-k').value;
+  lastDel=k===0?dirs.splice(0):dirs.length>k?dirs.splice(0,dirs.length-k):[];drawRot()});
+$('d508-rreset').addEventListener('click',()=>{dirs=[];nextStep=0;lastDel=[];drawRot()});
+$('d508-k').addEventListener('input',drawRot);drawRot();
+
+// ---------- quiz ----------
+AI.quiz($('d508-quizBox'),[
+ ['ليه gather-then-write هو النمط الغلط على نطاق كبير؟',['كل الحالة بتعدّي من rank 0، فسرعة الكتابة = أبطأ link واحد مش المجموع، والكتابة بحجم TB بتاخد ساعات','محتاج hardware خاص','بيستهلك CPU كتير','شكله وحش'],0,'الكتابة المقسّمة بتكبر مع الـ cluster: ٦٤ rank بيكتبوا بالتوازي بيخلصوا في 1/64 من وقت rank واحد بيكتب الحالة المجمّعة.'],
+ ['الـ manifest بيسجّل إيه ما تقدرش الـ shard files تسجّله؟',['world_size و schema version و sha256 لكل shard وملكية الـ shards؛ بيدّي الـ loader عقد يتحقق منه قبل ما يلمس الحالة','اسم الـ host','أرقام عشوائية','اسم الـ filesystem'],0,'من غير الـ manifest الـ loader هيضطر يخمّن أنهي shard تبع أنهي rank ويثق إن عدد الملفات صح.'],
+ ['ليه تكتب في <name>.tmp وتعمل rename بدل ما تكتب على طول؟',['torch بيطلب كده','أسرع','بيوفّر ذاكرة','الـ rename في POSIX جوه نفس الـ filesystem atomic: crash في نص الكتابة بيسيب الملف القديم سليم. الكتابة المباشرة ممكن تسيب checkpoint نصّه مكتوب يسمّم الـ resume'],3,'من غير atomic write، save ناقص + manifest متحدّث بيشاور عليه = حالة بايظة في التحميل الجاي.'],
+ ['الـ sha256 لكل shard بيحمي من إيه؟',['البطء','هجمات الشبكة','الكتابة الناقصة أو البايظة؛ التحقق من الـ hash وقت التحميل بيمسك الـ shard المقطوع قبل ما يلمس حالة الموديل','memory leak'],2,'من غير التحقق، shard مقطوع بيتحمّل في السكوت ويبوّظ الـ optimizer، ويظهر بعدين كـ NaN loss.'],
+ ['ليه مسار التحميل بيرفض عدم تطابق world_size بصوت عالي؟',['resume لـ layout بتاع ٤ ranks على ٨ هيوزّع الـ shards غلط في السكوت؛ الرفض بيجبر المشغّل يستخدم مسار الـ rebalance','الـ hardware محتاجه','أسهل في الكود','شكل بس'],0,'الـ rebalance لـ world size مختلف عملية منفصلة؛ لزق shards بأحجام غلط في السكوت بيبوّظ الحالة.'],
+ ['ليه الـ production بيعمل rotation للـ checkpoints (يحتفظ بآخر K)؟',['ضغط','شكل','مش بيعمل','من غيرها الديسك بيتملي في نص الـ run والـ checkpoint اللي بعده يفشل؛ الـ rotation بيمسح الأقدم فميزانية الديسك تفضل ثابتة'],3,'الـ runs الحقيقية بتحتفظ بـ ٣ لـ ٥ checkpoints حديثة.'],
+ ['(سؤال مني) بتحفظ كل checkpoint في نفس الفولدر ckpt/ بـ tmp + rename. حصل crash بعد rename أول shard. إيه الوضع؟',['الـ checkpoint القديم سليم','الـ shard الأول بقى جديد والـ manifest لسه قديم؛ الـ sha256 هيرفض، ومفيش أي checkpoint سليم','الجديد سليم','مفيش مشكلة لأن الـ rename atomic'],1,'كل rename لوحده atomic، بس المجموعة مش transaction. عشان كده فولدر لكل step.'],
+ ['(سؤال مني) ليه torch.load(weights_only=False) خطر على checkpoint نزّلته من النت؟',['بطيء','بيستخدم pickle، و pickle ممكن ينفّذ كود وقت التحميل','بيبوّظ الـ sha256','مش بيقرا الـ tensors'],1,'للملفات اللي من بره استخدم weights_only=True أو safetensors.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N0,root);
+AI.onTheme(()=>{if(!document.body.contains(wc))return false;drawBW();simulate();load()});
+})();
+</script>

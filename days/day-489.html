@@ -1,0 +1,590 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 61 · Cross-Attention Fusion</span>
+  <h1>اليوم ٤٨٩: كل كلمة تمد إيدها وتلمس جزء من الصورة</h1>
+  <p class="lede">امبارح الـ projection ربط <b>vector واحد</b> للصورة بـ <b>vector واحد</b> للكابشن. بس الموديل اللي بيوصف صورة محتاج أكتر من كده: كل <b>كلمة</b> في النص لازم تبص على <b>كل patch</b> في الصورة وتختار اللي يهمها. ده اسمه <b>cross-attention</b>: النص بيسأل (Q)، والصورة بترد (K وV). النهاردة هتبني الـ block ده، والـ causal self-attention، وأشكال الـ masks اللي بتخلي الاتنين صح.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python + PyTorch</b></span>
+    <span>قبله: <b>Projection Layer for Modality Alignment</b></span>
+    <span>بعده: <b>Vision-Language Pretraining</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — 85 lessons (Day 431 → 515)</span>
+    <div class="roadmap" id="d489-roadmap" aria-label="أيام مشاريع التخرج"></div>
+  </div>
+</header>
+
+<section id="d489-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ projection؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>الـ projection layer امبارح كانت شكلها إيه، وليه طبقتين مش طبقة واحدة؟
+      <details><summary>الإجابة</summary>MLP من طبقتين: <span class="ltr">Linear → GELU → Linear</span> (مثلًا <span class="ltr">768 → 1024 → 512</span>، حوالي 1.3M parameter). الطبقة الواحدة بتلف وتكبّر بس (خطية)، والـ GELU اللي في النص بيدي «انحناية» واحدة غير خطية، وده عمليًا كفاية عشان يوفّق بين الفضاءين.</details></li>
+    <li>الـ cosine alignment loss قيمته بتبقى بين كام وكام، ومعناها إيه؟
+      <details><summary>الإجابة</summary><span class="ltr">1 − cos_sim(image, text)</span>: من 0 (نفس الاتجاه بالظبط) لحد 2 (عكس بعض). المحاذاة معناها نفس <b>الاتجاه</b>، مش إن الأرقام تتساوى.</details></li>
+    <li>إيه اللي كان بيتدرب فعلًا، وإيه اللي كان frozen؟
+      <details><summary>الإجابة</summary>الـ ViT encoder متجمد، وجدول الـ text embeddings متجمد. الـ projection لوحدها هي اللي بتتحرك. وقبلها كنا بنعمل pooling (CLS أو mean) عشان الـ 197 token يبقوا vector واحد. النهاردة <b>مش هنعمل pooling</b>: الـ 197 token كلهم هيفضلوا موجودين، والنص هيختار منهم.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة ونص</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>early ضد late fusion + الـ cross-attention + معمل ١</div>
+    <div><b>15 min</b>الـ masks والتكلفة + معمل ٢</div>
+    <div><b>10 min</b>الـ KV cache + معمل ٣</div>
+    <div><b>25 min</b>اكتب الكود وشغّل الـ tests</div>
+    <div><b>15 min</b>التمارين والكويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d489-fusion">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: إزاي ندمج الصورة مع النص؟</h2></div>
+  <p>فيه طريقتين مشهورين:</p>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Early fusion</th><th>Late fusion</th></tr>
+    <tr><td>الفكرة</td><td>نحط image tokens وtext tokens ورا بعض في <b>sequence واحدة</b></td><td>النص في stream لوحده، والصورة في stream لوحدها، وبنوصل بينهم بـ <b>cross-attention في كل block</b></td></tr>
+    <tr><td>أمثلة</td><td>Chameleon، Emu3</td><td>Flamingo وكل اللي اتبنى على شكله (IDEFICS)، وBLIP-2</td></tr>
+    <tr><td>التكلفة</td><td>الـ sequence بتطول جدًا</td><td>sub-layer attention زيادة في كل block</td></tr>
+  </table></div>
+  <p>الدرس ده بيبني الـ <b>late fusion</b>. ليه؟ عشان ليه ميزتين:</p>
+  <ol class="ex">
+    <li><b>الـ text stream بيفضل نضيف:</b> الموديل بيحافظ على قدراته في النص لوحده.</li>
+    <li><b>الصورة بتتحسب مرة واحدة:</b> بنحسبها مرة لكل صورة ونعيد استخدامها في كل خطوة decode، فتوليد كابشن طويل بيبقى رخيص.</li>
+  </ol>
+  <div class="note"><strong>تشبيه:</strong> early fusion زي ما تحط صفحات الصور جوه الرواية نفسها، فالكتاب يتخن. late fusion زي ما تقرا الرواية وجنبك ألبوم صور مفتوح، وكل ما توصل لكلمة تبص في الألبوم وتدور على الصورة المناسبة. الألبوم اتطبع مرة واحدة، وانت بتبص فيه قد ما تحب.</div>
+
+  <h3>الـ cross-attention نفسه</h3>
+  <p>في الـ self-attention العادي Q وK وV كلهم جايين من نفس الـ sequence. في الـ <b>cross-attention</b>: <b>Q من stream</b> و<b>K وV من stream تاني</b>. هنا Q من النص، وK وV من الـ image tokens (اسمهم <b>memory tokens</b>: الـ tokens المتجمدة اللي الـ decoder بيمد إيده فيها).</p>
+  <div class="formula">Q: text (B, H, Nt, d)    K, V: image (B, H, Nv, d)</div>
+  <div class="formula">scores = Q @ Kᵀ / √d   → (B, H, Nt, Nv)    softmax على Nv</div>
+  <div class="formula">out = softmax(scores) @ V → (B, H, Nt, d) → (B, Nt, hidden)</div>
+  <p>لاحظ: الـ output <b>شكله شكل الـ query</b>. لو النص 10 tokens والصورة 197 patch، الخرج <span class="ltr">(B, 10, hidden)</span>، مهما كان طول الصورة. كل كلمة بتطلع ومعاها «ملخص» للأجزاء اللي بصتلها في الصورة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: كل كلمة بتبص فين؟</h3>
+      <p>الصورة هنا 4×4 = 16 patch، وكل patch ليه vector صغير (K). دوس على كلمة من الكابشن، وشوف توزيع الـ attention بتاعها على الـ patches (الأغمق = وزن أكبر). الأوزان في كل كلمة مجموعها 1 لأن الـ softmax على <span class="ltr">Nv</span>.</p>
+      <p>حرّك الـ <b>sharpness</b> (زي ما يكون بتغير الـ scale): لما يكبر الـ attention بيتركز على patch واحد، ولما يصغر بيتوزع بالتساوي تقريبًا.</p>
+      <div class="note ai"><strong>لاحظ:</strong> كلمة زي «a» مالهاش مكان واضح، فالـ attention بتاعها متوزع. ده طبيعي جدًا في الموديلات الحقيقية.</div>
+    </div>
+    <div class="instrument">
+      <div class="btns" id="d489-words"></div>
+      <canvas id="d489-attCv" width="520" height="300" aria-label="خريطة الـ cross-attention على الصورة"></canvas>
+      <div class="mrow">
+        <label>sharpness = <span id="d489-vsh">3</span><input type="range" id="d489-sh" min="0" max="8" step="0.25" value="3"></label>
+        <label>Nt × Nv = <span id="d489-vdim">5 × 16</span></label>
+      </div>
+      <div class="readout">
+        <div><small>أعلى وزن</small><b id="d489-max">0</b></div>
+        <div><small>أعلى patch</small><b id="d489-arg">-</b></div>
+        <div><small>مجموع الأوزان</small><b id="d489-sum">1</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d489-masks">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Masks: واحدة causal، والتانية مفيش</h2></div>
+  <p>جوه الـ decoder block فيه attention-ين، وكل واحدة محتاجة mask مختلف:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Attention</th><th>طول الـ Query</th><th>طول الـ Key</th><th>الـ Mask</th><th>ليه</th></tr>
+    <tr><td>Self-attention</td><td><span class="ltr">Nt</span> (نص)</td><td><span class="ltr">Nt</span> (نص)</td><td>Causal: مثلث سفلي <span class="ltr">(Nt, Nt)</span></td><td>الكلمة مينفعش تبص على اللي جاي وهي بتولّد</td></tr>
+    <tr><td>Cross-attention</td><td><span class="ltr">Nt</span> (نص)</td><td><span class="ltr">Nv</span> (صورة)</td><td>مفيش</td><td>الصورة كلها ظاهرة لكل مكان في النص</td></tr>
+  </table></div>
+  <p><b>ليه مفيش mask على الـ cross؟</b> الصورة موجودة كاملة <b>قبل</b> ما أي كلمة تتولد. مفيش ترتيب زمني بين الـ patches، ومفيش «مستقبل» نخاف يتسرب. الكلمة رقم t تقدر تبص على أي patch. (فيه نسخ من Flamingo بتضيف mask لكل sample لما يبقى فيه كذا صورة وكذا نص متداخلين، بس لصورة واحدة + كابشن: الـ cross بيشوف كل حاجة.)</p>
+  <p><b>الـ causal mask</b>: الخانة <span class="ltr">[i, j]</span> بـ True لو الـ token i مسموحله يبص على j، يعني <span class="ltr">j ≤ i</span>. والكود بيعمل <code>torch.tril</code>. الدرس فيه check على الشكل عشان لو خلطت بين الاتنين يطلعلك <code>ValueError</code> واضح، بدل loss curve بايظة من غير ما تعرف ليه.</p>
+  <div class="note"><strong>تشبيه:</strong> طالب في امتحان بيكتب إجابة كلمة كلمة. ممنوع يبص على الكلام اللي لسه هيكتبه (causal). بس مسموحله يبص على الرسمة اللي في ورقة الأسئلة كلها في أي وقت (cross بدون mask).</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: شكل الـ mask والتكلفة</h3>
+      <p>بدّل بين الـ self والـ cross، وحرّك <span class="ltr">Nt</span> و<span class="ltr">Nv</span>. الخانات الخضرا = مسموح، الرمادي = متقفل (<span class="ltr">-inf</span> قبل الـ softmax).</p>
+      <p>زرار «غلطة: causal على الـ cross» بيوريك اللي الكود بيمنعه: mask مربع <span class="ltr">(Nt, Nt)</span> مش هيركب على scores شكلها <span class="ltr">(Nt, Nv)</span>.</p>
+      <p>وبص على عدد الـ scores: الـ self تكلفته <span class="ltr">Nt²</span> والـ cross تكلفته <span class="ltr">Nt × Nv</span>. جرّب <span class="ltr">Nt=64, Nv=576</span> (شبكة 24×24 بدقة أعلى) وشوف مين اللي بيكسب.</p>
+    </div>
+    <div class="instrument">
+      <div class="btns">
+        <button type="button" id="d489-mSelf" class="primary">self (causal)</button>
+        <button type="button" id="d489-mCross">cross (بدون mask)</button>
+        <button type="button" id="d489-mBad">غلطة: causal على الـ cross</button>
+        <button type="button" id="d489-mBig">Nt=64, Nv=576</button>
+      </div>
+      <canvas id="d489-maskCv" width="520" height="300" aria-label="شكل الـ attention mask"></canvas>
+      <div class="mrow">
+        <label>Nt = <span id="d489-vnt">8</span><input type="range" id="d489-nt" min="2" max="64" value="8"></label>
+        <label>Nv = <span id="d489-vnv">16</span><input type="range" id="d489-nv" min="2" max="576" value="16"></label>
+      </div>
+      <div class="readout">
+        <div><small>self scores (Nt²)</small><b id="d489-cs">64</b></div>
+        <div><small>cross scores (Nt·Nv)</small><b id="d489-cc">128</b></div>
+        <div><small>cross ÷ self</small><b id="d489-cr">2</b></div>
+      </div>
+      <div class="verdict" id="d489-maskV" style="direction:ltr;text-align:right"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d489-cache">
+  <div class="station-head"><span class="tag">03</span><h2>الـ KV cache وتركيب الـ block</h2></div>
+  <p>الـ K والـ V بتوع الصورة <b>مش بيتغيروا</b> وانت بتولّد النص. فبنحسب <span class="ltr">kv_proj(memory)</span> <b>مرة واحدة</b> في أول الـ decode ونخزنهم في cache، وكل token جديد بيستخدمهم من غير ما نعيد الحساب. ده اللي بيخلي الـ captioning سريع: الـ ViT التقيل بيشتغل مرة، والـ cross-attention بيعيد استخدام الـ K وV في كل خطوة. الدرس بيطلّع الـ cache ويختبر إن النتيجة هي هي بالظبط.</p>
+  <h3>ترتيب الـ decoder block</h3>
+  <div class="formula">x = x + self_attn(ln1(x), mask=causal)</div>
+  <div class="formula">x = x + cross_attn(ln2(x), memory)      ← بدون mask</div>
+  <div class="formula">x = x + ffn(ln3(x))</div>
+  <p>تلات sub-layers، كل واحدة ليها LayerNorm خاص بيها قبلها (pre-LN) وresidual بعدها. ورقة Flamingo ضافت <b>tanh gate</b> متعلّم على الـ cross-attention، بيبدأ من صفر، عشان الـ LM المتجمد يبدأ زي ما هو بالظبط والتدريب يفضل مستقر. النسخة الأساسية في الدرس <b>مفيهاش gate</b> (هتضيفه في التمرين الأول).</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: decode بالـ cache ومن غيره</h3>
+      <p>دوس «ولّد» وشوف الكابشن بيتولد token token. في كل خطوة، من غير cache الموديل بيعيد projection للـ 197 patch في كل block. بالـ cache بيعملها مرة في الأول بس.</p>
+      <p>العداد بيحسب عدد مرات <span class="ltr">kv_proj</span> على الصورة (لكل الـ blocks). غيّر عدد الـ blocks وطول الكابشن.</p>
+      <div class="note ai"><strong>ملحوظة صادقة:</strong> الـ demo في الكود بيعمل forward واحد على الـ 10 tokens مرة واحدة، فالـ cache هناك بيتأكد إن الناتج متطابق مش إنه أسرع. التوفير الحقيقي بيظهر في الـ decode خطوة بخطوة، وده اللي المعمل بيمثله.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d489-kvCv" width="520" height="260" aria-label="مقارنة الـ KV cache"></canvas>
+      <div class="mrow">
+        <label>depth = <span id="d489-vdep">4</span><input type="range" id="d489-dep" min="1" max="12" value="4"></label>
+        <label>caption tokens = <span id="d489-vlen">10</span><input type="range" id="d489-len" min="2" max="32" value="10"></label>
+      </div>
+      <div class="btns">
+        <button type="button" id="d489-gen" class="primary">ولّد ▶</button>
+        <button type="button" id="d489-reset">من الأول</button>
+      </div>
+      <div class="readout">
+        <div><small>من غير cache</small><b id="d489-nc">0</b></div>
+        <div><small>بالـ cache</small><b id="d489-wc">0</b></div>
+        <div><small>التوفير</small><b id="d489-sv">-</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d489-code">
+  <div class="station-head"><span class="tag">04</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو، شغّل الأصل الأول عشان تشوف الناتج:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/61-cross-attention-fusion/code/main.py
+<span class="c"># الـ tests بتعمل "from main import" فشغّلها من جوه فولدر code:</span>
+cd phases/19-capstone-projects/61-cross-attention-fusion/code
+python3 -m unittest test_main.py</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_cross_attn.py</code> واكتب الخطوات دي بإيدك. محتاج <code>pip install torch</code> لو مش متسطب.</p>
+
+  <h3>خطوة ١: الـ config والـ causal mask</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import math
+from dataclasses import dataclass
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+@dataclass(frozen=True)
+class DecoderConfig:
+    hidden: int = 256
+    heads: int = 8
+    depth: int = 4
+    mlp_ratio: float = 4.0
+    text_vocab: int = 1024
+    max_text_len: int = 32
+    vision_dim: int = 256        <span class="c"># بُعد الـ image tokens</span>
+    vision_tokens: int = 197     <span class="c"># 196 patch + CLS</span>
+    dropout: float = 0.0
+
+    @property
+    def head_dim(self) -> int:
+        if self.hidden % self.heads != 0:
+            raise ValueError(f"hidden {self.hidden} not divisible by heads {self.heads}")
+        return self.hidden // self.heads
+
+
+def causal_mask(length: int) -> torch.Tensor:
+    <span class="c"># [i, j] = True لو j &lt;= i  (مثلث سفلي)</span>
+    return torch.tril(torch.ones(length, length, dtype=torch.bool))</pre></div>
+
+  <h3>خطوة ٢: الـ causal self-attention</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class CausalSelfAttention(nn.Module):
+    def __init__(self, cfg: DecoderConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.qkv = nn.Linear(cfg.hidden, cfg.hidden * 3, bias=True)   <span class="c"># Q,K,V من نفس النص</span>
+        self.out = nn.Linear(cfg.hidden, cfg.hidden, bias=True)
+        self.drop = nn.Dropout(cfg.dropout)
+        self.scale = 1.0 / math.sqrt(cfg.head_dim)
+
+    def forward(self, x, mask=None):
+        b, n, d = x.shape
+        h, hd = self.cfg.heads, self.cfg.head_dim
+        qkv = self.qkv(x).reshape(b, n, 3, h, hd).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]                 <span class="c"># كل واحد (B, H, n, hd)</span>
+
+        scores = (q @ k.transpose(-2, -1)) * self.scale   <span class="c"># (B, H, n, n)</span>
+        if mask is not None:
+            if mask.shape != (n, n):                      <span class="c"># حماية من خلط الـ masks</span>
+                raise ValueError(
+                    f"causal mask shape {tuple(mask.shape)} does not match (n, n) = ({n}, {n})")
+            scores = scores.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+        attn = F.softmax(scores, dim=-1)
+        out = (attn @ v).transpose(1, 2).reshape(b, n, d)
+        return self.drop(self.out(out))</pre></div>
+
+  <h3>خطوة ٣: الـ cross-attention (قلب الدرس)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class CrossAttention(nn.Module):
+    def __init__(self, cfg: DecoderConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.q_proj = nn.Linear(cfg.hidden, cfg.hidden, bias=True)           <span class="c"># Q من النص</span>
+        self.kv_proj = nn.Linear(cfg.vision_dim, cfg.hidden * 2, bias=True)  <span class="c"># K,V من الصورة</span>
+        self.out = nn.Linear(cfg.hidden, cfg.hidden, bias=True)
+        self.drop = nn.Dropout(cfg.dropout)
+        self.scale = 1.0 / math.sqrt(cfg.head_dim)
+
+    def project_memory(self, memory):
+        <span class="c"># دي اللي بتتحسب مرة واحدة وتتخزن في الـ cache</span>
+        if memory.dim() != 3:
+            raise ValueError(f"expected (B, Nv, vision_dim), got {tuple(memory.shape)}")
+        b, nv, _ = memory.shape
+        h, hd = self.cfg.heads, self.cfg.head_dim
+        kv = self.kv_proj(memory).reshape(b, nv, 2, h, hd).permute(2, 0, 3, 1, 4)
+        return kv[0], kv[1]                               <span class="c"># K, V كل واحد (B, H, Nv, hd)</span>
+
+    def forward(self, x, memory, kv_cache=None):
+        if x.dim() != 3:
+            raise ValueError(f"expected (B, Nt, hidden), got {tuple(x.shape)}")
+        if memory.shape[0] != x.shape[0]:
+            raise ValueError(f"batch mismatch: text {x.shape[0]} vs memory {memory.shape[0]}")
+        b, nt, d = x.shape
+        h, hd = self.cfg.heads, self.cfg.head_dim
+
+        q = self.q_proj(x).reshape(b, nt, h, hd).transpose(1, 2)   <span class="c"># (B, H, Nt, hd)</span>
+        if kv_cache is None:
+            k, v = self.project_memory(memory)
+        else:
+            k, v = kv_cache                                        <span class="c"># من غير إعادة حساب</span>
+            expected = (b, h, memory.shape[1], hd)
+            if k.shape != expected or v.shape != expected:
+                raise ValueError(f"kv_cache must be (B,H,Nv,hd)={expected}, got "
+                                 f"k={tuple(k.shape)} v={tuple(v.shape)}")
+
+        scores = (q @ k.transpose(-2, -1)) * self.scale   <span class="c"># (B, H, Nt, Nv) ومفيش mask</span>
+        attn = F.softmax(scores, dim=-1)                  <span class="c"># softmax على الـ patches</span>
+        out = (attn @ v).transpose(1, 2).reshape(b, nt, d)   <span class="c"># شكل الـ query</span>
+        return self.drop(self.out(out))</pre></div>
+
+  <h3>خطوة ٤: الـ FFN والـ DecoderBlock</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class FeedForward(nn.Module):
+    def __init__(self, cfg: DecoderConfig) -> None:
+        super().__init__()
+        inner = int(cfg.hidden * cfg.mlp_ratio)
+        self.fc1 = nn.Linear(cfg.hidden, inner)
+        self.fc2 = nn.Linear(inner, cfg.hidden)
+
+    def forward(self, x):
+        return self.fc2(F.gelu(self.fc1(x)))
+
+
+class DecoderBlock(nn.Module):
+    def __init__(self, cfg: DecoderConfig) -> None:
+        super().__init__()
+        self.ln1 = nn.LayerNorm(cfg.hidden, eps=1e-6)
+        self.self_attn = CausalSelfAttention(cfg)
+        self.ln2 = nn.LayerNorm(cfg.hidden, eps=1e-6)
+        self.cross_attn = CrossAttention(cfg)
+        self.ln3 = nn.LayerNorm(cfg.hidden, eps=1e-6)
+        self.ffn = FeedForward(cfg)
+
+    def forward(self, x, memory, text_mask, kv_cache=None):
+        x = x + self.self_attn(self.ln1(x), mask=text_mask)            <span class="c"># ١: النص يبص على اللي فات</span>
+        x = x + self.cross_attn(self.ln2(x), memory, kv_cache=kv_cache) <span class="c"># ٢: النص يبص على الصورة</span>
+        x = x + self.ffn(self.ln3(x))                                   <span class="c"># ٣: تفكير لكل token</span>
+        return x</pre></div>
+
+  <h3>خطوة ٥: الـ decoder كامل والـ cache</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class VisionLanguageDecoder(nn.Module):
+    def __init__(self, cfg: DecoderConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.tok_emb = nn.Embedding(cfg.text_vocab, cfg.hidden)
+        self.pos_emb = nn.Embedding(cfg.max_text_len, cfg.hidden)
+        self.blocks = nn.ModuleList([DecoderBlock(cfg) for _ in range(cfg.depth)])
+        self.norm = nn.LayerNorm(cfg.hidden, eps=1e-6)
+        self.head = nn.Linear(cfg.hidden, cfg.text_vocab, bias=False)
+
+    def build_kv_cache(self, memory):
+        <span class="c"># كل block ليه kv_proj خاص بيه، فـ cache لكل block</span>
+        return [block.cross_attn.project_memory(memory) for block in self.blocks]
+
+    def forward(self, text_ids, memory, use_cache=False):
+        if text_ids.dim() != 2:
+            raise ValueError(f"expected (B, Nt) ids, got {tuple(text_ids.shape)}")
+        b, nt = text_ids.shape
+        if nt > self.cfg.max_text_len:
+            raise ValueError(f"text length {nt} exceeds max {self.cfg.max_text_len}")
+        positions = torch.arange(nt, device=text_ids.device)
+        x = self.tok_emb(text_ids) + self.pos_emb(positions).unsqueeze(0)
+        mask = causal_mask(nt).to(text_ids.device)
+        cache = self.build_kv_cache(memory) if use_cache else [None] * len(self.blocks)
+        for block, kv in zip(self.blocks, cache):
+            x = block(x, memory=memory, text_mask=mask, kv_cache=kv)
+        return self.head(self.norm(x))                    <span class="c"># (B, Nt, text_vocab)</span></pre></div>
+
+  <h3>خطوة ٦: الداتا الصناعية والتجربة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def synth_memory(batch, n_tokens, dim, seed):      <span class="c"># بديل لخرج ViT متجمد</span>
+    gen = torch.Generator().manual_seed(seed)
+    return torch.randn(batch, n_tokens, dim, generator=gen)
+
+def synth_text(batch, length, vocab, seed):
+    gen = torch.Generator().manual_seed(seed + 1)
+    return torch.randint(low=0, high=vocab, size=(batch, length), generator=gen)
+
+cfg = DecoderConfig()
+torch.manual_seed(0)
+decoder = VisionLanguageDecoder(cfg).eval()
+print("params:", sum(p.numel() for p in decoder.parameters()))
+
+text_ids = synth_text(2, 10, cfg.text_vocab, seed=0)
+memory = synth_memory(2, cfg.vision_tokens, cfg.vision_dim, seed=1)
+with torch.no_grad():
+    a = decoder(text_ids, memory, use_cache=False)
+    b = decoder(text_ids, memory, use_cache=True)
+print(a.shape, (a - b).abs().max().item())          <span class="c"># لازم الفرق قريب من صفر</span></pre></div>
+  <details><summary>الناتج المتوقع من main.py (أجزاء منه)</summary><pre class="term">============================================================
+CROSS-ATTENTION FUSION DECODER
+============================================================
+  hidden          : 256
+  heads           : 8 (head dim 32)
+  depth           : 4
+  text vocab      : 1024
+  max text length : 32
+  vision tokens   : 197
+  vision dim      : 256
+
+decoder params  : 4,746,752
+
+text_ids shape  : (2, 10)
+memory shape    : (2, 197, 256)
+
+causal mask shape : (10, 10)
+causal mask top-left 5x5:
+  1 0 0 0 0
+  1 1 0 0 0
+  1 1 1 0 0
+  1 1 1 1 0
+  1 1 1 1 1
+
+logits shape    : (2, 10, 1024)
+logits cached   : (2, 10, 1024)
+max drift cache vs uncached : ...   (رقم صغير جدًا أو صفر)
+  ok: KV cache path matches uncached
+...
+done.</pre><p>عدد الـ params حسبته من الـ config (embeddings + 4 blocks + head)، والـ drift وقيم الـ norm لكل position هتشوفها بنفسك. والـ unittest لازم يطلع <code>OK</code> لـ 9 tests.</p></details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d489-ex">
+  <div class="station-head"><span class="tag">05</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Tanh gate زي Flamingo:</b> ضيف gate متعلّم على الـ residual بتاع الـ cross-attention، يبدأ من صفر، واتأكد إن التدريب بيتقارب من gate قريب من الصفر.
+      <details><summary>تلميح</summary>في <code>DecoderBlock.__init__</code>: <code>self.gate = nn.Parameter(torch.zeros(1))</code>. وفي الـ forward: <code>x = x + torch.tanh(self.gate) * self.cross_attn(...)</code>. عند الـ init <span class="ltr">tanh(0) = 0</span> فالـ block بيتصرف كأنه text-only بالظبط. اختبار سريع: قبل التدريب، الـ logits لازم ما تتغيرش لو غيرت الـ memory خالص.</details></li>
+    <li><b>Interleaved attention:</b> نفس الـ decoder ياخد كذا صورة وكذا قطعة نص. ابني mask للـ cross-attention لكل sample يمنع قطعة النص التانية إنها تبص على الصورة الأولى.
+      <details><summary>تلميح</summary>الـ mask هنا شكله <span class="ltr">(Nt, Nv_total)</span>. اعمل لكل text token رقم الـ segment بتاعه، ولكل image token رقم الصورة بتاعته، والـ mask = <span class="ltr">text_seg[:, None] == img_id[None, :]</span>. ولازم تعدّل <code>CrossAttention.forward</code> ياخد mask ويعمل <code>masked_fill</code> زي الـ self. خلي بالك: لو token مالوش أي صورة مسموحة، الصف كله <span class="ltr">-inf</span> والـ softmax هيطلع NaN، فلازم تتعامل مع الحالة دي.</details></li>
+    <li><b>Profile:</b> قارن الـ cross والـ self عند <span class="ltr">Nt=64, Nv=576</span>.
+      <details><summary>تلميح وإجابة</summary>الـ scores في الـ self <span class="ltr">64² = 4,096</span> وفي الـ cross <span class="ltr">64 × 576 = 36,864</span>، يعني الـ cross أكبر بـ 9 مرات في حسبة الـ scores. استخدم <code>time.perf_counter()</code> حوالين كل sub-layer لوحده جوه <code>torch.no_grad()</code> وكرر كذا مرة. جرّبها في معمل ٢ الأول.</details></li>
+    <li><b>Dropout على خريطة الـ cross:</b> ضيف dropout على الـ attention map بتاع الـ cross وقيس تنوع الكابشن في الـ demo.
+      <details><summary>تلميح</summary>بعد <code>attn = F.softmax(...)</code> حط <code>attn = self.attn_drop(attn)</code> بـ p مثلًا 0.1، وشغّل الموديل في <code>.train()</code> عشان الـ dropout يشتغل. ولّد كذا مرة لنفس المدخل وقيس الـ variance في الـ logits أو في الـ tokens المختارة: المفروض يزيد مع زيادة p.</details></li>
+    <li><b>Q-Former:</b> بدّل الـ cross-attention بـ block فيه 32 query token ثابتة متعلّمة بتبص على الـ image features مرة في كل layer.
+      <details><summary>تلميح</summary><code>self.queries = nn.Parameter(torch.randn(1, 32, hidden) * 0.02)</code>، وكرّرهم على الـ batch بـ <code>expand(b, -1, -1)</code>، وابعتهم كـ x في <code>CrossAttention</code> مع الـ memory. الخرج دايمًا <span class="ltr">(B, 32, hidden)</span> مهما كان Nv، وده اللي BLIP-2 بيعمله قبل ما يعمل project للـ LM.</details></li>
+    <li><b>إضافة مني · اختبار grounding في شغل حقيقي:</b> عندك VLM بيوصف صور منتجات، والعميل بيشتكي إن الموديل بيقول «أحمر» والمنتج أزرق. اكتب دالة بتطلّع الـ cross-attention weights لـ token معين (متوسط على الـ heads) وترجعها كـ heatmap <span class="ltr">14×14</span> فوق الصورة.
+      <details><summary>تلميح</summary>عدّل <code>CrossAttention.forward</code> يخزن <code>self.last_attn = attn.detach()</code> (شكله <span class="ltr">(B, H, Nt, Nv)</span>). خد <code>last_attn[0, :, t, 1:].mean(0)</code> (بنشيل الـ CLS) واعمل <code>reshape(14, 14)</code>. لو الـ token «أحمر» مركّز على الخلفية مش المنتج، يبقى المشكلة grounding مش vocabulary. ده debugging أداة بيستخدمها ناس كتير في الشغل، بس خليك فاكر إن الـ attention مش تفسير كامل للموديل.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d489-extra">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني: الحدس، الأخطاء، وفين بتظهر</h2></div>
+  <ul class="checklist">
+    <li><b>الحدس في جملة:</b> الـ self-attention = «النص بيكلم نفسه». الـ cross-attention = «النص بيسأل الصورة». نفس المعادلة بالظبط، الفرق الوحيد إن K وV جايين من مكان تاني.</li>
+    <li><b>غلطة: softmax على البُعد الغلط.</b> لازم يبقى على <span class="ltr">Nv</span> (آخر بُعد، <code>dim=-1</code>). لو عملته على <span class="ltr">Nt</span> كل patch هيوزع نفسه على الكلمات، وده معنى تاني خالص والكود هيشتغل عادي.</li>
+    <li><b>غلطة: <span class="ltr">vision_dim ≠ hidden</span>.</b> الـ <code>kv_proj</code> داخله <code>vision_dim</code> مش <code>hidden</code>، وده اللي بيخليك تربط encoder بُعده مختلف. في الكود الاتنين 256 فمش هتاخد بالك لو غلطت، جرّب <code>vision_dim=768</code> واتأكد إنه شغال.</li>
+    <li><b>غلطة: نسيان إن الـ cache لكل block.</b> كل block ليه <code>kv_proj</code> بأوزان مختلفة، فالـ cache قايمة فيها pair لكل block، مش pair واحد للموديل كله.</li>
+    <li><b>في الـ LLMs العادية:</b> الـ encoder-decoder الأصلي (Transformer 2017، T5، Whisper) فيه نفس الـ cross-attention بالظبط: الـ decoder بيبص على خرج الـ encoder. يعني اللي بنيته النهاردة مش خاص بالصور.</li>
+    <li><b>في الـ diffusion:</b> موديلات زي Stable Diffusion بتستخدم cross-attention عشان الصورة (Q) تبص على الـ text prompt (K وV)، يعني الاتجاه بالعكس.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d489-quiz">
+  <div class="station-head"><span class="tag">07</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d489-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d489-done">
+  <div class="station-head"><span class="tag">08</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d489-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الفرق بين early وlate fusion وأدي مثال لكل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم إن Q من النص وK/V من الصورة، والخرج شكله شكل الـ query</label></li>
+    <li><label><input type="checkbox" data-ck="3"> أعرف أنهي attention عليها causal mask وليه الـ cross ملهاش</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم ليه الـ KV cache بتاع الصورة بيتحسب مرة واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الـ CrossAttention والـ DecoderBlock بإيدي وشغّلت الـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل (الـ tanh gate واحد منهم)</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Cross-attention (late fusion)</td><td>Flamingo، IDEFICS: sub-layer كل K blocks مع LM متجمد</td></tr>
+    <tr><td>Query pool + cross-attention</td><td>BLIP-2 Q-Former: 32 query بتبص على الصورة وبعدين projection للـ LM</td></tr>
+    <tr><td>Causal mask</td><td>أي decoder بيولّد نص، من GPT لأي VLM</td></tr>
+    <tr><td>KV cache للـ memory</td><td>الـ captioning والـ VQA وقت الـ inference</td></tr>
+    <tr><td>Tanh gate</td><td>Flamingo: إضافة مودالتي جديدة لموديل متجمد من غير ما تبوظه</td></tr>
+    <tr><td>Early fusion (البديل)</td><td>Chameleon، Emu3</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Vision-Language Pretraining. هنعمم الـ cosine loss بتاع امبارح لـ contrastive batch (InfoNCE) وندرّب الـ اتنين مع بعض.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F61-cross-attention-fusion" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/61-cross-attention-fusion</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=489,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d489-roadmap').closest('.day');
+
+// roadmap: Phase 19 = days 431..515
+const rm=$('d489-roadmap');
+for(let i=431;i<=515;i++){const s=document.createElement('span');s.textContent=i;s.style.width='36px';if(i===N)s.className='now';rm.appendChild(s)}
+setTimeout(()=>{const nw=rm.querySelector('.now');if(nw&&rm.scrollWidth>rm.clientWidth)rm.scrollLeft=nw.offsetLeft-rm.clientWidth/2},0);
+
+// ---------- Lab 1: cross-attention heatmap ----------
+const ac=$('d489-attCv'),ax=AI.setupCanvas(ac),AW=+ac.dataset.w,AH=+ac.dataset.h;
+// 4x4 patches: sky (top rows), cat (middle), grass (bottom). each patch key = 3 features [sky, red-cat, grass]
+const G=4,PK=[];
+for(let r=0;r<G;r++)for(let c=0;c<G;c++){
+  let k=[0,0,0];
+  if(r===0)k=[1,0,0.05];
+  else if(r===3)k=[0,0.05,1];
+  else if(c>=1&&c<=2)k=[0.05,1,0.1];
+  else k=[r===1?0.5:0.1,0.1,r===2?0.6:0.2];
+  PK.push(k);
+}
+const PCOL=k=>k[1]>0.6?'#C2671A':(k[2]>0.5?'#2E7D4F':'#0B6F8E');
+const WORDS=[['a',[0.3,0.3,0.3]],['red',[0,1,0]],['cat',[0.1,0.9,0.1]],['on',[0.2,0.2,0.5]],['grass',[0,0,1]]];
+let wsel=2;
+const wb=$('d489-words');
+WORDS.forEach((w,i)=>{const b=document.createElement('button');b.type='button';b.textContent=w[0];b.className=i===wsel?'primary':'';b.addEventListener('click',()=>{wsel=i;[...wb.children].forEach((c,j)=>c.className=j===i?'primary':'');drawAtt()});wb.appendChild(b)});
+function softmax(a){const m=Math.max(...a),e=a.map(v=>Math.exp(v-m)),s=e.reduce((x,y)=>x+y,0);return e.map(v=>v/s)}
+function drawAtt(){
+  const sh=+$('d489-sh').value;$('d489-vsh').textContent=sh;
+  const q=WORDS[wsel][1];
+  const w=softmax(PK.map(k=>sh*(k[0]*q[0]+k[1]*q[1]+k[2]*q[2])));
+  ax.clearRect(0,0,AW,AH);
+  const cell=60,ox=20,oy=30;
+  ax.font='12px JetBrains Mono, monospace';ax.fillStyle=css('--muted');ax.fillText('image patches (K,V)',ox,18);
+  ax.fillText('attention of "'+WORDS[wsel][0]+'"',ox+G*cell+40,18);
+  // left: the image
+  PK.forEach((k,i)=>{const r=Math.floor(i/G),c=i%G;ax.fillStyle=PCOL(k);ax.globalAlpha=.55;ax.fillRect(ox+c*cell,oy+r*cell,cell-3,cell-3);ax.globalAlpha=1});
+  // right: heat
+  const hx=ox+G*cell+40,mx=Math.max(...w);
+  w.forEach((v,i)=>{const r=Math.floor(i/G),c=i%G;ax.fillStyle=css('--soft');ax.fillRect(hx+c*cell,oy+r*cell,cell-3,cell-3);
+    ax.fillStyle=css('--vec-a');ax.globalAlpha=Math.min(1,v/Math.max(mx,1e-9));ax.fillRect(hx+c*cell,oy+r*cell,cell-3,cell-3);ax.globalAlpha=1;
+    ax.fillStyle=v/mx>.55?css('--paper'):css('--ink');ax.textAlign='center';ax.fillText(f(v,2),hx+c*cell+(cell-3)/2,oy+r*cell+cell/2+3);ax.textAlign='left'});
+  // query arrow
+  AI.arrow(ax,hx-8,oy+G*cell/2,ox+G*cell+6,oy+G*cell/2,css('--vec-b'),2);
+  ax.fillStyle=css('--muted');ax.fillText('sky / cat / grass',ox,oy+G*cell+18);ax.fillText('Σ = 1 (softmax over Nv)',hx,oy+G*cell+18);
+  const arg=w.indexOf(mx);$('d489-max').textContent=f(mx,3);$('d489-arg').textContent='r'+Math.floor(arg/G)+' c'+(arg%G);$('d489-sum').textContent=f(w.reduce((a,b)=>a+b,0),3);
+  $('d489-vdim').textContent=WORDS.length+' × '+PK.length;
+}
+$('d489-sh').addEventListener('input',drawAtt);drawAtt();
+
+// ---------- Lab 2: masks & cost ----------
+const mc=$('d489-maskCv'),mx2=AI.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+let mmode='self';
+function setMode(m){mmode=m;[['self','d489-mSelf'],['cross','d489-mCross'],['bad','d489-mBad']].forEach(([k,id])=>$(id).classList.toggle('primary',k===m));drawMask()}
+function drawMask(){
+  const nt=+$('d489-nt').value,nv=+$('d489-nv').value;$('d489-vnt').textContent=nt;$('d489-vnv').textContent=nv;
+  const cs=nt*nt,cc=nt*nv;$('d489-cs').textContent=cs.toLocaleString('en');$('d489-cc').textContent=cc.toLocaleString('en');$('d489-cr').textContent=f(cc/cs,2)+'×';
+  mx2.clearRect(0,0,MW,MH);
+  const cols=mmode==='self'?nt:nv,rows=nt;
+  const pad=40,aw=MW-pad-10,ah=MH-pad-20,cell=Math.min(aw/cols,ah/rows);
+  const v=$('d489-maskV');
+  mx2.font='12px JetBrains Mono, monospace';mx2.fillStyle=css('--muted');
+  mx2.fillText('keys: '+(mmode==='self'?'text Nt='+nt:'image Nv='+nv)+'  →',pad,14);
+  mx2.save();mx2.translate(14,pad+rows*cell/2);mx2.rotate(-Math.PI/2);mx2.textAlign='center';mx2.fillText('queries: text Nt='+nt,0,0);mx2.restore();
+  const ok=css('--ok'),off=css('--soft');
+  for(let i=0;i<rows;i++)for(let j=0;j<cols;j++){
+    const allowed=mmode==='self'?j<=i:true;
+    mx2.fillStyle=allowed?ok:off;mx2.globalAlpha=allowed?.6:1;
+    mx2.fillRect(pad+j*cell,pad+i*cell,Math.max(cell-(cell>4?1:0),.5),Math.max(cell-(cell>4?1:0),.5));mx2.globalAlpha=1;
+  }
+  if(mmode==='bad'){
+    mx2.strokeStyle=css('--bad');mx2.lineWidth=2;mx2.setLineDash([5,4]);mx2.strokeRect(pad,pad,nt*cell,nt*cell);mx2.setLineDash([]);
+    mx2.fillStyle=css('--bad');mx2.font='bold 13px JetBrains Mono, monospace';mx2.fillText('mask ('+nt+','+nt+') vs scores ('+nt+','+nv+')',pad,pad+rows*cell+16);
+    v.textContent=nt===nv?'Shapes happen to match (Nt == Nv) — the silent bug: patches get hidden for no reason':'ValueError: mask shape ('+nt+', '+nt+') does not match scores ('+nt+', '+nv+')';v.style.color=css('--bad');
+  }else if(mmode==='self'){v.textContent='causal_mask('+nt+') → torch.tril, shape ('+nt+', '+nt+')';v.style.color=css('--ok')}
+  else{v.textContent='no mask: every text token sees all '+nv+' patches → scores ('+nt+', '+nv+')';v.style.color=css('--ok')}
+}
+$('d489-mSelf').addEventListener('click',()=>setMode('self'));
+$('d489-mCross').addEventListener('click',()=>setMode('cross'));
+$('d489-mBad').addEventListener('click',()=>setMode('bad'));
+$('d489-mBig').addEventListener('click',()=>{$('d489-nt').value=64;$('d489-nv').value=576;setMode('cross')});
+['d489-nt','d489-nv'].forEach(id=>$(id).addEventListener('input',drawMask));
+drawMask();
+
+// ---------- Lab 3: KV cache decode ----------
+const kc=$('d489-kvCv'),kx=AI.setupCanvas(kc),KW=+kc.dataset.w,KH=+kc.dataset.h;
+const CAP=['a','red','cat','sitting','on','green','grass','under','a','blue','sky','.'];
+let step=0,timer=null;
+function drawKV(){
+  const dep=+$('d489-dep').value,L=+$('d489-len').value;$('d489-vdep').textContent=dep;$('d489-vlen').textContent=L;
+  if(step>L)step=L;
+  const nc=step*dep,wc=step>0?dep:0;
+  $('d489-nc').textContent=nc;$('d489-wc').textContent=wc;$('d489-sv').textContent=step>0?f(nc/wc,1)+'×':'-';
+  kx.clearRect(0,0,KW,KH);kx.font='12px JetBrains Mono, monospace';
+  // tokens row
+  const tw=Math.min(40,(KW-20)/L);
+  for(let i=0;i<L;i++){const on=i<step;kx.fillStyle=on?css('--vec-a'):css('--soft');kx.globalAlpha=on?.8:1;kx.fillRect(10+i*tw,14,tw-3,24);kx.globalAlpha=1;
+    if(on&&tw>=30){kx.fillStyle=css('--paper');kx.textAlign='center';kx.fillText(CAP[i%CAP.length].slice(0,4),10+i*tw+(tw-3)/2,30);kx.textAlign='left'}}
+  kx.fillStyle=css('--muted');kx.fillText('decode step '+step+' / '+L,10,56);
+  // bars
+  const maxv=L*dep,bw=KW-170;
+  const bar=(y,val,col,label)=>{kx.fillStyle=css('--muted');kx.fillText(label,10,y+13);kx.fillStyle=css('--soft');kx.fillRect(150,y,bw,18);kx.fillStyle=col;kx.fillRect(150,y,bw*val/Math.max(maxv,1),18);kx.fillStyle=css('--ink');kx.fillText(String(val),150+Math.min(bw-30,bw*val/Math.max(maxv,1)+6),y+13)};
+  bar(80,nc,css('--bad'),'no cache');
+  bar(116,wc,css('--ok'),'with cache');
+  kx.fillStyle=css('--muted');kx.fillText('kv_proj(memory) calls on 197 patches',150,156);
+  // memory block
+  kx.fillStyle=css('--vec-b');kx.globalAlpha=.25;kx.fillRect(10,180,KW-20,60);kx.globalAlpha=1;
+  kx.fillStyle=css('--ink');kx.fillText('image memory (B, 197, 256) → K,V cached per block: '+(step>0?dep+' pairs ready':'empty'),20,214);
+}
+function stop(){clearInterval(timer);timer=null}
+$('d489-gen').addEventListener('click',()=>{stop();const L=+$('d489-len').value;if(step>=L)step=0;
+  timer=setInterval(()=>{if(!document.body.contains(kc)){stop();return}if(step>=+$('d489-len').value){stop();return}step++;drawKV()},450)});
+$('d489-reset').addEventListener('click',()=>{stop();step=0;drawKV()});
+['d489-dep','d489-len'].forEach(id=>$(id).addEventListener('input',drawKV));
+drawKV();
+
+// ---------- quiz ----------
+AI.quiz($('d489-quizBox'),[
+ ['إيه الفرق العملي بين الـ early fusion والـ late fusion في موديلات الصورة والنص؟',['الـ late fusion بيستهلك ميموري أكتر','الـ early fusion ممنوع','الـ early fusion بيحط image tokens وtext tokens في sequence واحدة، والـ late fusion بيسيبهم منفصلين ويوصل بينهم بـ cross-attention في كل block','الـ early fusion بيشتغل الأول في الوقت'],2,'Chameleon وEmu3 early fusion، وFlamingo وBLIP-2 late fusion. الاختيار ده بيغير شكل الـ masks والـ KV caching.'],
+ ['في decoder block فيه self-attention وcross-attention، أنهي واحدة عليها causal mask؟',['ولا واحدة','الاتنين','الـ cross-attention بس','الـ self-attention بس؛ الصورة ظاهرة كلها والـ cross مالوش ترتيب زمني'],3,'توليد النص autoregressive فالـ self-attention بتاع النص causal. الـ image tokens كلها موجودة قبل ما أي نص يتولد.'],
+ ['ليه الـ KV cache بتاع الـ cross-attention بيتبني مرة واحدة لكل صورة؟',['لأن K وV بتوع الصورة مش بيتغيروا وانت بتولّد النص، فبنعمل projection للـ memory مرة ونعيد استخدامها في كل خطوات الـ decode، ودي كل التسريعة','عشان نتجنب الـ GPU','لأن PyTorch بيطلب caching','عشان نوفر مساحة على الـ disk'],0,'الـ vision encoder بيشتغل مرة، والـ KV projection بتاعه بيتحسب مرة، وكل text token بيستخدم الـ cache ببلاش.'],
+ ['شكل خرج الـ cross-attention إيه لو النص Nt=10 والصورة Nv=197 والـ hidden=256؟',['(B, 10, 256)','(B, 207, 256)','(B, 10, 197)','(B, 197, 256)'],0,'الخرج بياخد شكل الـ query stream، يعني (B, Nt, hidden) مهما كان طول الـ keys.'],
+ ['ليه مفيش mask على الـ cross-attention؟',['الـ masks دايمًا بتعمل NaN','الـ masks غالية جدًا','الصورة موجودة كاملة قبل ما توليد النص يبدأ؛ كل مكان في النص يقدر يبص على كل patch','PyTorch مش بيدعم cross masks'],2,'مفيش ترتيب زمني بين الـ patches ومفيش تسريب نخاف منه، فالـ cross-attention بيشوف الصورة كلها.'],
+ ['أنهي إضافة ترجّع الاستقرار اللي في Flamingo وقت التدريب؟',['شيل الـ FFN','حط tanh gate متعلّم على الـ residual بتاع الـ cross-attention، عشان الموديل يبدأ text-only ويدخل الصورة بالتدريج','شيل الـ self-attention','استخدم head واحد بس'],1,'الـ tanh gate بيبدأ من صفر، فالموديل عند الـ init بيتصرف text-only، وبعدين بيدخل الـ cross-attention بالراحة.'],
+ ['(سؤال مني) في CrossAttention، الـ softmax المفروض يبقى على أنهي بُعد من scores شكلها (B, H, Nt, Nv)؟',['على Nt','على Nv (dim=-1)','على H','على B'],1,'كل كلمة بتوزع انتباهها على الـ patches، فالأوزان لازم مجموعها 1 على Nv. لو عملته على Nt الكود هيشتغل بس المعنى هيبقى غلط.'],
+ ['(سؤال مني) عندك decoder فيه 4 blocks. الـ build_kv_cache بيرجع إيه؟',['pair واحد (K, V) للموديل كله','قايمة فيها 4 pairs، واحد لكل block لأن كل block ليه kv_proj بأوزان مختلفة','الـ memory زي ما هي','الـ Q بتاع النص'],1,'كل DecoderBlock ليه CrossAttention خاص بيه بـ kv_proj مختلف، فلازم K وV لكل block لوحده.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(ac))return false;drawAtt();drawMask();drawKV()});
+})();
+</script>

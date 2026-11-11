@@ -1,0 +1,501 @@
+<div class="day" id="d487-root">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 59 · Vision Transformer Encoder</span>
+  <h1>اليوم ٤٨٧: الـ ViT Encoder، المحرك اللي بيخلّي الـ patches تشوف بعض</h1>
+  <p class="lede">امبارح قطّعنا الصورة لـ 196 patch + توكن CLS. النهاردة هنبني الـ <b>12 block</b> اللي بيخلّوا كل patch تعرف جيرانها: <b>pre-LN</b>، <b>multi-head self-attention</b>، <b>FFN بتوسعة 4x</b>، وفي الآخر توكن CLS بيلخّص الصورة كلها في متجه واحد. ده قلب أي vision-language model.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python + PyTorch</b></span>
+    <span>النوع: <b>Build</b></span>
+    <span>بعده: <b>Projection Layer for Modality Alignment</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects</span>
+    <div class="roadmap" id="d487-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d487-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ patches؟</h2></div>
+  <p>من غير ما تبص في درس امبارح (Vision Encoder Patches)، جاوب في دماغك وبعدين افتح الإجابة:</p>
+  <details><summary>١. صورة 224×224 بـ patch 16×16، هيطلع كام توكن داخل الـ transformer؟</summary>
+    <p>14×14 = <b>196 patch</b>، وزيادة عليهم توكن <b>CLS</b>، يبقى <b>197</b> توكن. كل واحد dimension بتاعه 768.</p></details>
+  <details><summary>٢. ليه بنقطّع لـ patches بدل ما ناخد كل pixel توكن؟</summary>
+    <p>لأن الـ attention تكلفته تربيعي في طول السيكوانس: 196² = 38,416 score، بينما 150,528² ≈ 22.6 مليار. الـ patches بتوفّر حوالي 590,000 مرة.</p></details>
+  <details><summary>٣. الـ Conv2d بـ kernel = stride = 16 بيعمل إيه هنا؟</summary>
+    <p>هو نفسه الـ patch projection: كل مكان في الخرج بيعمل dot product بين pixels الـ patch والفلتر. نفس نتيجة unfold وبعدين linear، بس أسرع على الـ GPU. وبعدها بنزوّد 2D sinusoidal position embedding عشان كل توكن يعرف مكانه.</p></details>
+  <div class="note"><strong>المشكلة اللي النهاردة بيحلها:</strong> الـ 197 توكن دول لحد دلوقتي كل واحد فيهم مش عارف أي حاجة عن التاني. صورة قطة محتاجة كل patch تعرف مين فيه شنب ومين خلفية ومين عين. من غير الـ transformer، الـ front end مجرد tokenizer شاطر مالوش فهم.</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين</div>
+    <div><b>20 min</b>الـ block: pre-LN، attention، FFN</div>
+    <div><b>15 min</b>المعامل التفاعلية الـ ٣</div>
+    <div><b>30 min</b>اكتب الكود وشغّله والـ tests</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+    <div><b>5 min</b>checklist</div>
+  </div>
+</section>
+
+<section id="d487-stack">
+  <div class="station-head"><span class="tag">01</span><h2>الصورة الكبيرة: 12 طابق فوق بعض</h2></div>
+  <p>الـ ViT encoder بسيط جدًا من بره: السيكوانس <span class="ltr">B × 197 × 768</span> بتدخل على Block 1، اللي خرجه يدخل Block 2، وهكذا لحد Block 12، وبعدين <b>Final LayerNorm</b>. الخرج نفس الشكل بالظبط <span class="ltr">B × 197 × 768</span>، بس كل توكن بقى <b>contextual</b>: عارف هو فين بالنسبة لباقي الصورة.</p>
+  <div class="formula">tokens (B,197,768) → Block×12 → LayerNorm → contextual tokens (B,197,768)</div>
+  <p>جوه كل block فيه حاجتين بس، وكل واحدة ليها residual:</p>
+  <div class="formula">x = x + Attn(LN₁(x))<br>x = x + FFN(LN₂(x))</div>
+  <p>تشبيه: تخيل ١٩٧ واحد قاعدين في اجتماع. في كل جولة (block)، كل واحد يسمع الكل (attention) ويضيف اللي فهمه على ورقته الأصلية (residual) من غير ما يرمي اللي كان مكتوب، وبعدين يقعد يفكّر لوحده شوية (FFN). بعد ١٢ جولة، كل واحد فاهم الصورة كلها من وجهة نظره.</p>
+  <div class="note ai"><strong>الوصفة دي ثابتة:</strong> 12 block، 12 head، pre-LN، GELU، FFN بتوسعة 4x. دي العمود الفقري لـ CLIP ViT-L وSigLIP وDINOv2 وعيلة Qwen-VL وInternVL وغيرهم من الـ open-weight vision encoders في 2025-2026. لما تقرا أي paper منهم، افترض شكل الـ block ده إلا لو قالوا غير كده صراحة.</div>
+</section>
+
+<section id="d487-preln">
+  <div class="station-head"><span class="tag">02</span><h2>Pre-LN ولا Post-LN؟</h2></div>
+  <p>الـ Transformer الأصلي (2017) كان بيحط الـ LayerNorm <b>بعد</b> الـ residual (post-LN). كل الـ vision-language models الحديثة بتستخدم <b>pre-LN</b>: الـ LayerNorm <b>قبل</b> كل sub-layer.</p>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>الـ forward</th><th>الفرق</th></tr>
+    <tr><td>Post-LN</td><td class="ltr">x = LN(x + Attn(x))</td><td>محتاج learning-rate warm-up وحيل عشان يتدرب في العمق</td></tr>
+    <tr><td>Pre-LN</td><td class="ltr">x = x + Attn(LN(x))</td><td>بيتدرب مستقر من غير warm-up tricks</td></tr>
+  </table></div>
+  <p>الفرق سطر واحد في الـ forward، بس سريان الـ gradient في عمق 12+ بيفرق «زي الليل والنهار» زي ما الدرس بيقول. السبب: في pre-LN، الطريق المباشر <span class="ltr">x → x</span> (الـ residual) نضيف تمامًا من أي normalization، فالـ gradient بيعدّي من الآخر للأول من غير ما حد يعصره. وكل sub-layer بتاخد input متظبط (normalized)، فحجم الـ gradient بيفضل محدود حتى لما العمق يزيد.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ residual زي سلّم الطوارئ في عمارة ١٢ دور. في pre-LN السلّم مفتوح على طول. في post-LN فيه باب (LayerNorm) في كل دور لازم تعدّي منه، ومع كتر الأدوار الحركة بتتلخبط.</div>
+</section>
+
+<section id="d487-mhsa">
+  <div class="station-head"><span class="tag">03</span><h2>Multi-Head Self-Attention</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>كل head بتعمل projection للتوكن لـ <b>(query, key, value)</b> خاصين بيها، والـ dimension بتاعهم:</p>
+      <div class="formula">head_dim = hidden / heads = 768 / 12 = 64</div>
+      <p>الـ 12 head شغالين <b>بالتوازي</b>، كل واحد يحسب attention map خاص بيه، وبعدين الخرج بيتلزق جنب بعض (concat) ويرجع 768، ويعدّي على <b>output projection</b>.</p>
+      <div class="formula">attn = softmax(q·kᵀ / √64) ; out = attn · v</div>
+      <p>ليه أكتر من head؟ عشان head تتعلم «بُص على عين القطة» وhead تانية «بُص على تدرّج الخلفية» من غير ما يبوّظوا بعض.</p>
+      <p><b>Causal mask؟ لأ.</b> الـ ViT <b>encoder-only</b> و<b>bidirectional</b>: أي توكن i يقدر يبص على أي توكن j. الـ causal mask هيظهر في الـ text decoder في درس 61 (والـ cross-attention بتاعه على الـ image patches برضه من غير mask)، بس جوه الـ vision encoder الـ attention متوصّل بالكامل.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> دوس على أي patch في الصورة عشان تبقى هي الـ query. الألوان على باقي الـ patches = وزن الـ attention منها. غيّر الـ head وشوف كل head «بتدوّر» على حاجة مختلفة. فعّل الـ causal mask وشوف التوكنات اللي بعدها اتقفلت، وده اللي <b>مش</b> بيحصل في الـ ViT.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d487-attn" width="520" height="420" aria-label="خريطة attention على شبكة patches"></canvas>
+      <div class="btns">
+        <button type="button" data-d487h="0" class="primary">Head 1: لون شبيه</button>
+        <button type="button" data-d487h="1">Head 2: الجيران</button>
+        <button type="button" data-d487h="2">Head 3: نفس الصف</button>
+      </div>
+      <label style="display:grid;gap:2px">حدّة الـ softmax (temperature أقل = أحدّ): <b class="mono" id="d487-tv">1.0</b><input type="range" id="d487-temp" min="0.2" max="3" step="0.1" value="1"></label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d487-causal"> فعّل causal mask (للمقارنة بس)</label>
+      <div class="readout">
+        <div><small>الـ query</small><b id="d487-q">CLS</b></div>
+        <div><small>مجموع الصف</small><b id="d487-sum">1.000</b></div>
+        <div><small>أعلى وزن</small><b id="d487-max">0</b></div>
+        <div><small>entropy</small><b id="d487-ent">0</b></div>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">معمل توضيحي: الأوزان هنا محسوبة بقواعد بسيطة عشان تشوف الفكرة، مش أوزان موديل متدرّب.</p>
+    </div>
+  </div>
+</section>
+
+<section id="d487-ffn">
+  <div class="station-head"><span class="tag">04</span><h2>الـ FFN وليه التوسعة 4x، وحساب الـ Parameters</h2></div>
+  <p>الـ FFN بيمشي كده: <span class="ltr">hidden → 4·hidden → hidden</span> وفي النص GELU. الرقم 4 <b>تجريبي</b> وصامد في اللغة والرؤية من 2017: أصغر (2x) بيعمل underfit، وأكبر (8x) بيعمل overfit عند نفس حجم الداتا. الـ MLP هو المكان اللي الموديل بيخزّن فيه معظم الحقايق اللي اتعلمها، والنص العريض هو المخزن.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <div class="tablewrap"><table>
+        <tr><th>المكوّن (ViT-Base)</th><th>Parameters</th></tr>
+        <tr><td>qkv projection لكل block</td><td class="ltr">3·768·768 = 1.77M</td></tr>
+        <tr><td>output projection لكل block</td><td class="ltr">768·768 = 590K</td></tr>
+        <tr><td>FFN لكل block (4x)</td><td class="ltr">2·768·4·768 = 4.72M</td></tr>
+        <tr><td>LayerNorm لكل block</td><td class="ltr">4·768 = 3K</td></tr>
+        <tr><td>إجمالي الـ block</td><td>حوالي 7.1M</td></tr>
+        <tr><td>12 block</td><td>حوالي 85M</td></tr>
+        <tr><td>+ الـ front end</td><td>حوالي 86M</td></tr>
+      </table></div>
+      <p>لاحظ: الـ FFN لوحده تقريبًا ثلثين الـ block. 86M صغير بمقاييس 2026 (SigLIP-So400M حوالي 400M، والـ ViT بتاع Qwen-VL حوالي 675M)، بس الـ architecture نفسها بالظبط، الفرق في العرض والعمق.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d487-par" width="520" height="200" aria-label="توزيع الـ parameters في الـ block"></canvas>
+      <div class="mrow">
+        <label>hidden <span id="d487-hv">768</span><input type="range" id="d487-hid" min="0" max="5" step="1" value="1"></label>
+        <label>depth <span id="d487-dv">12</span><input type="range" id="d487-dep" min="1" max="32" step="1" value="12"></label>
+        <label>heads <span id="d487-hdv">12</span><input type="range" id="d487-hds" min="1" max="24" step="1" value="12"></label>
+        <label>mlp_ratio <span id="d487-mv">4</span><input type="range" id="d487-mlp" min="1" max="8" step="1" value="4"></label>
+      </div>
+      <div class="btns">
+        <button type="button" data-d487p="768,12,12,4">ViT-Base</button>
+        <button type="button" data-d487p="1024,24,16,4">ViT-Large</button>
+        <button type="button" data-d487p="1152,27,16,4">SigLIP So400M (شكل)</button>
+      </div>
+      <div class="readout">
+        <div><small>head_dim</small><b id="d487-hd">64</b></div>
+        <div><small>لكل block</small><b id="d487-pb">0</b></div>
+        <div><small>الـ stack كله</small><b id="d487-pt">0</b></div>
+      </div>
+      <div class="verdict" id="d487-pv"></div>
+      <p style="font-size:14px;color:var(--muted)">الحساب بالـ biases زي الكود (من غير الـ front end). الـ So400M الحقيقي الـ FFN بتاعه مش 4x بالظبط، فالرقم هنا للشكل بس.</p>
+    </div>
+  </div>
+</section>
+
+<section id="d487-cls">
+  <div class="station-head"><span class="tag">05</span><h2>توكن CLS بيتعلم إيه؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ CLS بيبدأ كـ <b>learned parameter</b>، مالوش أي محتوى من الصورة. في كل block بيعمل attention على كل الـ patches ويلم منهم معلومات. في الطبقة الأخيرة، صف الـ CLS بقى <b>ملخص متجه للصورة كلها</b>.</p>
+      <p>الـ heads اللي بعده بتاخد المتجه الواحد ده وتعمل منه:</p>
+      <ul class="checklist">
+        <li>• class logits (تصنيف: قطة ولا كلب)</li>
+        <li>• contrastive embeddings (زي CLIP/SigLIP)</li>
+        <li>• keys للـ cross-attention بتاع text decoder</li>
+      </ul>
+      <div class="note"><strong>شوف القمع:</strong> دوس «شغّل» وشوف المعلومات بتتجمّع في CLS طبقة ورا طبقة. الـ CLS norm بيزيد مع تراكب الطبقات (زي ما الـ demo بيطبع)، والـ Final LayerNorm بيرجّعه لحجم ثابت.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d487-fun" width="520" height="300" aria-label="أنيميشن تجمع المعلومات في CLS"></canvas>
+      <label style="display:grid;gap:2px">الطبقة: <b class="mono" id="d487-lv">0</b><input type="range" id="d487-lay" min="0" max="13" step="1" value="0"></label>
+      <div class="btns"><button type="button" id="d487-play" class="primary">شغّل</button><button type="button" id="d487-reset">من الأول</button></div>
+      <div class="readout">
+        <div><small>نسبة الـ patches اللي وصل منها معلومة للـ CLS</small><b id="d487-cov">0%</b></div>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">توضيح مبسّط: الـ CLS هنا بيلم من عدد متزايد من الـ patches في كل طبقة عشان تشوف فكرة التراكم. في الحقيقة الـ attention متوصّل بالكامل من أول طبقة.</p>
+    </div>
+  </div>
+</section>
+
+<section id="d487-use">
+  <div class="station-head"><span class="tag">06</span><h2>نفس الـ block في كل مكان: الفروق بتبقى فين؟</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الفرق</th><th>أمثلة</th></tr>
+    <tr><td>العرض والعمق</td><td class="ltr">ViT-Large: hidden=1024, depth=24, heads=16 · SigLIP So400M: hidden=1152, depth=27, heads=16</td></tr>
+    <tr><td>الـ Pooling head</td><td>CLS pooling (الدرس ده) · average pooling (SigLIP) · attention pooling (VLMs أحدث)</td></tr>
+    <tr><td>التعامل مع المكان</td><td>fixed sinusoidal (درس 58) · learned 1D · ALiBi · 2D RoPE. رياضة الـ block مش بتتغير.</td></tr>
+    <tr><td>Register tokens</td><td>DINOv2 بيزوّد 4 توكنات متعلّمة في الأول. سطر كود واحد.</td></tr>
+  </table></div>
+  <p>الـ stack ده هو الأرض اللي الدروس الجاية (60-63) واقفة عليها.</p>
+</section>
+
+<section id="d487-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>الكود بيعتمد على <code>VisionFrontEnd</code> من درس 58 (بيعمله load من الفولدر اللي جنبه)، وعلى <code>torch</code> و<code>numpy</code>. <b>القاعدة:</b> اكتبه بنفسك في ملف جديد، وارجع للأصل بس لو اتزنقت.</p>
+  <h3>خطوة ١: الـ config</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass(frozen=True)
+class ViTConfig:
+    image_size: int = 224
+    patch_size: int = 16
+    in_channels: int = 3
+    hidden: int = 768
+    depth: int = 12
+    heads: int = 12
+    mlp_ratio: float = 4.0
+    dropout: float = 0.0
+
+    @property
+    def head_dim(self) -&gt; int:
+        if self.hidden % self.heads != 0:          <span class="c"># لازم القسمة تبقى مظبوطة</span>
+            raise ValueError(f"hidden {self.hidden} not divisible by heads {self.heads}")
+        return self.hidden // self.heads           <span class="c"># 768 // 12 = 64</span></pre></div>
+
+  <h3>خطوة ٢: Multi-Head Self-Attention</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MultiHeadSelfAttention(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+        self.qkv = nn.Linear(cfg.hidden, cfg.hidden * 3, bias=True)  <span class="c"># q,k,v في ضربة واحدة</span>
+        self.out = nn.Linear(cfg.hidden, cfg.hidden, bias=True)      <span class="c"># output projection</span>
+        self.drop = nn.Dropout(cfg.dropout)
+        self.scale = 1.0 / math.sqrt(cfg.head_dim)                   <span class="c"># 1/√64</span>
+        self.last_attn = None
+
+    def forward(self, x, store_attn=False):
+        if x.dim() != 3:
+            raise ValueError(f"expected (B, N, D), got {tuple(x.shape)}")
+        b, n, d = x.shape
+        h, hd = self.cfg.heads, self.cfg.head_dim
+        <span class="c"># (B,N,3D) → (3, B, H, N, hd)</span>
+        qkv = self.qkv(x).reshape(b, n, 3, h, hd).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        scores = (q @ k.transpose(-2, -1)) * self.scale              <span class="c"># (B,H,N,N) ومفيش mask</span>
+        attn = F.softmax(scores, dim=-1)                             <span class="c"># كل صف مجموعه 1</span>
+        if store_attn:
+            self.last_attn = attn.detach()
+        out = attn @ v
+        out = out.transpose(1, 2).reshape(b, n, d)                   <span class="c"># concat الـ heads</span>
+        return self.drop(self.out(out))</pre></div>
+
+  <h3>خطوة ٣: FeedForward و Block (pre-LN)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class FeedForward(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        inner = int(cfg.hidden * cfg.mlp_ratio)      <span class="c"># 768 × 4 = 3072</span>
+        self.fc1 = nn.Linear(cfg.hidden, inner)
+        self.fc2 = nn.Linear(inner, cfg.hidden)
+        self.drop = nn.Dropout(cfg.dropout)
+
+    def forward(self, x):
+        return self.drop(self.fc2(F.gelu(self.fc1(x))))
+
+class Block(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(cfg.hidden, eps=1e-6)
+        self.attn = MultiHeadSelfAttention(cfg)
+        self.ln2 = nn.LayerNorm(cfg.hidden, eps=1e-6)
+        self.ffn = FeedForward(cfg)
+
+    def forward(self, x, store_attn=False):
+        x = x + self.attn(self.ln1(x), store_attn=store_attn)  <span class="c"># LN قبل، residual بعد</span>
+        x = x + self.ffn(self.ln2(x))
+        return x</pre></div>
+
+  <h3>خطوة ٤: الـ ViT stack والـ VisionEncoder</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class ViT(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+        self.blocks = nn.ModuleList([Block(cfg) for _ in range(cfg.depth)])
+        self.norm = nn.LayerNorm(cfg.hidden, eps=1e-6)      <span class="c"># final LayerNorm</span>
+
+    def forward(self, x, store_attn=False):
+        for block in self.blocks:
+            x = block(x, store_attn=store_attn)
+        return self.norm(x)
+
+class VisionEncoder(nn.Module):
+    def __init__(self, cfg=None):
+        super().__init__()
+        self.cfg = cfg or ViTConfig()
+        self.front = VisionFrontEnd(self.cfg.front_end_config())  <span class="c"># من درس 58</span>
+        self.vit = ViT(self.cfg)
+
+    def forward(self, x, store_attn=False):
+        tokens = self.front(x)            <span class="c"># (B,197,768)</span>
+        tokens = self.vit(tokens, store_attn=store_attn)
+        cls = tokens[:, 0]                <span class="c"># أول توكن = ملخص الصورة</span>
+        return tokens, cls
+
+def count_params(module):
+    return sum(p.numel() for p in module.parameters())</pre></div>
+  <p>الـ <code>main()</code> في الأصل بيطبع الـ config وعدد الـ parameters، ويشغّل صورة fixture 224×224 من درس 58، ويطبع CLS norm كل طبقتين، ويتأكد إن صف CLS في attention مجموعه 1، وإن الـ gradient بيوصل من CLS لحد <code>patch.proj.weight</code> و<code>cls_token</code>.</p>
+
+  <h3>خطوة ٥: شغّل من الـ repo root</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>pip install torch numpy
+python3 phases/19-capstone-projects/59-vit-transformer/code/main.py</pre></div>
+  <details><summary>الناتج المتوقع (الشكل)</summary><pre class="term">VISION TRANSFORMER ENCODER
+  depth x heads   : 12 x 12 (head dim 64)
+total params     : ~86M
+output tokens    : (1, 197, 768)
+cls shape        : (1, 768)
+layer-by-layer CLS norm trace: ... (بيزيد مع الطبقات، والـ final LN بيثبّته)
+  block 0 head 0 CLS row sum (should be 1.0) : 1.000000
+  ok: gradients flow from CLS back through the encoder
+done.</pre></details>
+  <h3>خطوة ٦: الـ tests</h3>
+  <p>ملف الـ tests بيعمل <code>from main import ...</code>، فشغّله من جوه فولدر <code>code</code>:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd phases/19-capstone-projects/59-vit-transformer/code
+python3 -m unittest test_main.py</pre></div>
+  <p>بيختبر: الـ attention بيحافظ على الشكل، صفوف الـ attention مجموعها 1، توسعة الـ FFN صح، الـ residual متوصّل، stack من 4 طبقات بيطلع الشكل الصح، الـ gradient بيوصل للـ patch projection، و<code>hidden=65</code> مع <code>heads=4</code> بيرمي <code>ValueError</code>.</p>
+</section>
+
+<section id="d487-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Register tokens:</b> زوّد 4 متجهات متعلّمة بعد CLS وشغّل تاني. قارن نعومة الـ attention maps بالـ entropy بتاع الـ softmax في آخر طبقة.
+      <details><summary>تلميح</summary>اعمل <code>nn.Parameter(torch.zeros(1, 4, hidden))</code>، واعمل <code>torch.cat([tokens[:, :1], reg.expand(B,-1,-1), tokens[:, 1:]], dim=1)</code> قبل الـ ViT. الـ entropy = <code>-(p * p.log()).sum(-1)</code> على <code>last_attn</code> بـ <code>store_attn=True</code>. خلي بالك السيكوانس بقت 201.</details></li>
+    <li><b>Post-LN:</b> بدّل pre-LN بـ post-LN ودرّب epoch واحد على synthetic shape classifier. شوف مين بيتدرّب مستقر من غير LR warm-up.
+      <details><summary>تلميح</summary>في <code>Block.forward</code>: <code>x = self.ln1(x + self.attn(x))</code> ثم <code>x = self.ln2(x + self.ffn(x))</code>. الداتا: صور فيها مربع أو دايرة، وhead خطي على CLS. ثبّت نفس الـ LR من غير warm-up واتفرّج على الـ loss.</details></li>
+    <li><b>Causal mask:</b> زوّد argument اسمه <code>attn_mask</code> عشان نفس الـ block يتستخدم decoder. الشكل <span class="ltr">(seq, seq)</span> lower-triangular.
+      <details><summary>تلميح</summary><code>mask = torch.tril(torch.ones(n, n, dtype=torch.bool))</code> و<code>scores = scores.masked_fill(~mask, float('-inf'))</code> قبل الـ softmax. جرّبه في المعمل ٠٣ الأول.</details></li>
+    <li><b>Profiling:</b> اعمل profile لـ forward pass عند batch 1 و8 و64 بـ <code>torch.profiler</code>. هتلاقي الـ MLP هو اللي واكل الوقت، مش الـ attention.
+      <details><summary>تلميح</summary><code>with torch.profiler.profile() as p: enc(img)</code> وبعدين <code>p.key_averages().table(sort_by="cpu_time_total")</code>. عند 197 توكن الـ attention مصفوفاته صغيرة نسبيًا، والـ FFN فيه ثلثين الـ parameters (المعمل ٠٤).</details></li>
+    <li><b>LoRA على head واحدة:</b> بدّل projections الـ q-k-v بتاعة head واحدة بـ LoRA adapter، جمّد الباقي، واتأكد إن الـ gradient بيمشي في المكان اللي متوقعه بس.
+      <details><summary>تلميح</summary><code>requires_grad_(False)</code> على كل الموديل، وبعدين ضيف <code>A (r×768)</code> و<code>B (64×r)</code> وزوّد <code>x @ A.T @ B.T</code> على شريحة الـ head دي في خرج <code>qkv</code>. بعد <code>backward()</code> اتأكد إن <code>.grad</code> مش None غير لـ A وB.</details></li>
+    <li><b>إضافة مني · image embedding service:</b> اكتب دالة <code>embed(images)</code> بتاخد batch صور وترجع CLS vectors متعمول ليها L2-normalize، وبعدين دالة <code>search(query_img, gallery)</code> ترجع أقرب 3 بالـ cosine. ده نفس شكل خدمة البحث بالصور في أي RAG multimodal.
+      <details><summary>تلميح</summary><code>_, cls = enc(x)</code> ثم <code>F.normalize(cls, dim=-1)</code>. الـ cosine = <code>q @ G.T</code>. استخدم <code>torch.no_grad()</code> و<code>enc.eval()</code>. بأوزان عشوائية النتايج مش هيبقى ليها معنى، المهم الـ pipeline والأشكال.</details></li>
+  </ol>
+</section>
+
+<section id="d487-mine">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مقالوش صراحة</h2></div>
+  <h3>الحدس</h3>
+  <p>الـ attention هو «الكلام بين الـ patches»، والـ FFN هو «التفكير لوحدك». الـ residual بيخلّي كل block <b>يضيف</b> تعديل على التوكن بدل ما يكتبه من جديد، عشان كده تقدر ترص 12 أو 24 أو 27 طبقة.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li>• تنسى الـ <code>permute</code> بعد الـ reshape في الـ qkv فتعمل attention على المحور الغلط. اتأكد إن شكل <code>scores</code> هو <span class="ltr">(B, H, N, N)</span>.</li>
+    <li>• تنسى القسمة على <span class="ltr">√head_dim</span>: الـ scores تكبر والـ softmax تبقى one-hot والـ gradients تموت.</li>
+    <li>• تعمل softmax على <code>dim=-2</code> بدل <code>-1</code>: الصفوف مش هتبقى مجموعها 1 (والـ test هيمسكك).</li>
+    <li>• تحط causal mask في الـ encoder بالغلط: الـ patches اللي فوق الصورة مش هتشوف اللي تحت.</li>
+    <li>• تنسى الـ final LayerNorm أو تعمله جوه كل block زيادة.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents</h3>
+  <p>نفس الـ block ده (pre-LN + attention + FFN + residual) هو بالظبط الـ block بتاع الـ LLMs النصية، الفرق إنهم بيستخدموا causal mask. لما agent بيقرا screenshot أو PDF كصورة، الصورة بتعدّي على encoder بالشكل ده، والتوكنات بتتحوّل بـ projection layer (درس بكرة) لفضاء الـ LLM.</p>
+</section>
+
+<section id="d487-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d487-quizbox"></div>
+</section>
+
+<section id="d487-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أرسم الـ pre-LN block من دماغي وأقول ليه هو أحسن من post-LN</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه head_dim = 64 وإن الـ encoder من غير causal mask</label></li>
+    <li><label><input type="checkbox" data-ck="3"> حسبت ليه الـ ViT-Base حوالي 86M وإن الـ FFN أكبر جزء</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الكود بإيدي وشغّلت main.py والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6" id="d487-ckq"> جبت ٥ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Pre-LN block</td><td>كل الـ vision encoders الحديثة وكل الـ LLMs تقريبًا</td></tr>
+    <tr><td>Multi-head self-attention</td><td>CLIP، SigLIP، DINOv2، Qwen-VL، InternVL</td></tr>
+    <tr><td>FFN 4x + GELU</td><td>الـ transformers في اللغة والرؤية من 2017</td></tr>
+    <tr><td>CLS pooling</td><td>classification heads، contrastive embeddings، keys للـ cross-attention</td></tr>
+    <tr><td>Register tokens</td><td>DINOv2</td></tr>
+    <tr><td>Bidirectional vs causal</td><td>encoder للصورة، decoder للنص (درس 61)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Projection Layer for Modality Alignment: إزاي نوصّل خرج الـ encoder ده بفضاء الـ LLM.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F59-vit-transformer" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/59-vit-transformer</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+const root=$('d487-root');
+
+// roadmap
+const L=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17];for(let i=20;i<=87;i++)L.push(i);
+const rm=$('d487-roadmap');L.forEach(i=>{const s=document.createElement('span');s.textContent=i;if(i===59)s.className='now';rm.appendChild(s)});
+
+// ---------- Lab 1: attention ----------
+const ac=$('d487-attn'),actx=AI.setupCanvas(ac),AW=+ac.dataset.w,AH=+ac.dataset.h;
+const G=5,CS=62,gx=(AW-G*CS)/2+30,gy=50;
+// synthetic picture: background + a "cat" blob of warm colours + eyes
+const pal=[];for(let r=0;r<G;r++)for(let c=0;c<G;c++){
+  let t=0;const d=Math.hypot(r-2.2,c-2);if(d<1.7)t=1;if((r===1&&(c===1||c===3)))t=2;pal.push(t)}
+const colOf=t=>t===0?'#7FA7B8':t===1?'#D99A52':'#2E4A2E';
+let head=0,query=-1; // -1 = CLS
+function weights(){
+  const T=+$('d487-temp').value,causal=$('d487-causal').checked,N=G*G;
+  const qi=query; const s=[];
+  // index 0 = CLS, 1..25 patches
+  for(let j=-1;j<N;j++){
+    let v;
+    if(qi===-1){v=j===-1?0.5:(pal[j]>0?1.2:0.3)}
+    else if(j===-1){v=0.4}
+    else{const qr=Math.floor(qi/G),qc=qi%G,jr=Math.floor(j/G),jc=j%G;
+      if(head===0)v=pal[qi]===pal[j]?2:0;
+      else if(head===1)v=2-Math.hypot(qr-jr,qc-jc)*1.2;
+      else v=qr===jr?2:0;}
+    if(causal&&j>qi)v=-Infinity;
+    s.push(v/T)}
+  const m=Math.max(...s),e=s.map(v=>v===-Infinity?0:Math.exp(v-m)),z=e.reduce((a,b)=>a+b,0);
+  return e.map(v=>v/z);
+}
+function drawAttn(){
+  const w=weights();actx.clearRect(0,0,AW,AH);
+  const maxw=Math.max(...w);
+  // CLS box
+  const cx=gx-80,cy=gy+2*CS;
+  actx.fillStyle=query===-1?css('--vec-a'):css('--soft');actx.fillRect(cx,cy,56,56);
+  actx.globalAlpha=w[0]/maxw*0.8;actx.fillStyle=css('--vec-b');if(query!==-1)actx.fillRect(cx,cy,56,56);actx.globalAlpha=1;
+  actx.strokeStyle=css('--ink');actx.lineWidth=1;actx.strokeRect(cx,cy,56,56);
+  actx.fillStyle=query===-1?css('--paper'):css('--ink');actx.font='bold 13px JetBrains Mono, monospace';actx.textAlign='center';actx.fillText('CLS',cx+28,cy+33);
+  for(let i=0;i<G*G;i++){const r=Math.floor(i/G),c=i%G,x=gx+c*CS,y=gy+r*CS;
+    actx.fillStyle=colOf(pal[i]);actx.fillRect(x,y,CS-4,CS-4);
+    const a=w[i+1]/maxw;actx.fillStyle=css('--vec-b');actx.globalAlpha=0.15+0.0;actx.globalAlpha=a*0.75;actx.fillRect(x,y,CS-4,CS-4);actx.globalAlpha=1;
+    if(i===query){actx.strokeStyle=css('--ink');actx.lineWidth=4;actx.strokeRect(x+2,y+2,CS-8,CS-8)}
+    actx.fillStyle=css('--ink');actx.font='11px JetBrains Mono, monospace';actx.fillText(f(w[i+1],2),x+(CS-4)/2,y+CS-10);
+  }
+  actx.textAlign='left';actx.fillStyle=css('--muted');actx.font='12px JetBrains Mono, monospace';
+  actx.fillText('query → weights over 1 CLS + 25 patches (toy)',gx-80,30);
+  const sum=w.reduce((a,b)=>a+b,0),ent=-w.reduce((a,p)=>a+(p>0?p*Math.log(p):0),0);
+  $('d487-q').textContent=query===-1?'CLS':'patch '+(query+1);
+  $('d487-sum').textContent=sum.toFixed(3);$('d487-max').textContent=f(maxw,3);$('d487-ent').textContent=f(ent,2);
+  $('d487-tv').textContent=(+$('d487-temp').value).toFixed(1);
+}
+ac.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(ac,e);
+  const cx=gx-80,cy=gy+2*CS;if(x>=cx&&x<=cx+56&&y>=cy&&y<=cy+56){query=-1;drawAttn();return}
+  const c=Math.floor((x-gx)/CS),r=Math.floor((y-gy)/CS);if(c>=0&&c<G&&r>=0&&r<G){query=r*G+c;drawAttn()}});
+root.querySelectorAll('[data-d487h]').forEach(b=>b.addEventListener('click',()=>{head=+b.dataset.d487h;
+  root.querySelectorAll('[data-d487h]').forEach(o=>o.classList.toggle('primary',o===b));if(query===-1)query=7;drawAttn()}));
+$('d487-temp').addEventListener('input',drawAttn);$('d487-causal').addEventListener('change',drawAttn);
+drawAttn();
+
+// ---------- Lab 2: params ----------
+const HS=[512,768,1024,1152,1280,1536];
+const pc=$('d487-par'),pctx=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+function params(){
+  const d=HS[+$('d487-hid').value],dep=+$('d487-dep').value,h=+$('d487-hds').value,r=+$('d487-mlp').value;
+  $('d487-hv').textContent=d;$('d487-dv').textContent=dep;$('d487-hdv').textContent=h;$('d487-mv').textContent=r;
+  const qkv=3*d*d+3*d,out=d*d+d,ffn=d*r*d+r*d+r*d*d+d,ln=4*d,blk=qkv+out+ffn+ln,tot=blk*dep+2*d;
+  const ok=d%h===0;
+  $('d487-hd').textContent=ok?d/h:'✗';
+  $('d487-pb').textContent=(blk/1e6).toFixed(2)+'M';$('d487-pt').textContent=(tot/1e6).toFixed(1)+'M';
+  const v=$('d487-pv');
+  if(!ok){v.textContent='hidden مش بيقبل القسمة على heads → ValueError زي الكود';v.style.color=css('--bad')}
+  else{v.textContent='الـ FFN = '+Math.round(ffn/blk*100)+'% من الـ block';v.style.color=css('--ok')}
+  pctx.clearRect(0,0,PW,PH);
+  const parts=[['qkv',qkv,css('--vec-a')],['out',out,css('--muted')],['FFN',ffn,css('--vec-b')],['LN',ln,css('--ok')]];
+  let x=PW;const y=60,hgt=50;
+  pctx.font='12px JetBrains Mono, monospace';pctx.textAlign='center';
+  parts.forEach(([n,p,c])=>{const wd=Math.max(2,p/blk*PW);x-=wd;pctx.fillStyle=c;pctx.fillRect(x,y,wd,hgt);
+    if(wd>40){pctx.fillStyle=css('--paper');pctx.fillText(n,x+wd/2,y+30)}
+    pctx.fillStyle=css('--ink');if(wd>40)pctx.fillText((p/1e6).toFixed(2)+'M',x+wd/2,y+hgt+20)});
+  pctx.textAlign='right';pctx.fillStyle=css('--muted');pctx.fillText('one block = '+(blk/1e6).toFixed(2)+'M params',PW-4,30);
+  // depth bars
+  const bw=Math.min(14,(PW-8)/dep-2);pctx.fillStyle=css('--vec-a');
+  for(let i=0;i<dep;i++)pctx.fillRect(PW-4-(i+1)*(bw+2),PH-22,bw,14);
+  pctx.textAlign='left';
+}
+['d487-hid','d487-dep','d487-hds','d487-mlp'].forEach(id=>$(id).addEventListener('input',params));
+root.querySelectorAll('[data-d487p]').forEach(b=>b.addEventListener('click',()=>{const [d,dep,h,r]=b.dataset.d487p.split(',').map(Number);
+  $('d487-hid').value=HS.indexOf(d);$('d487-dep').value=dep;$('d487-hds').value=h;$('d487-mlp').value=r;params()}));
+params();
+
+// ---------- Lab 3: CLS funnel ----------
+const fc=$('d487-fun'),fctx=AI.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+const NP=24;let layer=0,timer=null;
+const order=[...Array(NP).keys()].sort((a,b)=>((a*7)%NP)-((b*7)%NP));
+function drawFun(){
+  fctx.clearRect(0,0,FW,FH);
+  const reached=layer===0?0:Math.min(NP,Math.round(NP*Math.min(1,layer/6)));
+  const set=new Set(order.slice(0,reached));
+  const cx=FW/2,cy=60;
+  for(let i=0;i<NP;i++){const c=i%12,r=Math.floor(i/12),x=40+c*((FW-80)/11),y=FH-70+r*34;
+    if(set.has(i)){fctx.strokeStyle=css('--vec-b');fctx.globalAlpha=.5;fctx.lineWidth=1.5;fctx.beginPath();fctx.moveTo(x,y);fctx.lineTo(cx,cy+16);fctx.stroke();fctx.globalAlpha=1}
+    fctx.fillStyle=set.has(i)?css('--vec-b'):css('--soft');fctx.fillRect(x-11,y-11,22,22);
+    fctx.strokeStyle=css('--line');fctx.lineWidth=1;fctx.strokeRect(x-11,y-11,22,22)}
+  const k=reached/NP,rad=18+k*14;
+  fctx.fillStyle=css('--vec-a');fctx.beginPath();fctx.arc(cx,cy,rad,0,7);fctx.fill();
+  fctx.fillStyle=css('--paper');fctx.font='bold 13px JetBrains Mono, monospace';fctx.textAlign='center';fctx.fillText('CLS',cx,cy+5);
+  fctx.fillStyle=css('--muted');fctx.font='12px JetBrains Mono, monospace';
+  fctx.fillText(layer===0?'layer 0: learned parameter, no image content':layer===13?'final LayerNorm: image summary vector':'after block '+layer,cx,cy+rad+20);
+  fctx.textAlign='left';
+  $('d487-lv').textContent=layer===13?'final LN':layer;$('d487-cov').textContent=Math.round(k*100)+'%';$('d487-lay').value=layer;
+}
+$('d487-lay').addEventListener('input',e=>{layer=+e.target.value;drawFun()});
+$('d487-play').addEventListener('click',()=>{clearInterval(timer);if(layer>=13)layer=0;
+  timer=setInterval(()=>{if(!document.body.contains(fc)||layer>=13){clearInterval(timer);return}layer++;drawFun()},450)});
+$('d487-reset').addEventListener('click',()=>{clearInterval(timer);layer=0;drawFun()});
+drawFun();
+
+// ---------- quiz ----------
+AI.quiz($('d487-quizbox'),[
+ ['ليه الـ ViT block القياسي بيستخدم pre-LayerNorm بدل post-LayerNorm؟',['Pre-LN أسرع','Post-LN بياكل memory أكتر','Pre-LN بيتدرّب مستقر في العمق من غير LR warm-up، والـ post-LN بيبوّظ بعد حوالي 6 طبقات','Post-LN عليه براءة اختراع'],2,'Pre-LN بيعمل normalize للـ input بتاع كل sub-layer، فحجم الـ gradients بيفضل محدود مع زيادة العمق.'],
+ ['عند hidden=768 وheads=12، الـ dimension لكل head كام وليه مهم؟',['12، عشان كل head تشتغل على GPU صغير','96، محدد من ResNet-50','768، لأن كل الـ heads بيشاركوا نفس الـ projection','64، وده بيحدد دقة كل attention map وبيخلي الـ 12 head يبصوا مستقلين بالتوازي'],3,'head_dim = hidden / heads = 64. كل head بتعمل projection للتوكن لـ q/k/v خاصين بيها بـ 64 بُعد وتحسب attention map لوحدها.'],
+ ['الـ ViT encoder محتاج causal attention mask؟',['في التدريب بس','لأ: الـ encoder bidirectional، أي توكن يقدر يبص على أي توكن تاني في نفس السيكوانس','أيوه، زي GPT decoder','لصف CLS بس'],1,'الـ vision encoders bidirectional. الـ causal mask بيظهر بعدين لما text decoder يستهلك الخرج.'],
+ ['الـ final hidden state بتاع CLS بعد الـ 12 block بيمثل إيه؟',['ملخص متجه متعلّم للصورة كلها، والـ heads اللي بعده بتحوّله لـ class logits أو contrastive embeddings','آخر patch بس','noise عشوائي','نسخة من الـ input embedding'],0,'CLS بيبدأ فاضي وبيلم معلومات من كل patch عن طريق الـ self-attention عبر الـ 12 block.'],
+ ['ليه الـ FFN بيتوسّع لـ 4x الـ hidden؟',['بيقسم الـ FLOPs على اتنين','PyTorch بيطلب 4x','نقطة توازن تجريبية من الـ Transformer الأصلي: أصغر بيعمل underfit، وأكبر بيعمل overfit عند نفس حجم الداتا','بيلغي الحاجة للـ attention'],2,'الـ 4x صامد في اللغة والرؤية من 2017.'],
+ ['أي امتداد بيسيب رياضة الـ block زي ما هي بس بيضيف توكنات متعلّمة في الأول؟',['Causal masking','RoPE rotation','Register tokens (DINOv2): كام متجه متعلّم بعد CLS بيمسكوا إحصائيات عامة ويخلوا الـ attention maps أنعم','Mixture-of-experts'],2,'الـ register tokens بتثبّت الـ attention من غير ما تغيّر رياضة الـ block؛ هي مجرد خانات زيادة في السيكوانس.'],
+ ['(سؤال مني) في ViT-Base، أكبر جزء من الـ parameters في كل block فين؟',['الـ qkv projection','الـ FFN','الـ LayerNorm','الـ output projection'],1,'FFN ≈ 4.72M من حوالي 7.1M، يعني تقريبًا ثلثين الـ block. جرّبه في المعمل ٠٤.'],
+ ['(سؤال مني) شكل scores جوه MultiHeadSelfAttention لصورة واحدة 224×224 في ViT-Base؟',['(1, 197, 768)','(1, 12, 197, 64)','(1, 12, 197, 197)','(197, 197)'],2,'B=1، H=12، وكل توكن من 197 بيحسب score مع كل توكن من 197. الـ softmax على آخر محور.']
+],5,()=>{const c=$('d487-ckq');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(487,root);
+
+AI.onTheme(()=>{if(!document.body.contains(ac))return false;drawAttn();params();drawFun()});
+})();
+</script>

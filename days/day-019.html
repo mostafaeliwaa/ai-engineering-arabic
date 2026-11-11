@@ -1,0 +1,657 @@
+<div class="day" id="d19-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 19 · Complex Numbers for AI</span>
+  <h1>اليوم ١٩: الـ i مش خيالي، ده زرار «لف ٩٠ درجة»</h1>
+  <p class="lede">النهاردة هتشوف إن الأعداد المركبة (complex numbers) هي اللغة الطبيعية لأي حاجة <b>بتلف أو بتتذبذب</b>. هتضرب أرقام وتشوفها بتلف قدامك، وتشوف موجة الـ sin طالعة من نقطة بتلف على دايرة، وتفكك سيجنال لتردداته بالـ DFT. وده بالظبط الأساس اللي الـ <b>RoPE</b> والـ positional encodings في الـ Transformers مبنيين عليه.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٦٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Convex Optimization</b></span>
+    <span>بعده: <b>The Fourier Transform</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d19-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d19-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. إيه اللي بيميّز الـ convex function، وليه ده مريح جدًا في التدريب؟</summary>
+    <p>لو وصلت بين أي نقطتين على الرسم بخط مستقيم، الخط بيبقى فوق الرسم أو عليه. النتيجة: فيه «وادي» واحد بس، فأي local minimum هو نفسه الـ global minimum، والـ gradient descent مش هيتزنق في وادي غلط.</p></details>
+  <details><summary>٢. إزاي تختبر إن دالة في أكتر من متغير convex باستخدام الـ Hessian؟</summary>
+    <p>الـ Hessian (مصفوفة المشتقات التانية) لازم تبقى positive semi-definite، يعني كل الـ eigenvalues بتاعتها ≥ 0 في كل حتة.</p></details>
+  <details><summary>٣. الـ Newton's method بيستخدم إيه زيادة عن الـ gradient descent؟</summary>
+    <p>بيستخدم الـ Hessian (معلومة الانحناء) عشان ياخد خطوة «مقاسة» على شكل الوادي، فبيوصل في خطوات أقل بكتير، بس كل خطوة أغلى لأنه محتاج يتعامل مع مصفوفة الـ Hessian.</p></details>
+  <p class="note ai"><strong>الرابط بالنهاردة:</strong> امبارح كنا بندوّر على قاع وادي. النهاردة هنسيب الأرقام العادية ونمشي في «مستوى» كامل، والضرب فيه هيبقى لفّ.</p>
+</section>
+
+<section>
+  <h2>خطة الساعة</h2>
+  <div class="plan">
+    <div><b>10 min</b>إيه هو العدد المركب والعمليات عليه</div>
+    <div><b>10 min</b>الـ polar form وEuler: الضرب = لف</div>
+    <div><b>15 min</b>المعامل: ضرب، phasor، DFT</div>
+    <div><b>15 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>الكويز + تمرين</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d19-what">
+  <div class="station-head"><span class="tag">01</span><h2>العدد المركب: نقطة في مستوى</h2></div>
+  <p>المشكلة اللي الدرس بيبدأ بيها: هتفتح أي paper عن الـ Fourier transform تلاقي <code>i</code> في كل حتة، وهتبص على الـ positional encodings في الـ Transformer تلاقي <code>sin</code> و<code>cos</code> بترددات مختلفة. من غير الأعداد المركبة مش هتفهم الـ DFT ولا الـ FFT ولا الـ RoPE.</p>
+  <p>العدد المركب ليه جزئين:</p>
+  <div class="formula">z = a + bi     a = real part     b = imaginary part     i² = −1</div>
+  <p>بس كده. بدل ما الأرقام عايشة على <b>خط</b>، بقت عايشة في <b>مستوى</b>. المحور الأفقي للأرقام الحقيقية، والرأسي للتخيلية. يعني:</p>
+  <div class="tablewrap"><table>
+    <tr><th>العدد</th><th>النقطة</th><th>مكانها</th></tr>
+    <tr><td class="ltr">3 + 2i</td><td class="ltr">(3, 2)</td><td>في النص</td></tr>
+    <tr><td class="ltr">−1 + 0i</td><td class="ltr">(−1, 0)</td><td>على المحور الحقيقي</td></tr>
+    <tr><td class="ltr">0 + 4i</td><td class="ltr">(0, 4)</td><td>على المحور التخيلي</td></tr>
+  </table></div>
+  <p>العدد المركب في نفس الوقت <b>نقطة</b> و<b>متجه</b> من الصفر لحد النقطة دي (فاكر يوم ١؟). المستوى ده اسمه complex plane أو Argand plane.</p>
+
+  <h3>العمليات الأربعة</h3>
+  <p><b>الجمع:</b> اجمع الحقيقي مع الحقيقي والتخيلي مع التخيلي. زي جمع متجهين بالظبط.</p>
+  <div class="formula">(3 + 2i) + (1 + 4i) = 4 + 6i</div>
+  <p><b>الضرب:</b> افتح الأقواس عادي وافتكر إن <span class="ltr">i² = −1</span>:</p>
+  <div class="formula">(a+bi)(c+di) = (ac − bd) + (ad + bc)i<br>(3+2i)(1+4i) = 3 + 12i + 2i + 8i² = 3 + 14i − 8 = −5 + 14i</div>
+  <p><b>الـ Conjugate (المرافق):</b> اقلب إشارة الجزء التخيلي. هندسيًا ده انعكاس في مراية على المحور الحقيقي. وأهم خاصية: العدد × مرافقه دايمًا رقم حقيقي:</p>
+  <div class="formula">conj(a + bi) = a − bi        (a + bi)(a − bi) = a² + b²</div>
+  <p><b>القسمة:</b> اضرب البسط والمقام في مرافق المقام. المقام يبقى رقم حقيقي ونخلص:</p>
+  <div class="formula">(a + bi) / (c + di) = (a + bi)(c − di) / (c² + d²)</div>
+  <div class="note"><strong>تشبيه:</strong> القسمة على عدد مركب زي إنك عايز تشيل «اللفة» من المقام. المرافق بيعمل لفة عكسية، فالمقام يتعدل على المحور الحقيقي ويبقى رقم عادي تقسم عليه.</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d19-polar">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Polar form: الضرب = لف + تكبير</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>أي نقطة تقدر توصفها بطريقتين: «امشي a يمين وb فوق» (rectangular)، أو «بُص بزاوية θ وامشي مسافة r» (polar).</p>
+      <div class="formula">r = |z| = √(a² + b²)     θ = atan2(b, a)<br>z = r (cos θ + i sin θ) = r·e^(iθ)</div>
+      <p>الـ <b>r</b> اسمها magnitude أو modulus، والـ <b>θ</b> اسمها phase أو argument. القاعدة الذهبية: الـ rectangular سهلة في <b>الجمع</b>، والـ polar سهلة في <b>الضرب</b>:</p>
+      <div class="formula">z₁·z₂ = (r₁·r₂) · e^(i(θ₁ + θ₂))</div>
+      <p>يعني: <b>اضرب الأطوال واجمع الزوايا.</b> ولو |w| = 1، الضرب فيه بيبقى <b>لفّ صافي</b> من غير ما يكبّر أو يصغّر.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> اسحب <b>z</b> (الأزرق) و<b>w</b> (البرتقالي). الناتج z·w باللون الغامق. بص على الـ readout: الطول = حاصل ضرب الطولين، والزاوية = مجموع الزاويتين. بعدين دوس «w = i» واضغط «اضرب تاني» كذا مرة: النقطة بتلف ٩٠° كل مرة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d19-mulCanvas" width="520" height="440" aria-label="مستوى الأعداد المركبة وضرب عددين"></canvas>
+      <div class="readout">
+        <div><small>z</small><b id="d19-rz">2 + 1i</b></div>
+        <div><small>w</small><b id="d19-rw">1 + 1i</b></div>
+        <div><small>z · w</small><b id="d19-rp">1 + 3i</b></div>
+        <div><small>|z|·|w| = |z·w|</small><b id="d19-rm">3.16</b></div>
+        <div><small>θz + θw</small><b id="d19-ra">71.6°</b></div>
+        <div><small>θ(z·w)</small><b id="d19-rpa">71.6°</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" data-d19w="0,1">w = i (لفة 90°)</button>
+        <button type="button" data-d19w="-1,0">w = −1</button>
+        <button type="button" data-d19w="0.7071,0.7071">w = e^(iπ/4)</button>
+        <button type="button" data-d19w="0.8660,0.5">w = e^(iπ/6)</button>
+        <button type="button" id="d19-again" class="primary">اضرب تاني: z ← z·w</button>
+        <button type="button" id="d19-reset">رجّع</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d19-showConj"> ورّيني conj(z)</label>
+      </div>
+    </div>
+  </div>
+  <p>لاحظ: لما w = e^(iπ/6) واضغطت «اضرب تاني» ١٢ مرة، بترجع لنفس المكان، لأن 12 × 30° = 360°. ده بالظبط تمرين ٢ تحت.</p>
+</section>
+
+<!-- STATION 3 -->
+<section id="d19-euler">
+  <div class="station-head"><span class="tag">03</span><h2>Euler: الجسر بين الأُس والـ sin والـ cos</h2></div>
+  <p>أهم معادلة في الدرس:</p>
+  <div class="formula">e^(iθ) = cos θ + i sin θ</div>
+  <p>ومعناها: لما θ تتغير، النقطة e^(iθ) بتمشي على <b>دايرة الوحدة</b> (unit circle، نص قطرها ١). عند θ = 0 انت عند (1, 0)، وعند π/2 عند (0, 1)، وعند π عند (−1, 0)، وعند 3π/2 عند (0, −1)، ولفة كاملة = 2π.</p>
+  <p>ولو حطيت θ = π:</p>
+  <div class="formula">e^(iπ) = cos π + i sin π = −1     ⟹     e^(iπ) + 1 = 0</div>
+  <p>خمس ثوابت أساسية (e و i و π و 1 و 0) في معادلة واحدة. بس الأهم بالنسبالنا: <b>الـ complex exponentials هي حرفيًا لفّات</b>.</p>
+
+  <h3>الضرب المركب = مصفوفة اللف</h3>
+  <p>اضرب (x + yi) في e^(iθ) وافتح الأقواس:</p>
+  <div class="formula">(x + yi)(cos θ + i sin θ) = (x cos θ − y sin θ) + (x sin θ + y cos θ)i</div>
+  <p>وقارن بمصفوفة اللف اللي شفتها في يوم ٣:</p>
+  <div class="formula">[[cos θ, −sin θ], [sin θ, cos θ]] · [x, y] = [x cos θ − y sin θ, x sin θ + y cos θ]</div>
+  <p>نفس النتيجة بالظبط. مصفوفة اللف 2×2 ما هي إلا ضرب مركب مكتوب بشكل مصفوفات.</p>
+
+  <h3>ليه i² = −1 مش لغز</h3>
+  <p>كلمة «تخيلي» غلطة تاريخية: ديكارت استخدمها بتريقة. والأرقام السالبة نفسها الناس رفضتها في الأول. السالب بيجاوب «أطرح ٥ من ٣ يطلع كام؟»، والـ i بتجاوب «إيه اللي تربيعه −1؟».</p>
+  <p>الأحسن تفكر فيها كده: <b>i = أمر «لف ٩٠°»</b>. اضرب رقم حقيقي في i مرة يلف ٩٠° ويروح على المحور التخيلي. اضربه تاني (i²) يلف ٩٠° كمان، يبقى بص في الاتجاه السالب. نص لفة = −1. خلاص.</p>
+  <p>عشان كده أي حاجة بتلف (موجات كهرومغناطيسية، quantum states، إشارات بتتذبذب، positional encodings) الأعداد المركبة بتوصفها بشكل طبيعي.</p>
+</section>
+
+<!-- STATION 4: phasor lab -->
+<section id="d19-phasor">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Phasor: الموجة هي ضل نقطة بتلف</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>e^(iωt) نقطة بتلف على دايرة الوحدة بسرعة زاوية ω. مع الوقت:</p>
+      <div class="formula">e^(iωt) = cos(ωt) + i sin(ωt)</div>
+      <p>الجزء الحقيقي = موجة cos، والتخيلي = موجة sin. يعني <b>موجة الـ sin هي ضل نقطة بتلف</b>.</p>
+      <p>ده اسمه phasor. بدل ما تتابع موجة متعرّجة، بتتابع سهم بيلف بهدوء:</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+        <li>الـ <b>phase shift</b> بقى زاوية بداية مختلفة.</li>
+        <li>تغيير الـ <b>amplitude</b> بقى طول السهم.</li>
+        <li><b>جمع موجتين</b> بقى جمع متجهين.</li>
+      </ul>
+      <div class="note"><strong>جرب:</strong> شغّل الأنيميشن وغيّر الـ phase φ: الموجة كلها بتزق يمين وشمال. غيّر A: السهم يطول والموجة تعلى.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d19-phCanvas" width="560" height="260" aria-label="نقطة بتلف على دايرة وموجتها"></canvas>
+      <div class="mrow">
+        <label>ω (لفات/ثانية) <span id="d19-vw">1</span><input type="range" id="d19-w" min="0.25" max="3" step="0.25" value="1"></label>
+        <label>phase φ° <span id="d19-vphi">0</span><input type="range" id="d19-phi" min="0" max="360" step="15" value="0"></label>
+        <label>amplitude A <span id="d19-vA">1</span><input type="range" id="d19-A" min="0.2" max="1" step="0.1" value="1"></label>
+        <label style="align-self:end"><button type="button" id="d19-play" class="primary">شغّل / وقّف</button></label>
+      </div>
+      <div class="readout">
+        <div><small>الزاوية ωt+φ</small><b id="d19-pang">0°</b></div>
+        <div><small>Real = A cos</small><b id="d19-pre">1</b></div>
+        <div><small>Imag = A sin</small><b id="d19-pim">0</b></div>
+        <div><small>|z|</small><b id="d19-pmag">1</b></div>
+      </div>
+    </div>
+  </div>
+  <h3>ليه المهندسين بيحبوا الـ complex exponentials</h3>
+  <p>زمان كانوا بيكتبوا الإشارة <span class="ltr">A cos(ωt + φ)</span>. شغالة، بس جمع اتنين cos بـ phases مختلفة محتاج متطابقات مثلثية مزعجة. بالـ complex exponentials نفس الإشارة <span class="ltr">A e^(i(ωt + φ))</span>:</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li>جمع إشارتين = جمع عددين مركبين.</li>
+    <li>الضرب (modulation) = اضرب الأطوال واجمع الزوايا.</li>
+    <li>الـ phase shift = جمع زاوية، والـ frequency shift = ضرب في phasor.</li>
+  </ul>
+  <p>«الإشارة الحقيقية» هي دايمًا الجزء الحقيقي بس، والتخيلي بيتشال معاها كـ «دفتر حسابات» عشان الجبر يمشي نضيف. عشان كده مجال الـ signal processing كله اتحول للكتابة دي.</p>
+</section>
+
+<!-- STATION 5: roots + DFT -->
+<section id="d19-roots">
+  <div class="station-head"><span class="tag">05</span><h2>جذور الواحد والـ DFT</h2></div>
+  <p>الـ N-th roots of unity هي N نقطة متوزعة بالتساوي على دايرة الوحدة:</p>
+  <div class="formula">w_k = e^(2πi·k/N)     k = 0, 1, …, N−1</div>
+  <p>لـ N = 4: <span class="ltr">1, i, −1, −i</span> (الاتجاهات الأربعة). لـ N = 8: الأربعة دول + الأربع أقطار. خاصيتين مهمين: كل جذر طوله ١ بالظبط، و<b>مجموعهم كلهم = صفر</b> (بيلغوا بعض بالتماثل). والخاصيتين دول هما اللي بيخلوا الـ DFT ينفع يتعكس: الجذور بتعمل orthogonal basis لعالم الترددات.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل أ: الجذور ومجموعها</h3>
+      <p>غيّر N. السهم الغامق هو مجموع الجذور كلها، ودايمًا بيفضل نقطة عند الصفر. و«k» بيوريك قوة الجذر الأساسي <span class="ltr">e^(2πi/N)</span>: الضرب فيه بيوديك للجذر اللي بعده.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d19-rootCanvas" width="400" height="320" aria-label="جذور الواحد على دايرة الوحدة"></canvas>
+      <div class="mrow">
+        <label>N <span id="d19-vN">8</span><input type="range" id="d19-N" min="2" max="16" step="1" value="8"></label>
+        <label>k <span id="d19-vk">1</span><input type="range" id="d19-k" min="0" max="7" step="1" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>w_k</small><b id="d19-rwk"></b></div>
+        <div><small>|Σ w_k|</small><b id="d19-rsum"></b></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>الـ DFT: سيجنال = مجموع phasors</h3>
+  <p>الـ Discrete Fourier Transform لسيجنال <span class="ltr">x[0..N−1]</span>:</p>
+  <div class="formula">X[k] = Σₙ x[n] · e^(−2πi·k·n/N)</div>
+  <p>كل X[k] بيقيس «السيجنال شبه الـ phasor اللي تردده k قد إيه» (correlation). الـ DFT بيفكك السيجنال لـ N سهم بيلفوا، ويقولك الطول (amplitude) والزاوية (phase) لكل واحد. والتكلفة هنا <span class="ltr">O(N²)</span> لأن كل X[k] جمع على N عينة. الـ FFT اللي هتشوفه بكرة بيعمل نفس الحساب أسرع بكتير.</p>
+  <p>والعكس (inverse DFT): نفس المعادلة بس اقلب إشارة الأُس واقسم على N. بترجّعلك السيجنال الأصلي بالظبط (لحد دقة الكمبيوتر). مفيش معلومة بتضيع.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ب: فكّك سيجنال لتردداته</h3>
+      <p>السيجنال: <span class="ltr">A₁ sin(2π f₁ t) + A₂ sin(2π f₂ t)</span>، متاخد على N = 32 نقطة (t = n/32). فوق السيجنال، وتحت طول X[k] لـ k من 0 لـ 16 (النص التاني صورة مراية).</p>
+      <p>لاحظ القاعدة: sine بسعة A بيعمل قمة طولها <b>A·N/2</b>. يعني بالقيم الافتراضية (A₁ = 1، A₂ = 0.5): قمة 16 عند k = 3 وقمة 8 عند k = 7. ده بالظبط تمرين ٣.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d19-dftCanvas" width="520" height="340" aria-label="سيجنال وطيف الترددات بتاعه"></canvas>
+      <div class="mrow">
+        <label>f₁ <span id="d19-vf1">3</span><input type="range" id="d19-f1" min="1" max="15" step="1" value="3"></label>
+        <label>A₁ <span id="d19-va1">1</span><input type="range" id="d19-a1" min="0" max="1" step="0.1" value="1"></label>
+        <label>f₂ <span id="d19-vf2">7</span><input type="range" id="d19-f2" min="1" max="15" step="1" value="7"></label>
+        <label>A₂ <span id="d19-va2">0.5</span><input type="range" id="d19-a2" min="0" max="1" step="0.1" value="0.5"></label>
+      </div>
+      <div class="readout">
+        <div><small>|X[f₁]|</small><b id="d19-x1"></b></div>
+        <div><small>A₁·N/2</small><b id="d19-e1"></b></div>
+        <div><small>|X[f₂]|</small><b id="d19-x2"></b></div>
+        <div><small>A₂·N/2</small><b id="d19-e2"></b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6: transformers -->
+<section id="d19-tf">
+  <div class="station-head"><span class="tag">06</span><h2>الربط بالـ Transformers</h2></div>
+  <h3>الـ Sinusoidal positional encodings</h3>
+  <p>من paper الـ Transformer الأصلي:</p>
+  <div class="formula">PE(pos, 2i) = sin(pos / 10000^(2i/d))<br>PE(pos, 2i+1) = cos(pos / 10000^(2i/d))</div>
+  <p>كل زوج (sin, cos) هو الجزء التخيلي والحقيقي لـ complex exponential بتردد معين. كل تردد بيدي «دقة» مختلفة للمكان: الترددات الواطية بتتغير ببطء (مكان تقريبي)، والعالية بتتغير بسرعة (مكان دقيق). مع بعض بيدوا كل position «بصمة ترددات» فريدة.</p>
+  <div class="note"><strong>تشبيه:</strong> زي عقارب الساعة. عقرب الثواني بيلف بسرعة (تفاصيل)، والدقايق أبطأ، والساعات أبطأ وأبطأ. من مكان التلات عقارب مع بعض تعرف الوقت بالظبط. كل زوج sin/cos عقرب بيلف بسرعته.</div>
+  <h3>الـ RoPE (Rotary Position Embedding)</h3>
+  <p>بيروح خطوة أبعد: بيضرب الـ query والـ key صراحةً في مصفوفات لف (complex rotations). الـ <b>المسافة النسبية</b> بين توكنين بتتحول لـ <b>زاوية لف</b>، والـ attention بيتحسب بالمتجهات الملفوفة، فالموديل بيبقى حساس للمكان النسبي من خلال الضرب المركب. شوف المعمل في الإضافة تحت.</p>
+  <h3>جدول المراجعة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>العملية</th><th>جبريًا</th><th>هندسيًا</th></tr>
+    <tr><td>الجمع</td><td class="ltr">(a+c) + (b+d)i</td><td>جمع متجهات في المستوى</td></tr>
+    <tr><td>الضرب</td><td class="ltr">(ac−bd) + (ad+bc)i</td><td>لف + تكبير</td></tr>
+    <tr><td>المرافق</td><td class="ltr">a − bi</td><td>انعكاس على المحور الحقيقي</td></tr>
+    <tr><td>الطول</td><td class="ltr">√(a² + b²)</td><td>المسافة من الصفر</td></tr>
+    <tr><td>الزاوية</td><td class="ltr">atan2(b, a)</td><td>الزاوية من المحور الحقيقي الموجب</td></tr>
+    <tr><td>القسمة</td><td>اضرب في المرافق</td><td>لف عكسي + تصغير</td></tr>
+    <tr><td>الأُس</td><td class="ltr">rⁿ e^(inθ)</td><td>لف n مرات، وتكبير بـ rⁿ</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 7: my addition -->
+<section id="d19-mine">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: ليه الـ RoPE بيشوف «المسافة» بس</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>خد زوج أرقام من الـ query واعتبره عدد مركب q، وزوج من الـ key واعتبره k. الـ RoPE بيلف q بزاوية <span class="ltr">m·θ</span> (m = مكان الـ query) ويلف k بزاوية <span class="ltr">n·θ</span>. الـ dot product بين المتجهين الملفوفين:</p>
+      <div class="formula">Re( q e^(imθ) · conj(k e^(inθ)) ) = Re( q · conj(k) · e^(i(m−n)θ) )</div>
+      <p>الـ m والـ n اختفوا وفضل <b>m − n</b> بس. يعني الـ score بيعتمد على بُعد التوكنين عن بعض، مش مكانهم المطلق. جرّب الزرار «زق الاتنين +5»: السهمين بيلفوا، بس الـ score ثابت.</p>
+      <p><b>أخطاء شائعة:</b></p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+        <li>تنسى إن <span class="ltr">atan2(b, a)</span> مش <span class="ltr">atan(b/a)</span>: الأخيرة بتغلط في الربع التاني والتالت وبتقع لو a = 0.</li>
+        <li>في Python الوحدة التخيلية <code>j</code> مش <code>i</code>، و<code>abs(z)</code> هي الطول.</li>
+        <li>بتبص على النص التاني من الـ DFT لسيجنال حقيقي وتفتكر فيه ترددات زيادة: ده مراية للنص الأول.</li>
+        <li>بتقارن عددين مركبين بـ <code>==</code> بعد حسابات float. استخدم tolerance زي ما الكود بيعمل (<code>1e-10</code>).</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d19-ropeCanvas" width="400" height="320" aria-label="لف الـ query والـ key في RoPE"></canvas>
+      <div class="mrow">
+        <label>m (مكان الـ query) <span id="d19-vm">4</span><input type="range" id="d19-m" min="0" max="30" step="1" value="4"></label>
+        <label>n (مكان الـ key) <span id="d19-vn">1</span><input type="range" id="d19-n" min="0" max="30" step="1" value="1"></label>
+        <label>θ <span id="d19-vth">0.3</span><input type="range" id="d19-th" min="0.05" max="1" step="0.05" value="0.3"></label>
+        <label style="align-self:end"><button type="button" id="d19-shift">زق الاتنين +5</button></label>
+      </div>
+      <div class="readout">
+        <div><small>m − n</small><b id="d19-rmn"></b></div>
+        <div><small>score</small><b id="d19-rsc"></b></div>
+      </div>
+    </div>
+  </div>
+  <div class="note ai"><strong>فين هتقابله:</strong> الـ RoPE مستخدم في موديلات كتير مفتوحة حديثة، والـ RoFormer paper (Su et al., 2021) هو اللي قدّمه. ولما تسمع عن «توسيع الـ context window» بتعديل ترددات الـ RoPE، فاللي بيتعدل هو سرعات اللف دي نفسها.</div>
+</section>
+
+<!-- CODE -->
+<section id="d19-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو، شغّل الكود الأصلي الأول وبص على الناتج:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/01-math-foundations/19-complex-numbers/code/complex_numbers.py</pre></div>
+  <p>الملف بيعمل demos ورا بعض (arithmetic، polar، Euler، rotation، roots of unity، DFT، phasor، positional encoding) وفي الآخر بيكتب <code>outputs/skill-complex-arithmetic.md</code> جوه فولدر الدرس.</p>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_complex.py</code> واكتب الخطوات دي بنفسك، وبص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: كلاس Complex</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+class Complex:
+    def __init__(self, real, imag=0.0):
+        self.real = real
+        self.imag = imag
+
+    def __add__(self, other):          <span class="c"># حقيقي + حقيقي، تخيلي + تخيلي</span>
+        return Complex(self.real + other.real, self.imag + other.imag)
+
+    def __mul__(self, other):          <span class="c"># (ac - bd) + (ad + bc)i</span>
+        r = self.real * other.real - self.imag * other.imag
+        i = self.real * other.imag + self.imag * other.real
+        return Complex(r, i)
+
+    def __truediv__(self, other):      <span class="c"># اضرب في مرافق المقام</span>
+        denom = other.real ** 2 + other.imag ** 2
+        r = (self.real * other.real + self.imag * other.imag) / denom
+        i = (self.imag * other.real - self.real * other.imag) / denom
+        return Complex(r, i)
+
+    def magnitude(self):               <span class="c"># المسافة من الصفر</span>
+        return math.sqrt(self.real ** 2 + self.imag ** 2)
+
+    def phase(self):                   <span class="c"># الزاوية، atan2 مش atan</span>
+        return math.atan2(self.imag, self.real)
+
+    def conjugate(self):               <span class="c"># مراية على المحور الحقيقي</span>
+        return Complex(self.real, -self.imag)</pre></div>
+  <p>الكلاس الأصلي في الريبو فيه كمان <code>__sub__</code> و<code>__neg__</code> و<code>__repr__</code> و<code>__eq__</code> (بـ tolerance <code>1e-10</code>)، وبيقبل أرقام عادية في العمليات. ضيفهم لما تخلص.</p>
+
+  <h3>خطوة ٢: Polar وEuler</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def to_polar(z):
+    return z.magnitude(), z.phase()            <span class="c"># (r, θ)</span>
+
+def from_polar(r, theta):
+    return Complex(r * math.cos(theta), r * math.sin(theta))
+
+def euler(theta):                              <span class="c"># e^(iθ) = cos θ + i sin θ</span>
+    return Complex(math.cos(theta), math.sin(theta))</pre></div>
+  <p>اتأكد: <code>euler(theta).magnitude()</code> دايمًا 1، و<code>euler(0)</code> = (1, 0)، و<code>euler(math.pi)</code> = (−1, 0).</p>
+
+  <h3>خطوة ٣: اللف</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>point = Complex(3, 4)
+rotated = point * euler(math.pi / 4)           <span class="c"># لف 45°</span>
+print(point.magnitude(), rotated.magnitude())  <span class="c"># الطول ما اتغيرش</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">5.0 5.0   (التاني ممكن يطلع 4.999999999999999 أو حاجة قريبة جدًا من 5 بسبب الـ float)</pre></details>
+
+  <h3>خطوة ٤: الـ DFT من الضرب المركب</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def dft(signal):
+    N = len(signal)
+    result = []
+    for k in range(N):                         <span class="c"># لكل تردد k</span>
+        total = Complex(0, 0)
+        for n in range(N):                     <span class="c"># اجمع على كل العينات</span>
+            angle = -2 * math.pi * k * n / N
+            total = total + Complex(signal[n], 0) * euler(angle)
+        result.append(total)
+    return result                              <span class="c"># O(N²)</span></pre></div>
+
+  <h3>خطوة ٥: الـ Inverse DFT</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def idft(spectrum):
+    N = len(spectrum)
+    result = []
+    for n in range(N):
+        total = Complex(0, 0)
+        for k in range(N):
+            angle = 2 * math.pi * k * n / N    <span class="c"># الإشارة اتقلبت</span>
+            total = total + spectrum[k] * euler(angle)
+        result.append(Complex(total.real / N, total.imag / N))   <span class="c"># واقسم على N</span>
+    return result</pre></div>
+
+  <h3>خطوة ٦: جذور الواحد</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def roots_of_unity(N):
+    return [euler(2 * math.pi * k / N) for k in range(N)]
+
+roots = roots_of_unity(8)
+print([round(r.magnitude(), 6) for r in roots])  <span class="c"># كلهم 1</span>
+s = Complex(0, 0)
+for r in roots:
+    s = s + r
+print(s.magnitude())                             <span class="c"># قريب جدًا من الصفر</span></pre></div>
+
+  <h3>خطوة ٧: نفس الكلام بأدوات Python الجاهزة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>z = 3 + 2j                 <span class="c"># في Python الوحدة اسمها j</span>
+w = 1 + 4j
+print(z + w)
+print(z * w)
+print(abs(z))
+
+import cmath
+print(cmath.phase(z))
+print(cmath.exp(1j * cmath.pi))
+
+import numpy as np
+z = np.array([1+2j, 3+4j, 5+6j])
+print(np.abs(z), np.angle(z), np.conj(z), np.real(z), np.imag(z))
+
+signal = np.sin(2 * np.pi * 5 * np.linspace(0, 1, 128))
+spectrum = np.fft.fft(signal)
+freqs = np.fft.fftfreq(128, d=1/128)</pre></div>
+  <details><summary>الناتج المتوقع لأول ٣ سطور</summary><pre class="term">(4+6j)
+(-5+14j)
+3.605551275463989</pre>
+  <p><code>cmath.exp(1j*cmath.pi)</code> هيطلع <span class="ltr">-1</span> وجنبه جزء تخيلي صغير جدًا (حاجة × 10⁻¹⁶) بسبب الـ float، مش صفر بالظبط.</p></details>
+
+  <h3>الناتج المتوقع من سكريبت الريبو</h3>
+  <p>القيم دي محسوبة بالرياضة مباشرة (مش من تشغيل السكريبت)، والكود بيطبع بـ ٦ أرقام عشرية. أول جزء (COMPLEX ARITHMETIC):</p>
+  <pre class="term">  z1 = 3.000000 + 2.000000i
+  z2 = 1.000000 + 4.000000i
+
+  z1 + z2  = 4.000000 + 6.000000i
+  z1 - z2  = 2.000000 - 2.000000i
+  z1 * z2  = -5.000000 + 14.000000i
+  z1 / z2  = 0.647059 - 0.588235i
+
+  |z1|     = 3.605551
+  phase(z1)= 0.588003 rad (33.69 deg)
+  conj(z1) = 3.000000 - 2.000000i</pre>
+  <p>وفي جزء DFT OF A SIMPLE SIGNAL لازم تلاقي قمتين بس: عند <span class="ltr">k=3</span> بطول <span class="ltr">16.0000</span> وعند <span class="ltr">k=7</span> بطول <span class="ltr">8.0000</span>، والسطور «Expected peaks at k=3 (amplitude 16.0)» و«k=7 (amplitude 8.0)»، و«Perfect reconstruction: True». باقي الأجزاء: الـ magnitude في الـ Euler والـ roots والـ phasor كلها 1، والـ <span class="ltr">|sum|</span> والأخطاء أرقام صغيرة جدًا زي <span class="ltr">1e-15</span> تقريبًا. قارن باللي طلعلك، ولو حاجة اختلفت كتير يبقى فيه bug.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d19-ex">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة، والباقي في الـ warm-up بكرة.</p>
+  <ol class="ex">
+    <li><b>حساب بإيدك:</b> احسب <span class="ltr">(2 + 3i)(4 − i)</span> واتأكد بالكود. وبعدين <span class="ltr">(5 + 2i) / (1 − 3i)</span>. ارسمهم على المستوى واتأكد إن الضرب لفّ وكبّر الرقم الأول.
+      <details><summary>تلميح + إجابة</summary>افتح الأقواس بـ <span class="ltr">i² = −1</span>: <span class="ltr">8 − 2i + 12i − 3i² = 11 + 10i</span>. للقسمة اضرب فوق وتحت في <span class="ltr">1 + 3i</span>: <span class="ltr">(5 + 15i + 2i − 6) / 10 = −0.1 + 1.7i</span>. التحقق: <code>Complex(2,3) * Complex(4,-1)</code> طولها لازم = حاصل ضرب الطولين (<span class="ltr">√13·√17 = √221</span>)، وزاويتها = مجموع الزاويتين.</details></li>
+    <li><b>سلسلة لف:</b> ابدأ من (1, 0) واضرب في <span class="ltr">e^(iπ/6)</span> ١٢ مرة. لازم ترجع لـ (1, 0). اطبع الإحداثيات كل خطوة: بترسم مضلع منتظم بـ ١٢ ضلع.
+      <details><summary>تلميح</summary>الخطوة <code>euler(math.pi / 6)</code>. كل مرة اتأكد إن الطول 1 والزاوية زادت 30°. النقطة الأخيرة لازم تبقى على بعد حوالي <span class="ltr">1e-12</span> من (1, 0). جرّبها الأول في معمل ٠٢ بزرار «w = e^(iπ/6)».</details></li>
+    <li><b>DFT لسيجنال معروف:</b> <span class="ltr">sin(2π·3t) + 0.5 sin(2π·7t)</span> على 32 نقطة. شغّل الـ DFT واتأكد إن فيه قمم عند 3 و7، وقمة 7 نص قمة 3.
+      <details><summary>تلميح</summary>t = n/32. بص على الـ bins من 0 لـ 15 بس (النص التاني مراية). sine بسعة A قمته A·N/2، يعني حوالي 16 عند bin 3 و8 عند bin 7. نفس اللي بتشوفه في معمل ٠٥ ب.</details></li>
+    <li><b>جذور الواحد:</b> احسب الـ 8th roots، اتأكد إن مجموعهم صفر، وإن ضرب أي جذر في <span class="ltr">e^(2πi/8)</span> بيديك اللي بعده.
+      <details><summary>تلميح</summary><code>roots_of_unity(8)</code>، واجمعهم: الطول لازم يبقى قريب من 0. اقسم كل جذر على اللي قبله، وكل ناتج لازم يساوي <code>euler(2 * math.pi / 8)</code>.</details></li>
+    <li><b>تكافؤ مصفوفة اللف:</b> لـ ١٠ زوايا عشوائية و١٠ نقط عشوائية، اتأكد إن الضرب المركب = ضرب مصفوفة اللف 2×2. اطبع أكبر فرق.
+      <details><summary>تلميح</summary>المصفوفة <span class="ltr">[[cos t, −sin t], [sin t, cos t]]</span>. احسب <code>euler(t) * Complex(x, y)</code> وضرب المصفوفة، وخد أكبر فرق مطلق. توقّع رقم قريب من <span class="ltr">10⁻¹⁵</span>.</details></li>
+    <li><b>إضافة مني · RoPE صغير بإيدك:</b> خد query وkey متجهات بطول 4. قسّم كل متجه لزوجين واعتبر كل زوج عدد مركب. لف الزوج رقم i بزاوية <span class="ltr">pos · θᵢ</span> حيث <span class="ltr">θᵢ = 1 / 10000^(2i/4)</span> (نفس ترددات الـ positional encoding). احسب الـ dot product للمواقع (m=2, n=0) و(m=12, n=10) و(m=7, n=5). لازم يطلعوا نفس الرقم.
+      <details><summary>تلميح</summary>
+        <div class="codebox"><button class="copy" type="button">Copy</button><pre>def rope(vec, pos, d=4):
+    out = []
+    for i in range(d // 2):
+        theta = 1 / (10000 ** (2 * i / d))
+        z = Complex(vec[2*i], vec[2*i+1]) * euler(pos * theta)
+        out += [z.real, z.imag]
+    return out
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+q, k = [1.0, 0.5, -0.3, 0.8], [0.2, 1.0, 0.7, -0.4]
+for m, n in [(2, 0), (12, 10), (7, 5)]:
+    print(m, n, round(dot(rope(q, m), rope(k, n)), 10))</pre></div>
+        الأرقام التلاتة لازم تتطابق (لحد آخر رقم عشري تقريبًا). جرب بعدين (5, 0): الرقم هيتغير لأن المسافة اتغيرت.</details></li>
+  </ol>
+</section>
+
+<!-- QUIZ -->
+<section id="d19-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d19-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d19-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d19-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أجمع وأضرب وأقسم أعداد مركبة بإيدي، وأعرف المرافق بيعمل إيه</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فهمت إن الضرب = «اضرب الأطوال واجمع الزوايا» وجربته في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> أقدر أشرح Euler's formula وليه موجة الـ sin ضل نقطة بتلف</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت Complex وdft وidft بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Euler's formula / phasors</td><td>الـ signal processing كله، الصوت (Phase 6)</td></tr>
+    <tr><td>الضرب المركب = لف</td><td>الـ RoPE في الـ attention بتاع موديلات كتير</td></tr>
+    <tr><td>أزواج sin/cos بترددات مختلفة</td><td>الـ sinusoidal positional encoding في الـ Transformer الأصلي</td></tr>
+    <tr><td>Roots of unity</td><td>الـ DFT والـ FFT (درس بكرة)</td></tr>
+    <tr><td>DFT / IDFT</td><td>الـ spectrograms، تحليل الصوت والإشارات</td></tr>
+    <tr><td>Complex vector spaces</td><td>الـ quantum computing</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> The Fourier Transform. هناخد الـ DFT اللي بنيته النهاردة ونفهمه بعمق ونسرّعه بالـ FFT. وهنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F19-complex-numbers" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/19-complex-numbers</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, $=id=>document.getElementById(id), css=A.css, f=A.fmt;
+const root=$('d19-root');
+
+// roadmap
+const rm=$('d19-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===19)s.className='now';rm.appendChild(s)}
+
+const cfmt=(re,im,d)=>{d=d==null?2:d;const r=f(re,d),i=f(im,d);return r+(i<0?' − ':' + ')+Math.abs(i)+'i'};
+const deg=r=>r*180/Math.PI;
+
+// ---------- Lab 1: multiplication ----------
+const mc=$('d19-mulCanvas'),mx=A.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h,MS=40,mox=MW/2,moy=MH/2;
+let Z=[2,1],Wv=[1,1],drag=null;
+const toPx=p=>[mox+p[0]*MS,moy-p[1]*MS],toW=(x,y)=>[(x-mox)/MS,(moy-y)/MS];
+const mul=(a,b)=>[a[0]*b[0]-a[1]*b[1],a[0]*b[1]+a[1]*b[0]];
+function dot(p,col,lbl){const [x,y]=toPx(p);mx.fillStyle=col;mx.beginPath();mx.arc(x,y,9,0,7);mx.fill();mx.fillStyle=css('--paper');mx.font='bold 11px JetBrains Mono, monospace';mx.textAlign='center';mx.fillText(lbl,x,y+4);mx.textAlign='left'}
+function drawMul(){
+  mx.clearRect(0,0,MW,MH);A.grid(mx,MW,MH,MS,mox,moy);
+  // unit circle
+  mx.strokeStyle=css('--muted');mx.setLineDash([4,4]);mx.lineWidth=1;mx.beginPath();mx.arc(mox,moy,MS,0,7);mx.stroke();mx.setLineDash([]);
+  mx.fillStyle=css('--muted');mx.font='12px JetBrains Mono, monospace';mx.fillText('Re',MW-24,moy-6);mx.fillText('Im',mox+6,14);
+  const P=mul(Z,Wv);
+  if($('d19-showConj').checked){const C=[Z[0],-Z[1]];A.arrow(mx,mox,moy,...toPx(C),css('--muted'),2);mx.fillStyle=css('--muted');mx.fillText('conj(z)',toPx(C)[0]+8,toPx(C)[1]+14)}
+  // angle arcs
+  const az=Math.atan2(Z[1],Z[0]),aw=Math.atan2(Wv[1],Wv[0]);
+  mx.lineWidth=2;mx.strokeStyle=css('--vec-a');mx.beginPath();mx.arc(mox,moy,26,0,-az,az>0);mx.stroke();
+  mx.strokeStyle=css('--vec-b');mx.beginPath();mx.arc(mox,moy,18,0,-aw,aw>0);mx.stroke();
+  A.arrow(mx,mox,moy,...toPx(P),css('--ink'),3.5);
+  A.arrow(mx,mox,moy,...toPx(Wv),css('--vec-b'),3);
+  A.arrow(mx,mox,moy,...toPx(Z),css('--vec-a'),3);
+  dot(Z,css('--vec-a'),'z');dot(Wv,css('--vec-b'),'w');
+  const [px,py]=toPx(P);mx.fillStyle=css('--ink');mx.font='bold 13px JetBrains Mono, monospace';
+  if(px>0&&px<MW&&py>0&&py<MH)mx.fillText('z·w',px+8,py-8);else{mx.fillText('z·w outside view',8,MH-10)}
+  const mz=Math.hypot(...Z),mw=Math.hypot(...Wv),ap=Math.atan2(P[1],P[0]);
+  let sum=deg(az+aw);while(sum>180)sum-=360;while(sum<=-180)sum+=360;
+  $('d19-rz').textContent=cfmt(Z[0],Z[1]);$('d19-rw').textContent=cfmt(Wv[0],Wv[1]);$('d19-rp').textContent=cfmt(P[0],P[1]);
+  $('d19-rm').textContent=f(mz)+' × '+f(mw)+' = '+f(Math.hypot(...P));
+  $('d19-ra').textContent=f(deg(az),1)+'° + '+f(deg(aw),1)+'° ≡ '+f(sum,1)+'°';
+  $('d19-rpa').textContent=(Math.hypot(...P)<1e-9?'—':f(deg(ap),1)+'°');
+}
+mc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(mc,e);const dz=Math.hypot(x-toPx(Z)[0],y-toPx(Z)[1]),dw=Math.hypot(x-toPx(Wv)[0],y-toPx(Wv)[1]);drag=dz<=dw?'z':'w';mc.setPointerCapture(e.pointerId);mmove(e)});
+function mmove(e){if(!drag)return;const [x,y]=A.evPos(mc,e);let p=toW(x,y);p=[Math.round(p[0]*2)/2,Math.round(p[1]*2)/2];p[0]=Math.max(-6,Math.min(6,p[0]));p[1]=Math.max(-5,Math.min(5,p[1]));if(drag==='z')Z=p;else Wv=p;drawMul()}
+mc.addEventListener('pointermove',mmove);mc.addEventListener('pointerup',()=>drag=null);mc.addEventListener('pointercancel',()=>drag=null);
+root.querySelectorAll('[data-d19w]').forEach(b=>b.addEventListener('click',()=>{Wv=b.dataset.d19w.split(',').map(Number);drawMul()}));
+$('d19-again').addEventListener('click',()=>{const P=mul(Z,Wv);if(Math.hypot(...P)<60)Z=P;drawMul()});
+$('d19-reset').addEventListener('click',()=>{Z=[2,1];Wv=[1,1];drawMul()});
+$('d19-showConj').addEventListener('change',drawMul);
+drawMul();
+
+// ---------- Lab 2: phasor ----------
+const pc=$('d19-phCanvas'),px2=A.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+const cx=110,cy=PH/2,R=90,wx0=230,wx1=PW-10;
+let t=0,playing=true,last=null,raf=null;
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;if(reduce)playing=false;
+function phParams(){return{w:+$('d19-w').value,phi:+$('d19-phi').value*Math.PI/180,Am:+$('d19-A').value}}
+function drawPh(){
+  const {w,phi,Am}=phParams(),ang=2*Math.PI*w*t+phi,re=Am*Math.cos(ang),im=Am*Math.sin(ang);
+  px2.clearRect(0,0,PW,PH);
+  // axes
+  px2.strokeStyle=css('--grid');px2.lineWidth=1;px2.beginPath();px2.moveTo(cx-R-10,cy);px2.lineTo(cx+R+10,cy);px2.moveTo(cx,cy-R-10);px2.lineTo(cx,cy+R+10);px2.moveTo(wx0,cy);px2.lineTo(wx1,cy);px2.stroke();
+  px2.strokeStyle=css('--muted');px2.setLineDash([4,4]);px2.beginPath();px2.arc(cx,cy,R,0,7);px2.stroke();px2.setLineDash([]);
+  // waves: x-axis = time window of 2 seconds, newest at left
+  const span=2,toX=s=>wx0+(s/span)*(wx1-wx0);
+  [['cos',css('--vec-b'),Math.cos],['sin',css('--vec-a'),Math.sin]].forEach(([nm,col,fn])=>{
+    px2.strokeStyle=col;px2.lineWidth=nm==='sin'?2.5:1.5;if(nm==='cos')px2.setLineDash([5,4]);px2.beginPath();
+    for(let i=0;i<=200;i++){const s=i/200*span,a=2*Math.PI*w*(t-s)+phi,y=cy-Am*R*fn(a);i?px2.lineTo(toX(s),y):px2.moveTo(toX(s),y)}
+    px2.stroke();px2.setLineDash([]);
+  });
+  const ex=cx+re*R,ey=cy-im*R;
+  // projection line to wave
+  px2.strokeStyle=css('--muted');px2.lineWidth=1;px2.setLineDash([3,3]);px2.beginPath();px2.moveTo(ex,ey);px2.lineTo(wx0,ey);px2.stroke();px2.beginPath();px2.moveTo(ex,ey);px2.lineTo(ex,cy);px2.stroke();px2.setLineDash([]);
+  A.arrow(px2,cx,cy,ex,ey,css('--ink'),3);
+  px2.fillStyle=css('--vec-a');px2.beginPath();px2.arc(wx0,ey,5,0,7);px2.fill();
+  px2.fillStyle=css('--vec-b');px2.beginPath();px2.arc(ex,cy,4,0,7);px2.fill();
+  px2.font='12px JetBrains Mono, monospace';px2.fillStyle=css('--vec-a');px2.fillText('Im → sin',wx0+6,18);px2.fillStyle=css('--vec-b');px2.fillText('Re → cos (dashed)',wx0+90,18);
+  px2.fillStyle=css('--muted');px2.fillText('time →',wx1-50,PH-8);
+  let a=(ang*180/Math.PI)%360;if(a<0)a+=360;
+  $('d19-pang').textContent=f(a,0)+'°';$('d19-pre').textContent=f(re);$('d19-pim').textContent=f(im);$('d19-pmag').textContent=f(Math.hypot(re,im));
+  $('d19-vw').textContent=w;$('d19-vphi').textContent=$('d19-phi').value;$('d19-vA').textContent=Am;
+}
+function loop(ts){if(!document.body.contains(pc))return;if(playing){if(last!=null)t+=(ts-last)/1000;last=ts}else last=null;drawPh();raf=requestAnimationFrame(loop)}
+$('d19-play').addEventListener('click',()=>{playing=!playing});
+['d19-w','d19-phi','d19-A'].forEach(id=>$(id).addEventListener('input',drawPh));
+drawPh();raf=requestAnimationFrame(loop);
+
+// ---------- Lab 3a: roots of unity ----------
+const rc=$('d19-rootCanvas'),rx=A.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h,rcx=RW/2,rcy=RH/2,RR=120;
+function drawRoots(){
+  const N=+$('d19-N').value,kEl=$('d19-k');kEl.max=N-1;if(+kEl.value>N-1)kEl.value=N-1;const k=+kEl.value;
+  $('d19-vN').textContent=N;$('d19-vk').textContent=k;
+  rx.clearRect(0,0,RW,RH);A.grid(rx,RW,RH,RR,rcx,rcy);
+  rx.strokeStyle=css('--muted');rx.setLineDash([4,4]);rx.lineWidth=1;rx.beginPath();rx.arc(rcx,rcy,RR,0,7);rx.stroke();rx.setLineDash([]);
+  const pts=[];let sx=0,sy=0;
+  for(let j=0;j<N;j++){const a=2*Math.PI*j/N,x=Math.cos(a),y=Math.sin(a);pts.push([x,y]);sx+=x;sy+=y}
+  rx.strokeStyle=css('--vec-a');rx.globalAlpha=.4;rx.lineWidth=1.5;rx.beginPath();pts.forEach((p,j)=>{const X=rcx+p[0]*RR,Y=rcy-p[1]*RR;j?rx.lineTo(X,Y):rx.moveTo(X,Y)});rx.closePath();rx.stroke();rx.globalAlpha=1;
+  pts.forEach((p,j)=>{const X=rcx+p[0]*RR,Y=rcy-p[1]*RR;
+    if(j===k)A.arrow(rx,rcx,rcy,X,Y,css('--vec-b'),3);
+    rx.fillStyle=j===k?css('--vec-b'):css('--vec-a');rx.beginPath();rx.arc(X,Y,j===k?7:5,0,7);rx.fill();
+    rx.fillStyle=css('--ink');rx.font='11px JetBrains Mono, monospace';rx.textAlign='center';rx.fillText('w'+j,rcx+p[0]*(RR+18),rcy-p[1]*(RR+18)+4);rx.textAlign='left'});
+  // sum vector
+  rx.fillStyle=css('--ink');rx.beginPath();rx.arc(rcx+sx*RR,rcy-sy*RR,5,0,7);rx.fill();
+  rx.font='12px JetBrains Mono, monospace';rx.fillText('Σ = 0',rcx+8,rcy+18);
+  $('d19-rwk').textContent=cfmt(pts[k][0],pts[k][1],3)+'  ('+f(360*k/N,1)+'°)';
+  $('d19-rsum').textContent=Math.hypot(sx,sy).toExponential(1);
+}
+['d19-N','d19-k'].forEach(id=>$(id).addEventListener('input',drawRoots));drawRoots();
+
+// ---------- Lab 3b: DFT ----------
+const dc=$('d19-dftCanvas'),dx=A.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h,N=32;
+function drawDft(){
+  const f1=+$('d19-f1').value,a1=+$('d19-a1').value,f2=+$('d19-f2').value,a2=+$('d19-a2').value;
+  $('d19-vf1').textContent=f1;$('d19-va1').textContent=a1;$('d19-vf2').textContent=f2;$('d19-va2').textContent=a2;
+  const sig=[];for(let n=0;n<N;n++){const tt=n/N;sig.push(a1*Math.sin(2*Math.PI*f1*tt)+a2*Math.sin(2*Math.PI*f2*tt))}
+  const mag=[];for(let k=0;k<=N/2;k++){let re=0,im=0;for(let n=0;n<N;n++){const a=-2*Math.PI*k*n/N;re+=sig[n]*Math.cos(a);im+=sig[n]*Math.sin(a)}mag.push(Math.hypot(re,im))}
+  dx.clearRect(0,0,DW,DH);
+  // signal panel
+  const top=10,sh=120,mid=top+sh/2,L=30,Rr=DW-10;
+  dx.strokeStyle=css('--grid');dx.lineWidth=1;dx.beginPath();dx.moveTo(L,mid);dx.lineTo(Rr,mid);dx.stroke();
+  dx.strokeStyle=css('--muted');dx.lineWidth=1;dx.beginPath();
+  for(let i=0;i<=300;i++){const tt=i/300,v=a1*Math.sin(2*Math.PI*f1*tt)+a2*Math.sin(2*Math.PI*f2*tt),X=L+tt*(Rr-L),Y=mid-v*(sh/2-4)/1.6;i?dx.lineTo(X,Y):dx.moveTo(X,Y)}dx.stroke();
+  dx.fillStyle=css('--vec-a');sig.forEach((v,n)=>{const X=L+n/N*(Rr-L),Y=mid-v*(sh/2-4)/1.6;dx.beginPath();dx.arc(X,Y,3,0,7);dx.fill()});
+  dx.fillStyle=css('--muted');dx.font='11px JetBrains Mono, monospace';dx.fillText('x[n], N=32',L,top+10);
+  // spectrum
+  const b0=DH-22,bh=160,bw=(Rr-L)/(N/2+1),mx2=Math.max(16,...mag);
+  dx.strokeStyle=css('--muted');dx.beginPath();dx.moveTo(L,b0);dx.lineTo(Rr,b0);dx.stroke();
+  // reference line at 16
+  const y16=b0-16/mx2*bh;dx.setLineDash([4,4]);dx.strokeStyle=css('--grid');dx.beginPath();dx.moveTo(L,y16);dx.lineTo(Rr,y16);dx.stroke();dx.setLineDash([]);
+  dx.fillStyle=css('--muted');dx.fillText('16',4,y16+4);
+  mag.forEach((m,k)=>{const h=m/mx2*bh,X=L+k*bw+2;dx.fillStyle=(k===f1||k===f2)&&m>0.01?css('--vec-b'):css('--vec-a');dx.fillRect(X,b0-h,bw-4,h);
+    dx.fillStyle=css('--muted');dx.textAlign='center';dx.fillText(k,X+(bw-4)/2,b0+14);
+    if(m>0.5){dx.fillStyle=css('--ink');dx.fillText(f(m,1),X+(bw-4)/2,b0-h-4)}dx.textAlign='left'});
+  dx.fillStyle=css('--muted');dx.fillText('|X[k]|',L,b0-bh-6);
+  $('d19-x1').textContent=f(mag[f1],2);$('d19-e1').textContent=f(a1*N/2,2)+(f1===f2?' (+A₂·N/2)':'');
+  $('d19-x2').textContent=f(mag[f2],2);$('d19-e2').textContent=f(a2*N/2,2)+(f1===f2?' (+A₁·N/2)':'');
+}
+['d19-f1','d19-a1','d19-f2','d19-a2'].forEach(id=>$(id).addEventListener('input',drawDft));drawDft();
+
+// ---------- Lab 4: RoPE ----------
+const oc=$('d19-ropeCanvas'),ox2=A.setupCanvas(oc),OW=+oc.dataset.w,OH=+oc.dataset.h,ocx=OW/2,ocy=OH/2,OS=110;
+const q0=[1,0.3],k0=[0.6,0.8];
+const rot=(v,a)=>[v[0]*Math.cos(a)-v[1]*Math.sin(a),v[0]*Math.sin(a)+v[1]*Math.cos(a)];
+function drawRope(){
+  const m=+$('d19-m').value,n=+$('d19-n').value,th=+$('d19-th').value;
+  $('d19-vm').textContent=m;$('d19-vn').textContent=n;$('d19-vth').textContent=th;
+  const q=rot(q0,m*th),k=rot(k0,n*th),score=q[0]*k[0]+q[1]*k[1];
+  ox2.clearRect(0,0,OW,OH);A.grid(ox2,OW,OH,OS/2,ocx,ocy);
+  ox2.strokeStyle=css('--muted');ox2.setLineDash([4,4]);ox2.lineWidth=1;ox2.beginPath();ox2.arc(ocx,ocy,OS,0,7);ox2.stroke();ox2.setLineDash([]);
+  ox2.globalAlpha=.3;A.arrow(ox2,ocx,ocy,ocx+q0[0]*OS,ocy-q0[1]*OS,css('--vec-a'),2);A.arrow(ox2,ocx,ocy,ocx+k0[0]*OS,ocy-k0[1]*OS,css('--vec-b'),2);ox2.globalAlpha=1;
+  A.arrow(ox2,ocx,ocy,ocx+q[0]*OS,ocy-q[1]*OS,css('--vec-a'),3.5);A.arrow(ox2,ocx,ocy,ocx+k[0]*OS,ocy-k[1]*OS,css('--vec-b'),3.5);
+  ox2.font='bold 13px JetBrains Mono, monospace';ox2.fillStyle=css('--vec-a');ox2.fillText('q·e^(imθ)',ocx+q[0]*OS+6,ocy-q[1]*OS-6);
+  ox2.fillStyle=css('--vec-b');ox2.fillText('k·e^(inθ)',ocx+k[0]*OS+6,ocy-k[1]*OS+14);
+  ox2.fillStyle=css('--muted');ox2.font='11px JetBrains Mono, monospace';ox2.fillText('faded = before rotation',8,OH-8);
+  $('d19-rmn').textContent=m-n;$('d19-rsc').textContent=f(score,4);
+}
+['d19-m','d19-n','d19-th'].forEach(id=>$(id).addEventListener('input',drawRope));
+$('d19-shift').addEventListener('click',()=>{const m=$('d19-m'),n=$('d19-n');if(+m.value+5>30||+n.value+5>30){const s=5*Math.floor(Math.min(+m.value,+n.value)/5);m.value=+m.value-s;n.value=+n.value-s}else{m.value=+m.value+5;n.value=+n.value+5}drawRope()});
+drawRope();
+
+// ---------- quiz ----------
+const Q=[
+ ['الوحدة التخيلية i متعرّفة بإيه؟',['i = −1','i² = −1','i² = 1','i = √2'],1,'i متعرّفة بالخاصية i² = −1، وبتمد خط الأرقام لمستوى. هندسيًا الضرب في i لفة 90°، ومرتين (i²) يبقى 180° يعني −1.'],
+ ['Euler\'s formula: e^(iθ) بتساوي إيه؟',['cos θ + i sin θ','sin θ + cos θ','i^θ','θ + i'],0,'e^(iθ) = cos θ + i sin θ. دي بتربط الأُس المركب بالمثلثات وبتوضح إن e^(iθ) بترسم دايرة الوحدة لما θ تتغير.'],
+ ['ناتج (3 + 2i)(1 + 4i)؟',['−5 + 14i','5 + 14i','3 + 8i','4 + 6i'],0,'3 + 12i + 2i + 8i² = 3 + 14i − 8 = −5 + 14i. والاختيار 4 + 6i ده الجمع مش الضرب.'],
+ ['ليه الأعداد المركبة مستخدمة في الـ RoPE في الـ Transformers؟',['عشان تتعامل مع positions سالبة','عشان تضغط الـ encoding ويقل الميموري','لأن الـ softmax بتاع الـ attention محتاجها','لأن لف الـ query والـ key بـ complex rotations بيحوّل المكان النسبي لزاوية لف'],3,'الـ RoPE بيضرب الـ q والـ k في e^(imθ) حيث m المكان. المسافة النسبية بين توكنين بتبقى زاوية، فالـ attention يبقى حساس للمكان النسبي مش المطلق. شوف معمل ٠٧.'],
+ ['الـ N-th roots of unity هما N نقطة متوزعين بالتساوي على دايرة الوحدة. مجموعهم كام؟',['1','N','N/2','0'],3,'بالتماثل حوالين الدايرة المتجهات بتلغي بعض فالمجموع صفر. والخاصية دي هي اللي بتخلي الـ DFT ينفع يتعكس.'],
+ ['(سؤال مني) ضربت z في w حيث |w| = 2 وزاويتها 30°. إيه اللي حصل لـ z؟',['اتنقلت 2 يمين و30 فوق','طولها اتضرب في 2 وزاويتها زادت 30°','طولها زاد 2 وزاويتها اتضربت في 30','اتعكست على المحور الحقيقي'],1,'في الـ polar form: اضرب الأطوال واجمع الزوايا. لو |w| = 1 كان هيبقى لف صافي.'],
+ ['(سؤال مني) سيجنال sin بسعة A = 0.5 بتردد 7، على N = 32 نقطة. طول X[7] في الـ DFT تقريبًا؟',['0.5','3.5','8','32'],2,'sine بسعة A بيعمل قمة A·N/2 = 0.5 × 32 / 2 = 8. نفس الرقم اللي في الـ demo والتمرين ٣.']
+];
+A.quiz($('d19-quizBox'),Q,5,()=>{const c=root.querySelector('input[data-ck="c6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(19,$('d19-checklist'));
+
+// theme redraw
+A.onTheme(()=>{if(!document.body.contains(mc))return false;drawMul();drawPh();drawRoots();drawDft();drawRope()});
+})();
+</script>

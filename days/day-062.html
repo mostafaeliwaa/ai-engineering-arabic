@@ -1,0 +1,520 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 06 · Object Detection — YOLO from Scratch</span>
+  <h1>اليوم ٦٢: الـ Detection = تصنيف + مربع، عند كل مكان في الصورة</h1>
+  <p class="lede">لحد دلوقتي الـ CNN كان بيقولك «دي صورة كلب». النهاردة هتخليه يقولك «فيه كلب في المربع ده، وقطة في المربع ده، ومفيش حاجة غير كده». هتبني بإيدك الـ <b>IoU</b> والـ <b>NMS</b> والـ <b>encode/decode</b> وراس YOLO صغيرة بالـ loss بتاعها، وتتعلم تقرا أرقام الـ <b>mAP</b>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (NumPy + PyTorch)</span>
+    <span>قبله: <b>Transfer Learning</b></span>
+    <span>بعده: <b>Semantic Segmentation (U-Net)</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 lessons</span>
+    <div class="roadmap" id="d62-roadmap" aria-label="دروس الفيز الرابعة"></div>
+  </div>
+</header>
+
+<section id="d62-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ Transfer Learning؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه الفرق بين <span class="ltr">feature extraction</span> و<span class="ltr">fine-tuning</span>؟
+      <details><summary>الإجابة</summary>في الأولى الـ backbone متجمد (من غير gradient) وبتدرب الـ head الجديدة بس. في التانية بتدرب كل الشبكة بس الـ backbone بـ learning rate صغير جدًا والـ head بـ LR عادي.</details></li>
+    <li>ليه الـ learning rate العالي على الـ blocks المفكوكة بيبوظ الـ pretrained features؟
+      <details><summary>الإجابة</summary>لأن الـ features دي اتعلمت بمجهود ضخم (آلاف ساعات GPU)، ولو عملت خطوات كبيرة هتمسحها بسرعة (feature drift). عشان كده الـ layers المبكرة (edges, textures) بتاخد LR أصغر من المتأخرة.</details></li>
+    <li>إيه المشكلة اللي ممكن تحصل لـ BatchNorm لما تدرب على داتا صغيرة؟
+      <details><summary>الإجابة</summary>الـ running statistics بتاعته بتتحرك ناحية الداتا الصغيرة اللي باقي الشبكة ما اتعلمتش منها (BN statistics collapse). حل شائع إنك تحط الـ BN في وضع eval وهو متجمد.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة والربع</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>المفاهيم: grid, anchors, decode, IoU, NMS, loss, metrics</div>
+    <div><b>25 min</b>المعامل التفاعلية الثلاثة</div>
+    <div><b>20 min</b>اكتب الكود بإيدك</div>
+    <div><b>5 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 -->
+<section id="d62-dense">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: من «إيه ده؟» لـ «إيه وفين؟»</h2></div>
+  <p>الـ Classification بيطلّع رقم واحد لكل صورة. الـ <b>Detection</b> بيطلّع <b>عدد متغير</b> من المربعات، وكل مربع ليه class. التغيير البسيط ده هو اللي بتعتمد عليه العربيات ذاتية القيادة، وكاميرات المراقبة، وتحليل شكل المستندات، وخطوط الفحص في المصانع.</p>
+  <p>والـ Detection هو المكان اللي كل الـ trade-offs في الـ vision بتظهر فيه مرة واحدة. محتاج أربع حاجات تشتغل مع بعض:</p>
+  <ol class="ex">
+    <li><b>مربع دقيق</b> (regression head).</li>
+    <li><b>الـ class الصح</b> لكل مربع (classification head).</li>
+    <li>الموديل يعرف إمتى <b>مفيش حاجة</b> (objectness score).</li>
+    <li><b>مربع واحد بس لكل شيء حقيقي</b> (non-maximum suppression).</li>
+  </ol>
+  <p>لو واحدة منهم وقعت: يا إما بتفوّت أشياء، يا إما بتهلوس مربعات مش موجودة، يا إما بتتنبأ بنفس الكلب ١٥ مرة بمواقع مختلفة شوية.</p>
+  <div class="note"><strong>YOLO</strong> = You Only Look Once (Redmon وآخرين، 2016). الفكرة اللي خلّته real-time: كل ده بـ <b>forward pass واحد</b> في conv net. وكل الأجيال بعده (YOLOv8, YOLOv9, YOLO-NAS, RT-DETR) بنفس الأجزاء الأساسية متعمدة ترتيبها. اتعلم الأصل وكل نسخة هتبقى إعادة ترتيب.</div>
+</section>
+
+<!-- 02 -->
+<section id="d62-grid">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Detection كـ dense prediction: الـ grid والـ output tensor</h2></div>
+  <p>الـ classifier بيطلّع <span class="ltr">C</span> رقم للصورة. الـ YOLO بيطلّع <span class="ltr">S × S × (5 + C)</span> رقم (لكل anchor)، حيث <span class="ltr">S</span> حجم الـ grid.</p>
+  <div class="formula">Input 416×416 → Backbone → Feature map (C_feat, 13, 13) → 1×1 conv head → (13, 13, B·(5+C)) → Decode → NMS → Final boxes</div>
+  <p>تخيل إنك رسمت على الصورة شبكة شطرنج ١٣×١٣. كل خانة (cell) بتتنبأ بـ <span class="ltr">B</span> مربعات. وكل مربع بيطلّع:</p>
+  <ul class="ex" style="list-style:disc">
+    <li><b>٤ أرقام</b> للشكل الهندسي: <span class="ltr">tx, ty, tw, th</span>.</li>
+    <li><b>رقم objectness</b>: «هل فيه شيء مركزه في الخانة دي؟».</li>
+    <li><b>C رقم</b> احتمالات الـ classes.</li>
+  </ul>
+  <div class="formula">per cell = B × (5 + C)     مثال VOC: S=13, B=2, C=20  →  50 رقم لكل خانة</div>
+  <div class="note"><strong>تشبيه:</strong> الصورة كلها قاعة امتحان فيها ١٦٩ مراقب، كل واحد مسؤول عن مربع أرضية صغير. لو مركز الكلب واقع في مربعك، إنت المسؤول عنه ولازم تبلّغ. الباقي يسكت. دي بالظبط فكرة «الخانة المسؤولة».</div>
+
+  <h3>ليه grid؟ وليه anchors؟</h3>
+  <p>لو خليت الشبكة تتنبأ بـ <span class="ltr">(x, y, w, h)</span> مطلقة لكل شيء، هتبقى صعبة جدًا على الـ conv. الـ conv بطبيعتها «translation-equivariant» يعني لو اتحرك الشيء، التنبؤ يتحرك معاه. الـ grid بيحل ده: كل ground-truth box بيتسند للخانة اللي <b>مركزه</b> واقع فيها، والخانة دي وحدها المسؤولة عنه.</p>
+  <p>المشكلة التانية: خانة feature صغيرة (receptive field ١٦ بكسل مثلًا) مش هتعرف تـ regress مربع عرضه ٥٠٠ بكسل من الصفر. فبنحدد مسبقًا <span class="ltr">B</span> أشكال مربعات جاهزة اسمها <b>anchors</b> لكل خانة، والموديل بيتنبأ بـ <b>تعديلات صغيرة (deltas)</b> عليها بدل ما يبدأ من العدم. الموديل بيختار الـ anchor الأنسب وبيضبطه.</p>
+  <pre class="ltr" style="direction:ltr">Anchor priors (مثال لصورة 416x416):
+  small:  (30, 60)
+  medium: (75, 170)
+  large:  (200, 380)
+كل anchor في كل خانة بيطلّع: (tx, ty, tw, th, obj, c_1 ... c_C)</pre>
+  <p>الـ detectors الحديثة بتستخدم <b>FPN</b> بمجموعة anchors مختلفة لكل resolution: anchors صغيرة على الخرايط الضحلة عالية الدقة، وكبيرة على الخرايط العميقة قليلة الدقة. نفس الفكرة بـ scales أكتر.</p>
+</section>
+
+<!-- 03 -->
+<section id="d62-decode">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Decoding: الأرقام الخام مش إحداثيات</h2></div>
+  <p>الـ <span class="ltr">tx, ty, tw, th</span> اللي بتطلع من الشبكة مش إحداثيات. هي أهداف regression لازم تتحول قبل ما ترسم:</p>
+  <div class="formula">center_x = (σ(tx) + cell_x) · stride<br>center_y = (σ(ty) + cell_y) · stride<br>width = anchor_w · exp(tw)<br>height = anchor_h · exp(th)</div>
+  <ul class="ex" style="list-style:disc">
+    <li><b>sigmoid</b> بتحبس الـ offset جوه الخانة (بين ٠ و١)، فالمركز ميهربش لخانة جارة.</li>
+    <li><b>exp</b> بتخلي العرض يتمدد أو يضيق بالنسبة للـ anchor من غير ما يبقى سالب أبدًا.</li>
+    <li><b>stride</b> بيرجّع إحداثيات الـ grid لبكسلات. صورة 416 بـ head ١٣×١٣ → stride = 32.</li>
+  </ul>
+  <p>الـ decode ده بنفس الشكل في كل نسخ YOLO من v2.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الـ decode بإيدك</h3>
+      <p>الـ anchor هنا عرضه <span class="ltr">75</span> والـ stride <span class="ltr">32</span>. حرّك <span class="ltr">tx</span> و<span class="ltr">tw</span> وراقب المنحنيين: الـ sigmoid محبوسة بين ٠ و١، والـ exp ماشية لفوق من غير سقف.</p>
+      <div class="note ai"><strong>لاحظ:</strong> لما <span class="ltr">tw = 0</span> العرض بالظبط = عرض الـ anchor (لأن exp(0)=1). وقيمة سالبة بتصغّر والموجبة بتكبّر. وجرّب <span class="ltr">tx = 0</span>: sigmoid = 0.5 يعني المركز في نص الخانة بالظبط.</div>
+    </div>
+    <div id="d62-lab1"></div>
+  </div>
+</section>
+
+<!-- 04 -->
+<section id="d62-iou">
+  <div class="station-head"><span class="tag">04</span><h2>الـ IoU: مقياس التشابه الأساسي بين مربعين</h2></div>
+  <div class="formula">IoU(A, B) = area(A ∩ B) / area(A ∪ B)</div>
+  <p><b>IoU = 1</b> معناه مربعين متطابقين، و<b>IoU = 0</b> معناه ولا تقاطع. بنستخدمه في حاجتين:</p>
+  <ul class="ex" style="list-style:disc">
+    <li>بين <b>التنبؤ والـ ground truth</b>: هو اللي بيقرر هل التنبؤ true positive (عادةً <span class="ltr">IoU ≥ 0.5</span>).</li>
+    <li>بين <b>تنبؤين</b>: الـ NMS بيستخدمه عشان يشيل المكرر.</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> ورقتين A4 فوق بعض. المساحة المشتركة (اللي الاتنين غاطيينها) على المساحة الكلية اللي الاتنين مغطيينها مع بعض (من غير ما تعد المشترك مرتين).</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: منحنى الـ IoU</h3>
+      <p>المربع A ثابت <span class="ltr">[0,0,10,10]</span>. المربع B حجمه <span class="ltr">10 × scale</span> وبتحركه بـ <span class="ltr">dx, dy</span>. المنحنى بيوريك الـ IoU لو أزحت B أفقيًا.</p>
+      <p>جرّب: إزاحة <span class="ltr">dx = 5, dy = 0</span> والحجم نفسه، هتلاقي <span class="ltr">1/3 = 0.333</span> بالظبط، وده نفس مثال الكود.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ IoU بيقع بسرعة مع الإزاحة. إزاحة خفيفة (٢ من ١٠) لسه 0.67، بس إزاحة ٥ بتنزل على 0.33، يعني مش true positive. وده السبب إن mAP@0.5:0.95 صعب جدًا: عند IoU 0.9 المربع لازم يكون «شعرة» من الحقيقة.</div>
+    </div>
+    <div id="d62-lab2"></div>
+  </div>
+</section>
+
+<!-- 05 -->
+<section id="d62-nms">
+  <div class="station-head"><span class="tag">05</span><h2>الـ NMS: مربع واحد بس لكل شيء</h2></div>
+  <p>الشبكة المدربة على anchors متجاورة بتتنبأ كتير بمربعات متراكبة على نفس الشيء. الـ <b>Non-Maximum Suppression</b> بيحتفظ بالأعلى confidence وبيمسح أي مربع تاني IoU بينه وبين الفايز أعلى من threshold.</p>
+  <pre class="ltr" style="direction:ltr">NMS(boxes, scores, iou_threshold):
+    sort boxes by score descending
+    keep = []
+    while boxes not empty:
+        pick the top-scoring box, add to keep
+        remove every box with IoU > iou_threshold to the picked box
+    return keep</pre>
+  <p>الـ threshold المعتاد <b>0.45</b>. فيه نسخ أحدث: <span class="ltr">soft-NMS</span> و<span class="ltr">DIoU-NMS</span>، وفي RT-DETR الموديل بيتعلم يشيل المكرر بنفسه، بس الغرض هو هو.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: شغّل الـ NMS خطوة خطوة</h3>
+      <p>٦ مربعات: ٣ متراكبة على شيء، و٢ على شيء تاني، وواحد لوحده. اختار الـ threshold واضغط «اللي بعدها» وشوف مين بيفضل ومين بيتشال.</p>
+      <label>IoU threshold:
+        <select id="d62-thr"><option value="0.3">0.3</option><option value="0.4" selected>0.4</option><option value="0.5">0.5</option><option value="0.7">0.7</option></select></label>
+      <div class="note ai"><strong>لاحظ:</strong> المربع الأوسط (index 2) IoU بتاعه مع الفايز <span class="ltr">0.47</span>. عند threshold 0.4 بيتشال، وعند 0.5 بيفضل! يعني threshold عالي = مكررات أكتر، وواطي = خطر إنك تمسح شيء حقيقي واقف قريب من التاني (زحمة).</div>
+    </div>
+    <div id="d62-lab3"></div>
+  </div>
+</section>
+
+<!-- 06 -->
+<section id="d62-loss">
+  <div class="station-head"><span class="tag">06</span><h2>الـ Loss: تلات خسايس مجمّعين بأوزان</h2></div>
+  <div class="formula">L = λ_coord · L_box(where obj=1)<br>+ λ_obj · L_obj(pred, 1, where obj=1)<br>+ λ_noobj · L_obj(pred, 0, where obj=0)<br>+ λ_cls · L_cls(where obj=1)</div>
+  <p>الخانات اللي فيها شيء بس هي اللي بتساهم في loss المربع والـ class. الخانات الفاضية بتساهم في الـ objectness بس (بتعلّم الموديل «يسكت»). والـ <span class="ltr">λ_noobj</span> عادةً صغير (~0.5) لأن أغلب الخانات فاضية وكانت هتغرق الـ loss كله.</p>
+  <div class="note"><strong>تشبيه:</strong> فصل فيه ١٦٩ طالب وبس ٣ منهم عندهم إجابة صح. لو كل الصوت اللي بيطلع من «الساكتين» معدّل زي صوت اللي بيجاوبوا، مش هتسمع حد. بتخفّض صوتهم (<span class="ltr">λ_noobj = 0.5</span>) عشان تسمع الإشارة.</div>
+  <p>النسخ الحديثة بتبدل MSE بـ <b>CIoU / DIoU</b> (بتحسّن الـ IoU مباشرة)، وبتستخدم <b>focal loss</b> لعدم توازن الـ classes، و<span class="ltr">quality focal loss</span> للـ objectness. الهيكل ثلاثي الأجزاء ما اتغيرش.</p>
+  <h3>معمل ٤: حاسبة حجم الـ output</h3>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>غيّر حجم الـ grid وعدد الـ anchors وعدد الـ classes وشوف كام رقم الموديل بيطلّعه لكل صورة، وكام تنبؤ هيمر على الـ NMS. جرّب COCO (<span class="ltr">C=80</span>) وVOC (<span class="ltr">C=20</span>).</p>
+      <div class="note ai"><strong>لاحظ:</strong> الأرقام بتكبر بسرعة. ده السبب إن الـ NMS لازم يتحسب في الـ latency: ممكن يبدأ بآلاف التنبؤات المرشحة وينتهي بكام مربع بس.</div>
+    </div>
+    <div id="d62-lab4"></div>
+  </div>
+</section>
+
+<!-- 07 -->
+<section id="d62-metrics">
+  <div class="station-head"><span class="tag">07</span><h2>مقاييس الـ Detection</h2></div>
+  <p>الـ accuracy مش بتنفع هنا. أربع أرقام بتنفع:</p>
+  <div class="tablewrap"><table>
+    <tr><th>المقياس</th><th>معناه</th></tr>
+    <tr><td class="ltr">Precision@IoU=0.5</td><td>من التنبؤات اللي اتحسبت إيجابية، كام فعلًا صح</td></tr>
+    <tr><td class="ltr">Recall@IoU=0.5</td><td>من الأشياء الحقيقية، كام لقيناها</td></tr>
+    <tr><td class="ltr">AP@0.5</td><td>مساحة منحنى precision-recall عند IoU 0.5، رقم لكل class</td></tr>
+    <tr><td class="ltr">mAP@0.5:0.95</td><td>متوسط الـ AP على thresholds من 0.5 لـ 0.95 بخطوة 0.05. مقياس COCO، الأشد والأكتر معلومات</td></tr>
+  </table></div>
+  <p>بلّغ بالأربعة. القراءة:</p>
+  <ul class="ex" style="list-style:disc">
+    <li><b>mAP@0.5 عالي وmAP@0.5:0.95 ضعيف</b> = الموديل بيحدد المكان تقريبًا بس مش بدقة. العلاج: box loss أحسن (CIoU/DIoU)، أو features بدقة أعلى.</li>
+    <li><b>precision عالية وrecall واطي</b> = الموديل متحفظ زيادة. نزّل الـ confidence threshold أو زوّد وزن الـ objectness.</li>
+  </ul>
+</section>
+
+<!-- 08 code -->
+<section id="d62-code">
+  <div class="station-head"><span class="tag">08</span><h2>الكود: ابنِ YOLO صغير بإيدك</h2></div>
+  <p>الأول شغّل الكود الأصلي وشوف الناتج، بعدين افتح ملف جديد <code>my_yolo.py</code> واكتب الخطوات دي بنفسك سطر سطر. متعملش Copy غير لو اتزنقت. الكتابة بإيدك هي اللي بتثبّت الفكرة.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/06-object-detection-yolo/code/main.py</pre></div>
+  <p>الناتج المتوقع (مختصر): <code>iou=1.000</code> للمتطابقين، <code>iou=0.333</code> لنص التراكب، <code>kept indices: [0, 3]</code> للـ NMS، وفي الـ round-trip لازم <code>max|diff|</code> يكون قريب جدًا من صفر.</p>
+
+  <h3>خطوة ١: IoU</h3>
+  <p>بيشتغل على مصفوفتين من المربعات بصيغة <span class="ltr">(x1, y1, x2, y2)</span> ويرجّع مصفوفة <span class="ltr">(N_a, N_b)</span> لكل الأزواج.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def box_iou(boxes_a, boxes_b):
+    ax1, ay1, ax2, ay2 = boxes_a[:, 0], boxes_a[:, 1], boxes_a[:, 2], boxes_a[:, 3]
+    bx1, by1, bx2, by2 = boxes_b[:, 0], boxes_b[:, 1], boxes_b[:, 2], boxes_b[:, 3]
+
+    # أركان منطقة التقاطع (None بيعمل broadcasting لكل الأزواج)
+    inter_x1 = np.maximum(ax1[:, None], bx1[None, :])
+    inter_y1 = np.maximum(ay1[:, None], by1[None, :])
+    inter_x2 = np.minimum(ax2[:, None], bx2[None, :])
+    inter_y2 = np.minimum(ay2[:, None], by2[None, :])
+
+    # clip عشان لو مفيش تقاطع المساحة تبقى صفر مش سالب
+    inter_w = np.clip(inter_x2 - inter_x1, 0, None)
+    inter_h = np.clip(inter_y2 - inter_y1, 0, None)
+    inter = inter_w * inter_h
+
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+    union = area_a[:, None] + area_b[None, :] - inter   # الاتحاد = A + B - المشترك
+    return inter / np.clip(union, 1e-8, None)</pre></div>
+
+  <h3>خطوة ٢: NMS</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def nms(boxes, scores, iou_threshold=0.45):
+    order = np.argsort(-scores)          # ترتيب تنازلي بالـ score
+    keep = []
+    while len(order) &gt; 0:
+        i = order[0]                     # الأعلى score
+        keep.append(int(i))
+        if len(order) == 1:
+            break
+        rest = order[1:]
+        ious = box_iou(boxes[[i]], boxes[rest])[0]
+        order = rest[ious &lt;= iou_threshold]   # احتفظ بس بالبعيدين عن الفايز
+    return np.array(keep, dtype=np.int64)</pre></div>
+  <p>الدالة deterministic وتكلفتها <span class="ltr">O(N log N)</span> من الـ sort، وبتطابق <code>torchvision.ops.nms</code> على نفس المدخلات.</p>
+
+  <h3>خطوة ٣: encode / decode</h3>
+  <p>التحويل بين البكسلات والأهداف <span class="ltr">(tx, ty, tw, th)</span> اللي الشبكة بتعمل لها regression فعلًا. الـ encode بيخزن الـ offset كـ <b>logit</b> (عكس الـ sigmoid) عشان الـ decode يرجّعك للأصل بالظبط.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+def encode(box_xyxy, cell_x, cell_y, stride, anchor_wh):
+    x1, y1, x2, y2 = box_xyxy
+    cx, cy = 0.5 * (x1 + x2), 0.5 * (y1 + y2)
+    w, h = x2 - x1, y2 - y1
+    # الـ offset جوه الخانة بين 0 و1، و clip عشان الـ logit يفضل محدود
+    off_x = np.clip(cx / stride - cell_x, 1e-6, 1 - 1e-6)
+    off_y = np.clip(cy / stride - cell_y, 1e-6, 1 - 1e-6)
+    tx = np.log(off_x / (1 - off_x))     # logit = عكس sigmoid
+    ty = np.log(off_y / (1 - off_y))
+    tw = np.log(w / anchor_wh[0] + 1e-8)  # عكس exp
+    th = np.log(h / anchor_wh[1] + 1e-8)
+    return np.array([tx, ty, tw, th])
+
+def decode(t, cell_x, cell_y, stride, anchor_wh):
+    tx, ty, tw, th = t
+    cx = (sigmoid(tx) + cell_x) * stride
+    cy = (sigmoid(ty) + cell_y) * stride
+    w = anchor_wh[0] * np.exp(tw)
+    h = anchor_wh[1] * np.exp(th)
+    return np.array([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2])</pre></div>
+  <p><b>اختبار:</b> اعمل encode لمربع مركزه جوه الخانة وبعدين decode، لازم ترجع المربع الأصلي مع فرق float صغير. (في النسخة الكاملة في الريبو فيه clip إضافي على <code>tw, th</code> في الـ decode بين -10 و10 عشان الـ exp ميطلعش inf.)</p>
+
+  <h3>خطوة ٤: راس YOLO صغيرة</h3>
+  <p>conv واحدة ١×١ على الـ feature map وبعدين reshape لـ <span class="ltr">(B, S, S, num_anchors, 5 + C)</span>.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+
+class YOLOHead(nn.Module):
+    def __init__(self, in_c, num_anchors, num_classes):
+        super().__init__()
+        self.num_anchors = num_anchors
+        self.num_classes = num_classes
+        self.conv = nn.Conv2d(in_c, num_anchors * (5 + num_classes), kernel_size=1)
+
+    def forward(self, x):
+        n, _, h, w = x.shape
+        y = self.conv(x)
+        y = y.view(n, self.num_anchors, 5 + self.num_classes, h, w)
+        y = y.permute(0, 3, 4, 1, 2).contiguous()   # (N, H, W, anchors, 5+C)
+        return y</pre></div>
+  <p>آخر بُعد = <code>[tx, ty, tw, th, obj, cls_0 ... cls_{C-1}]</code>.</p>
+
+  <h3>خطوة ٥: تعيين الـ ground truth (assign_targets)</h3>
+  <p>لكل مربع حقيقي بنحدد مين <span class="ltr">(cell, anchor)</span> المسؤول عنه: الخانة اللي مركزه فيها، والـ anchor اللي <b>شكله</b> الأقرب لشكل المربع (IoU بين الأشكال بس، من غير مواقع).</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def assign_targets(boxes_xyxy, classes, anchors, stride, grid_size, num_classes):
+    num_anchors = len(anchors)
+    target = np.zeros((grid_size, grid_size, num_anchors, 5 + num_classes), dtype=np.float32)
+    has_obj = np.zeros((grid_size, grid_size, num_anchors), dtype=bool)
+
+    for box, cls in zip(boxes_xyxy, classes):
+        x1, y1, x2, y2 = box
+        cx, cy = 0.5 * (x1 + x2), 0.5 * (y1 + y2)
+        gx, gy = int(cx / stride), int(cy / stride)   # الخانة المسؤولة
+        bw, bh = x2 - x1, y2 - y1
+
+        # أنسب anchor من حيث الشكل (width/height بس)
+        ious = []
+        for aw, ah in anchors:
+            inter = min(bw, aw) * min(bh, ah)
+            ious.append(inter / (bw * bh + aw * ah - inter))
+        best = int(np.argmax(ious))
+        aw, ah = anchors[best]
+
+        off_x = np.clip(cx / stride - gx, 1e-6, 1 - 1e-6)
+        off_y = np.clip(cy / stride - gy, 1e-6, 1 - 1e-6)
+        target[gy, gx, best, 0] = np.log(off_x / (1 - off_x))
+        target[gy, gx, best, 1] = np.log(off_y / (1 - off_y))
+        target[gy, gx, best, 2] = np.log(bw / aw + 1e-8)
+        target[gy, gx, best, 3] = np.log(bh / ah + 1e-8)
+        target[gy, gx, best, 4] = 1.0              # objectness
+        target[gy, gx, best, 5 + cls] = 1.0        # one-hot للـ class
+        has_obj[gy, gx, best] = True
+    return target, has_obj</pre></div>
+  <p>ده نفس أسلوب YOLOv2/v3. النسخ من v5 وطالع بتستخدم تعيين أذكى (task-aligned, dynamic-k) بس الفكرة واحدة. ولاحظ إن الـ targets متخزنة بنفس «فضاء» اللي الـ decode متوقعه (logits)، فالراس بتتدرب في الفضاء الصح.</p>
+
+  <h3>خطوة ٦: الـ loss التلاتة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch.nn.functional as F
+
+def yolo_loss(pred, target, has_obj,
+              lambda_coord=5.0, lambda_obj=1.0, lambda_noobj=0.5, lambda_cls=1.0):
+    has_obj_t = torch.from_numpy(has_obj).bool()
+    target_t = torch.from_numpy(target).float()
+    if pred.dim() == 5 and pred.shape[0] == 1:
+        pred = pred[0]
+
+    # 1) box loss: على الخانات اللي فيها شيء بس
+    box_pred = pred[..., :4][has_obj_t]
+    box_true = target_t[..., :4][has_obj_t]
+    loss_box = F.mse_loss(box_pred, box_true, reduction="sum")
+
+    # 2) objectness: إيجابي (لازم 1) وسلبي (لازم 0)
+    obj_pred, obj_true = pred[..., 4], target_t[..., 4]
+    loss_obj_pos = F.binary_cross_entropy_with_logits(
+        obj_pred[has_obj_t], obj_true[has_obj_t], reduction="sum")
+    loss_obj_neg = F.binary_cross_entropy_with_logits(
+        obj_pred[~has_obj_t], obj_true[~has_obj_t], reduction="sum")
+
+    # 3) classification: على الخانات اللي فيها شيء بس
+    cls_pred = pred[..., 5:][has_obj_t]
+    cls_true = target_t[..., 5:][has_obj_t]
+    loss_cls = F.binary_cross_entropy_with_logits(cls_pred, cls_true, reduction="sum")
+
+    total = (lambda_coord * loss_box + lambda_obj * loss_obj_pos
+             + lambda_noobj * loss_obj_neg + lambda_cls * loss_cls)
+    return total</pre></div>
+  <p>الأوزان اللي كل tutorial بيثبتها أو بيجرّبها. النسب هي المهمة: <span class="ltr">λ_coord=5, λ_noobj=0.5</span> بتعكس ورقة YOLOv1 ولسه نقطة بداية معقولة. (النسخة الكاملة في الريبو بتحمي الحالات اللي مفيش فيها خانات إيجابية بـ <code>.any()</code>.)</p>
+
+  <h3>خطوة ٧: مسار الـ Inference</h3>
+  <p>فك تشفير ناتج الراس، threshold على الـ score، وبعدين NMS. الـ score = <span class="ltr">sigmoid(obj) × max(sigmoid(classes))</span>.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def postprocess(pred_tensor, anchors, stride, conf_threshold=0.25, iou_threshold=0.45):
+    pred = pred_tensor.detach().cpu().numpy()
+    _, grid_h, grid_w, num_anchors, _ = pred.shape
+    boxes, scores, classes = [], [], []
+    for gy in range(grid_h):
+        for gx in range(grid_w):
+            for a in range(num_anchors):
+                tx, ty, tw, th, obj = pred[0, gy, gx, a, :5]
+                cls_probs = sigmoid(pred[0, gy, gx, a, 5:])
+                score = float(sigmoid(obj) * cls_probs.max())
+                if score &lt; conf_threshold:
+                    continue
+                cx = (sigmoid(tx) + gx) * stride
+                cy = (sigmoid(ty) + gy) * stride
+                w = anchors[a][0] * np.exp(np.clip(tw, -10, 10))
+                h = anchors[a][1] * np.exp(np.clip(th, -10, 10))
+                boxes.append([cx - w/2, cy - h/2, cx + w/2, cy + h/2])
+                scores.append(score)
+                classes.append(int(np.argmax(cls_probs)))
+    if not boxes:
+        return np.zeros((0, 4)), np.zeros((0,)), np.zeros((0,), dtype=int)
+    boxes, scores, classes = np.array(boxes), np.array(scores), np.array(classes)
+    keep = nms(boxes, scores, iou_threshold)
+    return boxes[keep], scores[keep], classes[keep]</pre></div>
+  <p>ده مسار الـ eval كامل: <b>head → decode → threshold → NMS</b>.</p>
+
+  <h3>الاستخدام الحقيقي (Use It)</h3>
+  <p><code>torchvision.models.detection</code> فيها detectors جاهزة بنفس الفكرة. تحميل واحد pretrained بتلات سطور:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2
+
+model = fasterrcnn_resnet50_fpn_v2(weights="DEFAULT")
+model.eval()
+with torch.no_grad():
+    predictions = model([torch.randn(3, 400, 600)])
+print(predictions[0].keys())
+print(f"boxes:  {predictions[0]['boxes'].shape}")
+print(f"scores: {predictions[0]['scores'].shape}")
+print(f"labels: {predictions[0]['labels'].shape}")</pre></div>
+  <p>ولو عايز real-time: مكتبة <code>ultralytics</code> هي المعيار (YOLOv8/v9):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from ultralytics import YOLO
+model = YOLO('yolov8n.pt')
+model(img)    # الـ decode والـ NMS جوه، والناتج boxes / scores / labels زي اللي بنيته</pre></div>
+  <div class="note"><strong>اللي الدرس بيطلّعه (Ship It):</strong> ملفين في <code>outputs/</code>: prompt بيحول صف metrics (precision, recall, AP, mAP) لتشخيص من سطر وأفضل تجربة تالية، وskill بيعمل k-means على <span class="ltr">(w, h)</span> للمربعات الحقيقية ويطلّع anchors لكل مستوى FPN مع إحصائيات التغطية.</div>
+</section>
+
+<!-- 09 exercises -->
+<section id="d62-ex">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> اكتب <code>box_iou</code> وقارنها بـ <code>torchvision.ops.box_iou</code> على ١٠٠٠ زوج مربعات عشوائي. أقصى فرق مطلق لازم يكون أقل من <span class="ltr">1e-6</span>.
+      <details><summary>تلميح</summary>ولّد <code>x1,y1</code> عشوائي بـ <code>rng.uniform(0,100)</code> وبعدين <code>x2 = x1 + rng.uniform(1,50)</code> عشان تضمن إن x2 &gt; x1. الـ torchvision بتاخد tensors فحوّل بـ <code>torch.from_numpy</code>. قارن بـ <code>np.abs(ours - theirs).max()</code>.</details></li>
+    <li><b>(متوسط)</b> انقل <code>yolo_loss</code> لنسخة بتستخدم <b>CIoU</b> بدل الـ MSE على الـ box. وريني على داتا synthetic من ١٠٠ صورة إن الـ CIoU بيوصل لـ mAP@0.5:0.95 أحسن في نفس عدد الـ epochs.
+      <details><summary>تلميح</summary>الـ CIoU بيشتغل على صناديق في فضاء البكسل مش على الـ logits، فالأول <b>decode</b> الـ prediction للصناديق وبعدين احسب <span class="ltr">1 - CIoU</span>. CIoU = IoU ناقص مسافة المراكز المطبّعة ناقص عقوبة اختلاف نسبة الأبعاد. جاهزة في <code>torchvision.ops.complete_box_iou_loss</code>.</details></li>
+    <li><b>(صعب)</b> اعمل multi-scale inference: مرّر نفس الصورة بتلات resolutions، اجمع كل المربعات، وشغّل NMS واحد في الآخر. قيس رفع الـ mAP مقارنةً بـ single-scale على داتا held-out.
+      <details><summary>تلميح</summary>لازم تحوّل إحداثيات كل مربع لحجم الصورة الأصلي (اقسم على نسبة الـ resize) قبل ما تجمعهم. وعشان NMS واحد على مربعات من scales مختلفة لازم كلهم في نفس فضاء الإحداثيات. وقيس بـ pycocotools أو نفس مقياسك من الأول.</details></li>
+    <li><b>(تمرين مني)</b> بدّل الـ stride بتاع الـ head: صورة 416 وgrid بـ 26×26 بدل 13×13. احسب الـ stride الجديد، واكتب كام تنبؤ هتطلع للـ head مع ٣ anchors، وقول: إيه اللي بيتحسن في الأشياء الصغيرة وإيه الثمن؟
+      <details><summary>الإجابة</summary>الـ stride = 416 / 26 = 16. التنبؤات = 26×26×3 = 2028 (مقابل 507 في 13×13). الأشياء الصغيرة بتتحسن لأن الخانة أصغر فبتتميز عن جارتها. الثمن: حسابات وذاكرة أكتر، ومرشحين أكتر للـ NMS. وده نفس منطق الـ FPN اللي بيستخدم grids متعددة.</details></li>
+  </ol>
+</section>
+
+<!-- 10 own addition -->
+<section id="d62-own">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس مبيقولوش صراحة</h2></div>
+  <div class="note ai"><strong>حدس:</strong> فكّر في الـ Detection كأنه <b>١٦٩ مصنِّف صغير شغالين في نفس الوقت</b> (واحد لكل خانة)، كل واحد بيسأل سؤالين: «هل فيه شيء مركزه عندي؟» و«لو آه، إيه هو وحجمه كام؟». الـ NMS هو الاجتماع اللي بيحصل في الآخر عشان يلغي التكرار.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul class="ex" style="list-style:disc">
+    <li><b>خلط صيغ المربع:</b> <span class="ltr">(x1,y1,x2,y2)</span> مش هي <span class="ltr">(cx,cy,w,h)</span> ولا <span class="ltr">(x,y,w,h)</span>. أغلب الـ bugs الصامتة في الـ detection سببها إن حد حط صيغة في مكان صيغة تانية. اتأكد من الصيغة في كل دالة.</li>
+    <li><b>نسيان الـ stride:</b> لو الـ targets بالـ grid والـ predictions بالبكسل مش هتتقارن صح. حدد فضاء واحد.</li>
+    <li><b>ضبط الـ threshold على الداتا اللي بتقيّم عليها:</b> الـ confidence threshold و NMS threshold بيتضبطوا على validation مش test.</li>
+    <li><b>الـ NMS على كل الـ classes مع بعض:</b> في الممارسة بتشغّله <b>لكل class لوحده</b> (class-wise) عشان كلب جنب شخص ميمسحوش بعض. (دي ملاحظة عامة عن التطبيق مش من الدرس.)</li>
+    <li><b>الـ anchors الغلط:</b> لو داتاك أشياء طويلة رفيعة وانت بتستخدم anchors من COCO، هتتعب. الـ k-means على <span class="ltr">(w,h)</span> بتاعك (الـ skill اللي الدرس بيطلّعه) هو الحل.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents؟</h3>
+  <p>الموديلات الـ multimodal اللي بتفهم الصور بتحتاج تقول «فين» مش بس «إيه»، وفي أنظمة الـ agents اللي بتتحكم في شاشة أو متصفح (computer use) الموديل لازم يحدد مكان العنصر في الصورة. الـ detectors هي أصل الـ grounding ده (ربط الكلام بمنطقة في الصورة). وكمان RT-DETR بيستخدم Transformer بدل anchors + NMS، يعني نفس المشكلة اللي اتعلمتها النهاردة بحلّ تاني، وده تمهيد للـ Transformers اللي جاية.</p>
+</section>
+
+<!-- 11 quiz -->
+<section id="d62-quiz">
+  <div class="station-head"><span class="tag">11</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d62-quizBox"></div>
+</section>
+
+<!-- 12 wrap -->
+<section id="d62-done">
+  <div class="station-head"><span class="tag">12</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d62-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح كل رقم في الـ output tensor (٥ + C) وليه</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه sigmoid للمركز و exp للعرض</label></li>
+    <li><label><input type="checkbox" data-ck="3"> لعبت في معمل الـ IoU وشفت إن إزاحة بسيطة بتوقع الـ IoU</label></li>
+    <li><label><input type="checkbox" data-ck="4"> شغّلت الـ NMS خطوة خطوة وغيرت الـ threshold</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت IoU وNMS وencode/decode بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرين واحد على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Grid + anchors</td><td>كل نسخ YOLO وSSD وRetinaNet وRPN جوه Faster/Mask R-CNN (بكرة)</td></tr>
+    <tr><td>IoU</td><td>الـ metrics، تعيين الـ targets، الـ NMS، والـ CIoU loss</td></tr>
+    <tr><td>NMS</td><td>أي detector تقليدي (وRT-DETR بيستغنى عنه)</td></tr>
+    <tr><td>Objectness / BCE-with-logits</td><td>الـ RPN، وأي مهمة multi-label</td></tr>
+    <tr><td>mAP@0.5:0.95</td><td>تقارير COCO، مقارنة الموديلات</td></tr>
+    <tr><td>Anchor k-means</td><td>ضبط الـ detector على داتا خاصة (مصانع، أقمار صناعية)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Semantic Segmentation بـ U-Net: بدل مربع، تصنيف لكل بكسل، وإزاي الـ skip connections بتحافظ على الحدود الدقيقة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F06-object-detection-yolo" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/06-object-detection-yolo</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=62,$=id=>document.getElementById(id),L=AI.lab,css=AI.css;
+const root=$('d62-roadmap').closest('.day');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===6)s.className='now';$('d62-roadmap').appendChild(s)}
+
+const sig=x=>1/(1+Math.exp(-x));
+// ---- lab1: decode ----
+L.plot($('d62-lab1'),{x:[-4,4],y:[0,4],label:'sigmoid وexp',
+  params:[{k:'tx',label:'tx',min:-4,max:4,step:0.1,v:0},{k:'tw',label:'tw',min:-2,max:2,step:0.05,v:0},{k:'cell',label:'cell_x',min:0,max:12,step:1,v:6}],
+  curves:[{f:x=>sig(x),label:'sigmoid',color:'a'},{f:x=>Math.exp(x),label:'exp',color:'b'}],
+  marks:p=>[{x:p.tx,y:sig(p.tx),color:'a'},{x:p.tw,y:Math.exp(p.tw),color:'b'}],
+  readout:p=>[['offset في الخانة',sig(p.tx)],['center_x (px)',(sig(p.tx)+p.cell)*32],['width (px)',75*Math.exp(p.tw)],['width / anchor',Math.exp(p.tw)]],
+  note:p=>Math.abs(p.tw)<0.05?'tw=0: العرض = عرض الـ anchor بالظبط':(p.tw>0?'المربع أكبر من الـ anchor':'المربع أصغر من الـ anchor')});
+
+// ---- lab2: IoU ----
+function iou(a,b){const w=Math.max(0,Math.min(a[2],b[2])-Math.max(a[0],b[0])),h=Math.max(0,Math.min(a[3],b[3])-Math.max(a[1],b[1])),i=w*h;const u=(a[2]-a[0])*(a[3]-a[1])+(b[2]-b[0])*(b[3]-b[1])-i;return u>0?i/u:0}
+const A=[0,0,10,10],Bx=(x,p)=>[x,p.dy,x+10*p.sc,p.dy+10*p.sc];
+L.plot($('d62-lab2'),{x:[-14,14],y:[0,1],label:'IoU مقابل الإزاحة',
+  params:[{k:'dx',label:'dx',min:-12,max:12,step:0.5,v:5},{k:'dy',label:'dy',min:-8,max:8,step:0.5,v:0},{k:'sc',label:'scale',min:0.5,max:2,step:0.05,v:1}],
+  curves:[{f:(x,p)=>iou(A,Bx(x,p)),label:'IoU(dx)',color:'a'},{f:()=>0.5,label:'0.5',color:'bad',dash:1}],
+  marks:p=>[{x:p.dx,y:iou(A,Bx(p.dx,p)),color:'b'}],
+  readout:p=>{const v=iou(A,Bx(p.dx,p));return [['IoU',v],['≥ 0.5 ؟',v>=0.5?'نعم':'لا'],['IoU ≥ 0.75 ؟',v>=0.75?'نعم':'لا']]},
+  note:p=>{const v=iou(A,Bx(p.dx,p));return v>=0.75?'تطابق قوي (يعدي thresholds عالية)':v>=0.5?'true positive عند 0.5 بس':'false positive عند 0.5'}});
+
+// ---- lab3: NMS stepper ----
+const BX=[[0,0,10,10],[1,1,11,11],[2,2,12,12],[16,1,26,11],[17,2,27,12],[30,2,38,10]],SC=[.9,.8,.7,.85,.6,.5];
+function steps(thr){
+  const order=BX.map((_,i)=>i).sort((a,b)=>SC[b]-SC[a]);let rem=order.slice(),keep=[],supp=[];
+  const out=[{st:{keep:[],supp:[],pick:-1},title:'البداية',text:'٦ مربعات بالـ scores. هنرتبهم تنازليًا: '+order.map(i=>i+' ('+SC[i]+')').join('، ')}];
+  while(rem.length){const i=rem.shift();keep=keep.concat([i]);
+    out.push({st:{keep:keep.slice(),supp:supp.slice(),pick:i},title:'اختار الأعلى: مربع '+i,text:'score = '+SC[i]+'. بنحسب IoU مع الباقي: '+(rem.length?rem.map(j=>j+'→'+iou(BX[i],BX[j]).toFixed(2)).join('، '):'مفيش باقي')});
+    const gone=rem.filter(j=>iou(BX[i],BX[j])>thr);rem=rem.filter(j=>iou(BX[i],BX[j])<=thr);supp=supp.concat(gone);
+    out.push({st:{keep:keep.slice(),supp:supp.slice(),pick:-1},title:gone.length?'شيل '+gone.join('، '):'مفيش حاجة تتشال',text:gone.length?'IoU أعلى من '+thr+' فاتشالوا.':'كلهم IoU ≤ '+thr+' فبيفضلوا في الطابور.'})}
+  out.push({st:{keep:keep.slice(),supp:supp.slice(),pick:-1},title:'الناتج النهائي',text:'اتحفظ: ['+keep.join(', ')+'] وانشال: ['+supp.join(', ')+']'});
+  return out}
+function drawNms(ctx,W,H,i,s){const S=12.5,ox=12,oy=22,st=s.st;
+  BX.forEach((b,k)=>{const x=ox+b[0]*S,y=oy+b[1]*S,w=(b[2]-b[0])*S,h=(b[3]-b[1])*S;
+    const kept=st.keep.includes(k),sp=st.supp.includes(k),pk=st.pick===k;
+    ctx.setLineDash(sp?[5,4]:[]);ctx.lineWidth=pk?4:2;ctx.strokeStyle=pk?css('--vec-b'):kept?css('--ok'):sp?css('--bad'):css('--muted');ctx.strokeRect(x,y,w,h);ctx.setLineDash([]);
+    ctx.fillStyle=ctx.strokeStyle;ctx.font='12px JetBrains Mono, monospace';ctx.fillText('#'+k+' '+SC[k],x+3,y+h-4)})}
+let nmsW=null;
+function buildNms(){nmsW=L.stepper($('d62-lab3'),{steps:steps(+$('d62-thr').value),draw:drawNms,height:170,label:'خطوات الـ NMS'})}
+$('d62-thr').addEventListener('change',buildNms);buildNms();
+
+// ---- lab4: output size ----
+L.calc($('d62-lab4'),{params:[{k:'S',label:'grid S',min:7,max:52,step:1,v:13},{k:'B',label:'anchors B',min:1,max:9,step:1,v:3},{k:'C',label:'classes C',min:1,max:80,step:1,v:20}],
+  compute:p=>[['أرقام لكل anchor (5+C)',5+p.C],['أرقام لكل خانة',p.B*(5+p.C)],['عدد الخانات',p.S*p.S],['تنبؤات (مرشحين للـ NMS)',p.S*p.S*p.B],['إجمالي الأرقام',p.S*p.S*p.B*(5+p.C)]],
+  note:p=>'من '+(p.S*p.S*p.B)+' مرشح، الـ NMS بيطلّع كام مربع بس.'});
+
+// ---- quiz ----
+AI.quiz($('d62-quizBox'),[
+ ['detector بـ grid ١٣×١٣ و٣ anchors لكل خانة و٢٠ class بيطلّع output شكله (N, 13, 13, 3, 25). ليه آخر رقم ٢٥؟',['padding لأقرب قوة اتنين','٢٥ هو عدد classes في COCO','٤ إحداثيات + ١ bias + ٢٠ class','٤ إحداثيات + ١ objectness + ٢٠ class = 5 + C'],3,'كل anchor بيطلّع ٤ أهداف regression (tx,ty,tw,th) ورقم objectness واحد وC logits للـ classes. على COCO (80 class) الرقم 85، وعلى VOC (20) الرقم 25.'],
+ ['ليه YOLO بيمرر tx, ty على sigmoid قبل ما يضيف رقم الخانة؟',['الـ conv بتطلبه','عشان منحصلش NaN','عشان يتطبّعوا بين ٠ و١ فيفضل المركز جوه الخانة ومايهربش لخانة جارة','عشان المربع يكبر'],2,'sigmoid(tx) بين ٠ و١ فالمركز بيقع جوه الخانة. ده بيحافظ على الافتراض إن كل خانة مسؤولة بس عن الأشياء اللي مركزها جواها، وده اللي بيخلي التدريب مستقر.'],
+ ['الموديل طلّع ١٥ مربع حوالين شيء واحد. طبّقت NMS بـ iou_threshold=0.45 ورجعلك مربع واحد. إيه اللي حصل؟',['عمل متوسط للـ ١٥','رتّب بالـ score، احتفظ بالأعلى، ومسح كل مربع IoU بينه وبينه أعلى من 0.45، والـ ١٤ التانيين كلهم عدّوا الحد فاتشالوا','اختار واحد عشوائي','دمجهم هندسيًا'],1,'الـ NMS greedy: رتّب، احتفظ بالأعلى، شيل القريب منه، كرّر. مش بيدمج ولا بيعمل متوسط. وعشان كده RT-DETR بيستبدله بحاجة متعلَّمة.'],
+ ['موديلك mAP@0.5 = 0.75 بس mAP@0.5:0.95 = 0.32. أدق تفسير؟',['الداتا فيها classes كتير','الموديل بيلاقي الأشياء الصح بس مربعاته مش دقيقة: كويسة عند IoU 0.5 وبتفشل عند 0.7 فما فوق','الموديل بايظ','الـ inference threshold عالي'],1,'mAP@0.5 متسامح في الـ localization، أما 0.5:0.95 بيدخل thresholds صارمة لحد 0.95. الفجوة الكبيرة معناها إن المربعات في مكان تقريبي بس مش دقيقة. علاج: CIoU/DIoU، features بدقة أعلى، anchors مضبوطة على داتاك.'],
+ ['الـ λ_coord=5.0 وλ_noobj=0.5 بيعكسوا إيه تقريبًا؟',['أن أغلب الخانات فاضية فلازم نقلل وزنها وإلا هتطغى على الـ loss، وإن الـ MSE للمربع صغير جنب الـ cross-entropy فمحتاج تكبير عشان الـ gradients تتقارب','قيود ذاكرة GPU','عدد الـ anchors','اختيارات عشوائية'],0,'في grid ١٣×١٣ فيه ١٦٩ خانة وغالبًا من ١ لـ ٥ أشياء. الخانات الفاضية كلها بتساهم في objectness loss ولو ماتخفّضش وزنها هتغرق الإشارة الإيجابية. ولأن الـ MSE رقمه صغير جنب الـ CE، λ_coord>1 بيوازن الـ gradients.'],
+ ['(سؤال مني) مربعين A و B كل واحد مساحته ١٠٠، ومساحة التقاطع ٥٠. كام الـ IoU؟',['0.5','0.33','0.25','0.67'],1,'الاتحاد = 100 + 100 - 50 = 150، فـ IoU = 50/150 = 0.333. الغلط الشائع إنك تقسم على ١٠٠ فتطلع ٠٫٥.'],
+ ['(سؤال مني) ليه الـ NMS عادةً بيتشغّل لكل class لوحده؟',['عشان أسرع بس','عشان كلب جنب شخص (IoU عالي بينهم) ما يمسحوش بعض، لأن مفيش مشكلة تكرار بين classes مختلفة','لأن الـ IoU مش بيشتغل بين classes','مفيش سبب'],1,'التكرار اللي بنشيله هو «نفس الشيء اتنبأ بيه كذا مرة». شيئين مختلفين من classes مختلفة ممكن يتراكبوا فعلًا، فبنعمل NMS داخل كل class.']
+],5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

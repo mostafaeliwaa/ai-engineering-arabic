@@ -1,0 +1,567 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 06 · Probability and Distributions</span>
+  <h1>اليوم ٦: كل توقع بيطلعه الموديل هو توزيع احتمالي</h1>
+  <p class="lede">الـ classifier بيطلّع <span class="ltr">[0.03, 0.91, 0.06]</span>. الـ LLM بيختار الكلمة الجاية من 50,000 احتمال. الـ diffusion model بيولّد صور بالـ sampling من توزيعات. كل loss function بيقيس قد إيه توزيع بعيد عن التاني، وكل خطوة تدريب بتقرّبهم. النهاردة: الاحتمالات، الـ PMF والـ PDF، التوزيعات المشهورة، الـ expected value والـ variance، الـ CLT، الـ log probabilities، الـ softmax، والـ cross-entropy.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia)</span>
+    <span>قبله: <b>Chain Rule &amp; Autodiff</b></span>
+    <span>بعده: <b>Bayes' Theorem</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d6-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d6-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <ol class="ex">
+    <li>الـ <code>backward()</code> بيبدأ الـ gradient بتاع الخرج بكام، وليه؟
+      <details><summary>الإجابة</summary>بـ 1، لأن <span class="ltr">dy/dy = 1</span>. ده الـ seed بتاع الـ reverse mode.</details></li>
+    <li>الـ derivative المحلي لـ <code>log(x)</code> و<code>exp(x)</code> كام؟
+      <details><summary>الإجابة</summary><span class="ltr">1/x</span> و<span class="ltr">exp(x)</span>. النهاردة هتشوفهم الاتنين جوه الـ softmax والـ cross-entropy.</details></li>
+    <li>ليه بنعمل <code>p.grad = 0</code> قبل كل backward؟
+      <details><summary>الإجابة</summary>لأن الـ gradients بتتجمع بـ <code>+=</code>، فمن غير تصفير الخطوة الجديدة هتشيل gradients الخطوات القديمة.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٧٥ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>الأساسيات والتوزيعات + المعمل ١</div>
+    <div><b>15 min</b>الـ CLT والـ log-probs والـ softmax + المعامل ٢–٤</div>
+    <div><b>25 min</b>اكتب الكود</div>
+    <div><b>10 min</b>الكويز + تمرين</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d6-basics">
+  <div class="station-head"><span class="tag">01</span><h2>الأحداث، فضاء العينة، والاحتمال</h2></div>
+  <p><b>فضاء العينة</b> (sample space) S هو كل النتايج الممكنة. <b>الحدث</b> (event) مجموعة جزئية منه. والاحتمال بيدي كل حدث رقم بين 0 و1.</p>
+  <div class="formula" style="white-space:pre-line">عملة:  S = {H, T}   P(H) = 0.5 ، P(T) = 0.5
+زهرة:  S = {1, 2, 3, 4, 5, 6}   P(زوجي) = P({2, 4, 6}) = 3/6 = 0.5</div>
+  <p>تلات قواعد (axioms) بس، وكل الاحتمالات طالعة منهم:</p>
+  <ol class="ex">
+    <li><span class="ltr">P(A) ≥ 0</span> لأي حدث.</li>
+    <li><span class="ltr">P(S) = 1</span>: حاجة لازم تحصل.</li>
+    <li><span class="ltr">P(A أو B) = P(A) + P(B)</span> لو مينفعش يحصلوا مع بعض.</li>
+  </ol>
+  <h3>الاحتمال الشرطي والاستقلال</h3>
+  <p><span class="ltr">P(A | B)</span> = احتمال A <b>بشرط</b> إن B حصلت. بنضيّق العالم على B بس:</p>
+  <div class="formula">P(A | B) = P(A و B) / P(B)       P(King | Face) = (4/52) / (12/52) = 4/12 = 1/3</div>
+  <p>حدثين <b>مستقلين</b> لو معرفة واحد مش بتقول أي حاجة عن التاني:</p>
+  <div class="formula">P(A | B) = P(A)     يعني     P(A و B) = P(A) · P(B)</div>
+  <p>رمي العملة مرتين مستقلين. سحب كروت من غير ما ترجعها مش مستقلين: كل كارت بيغير اللي فاضل.</p>
+  <div class="note"><strong>تشبيه:</strong> الاحتمال الشرطي زي إنك تقلّب في الصور بفلتر. <span class="ltr">P(King | Face)</span>: فلتر «صور الوشوش بس» (12 كارت)، وبعدين تعد الملوك جوه الفلتر (4).</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d6-dists">
+  <div class="station-head"><span class="tag">02</span><h2>PMF ضد PDF، والتوزيعات المشهورة</h2></div>
+  <p>المتغير <b>المتقطع</b> (discrete) ليه <b>PMF</b>: كل نتيجة ليها احتمال تقراه مباشرة، ومجموعهم = 1. زهرة عادلة: <span class="ltr">P(X = k) = 1/6</span> لكل k.</p>
+  <p>المتغير <b>المتصل</b> (continuous) ليه <b>PDF</b>: الكثافة عند نقطة واحدة <b>مش احتمال</b>. الاحتمال بييجي من الـ integral على فترة (فاكر معمل المستطيلات يوم ٤؟). والكثافة ممكن تبقى أكبر من 1، بس المساحة الكلية تحتها = 1.</p>
+  <div class="formula">P(a ≤ X ≤ b) = ∫ₐᵇ f(x) dx        ∫ f(x) dx على كل الخط = 1</div>
+  <p>في الـ ML: خرج الـ classification هو PMF (اختيارات متقطعة)، والـ latent space في الـ VAE بيستخدم PDFs (متصل).</p>
+  <div class="tablewrap"><table>
+    <tr><th>التوزيع</th><th>الصيغة</th><th>Mean / Variance</th><th>بيمثّل إيه في الـ ML</th></tr>
+    <tr><td>Bernoulli</td><td class="ltr">P(1) = p, P(0) = 1 − p</td><td class="ltr">p / p(1 − p)</td><td>محاولة واحدة بنتيجتين: الـ binary classification</td></tr>
+    <tr><td>Categorical</td><td class="ltr">P(X = i) = pᵢ, Σpᵢ = 1</td><td>—</td><td>محاولة واحدة بـ k نتيجة: خرج الـ softmax (قطة 0.7، كلب 0.2، عصفورة 0.1)</td></tr>
+    <tr><td>Uniform</td><td class="ltr">1/n  أو  1/(b − a) على [a, b]</td><td>—</td><td>كله متساوي: الـ random initialization</td></tr>
+    <tr><td>Normal (Gaussian)</td><td class="ltr">(1/√(2πσ²)) · exp(−(x − μ)² / 2σ²)</td><td class="ltr">μ / σ²</td><td>منحنى الجرس: 68% جوه σ واحدة، 95% جوه 2σ، 99.7% جوه 3σ</td></tr>
+    <tr><td>Poisson</td><td class="ltr">λᵏ e^(−λ) / k!</td><td class="ltr">λ / λ</td><td>عدد الأحداث النادرة في فترة: معدلات الأحداث</td></tr>
+  </table></div>
+
+  <h3>Expected value والـ Variance</h3>
+  <div class="formula" style="white-space:pre-line">E[X] = Σ xᵢ · P(X = xᵢ)          (متقطع)        E[X] = ∫ x · f(x) dx       (متصل)
+Var(X) = E[(X − E[X])²] = E[X²] − (E[X])²         SD = √Var</div>
+  <p>الـ expected value هو المتوسط الموزون بالاحتمالات. الزهرة: <span class="ltr">E = 3.5</span>، <span class="ltr">Var ≈ 2.9167</span>، <span class="ltr">SD ≈ 1.7078</span>. في الـ ML الـ loss هو expected value (متوسط الـ loss على توزيع الداتا)، والـ variance بتقولك عن الاستقرار: variance عالية في الـ gradients = تدريب مشوّش.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: معرض التوزيعات + الـ sampling</h3>
+      <p>اختار توزيع وحرّك الـ parameters. الخط/الأعمدة الغامقة هي الصيغة النظرية. دوس «اسحب عينات» وشوف الـ histogram بيقرب منها كل ما تزود العينات.</p>
+      <p>جرّب Normal بـ σ = 0.2: الكثافة بتعدي 1 بكتير، وده عادي لأنها مش احتمال.</p>
+      <div class="note ai"><strong>الـ sampling في الـ ML:</strong> الـ dropout بيسحب عشوائي مين يتقفل، الـ augmentation بيسحب تحويلات عشوائية، الـ LLM بيسحب الكلمة الجاية من التوزيع، والـ diffusion بيسحب noise ويشيله تدريجيًا. وللتوزيعات المعقدة فيه تقنيات زي inverse transform وrejection sampling والـ reparameterization trick (في الـ VAEs).</div>
+    </div>
+    <div class="instrument">
+      <div class="btns" id="d6-dBtns">
+        <button type="button" data-d6d="bern" class="primary">Bernoulli</button>
+        <button type="button" data-d6d="cat">Categorical</button>
+        <button type="button" data-d6d="pois">Poisson</button>
+        <button type="button" data-d6d="unif">Uniform</button>
+        <button type="button" data-d6d="norm">Normal</button>
+      </div>
+      <canvas id="d6-dCv" width="520" height="260" aria-label="شكل التوزيع"></canvas>
+      <div class="mrow">
+        <label id="d6-dl1"><span id="d6-dn1">p</span> = <span id="d6-dv1"></span><input type="range" id="d6-dp1"></label>
+        <label id="d6-dl2"><span id="d6-dn2"></span> = <span id="d6-dv2"></span><input type="range" id="d6-dp2"></label>
+      </div>
+      <div class="readout">
+        <div><small>mean (نظري)</small><b id="d6-dm"></b></div>
+        <div><small>variance (نظري)</small><b id="d6-dvv"></b></div>
+        <div><small>mean (العينات)</small><b id="d6-dsm">—</b></div>
+        <div><small>عدد العينات</small><b id="d6-dsn">0</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d6-s100" class="primary">اسحب 100</button><button type="button" id="d6-s5k">اسحب 5000</button><button type="button" id="d6-sclr">امسح</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d6-joint">
+  <div class="station-head"><span class="tag">03</span><h2>Joint وMarginal distributions</h2></div>
+  <p>الـ <b>joint</b> <span class="ltr">P(X, Y)</span> بيوصف متغيرين مع بعض. مثال الدرس: X = الجو، Y = شمسية.</p>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Y = 0 (من غير شمسية)</th><th>Y = 1 (شمسية)</th><th>Marginal P(X)</th></tr>
+    <tr><td>X = 0 (شمس)</td><td class="ltr">0.40</td><td class="ltr">0.10</td><td class="ltr">0.50</td></tr>
+    <tr><td>X = 1 (مطر)</td><td class="ltr">0.05</td><td class="ltr">0.45</td><td class="ltr">0.50</td></tr>
+    <tr><td><b>Marginal P(Y)</b></td><td class="ltr">0.45</td><td class="ltr">0.55</td><td class="ltr">1.00</td></tr>
+  </table></div>
+  <p>الـ <b>marginal</b> بنجيبه بإننا «نجمع» المتغير التاني: <span class="ltr">P(X = x) = Σ_y P(X = x, Y = y)</span>. هما حرفيًا مجاميع الصفوف والأعمدة (اسمهم marginal عشان بيتكتبوا في هامش الجدول).</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: هل الشمسية مستقلة عن المطر؟</h3>
+      <p>الـ slider بيتحكم في قد إيه الناس بتاخد شمسية <b>بسبب</b> المطر. عند الصفر: الشمسية مالهاش علاقة بالجو، وكل خانة = حاصل ضرب الـ marginals بتوعها، فهما مستقلين. القيمة 0.8 بتطلّع جدول الدرس بالظبط.</p>
+      <p>الاستقلال معناه إن كل خانة في الجدول = <span class="ltr">P(X) · P(Y)</span>، مش خانة واحدة بس.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">الاعتماد على المطر = <b class="mono" id="d6-vjd">0.8</b><input type="range" id="d6-jd" min="0" max="0.8" step="0.05" value="0.8"></label>
+      <div id="d6-jOut" style="direction:ltr"></div>
+      <div class="verdict" id="d6-jV"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d6-clt">
+  <div class="station-head"><span class="tag">04</span><h2>ليه الـ Normal في كل حتة؟ الـ Central Limit Theorem</h2></div>
+  <p>الـ CLT: متوسط عدد كبير من المتغيرات العشوائية المستقلة من نفس التوزيع، بعد ما تـ center وتـ scale بـ <span class="ltr">√n</span>، بيقرب من توزيع normal، <b>مهما كان شكل التوزيع الأصلي</b>، طالما الـ variance بتاعه محدودة. ونفس الكلام للمجموع.</p>
+  <div class="formula" style="white-space:pre-line">زهرة واحدة:            uniform (مسطح)
+متوسط زهرتين:          مثلث
+متوسط 30 زهرة:         جرس تقريبًا كامل</div>
+  <p>عشان كده: أخطاء القياس تقريبًا normal (مصادر صغيرة كتير مستقلة)، والـ weight initialization بيستخدم normal، والـ noise في gradients الـ SGD تقريبًا normal (مجموع gradients عينات كتير)، والـ normal هو التوزيع اللي ليه أعلى entropy لما تحدد الـ mean والـ variance.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: شوف الجرس بيتولد</h3>
+      <p>اختار توزيع أصلي (حتى لو مايل أو ليه قيمتين بس) وحرّك n. كل عمود في الـ histogram هو 4000 متوسط، كل متوسط من n عينة. الخط هو منحنى normal بنفس الـ mean والـ SD.</p>
+      <p>لاحظ كمان إن الـ SD بتقل زي <span class="ltr">1/√n</span>: المتوسطات بتتلم أكتر حوالين الـ mean.</p>
+    </div>
+    <div class="instrument">
+      <div class="btns">
+        <button type="button" data-d6c="unif" class="primary">Uniform [0,1)</button>
+        <button type="button" data-d6c="die">زهرة</button>
+        <button type="button" data-d6c="coin">عملة 0/1</button>
+        <button type="button" data-d6c="skew">مايل (exponential)</button>
+      </div>
+      <canvas id="d6-cCv" width="520" height="240" aria-label="الـ histogram بتاع المتوسطات"></canvas>
+      <label style="display:grid;gap:2px">n = <b class="mono" id="d6-vcn">1</b><input type="range" id="d6-cn" min="1" max="50" step="1" value="1"></label>
+      <div class="readout"><div><small>mean المتوسطات</small><b id="d6-cm"></b></div><div><small>SD المتوسطات</small><b id="d6-cs"></b></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d6-logs">
+  <div class="station-head"><span class="tag">05</span><h2>Log probabilities، Softmax، وCross-entropy</h2></div>
+  <h3>ليه الـ log؟</h3>
+  <p>ضرب احتمالات صغيرة كتير بيوصل لـ <b>underflow</b>: الرقم بيصغر لدرجة إن الكمبيوتر يقربه لصفر. احتمال جملة = حاصل ضرب احتمالات كلماتها:</p>
+  <div class="formula" style="white-space:pre-line">P(جملة) = 0.01 · 0.003 · 0.02 · …  → 0.0   (underflow)
+log P(جملة) = −4.6 + −5.8 + −3.9 + …  → رقم عادي</div>
+  <ul class="checklist">
+    <li><span class="ltr">log(a · b) = log(a) + log(b)</span>: الضرب بقى جمع.</li>
+    <li>الـ log probability دايمًا <span class="ltr">≤ 0</span> (لأن <span class="ltr">0 &lt; P ≤ 1</span>). كل ما يبقى سالب أكتر يبقى أقل احتمالًا.</li>
+    <li>الـ cross-entropy loss = سالب الـ log probability بتاع الإجابة الصح.</li>
+  </ul>
+  <h3>الـ Softmax: من scores لاحتمالات</h3>
+  <p>الشبكة بتطلّع أرقام خام اسمها <b>logits</b> (اسمها جاي من الـ logistic function). الـ softmax بيحولها لتوزيع احتمالي سليم:</p>
+  <div class="formula">softmax(zᵢ) = exp(zᵢ) / Σⱼ exp(zⱼ)</div>
+  <p>كل الخرج بين 0 و1، مجموعه 1، بيحافظ على ترتيب الـ logits، والـ exp بيكبّر الفروق بينهم.</p>
+  <p><b>الـ softmax trick:</b> <span class="ltr">exp(102)</span> ممكن يعمل overflow. اطرح أكبر logit الأول: <span class="ltr">[100, 101, 102] → [−2, −1, 0]</span>. النتيجة نفسها بالظبط (الطرح بيتلغي في القسمة)، ومفيش overflow. والـ <b>log-softmax</b> بيجمع الـ softmax والـ log في خطوة واحدة مستقرة، وده اللي PyTorch بيستخدمه جوه الـ cross-entropy.</p>
+  <div class="formula">log_softmax(zᵢ) = zᵢ − ( m + log Σⱼ exp(zⱼ − m) )      حيث m = max(z)</div>
+  <p>والـ <b>cross-entropy</b> عمومًا <span class="ltr">−Σ p_true · log(p_pred)</span>. لما الإجابة الصح واحدة بس (one-hot) بتبقى <span class="ltr">−log(q_صح)</span>: لو الموديل قال 0.9 للصح، الـ loss = 0.105. لو قال 0.01، الـ loss = 4.6.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: softmax وcross-entropy قدامك</h3>
+      <p>حرّك الـ logits واختار الإجابة الصح. الأعمدة هي الـ softmax، وتحت الـ loss. لاحظ: لما تعلي logit الإجابة الصح الـ loss بيقرب من صفر، ولما الموديل يبقى واثق في إجابة غلط الـ loss بيطير.</p>
+      <p>وفعّل «زوّد 1000 على الكل»: الـ softmax العادي بيطلّع NaN (overflow)، والـ stable مش بيتأثر خالص.</p>
+      <p><b>إضافة مني:</b> الـ temperature T بتقسم الـ logits قبل الـ softmax. T صغيرة = توزيع حاد (الموديل «متأكد»)، T كبيرة = توزيع مفرود. ده نفس الـ temperature اللي في إعدادات أي LLM.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d6-sCv" width="520" height="220" aria-label="الـ softmax"></canvas>
+      <div class="mrow">
+        <label>z₀ (قطة) = <span id="d6-vz0">2</span><input type="range" id="d6-z0" min="-4" max="6" step="0.1" value="2"></label>
+        <label>z₁ (كلب) = <span id="d6-vz1">1</span><input type="range" id="d6-z1" min="-4" max="6" step="0.1" value="1"></label>
+        <label>z₂ (عصفورة) = <span id="d6-vz2">0.1</span><input type="range" id="d6-z2" min="-4" max="6" step="0.1" value="0.1"></label>
+        <label>T = <span id="d6-vT">1</span><input type="range" id="d6-T" min="0.1" max="5" step="0.1" value="1"></label>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">الإجابة الصح: <select id="d6-tgt"><option value="0">قطة (0)</option><option value="1">كلب (1)</option><option value="2">عصفورة (2)</option></select>
+        <label><input type="checkbox" id="d6-big"> زوّد 1000 على الكل</label></label>
+      <div class="readout">
+        <div><small>naive softmax</small><b id="d6-naive"></b></div>
+        <div><small>stable softmax</small><b id="d6-stable"></b></div>
+        <div><small>cross-entropy</small><b id="d6-ce"></b></div>
+      </div>
+    </div>
+  </div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٥: الـ underflow بعينك</h3>
+      <p>جملة كل كلمة فيها احتمالها p. حرّك عدد الكلمات وشوف الضرب العادي بيوصل صفر (حوالي 160 كلمة عند p = 0.01)، والـ log sum فاضل رقم عادي.</p>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>عدد الكلمات = <span id="d6-vuw">50</span><input type="range" id="d6-uw" min="1" max="400" step="1" value="50"></label>
+        <label>p لكل كلمة = <span id="d6-vup">0.01</span><input type="range" id="d6-up" min="0.001" max="0.5" step="0.001" value="0.01"></label>
+      </div>
+      <div class="readout">
+        <div><small>ضرب عادي</small><b id="d6-uprod"></b></div>
+        <div><small>جمع logs</small><b id="d6-ulog"></b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d6-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/01-math-foundations/06-probability-and-distributions/code/probability.py
+<span class="c"># نسخة Julia:</span>
+julia phases/01-math-foundations/06-probability-and-distributions/code/main.jl</pre></div>
+  <p>الملف الأصلي بيرسم كمان صورة <code>probability_distributions.png</code> لو عندك matplotlib، ولو مش موجود بيكمّل عادي. اكتب الخطوات دي في <code>my_prob.py</code>.</p>
+
+  <h3>خطوة ١: الأساسيات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+random.seed(42)
+
+def factorial(n):
+    result = 1
+    for i in range(2, n + 1):
+        result *= i
+    return result
+
+def combinations(n, k):                      <span class="c"># n اختار k</span>
+    return factorial(n) // (factorial(k) * factorial(n - k))
+
+def conditional_probability(p_a_and_b, p_b):
+    return p_a_and_b / p_b
+
+print(f"P(King | Face card) = {conditional_probability(4/52, 12/52):.4f}")   <span class="c"># 0.3333</span></pre></div>
+
+  <h3>خطوة ٢: PMF وPDF من الصفر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bernoulli_pmf(k, p):
+    return p if k == 1 else (1 - p)
+
+def categorical_pmf(k, probs):
+    return probs[k]
+
+def poisson_pmf(k, lam):
+    return (lam ** k) * math.exp(-lam) / factorial(k)
+
+def uniform_pdf(x, a, b):
+    return 1.0 / (b - a) if a &lt;= x &lt;= b else 0.0
+
+def normal_pdf(x, mu, sigma):
+    coeff = 1.0 / (sigma * math.sqrt(2 * math.pi))
+    exponent = -0.5 * ((x - mu) / sigma) ** 2
+    return coeff * math.exp(exponent)
+
+print([round(poisson_pmf(k, 3), 4) for k in range(10)])
+print([round(normal_pdf(x, 0, 1), 4) for x in range(-3, 4)])</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">[0.0498, 0.1494, 0.224, 0.224, 0.168, 0.1008, 0.0504, 0.0216, 0.0081, 0.0027]
+[0.0044, 0.054, 0.242, 0.3989, 0.242, 0.054, 0.0044]</pre><p>الـ Poisson بـ λ = 3 أعلى حاجة عند 2 و3. والـ normal أعلى قيمة 0.3989 عند الصفر.</p></details>
+
+  <h3>خطوة ٣: Expected value والـ variance</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def expected_value(values, probabilities):
+    return sum(v * p for v, p in zip(values, probabilities))
+
+def variance(values, probabilities):
+    mu = expected_value(values, probabilities)
+    return sum(p * (v - mu) ** 2 for v, p in zip(values, probabilities))
+
+die, probs = [1, 2, 3, 4, 5, 6], [1/6] * 6
+mu, var = expected_value(die, probs), variance(die, probs)
+print(f"Die: E[X] = {mu:.4f}, Var(X) = {var:.4f}, SD = {var**0.5:.4f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Die: E[X] = 3.5000, Var(X) = 2.9167, SD = 1.7078</pre></details>
+
+  <h3>خطوة ٤: الـ sampling</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sample_bernoulli(p, n=1):
+    return [1 if random.random() &lt; p else 0 for _ in range(n)]
+
+def sample_categorical(probs, n=1):
+    cumulative, total = [], 0
+    for p in probs:                          <span class="c"># [0.1, 0.4, 0.8, 1.0]</span>
+        total += p
+        cumulative.append(total)
+    samples = []
+    for _ in range(n):
+        r = random.random()                  <span class="c"># رقم بين 0 و1</span>
+        for i, c in enumerate(cumulative):   <span class="c"># أول خانة تعدّيه</span>
+            if r &lt;= c:
+                samples.append(i)
+                break
+    return samples
+
+def sample_normal_box_muller(mu, sigma, n=1):
+    samples = []
+    for _ in range(n):
+        u1, u2 = random.random(), random.random()
+        z = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)   <span class="c"># Box-Muller</span>
+        samples.append(mu + sigma * z)
+    return samples
+
+s = sample_categorical([0.1, 0.3, 0.4, 0.2], 1000)
+print([s.count(i) / 1000 for i in range(4)])     <span class="c"># قريب من [0.1, 0.3, 0.4, 0.2]</span></pre></div>
+  <p>الـ <b>Box-Muller</b> بياخد رقمين uniform ويحوّلهم لرقم normal بمعادلة مظبوطة. والـ categorical شغال بفكرة الـ «مسطرة»: بتقسم الخط من 0 لـ 1 لحتت طولها الاحتمالات، وترمي رقم عشوائي وتشوف وقع في أنهي حتة.</p>
+  <div class="note"><strong>ملاحظة:</strong> <code>random.random()</code> ممكن نظريًا يطلّع 0 بالظبط، و<code>log(0)</code> هيعمل إيرور. نسخة Julia بتحمي نفسها من ده بإنها تسحب تاني لو طلع صفر. احتمال نادر جدًا، بس كود production لازم يحسبه.</div>
+
+  <h3>خطوة ٥: Softmax والـ log probabilities</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def softmax(logits):
+    max_logit = max(logits)
+    shifted = [z - max_logit for z in logits]        <span class="c"># الـ trick</span>
+    exps = [math.exp(z) for z in shifted]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+def log_softmax(logits):
+    max_logit = max(logits)
+    shifted = [z - max_logit for z in logits]
+    log_sum_exp = max_logit + math.log(sum(math.exp(z) for z in shifted))
+    return [z - log_sum_exp for z in logits]
+
+def cross_entropy_loss(logits, target_index):
+    return -log_softmax(logits)[target_index]
+
+print([round(p, 4) for p in softmax([2.0, 1.0, 0.1])])
+print([round(p, 4) for p in softmax([100, 101, 102])])
+print([round(p, 4) for p in log_softmax([2.0, 1.0, 0.1])])
+print(round(cross_entropy_loss([2.0, 1.0, 0.1], 0), 4))
+print(0.01 ** 50, 50 * math.log(0.01))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">[0.659, 0.2424, 0.0986]
+[0.09, 0.2447, 0.6652]
+[-0.417, -1.417, -2.317]
+0.417
+1.000000000000001e-100 -230.25850929940455</pre><p>آخر سطر ممكن آخر رقم فيه يفرق حسب الجهاز. و<span class="ltr">[100, 101, 102]</span> طلعت نفس نتيجة <span class="ltr">[0, 1, 2]</span> لأن الـ softmax مش بيهمه الإزاحة.</p></details>
+
+  <h3>خطوة ٦: Joint وmarginals والـ CLT</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def joint_to_marginals(joint):
+    rows, cols = len(joint), len(joint[0])
+    marginal_x = [sum(joint[i][j] for j in range(cols)) for i in range(rows)]   <span class="c"># مجموع الصف</span>
+    marginal_y = [sum(joint[i][j] for i in range(rows)) for j in range(cols)]   <span class="c"># مجموع العمود</span>
+    return marginal_x, marginal_y
+
+def check_independence(joint, marginal_x, marginal_y, tol=1e-9):
+    for i in range(len(marginal_x)):
+        for j in range(len(marginal_y)):
+            if abs(joint[i][j] - marginal_x[i] * marginal_y[j]) &gt; tol:
+                return False
+    return True
+
+joint = [[0.40, 0.10], [0.05, 0.45]]
+mx, my = joint_to_marginals(joint)
+print(mx, my, check_independence(joint, mx, my))   <span class="c"># [0.5, 0.5] [0.45, 0.55] False</span>
+
+def demonstrate_clt(dist_fn, n_per_sample, n_averages):
+    return [sum(dist_fn() for _ in range(n_per_sample)) / n_per_sample
+            for _ in range(n_averages)]
+
+for n in [1, 2, 5, 30]:
+    avgs = demonstrate_clt(random.random, n, 10000)
+    m = sum(avgs) / len(avgs)
+    sd = (sum((a - m) ** 2 for a in avgs) / len(avgs)) ** 0.5
+    print(f"n={n:2d}: mean={m:.4f}, std={sd:.4f}")</pre></div>
+  <details><summary>الناتج المتوقع (تقريبًا)</summary><pre class="term">n= 1: mean≈0.50, std≈0.289
+n= 2: mean≈0.50, std≈0.204
+n= 5: mean≈0.50, std≈0.129
+n=30: mean≈0.50, std≈0.053</pre><p>الأرقام الدقيقة بتعتمد على الـ random. القاعدة: SD الـ uniform هو <span class="ltr">1/√12 ≈ 0.289</span>، والمتوسط بيقسمه على <span class="ltr">√n</span>.</p></details>
+
+  <h3>خطوة ٧: نفس الكلام بالمكتبات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+from scipy import stats
+from scipy.special import softmax, log_softmax
+
+normal = stats.norm(loc=0, scale=1)
+samples = normal.rvs(size=10000)
+print(f"Mean: {np.mean(samples):.4f}, Std: {np.std(samples):.4f}")
+print(f"P(X &lt; 1.96) = {normal.cdf(1.96):.4f}")      <span class="c"># 0.9750</span>
+print(softmax(np.array([2.0, 1.0, 0.1])), log_softmax(np.array([2.0, 1.0, 0.1])))</pre></div>
+  <p>محتاج <code>pip install scipy</code> للخطوة دي بس. كل اللي فوق انت بنيته من الصفر، فدلوقتي عارف المكتبة بتعمل إيه جوه.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d6-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Inverse transform sampling:</b> اعمله للـ exponential distribution. اسحب 10,000 عينة وقارن الـ histogram بالـ PDF الحقيقي.
+      <details><summary>تلميح</summary>اسحب <code>u</code> uniform ورجّع <span class="ltr">−ln(1 − u) / λ</span>. اتأكد إن متوسط العينات قريب من <span class="ltr">1/λ</span> وإن الـ histogram ماشي مع <span class="ltr">λ·e^(−λx)</span>. (ده نفس اللي المعمل ٣ بيعمله في «مايل».)</details></li>
+    <li><b>زهرتين مغشوشين:</b> اعمل جدول joint ليهم، احسب الـ marginals، وشوف هما مستقلين ولا لأ.
+      <details><summary>تلميح</summary>جدول 6×6 كل خانة فيه احتمال ومجموعه كله 1. استخدم <code>joint_to_marginals</code> و<code>check_independence</code>. لو عملت الجدول بإنك تضرب زهرة في زهرة (<span class="ltr">P(i)·P(j)</span>) هيطلعوا مستقلين حتى لو مغشوشين. عشان تكسر الاستقلال لازم الزهرة التانية تعتمد على الأولى.</details></li>
+    <li><b>Cross-entropy:</b> logits <span class="ltr">[2.0, 0.5, −1.0, 3.0, 0.1]</span> والإجابة الصح index 3. احسب الـ loss وقارنه بـ <code>nn.CrossEntropyLoss</code>.
+      <details><summary>الإجابة</summary>softmax وبعدين <span class="ltr">−ln</span> الاحتمال عند index 3. لازم يطلع حوالي <b>0.421</b>، ونفس الرقم من PyTorch. لاحظ إن PyTorch بياخد الـ logits الخام مش الـ softmax.</details></li>
+    <li><b>أكتر جملة محتملة:</b> اكتب دالة بتاخد list من الـ log probabilities وترجع المجموع والاحتمال الخام المقابل. جربها على جملة 50 كلمة كل كلمة احتمالها 0.01.
+      <details><summary>الإجابة</summary>اجمع الـ logs ومتضربش الاحتمالات. المجموع <span class="ltr">50·ln(0.01) ≈ −230.26</span> والاحتمال الخام <span class="ltr">10⁻¹⁰⁰</span>. جرّب 200 كلمة وهتلاقي الضرب العادي صفر والـ log تمام.</details></li>
+    <li><b>إضافة مني · sampler بتاع LLM:</b> اكتب <code>sample_next(logits, temperature, top_k)</code>: اقسم الـ logits على الـ temperature، خلي أعلى k بس (والباقي <span class="ltr">−∞</span>)، softmax، وبعدين <code>sample_categorical</code>. اسحب 1000 مرة بـ T = 0.2 وT = 1.5 وقارن التنوع.
+      <details><summary>تلميح</summary>ده تقريبًا اللي بيحصل في كل API لما تحدد <code>temperature</code> و<code>top_k</code>. T قريبة من الصفر بتقرب من اختيار الأعلى دايمًا (greedy). خلي بالك: الـ <span class="ltr">−∞</span> لازم تعديها في الـ softmax الـ stable من غير ما تعمل NaN (<span class="ltr">exp(−∞) = 0</span> عادي).</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d6-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: أخطاء شائعة وفين في الـ LLMs</h2></div>
+  <ul class="checklist">
+    <li><b>‏Loss = NaN:</b> أول مشتبه فيه <code>log(0)</code> أو softmax من غير الـ trick. عشان كده دايمًا ادّي PyTorch الـ logits الخام لـ <code>CrossEntropyLoss</code>، متحسبش softmax بنفسك وبعدين log.</li>
+    <li><b>الكثافة مش احتمال:</b> قيمة <code>normal_pdf</code> ممكن تبقى 2 أو 5. لو قارنت كثافات من توزيعات مختلفة كأنها احتمالات هتوصل لاستنتاجات غلط.</li>
+    <li><b>الاستقلال افتراض:</b> كتير من الموديلات بتفترضه عشان الحساب يبقى سهل (بكرة في الـ Naive Bayes). لازم تعرف امتى بتفترضه.</li>
+    <li><b>في الـ LLMs:</b> الموديل بيطلّع logits على الـ vocabulary كله لكل token. الـ training loss هو متوسط الـ cross-entropy على كل token. والـ <b>perplexity</b> اللي بتشوفها في الـ papers هي <span class="ltr">exp(متوسط الـ cross-entropy)</span>، يعني تقريبًا «الموديل محتار بين كام كلمة في المتوسط». والـ <code>logprobs</code> اللي بعض الـ APIs بترجعها هي نفس الـ log-softmax ده.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d6-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d6-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d6-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d6-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أفرق بين PMF وPDF وأشرح ليه الكثافة ممكن تعدي 1</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم الاحتمال الشرطي والاستقلال وجربت الجدول</label></li>
+    <li><label><input type="checkbox" data-ck="3"> شفت الـ CLT بيطلّع جرس من توزيع مايل</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم الـ softmax trick والـ log-softmax وليه الـ cross-entropy = −log(q)</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود وحليت تمرين ٣</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Bernoulli / Categorical</td><td>خرج الـ binary والـ multi-class classifiers، اختيار الـ token في الـ LLM</td></tr>
+    <tr><td>Normal</td><td>الـ weight initialization، الـ noise في الـ diffusion، الـ VAEs</td></tr>
+    <tr><td>Expected value / Variance</td><td>الـ loss كمتوسط، استقرار الـ gradients</td></tr>
+    <tr><td>CLT</td><td>ليه الـ SGD noise تقريبًا normal، الـ confidence intervals</td></tr>
+    <tr><td>Log probabilities</td><td>الـ logprobs في الـ APIs، الـ beam search، الـ perplexity</td></tr>
+    <tr><td>Softmax + cross-entropy</td><td>آخر layer في أي classifier وأي LLM، و<code>nn.CrossEntropyLoss</code></td></tr>
+    <tr><td>Sampling</td><td>الـ temperature والـ top-k/top-p، الـ dropout، الـ augmentation</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Bayes' Theorem. إزاي تحدّث اعتقادك لما تشوف دليل، وهتبني spam filter بالـ Naive Bayes.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F06-probability-and-distributions" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/06-probability-and-distributions</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=6,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d6-roadmap').closest('.day');
+const rm=$('d6-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===N)s.className='now';rm.appendChild(s)}
+const alive=c=>document.body.contains(c);
+const fact=n=>{let r=1;for(let i=2;i<=n;i++)r*=i;return r};
+const gauss=()=>{let u=0;while(u===0)u=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*Math.random())};
+const npdf=(x,m,s)=>Math.exp(-0.5*((x-m)/s)**2)/(s*Math.sqrt(2*Math.PI));
+
+// ---------- Lab 1: distributions ----------
+const D={
+ bern:{p:[['p',0,1,0.01,0.7]],disc:true,xs:()=>[0,1],pmf:(k,[p])=>k===1?p:1-p,mean:([p])=>p,vr:([p])=>p*(1-p),samp:([p])=>Math.random()<p?1:0},
+ cat:{p:[['p₀',0,1,0.01,0.1],['p₂',0,1,0.01,0.4]],disc:true,xs:()=>[0,1,2,3],probs:([a,c])=>{const rest=Math.max(0,1-a-c);return[a,rest*0.6,c,rest*0.4]},pmf(k,P){return this.probs(P)[k]},mean(P){return this.probs(P).reduce((s,p,i)=>s+p*i,0)},vr(P){const m=this.mean(P);return this.probs(P).reduce((s,p,i)=>s+p*(i-m)**2,0)},samp(P){const pr=this.probs(P),t=pr.reduce((a,b)=>a+b,0);let r=Math.random()*t;for(let i=0;i<4;i++){r-=pr[i];if(r<=0)return i}return 3}},
+ pois:{p:[['λ',0.5,10,0.1,3]],disc:true,xs:()=>Array.from({length:16},(_,i)=>i),pmf:(k,[l])=>Math.pow(l,k)*Math.exp(-l)/fact(k),mean:([l])=>l,vr:([l])=>l,samp:([l])=>{const L=Math.exp(-l);let k=0,p=1;do{k++;p*=Math.random()}while(p>L);return k-1}},
+ unif:{p:[['a',-3,2,0.1,1],['b',-2,5,0.1,4]],disc:false,range:()=>[-4,6],pdf:(x,[a,b])=>b>a&&x>=a&&x<=b?1/(b-a):0,mean:([a,b])=>(a+b)/2,vr:([a,b])=>(b-a)**2/12,samp:([a,b])=>a+(b-a)*Math.random()},
+ norm:{p:[['μ',-3,3,0.1,0],['σ',0.2,3,0.05,1]],disc:false,range:()=>[-6,6],pdf:(x,[m,s])=>npdf(x,m,s),mean:([m])=>m,vr:([,s])=>s*s,samp:([m,s])=>m+s*gauss()}};
+let dk='bern',samples=[];
+const dc=$('d6-dCv'),dx=AI.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+function P(){return D[dk].p.map((_,i)=>+$('d6-dp'+(i+1)).value)}
+function setDist(k){dk=k;samples=[];document.querySelectorAll('[data-d6d]').forEach(b=>b.classList.toggle('primary',b.dataset.d6d===k));
+  D[k].p.forEach(([n,lo,hi,st,v],i)=>{const el=$('d6-dp'+(i+1));el.min=lo;el.max=hi;el.step=st;el.value=v;$('d6-dn'+(i+1)).textContent=n});
+  $('d6-dl2').style.display=D[k].p.length>1?'':'none';dDraw()}
+function dDraw(){const d=D[dk],pr=P();pr.forEach((v,i)=>$('d6-dv'+(i+1)).textContent=v);
+  if(dk==='unif'&&pr[1]<=pr[0]){$('d6-dm').textContent='b لازم > a';$('d6-dvv').textContent='—'}else{$('d6-dm').textContent=f(d.mean(pr),3);$('d6-dvv').textContent=f(d.vr(pr),3)}
+  dx.clearRect(0,0,DW,DH);const pad=26;
+  if(d.disc){const xs=d.xs(pr),n=xs.length,bw=(DW-2*pad)/n;const ys=xs.map(k=>d.pmf(k,pr));const cnt=xs.map(k=>samples.filter(s=>s===k).length/Math.max(1,samples.length));const mx=Math.max(...ys,...(samples.length?cnt:[0]),0.05)*1.1;
+    xs.forEach((k,i)=>{const x=pad+i*bw,h=ys[i]/mx*(DH-2*pad);dx.fillStyle=css('--vec-a');dx.fillRect(x+bw*.15,DH-pad-h,bw*.35,h);
+      if(samples.length){const h2=cnt[i]/mx*(DH-2*pad);dx.fillStyle=css('--vec-b');dx.fillRect(x+bw*.5,DH-pad-h2,bw*.35,h2)}
+      dx.fillStyle=css('--muted');dx.font='11px JetBrains Mono, monospace';dx.textAlign='center';dx.fillText(k,x+bw/2,DH-8);if(n<=6){dx.fillStyle=css('--ink');dx.fillText(f(ys[i],3),x+bw*.32,DH-pad-h-4)}});dx.textAlign='left'}
+  else{const [lo,hi]=d.range(),X=x=>pad+(x-lo)/(hi-lo)*(DW-2*pad);const bins=40,bw=(hi-lo)/bins,cnt=new Array(bins).fill(0);samples.forEach(s=>{const b=Math.floor((s-lo)/bw);if(b>=0&&b<bins)cnt[b]++});
+    const dens=cnt.map(c=>c/Math.max(1,samples.length)/bw);let mx=0;for(let i=0;i<=200;i++)mx=Math.max(mx,d.pdf(lo+(hi-lo)*i/200,pr));mx=Math.max(mx,...dens)*1.1||1;const Y=y=>DH-pad-y/mx*(DH-2*pad);
+    if(samples.length){dx.fillStyle=css('--vec-b');dx.globalAlpha=.5;dens.forEach((v,i)=>dx.fillRect(X(lo+i*bw),Y(v),X(lo+(i+1)*bw)-X(lo+i*bw)-1,Y(0)-Y(v)));dx.globalAlpha=1}
+    dx.strokeStyle=css('--vec-a');dx.lineWidth=2.5;dx.beginPath();for(let i=0;i<=300;i++){const x=lo+(hi-lo)*i/300,p=[X(x),Y(d.pdf(x,pr))];i?dx.lineTo(...p):dx.moveTo(...p)}dx.stroke();
+    dx.fillStyle=css('--muted');dx.font='11px JetBrains Mono, monospace';for(let k=Math.ceil(lo);k<=hi;k++)dx.fillText(k,X(k)-3,DH-8);
+    dx.fillStyle=css('--ink');dx.fillText('max density = '+f(mx/1.1,3),DW-150,16)}
+  dx.strokeStyle=css('--muted');dx.lineWidth=1;dx.beginPath();dx.moveTo(pad,DH-pad);dx.lineTo(DW-pad,DH-pad);dx.stroke();
+  $('d6-dsn').textContent=samples.length;$('d6-dsm').textContent=samples.length?f(samples.reduce((a,b)=>a+b,0)/samples.length,3):'—'}
+function draw(n){const d=D[dk],pr=P();if(dk==='unif'&&pr[1]<=pr[0])return;for(let i=0;i<n;i++)samples.push(d.samp(pr));dDraw()}
+document.querySelectorAll('[data-d6d]').forEach(b=>b.addEventListener('click',()=>setDist(b.dataset.d6d)));
+['d6-dp1','d6-dp2'].forEach(id=>$(id).addEventListener('input',()=>{samples=[];dDraw()}));
+$('d6-s100').addEventListener('click',()=>draw(100));$('d6-s5k').addEventListener('click',()=>draw(5000));$('d6-sclr').addEventListener('click',()=>{samples=[];dDraw()});
+setDist('bern');
+
+// ---------- Lab 2: joint ----------
+function joint(){const d=+$('d6-jd').value;$('d6-vjd').textContent=d;
+  // P(rain)=0.5 ; P(umbrella|sun)=0.55-d/2*... design: P(U|rain)=0.55+d/2*... ensure d=0.8 -> 0.9 and 0.2
+  const pu_r=0.55+d*0.4375,pu_s=0.55-d*0.4375;
+  const J=[[0.5*(1-pu_s),0.5*pu_s],[0.5*(1-pu_r),0.5*pu_r]];
+  const mx=[J[0][0]+J[0][1],J[1][0]+J[1][1]],my=[J[0][0]+J[1][0],J[0][1]+J[1][1]];
+  let ind=true;const cell=(i,j)=>{const prod=mx[i]*my[j],ok=Math.abs(J[i][j]-prod)<1e-9;if(!ok)ind=false;return `<td style="text-align:center">${f(J[i][j],3)}<br><small style="color:${ok?css('--ok'):css('--bad')}">P(X)P(Y)=${f(prod,3)}</small></td>`};
+  $('d6-jOut').innerHTML=`<table><tr><th></th><th style="text-align:center">no umbrella</th><th style="text-align:center">umbrella</th><th style="text-align:center">P(X)</th></tr>
+  <tr><td>sun</td>${cell(0,0)}${cell(0,1)}<td style="text-align:center">${f(mx[0],2)}</td></tr>
+  <tr><td>rain</td>${cell(1,0)}${cell(1,1)}<td style="text-align:center">${f(mx[1],2)}</td></tr>
+  <tr><td>P(Y)</td><td style="text-align:center">${f(my[0],3)}</td><td style="text-align:center">${f(my[1],3)}</td><td style="text-align:center">1</td></tr></table>`;
+  const v=$('d6-jV');v.textContent=ind?'مستقلين: كل خانة = P(X)·P(Y)':'مش مستقلين: P(شمسية | مطر) = '+f(pu_r,3)+' ≠ P(شمسية) = '+f(my[1],3);v.style.color=ind?css('--ok'):css('--bad')}
+$('d6-jd').addEventListener('input',joint);joint();
+
+// ---------- Lab 3: CLT ----------
+const SRC={unif:[()=>Math.random(),0.5,Math.sqrt(1/12),[0,1]],die:[()=>1+Math.floor(Math.random()*6),3.5,Math.sqrt(35/12),[1,6]],coin:[()=>Math.random()<0.5?0:1,0.5,0.5,[0,1]],skew:[()=>-Math.log(1-Math.random()),1,1,[0,4]]};
+let ck='unif';const cc=$('d6-cCv'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+function clt(){const n=+$('d6-cn').value;$('d6-vcn').textContent=n;const [fn,mu,sd,[lo,hi]]=SRC[ck];
+  const M=4000,avgs=[];for(let i=0;i<M;i++){let s=0;for(let j=0;j<n;j++)s+=fn();avgs.push(s/n)}
+  const m=avgs.reduce((a,b)=>a+b,0)/M,s=Math.sqrt(avgs.reduce((a,b)=>a+(b-m)**2,0)/M);$('d6-cm').textContent=f(m,3);$('d6-cs').textContent=f(s,3)+'  (σ/√n = '+f(sd/Math.sqrt(n),3)+')';
+  const bins=50,bw=(hi-lo)/bins,cnt=new Array(bins).fill(0);avgs.forEach(a=>{let b=Math.floor((a-lo)/bw);if(b===bins)b--;if(b>=0&&b<bins)cnt[b]++});
+  const dens=cnt.map(c=>c/M/bw),pad=20,X=x=>pad+(x-lo)/(hi-lo)*(CW-2*pad);const peak=npdf(mu,mu,sd/Math.sqrt(n));const mx=Math.max(...dens,ck==='coin'||ck==='die'?0:peak)*1.1;const Y=y=>CH-pad-y/mx*(CH-2*pad);
+  cx.clearRect(0,0,CW,CH);cx.fillStyle=css('--vec-b');cx.globalAlpha=.6;dens.forEach((v,i)=>cx.fillRect(X(lo+i*bw),Y(v),Math.max(1,X(lo+(i+1)*bw)-X(lo+i*bw)-1),Y(0)-Y(v)));cx.globalAlpha=1;
+  if(n>1||ck==='unif'||ck==='skew'){cx.strokeStyle=css('--vec-a');cx.lineWidth=2.5;cx.beginPath();for(let i=0;i<=300;i++){const x=lo+(hi-lo)*i/300,p=[X(x),Y(Math.min(mx,npdf(x,mu,sd/Math.sqrt(n))))];i?cx.lineTo(...p):cx.moveTo(...p)}cx.stroke()}
+  cx.fillStyle=css('--muted');cx.font='11px JetBrains Mono, monospace';cx.fillText(lo,X(lo),CH-4);cx.fillText(hi,X(hi)-10,CH-4);cx.fillText(mu,X(mu)-6,CH-4)}
+document.querySelectorAll('[data-d6c]').forEach(b=>b.addEventListener('click',()=>{ck=b.dataset.d6c;document.querySelectorAll('[data-d6c]').forEach(c=>c.classList.toggle('primary',c===b));clt()}));
+$('d6-cn').addEventListener('input',clt);clt();
+
+// ---------- Lab 4: softmax / CE ----------
+const sc=$('d6-sCv'),sx=AI.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;const NAMES=['cat','dog','bird'];
+function soft(){let z=[0,1,2].map(i=>+$('d6-z'+i).value);[0,1,2].forEach(i=>$('d6-vz'+i).textContent=z[i]);const T=+$('d6-T').value;$('d6-vT').textContent=T;
+  const big=$('d6-big').checked;if(big)z=z.map(v=>v+1000);const t=+$('d6-tgt').value,zt=z.map(v=>v/T);
+  const ne=zt.map(Math.exp),ns=ne.reduce((a,b)=>a+b,0),naive=ne.map(e=>e/ns);
+  const m=Math.max(...zt),se=zt.map(v=>Math.exp(v-m)),ss=se.reduce((a,b)=>a+b,0),p=se.map(e=>e/ss);
+  const lse=m+Math.log(ss),ce=-(zt[t]-lse);
+  const fm=a=>'['+a.map(v=>isFinite(v)?f(v,3):'NaN').join(', ')+']';
+  $('d6-naive').textContent=fm(naive);$('d6-naive').style.color=naive.some(v=>!isFinite(v))?css('--bad'):'';$('d6-stable').textContent=fm(p);$('d6-ce').textContent=f(ce,4);
+  sx.clearRect(0,0,SW,SH);const bw=(SW-60)/3;
+  p.forEach((v,i)=>{const x=30+i*bw,h=v*(SH-60);sx.fillStyle=i===t?css('--ok'):css('--vec-a');sx.fillRect(x+bw*.2,SH-30-h,bw*.6,h);
+    sx.fillStyle=css('--ink');sx.font='13px JetBrains Mono, monospace';sx.textAlign='center';sx.fillText(f(v,3),x+bw/2,SH-36-h);sx.fillText(NAMES[i]+(i===t?' ✓':''),x+bw/2,SH-10)});
+  sx.textAlign='left';sx.fillStyle=css('--muted');sx.fillText('−log q(correct) = −log('+f(p[t],3)+') = '+f(ce,3),10,16)}
+['d6-z0','d6-z1','d6-z2','d6-T','d6-tgt','d6-big'].forEach(id=>$(id).addEventListener('input',soft));$('d6-tgt').addEventListener('change',soft);soft();
+
+// ---------- Lab 5: underflow ----------
+function uf(){const n=+$('d6-uw').value,p=+$('d6-up').value;$('d6-vuw').textContent=n;$('d6-vup').textContent=p;let prod=1;for(let i=0;i<n;i++)prod*=p;
+  const u=$('d6-uprod');u.textContent=prod===0?'0 (underflow!)':prod.toExponential(3);u.style.color=prod===0?css('--bad'):'';$('d6-ulog').textContent=f(n*Math.log(p),3)}
+['d6-uw','d6-up'].forEach(id=>$(id).addEventListener('input',uf));uf();
+
+// ---------- quiz ----------
+AI.quiz($('d6-quizBox'),[
+ ['إيه الفرق بين الـ PMF والـ PDF؟',['الـ PMF مجموعه دايمًا 0.5 والـ PDF الـ integral بتاعه 1','الـ PMF بيدي احتمالات مظبوطة للنتايج المتقطعة، والـ PDF بيدي كثافة للمتغيرات المتصلة لازم تعمل ليها integral على فترة عشان تاخد احتمال','مفيش فرق، نفس المفهوم باسمين','الـ PMF للمتغيرات المتصلة والـ PDF للمتقطعة'],1,'للمتقطع الـ PMF بيدي P(X=k) مباشرة. للمتصل الـ PDF كثافة، والاحتمال P(a≤X≤b) محتاج integral. الكثافة عند نقطة مش احتمال.'],
+ ['الـ Central Limit Theorem بيقول إيه؟',['متوسط عينات عشوائية مستقلة كتير بيقرب من توزيع normal مهما كان التوزيع الأصلي','كل الداتا ماشية normal','احتمال الأحداث النادرة بيقل لما العينة تكبر','الداتا الكبيرة دايمًا الـ variance بتاعها قليل'],0,'متوسط متغيرات مستقلة كتير بيقرب من Gaussian مهما كان شكل الأصل. ده سبب ظهور الـ normal في كل حتة.'],
+ ['ليه الـ softmax بيطرح أكبر logit قبل الـ exp (الـ softmax trick)؟',['عشان كل الاحتمالات تبقى متساوية','عشان يمنع الـ overflow من exp لأرقام كبيرة، والنتيجة رياضيًا نفسها بالظبط','عشان يسرّع الحساب ويقلل عدد الـ exp','عشان يخلي متوسط الـ logits صفر'],1,'exp(100) بيعمل overflow. الطرح بيخلي أكبر قيمة صفر، وexp(0) = 1 آمن. والطرح بيتلغي في القسمة فالاحتمالات زي ما هي.'],
+ ['الـ cross-entropy في الـ classification بتبقى ‎−log(q(الإجابة الصح))‎. معناها إيه بالبساطة؟',['اضرب الاحتمالات المتوقعة في الـ labels الحقيقية','عاقب الموديل حسب قد إيه الاحتمال اللي ادّاه للإجابة الصح قليل: كل ما يقل، الـ loss يزيد','خد متوسط الـ log probabilities على كل الـ classes','احسب الـ entropy بتاع التوزيع الحقيقي'],1,'لو قال 0.9 للصح: −log(0.9) = 0.105. لو قال 0.01: −log(0.01) = 4.6. الـ loss بيعاقب قلة الثقة في الإجابة الصح.'],
+ ['ليه الـ language models بتشتغل بالـ log probabilities مش الاحتمالات الخام؟',['ضرب احتمالات صغيرة كتير بيوصل لـ underflow للصفر، والـ log بيحول الضرب لجمع فبيمنع ده','الـ log أسهل في الرسم','الاحتمالات الخام مش بتقدر تمثل أقل من 0.01','الـ transformer architecture بيطلب كده'],0,'P(جملة) = P(w1)·P(w2)·… بيوصل 0.0 بسرعة. log P = مجموع logs بيفضل رقم عادي.'],
+ ['(سؤال مني) normal_pdf(0, 0, 0.1) طلعت 3.99. ده معناه إيه؟',['فيه bug لأن الاحتمال مينفعش يعدي 1','عادي: دي كثافة مش احتمال، والمساحة الكلية لسه 1','معناها إن P(X = 0) = 3.99','لازم نعمل normalize ونقسم على 3.99'],1,'σ صغيرة يعني الجرس ضيق وعالي. الكثافة ممكن تعدي 1، والاحتمال بييجي من المساحة.'],
+ ['(سؤال مني) في LLM، لو قللت الـ temperature لقرب الصفر قبل الـ softmax، إيه اللي هيحصل؟',['التوزيع هيبقى uniform','الـ token الأعلى هياخد تقريبًا كل الاحتمال (قريب من greedy)','الـ logits هتتعكس','مفيش أي تأثير'],1,'القسمة على T صغيرة بتكبّر الفروق بين الـ logits، فالـ exp بيخلي الأعلى ياخد كل حاجة تقريبًا.']
+],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+AI.onTheme(()=>{if(!alive(dc))return false;dDraw();joint();clt();soft();uf()});
+})();
+</script>

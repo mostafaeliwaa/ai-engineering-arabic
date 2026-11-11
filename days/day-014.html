@@ -1,0 +1,791 @@
+<div class="day" id="d14-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 14 · Norms and Distances</span>
+  <h1>اليوم ١٤: دالة المسافة هي اللي بتحدد يعني إيه «شبه بعض»</h1>
+  <p class="lede">عندك متجهين: embeddings، أو بروفايل يوزرين، أو صورتين. قد إيه هما قريبين؟ الإجابة بتتغير تمامًا حسب <b>دالة المسافة</b> اللي هتختارها. نفس النقطتين ممكن يبقوا جيران بمقياس وبعاد عن بعض بمقياس تاني. النهاردة هنبني كل المقاييس المهمة من الصفر، ونشوف إمتى نستخدم كل واحد.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Numerical Stability</b></span>
+    <span>بعده: <b>Statistics for Machine Learning</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d14-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d14-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح في <b>Numerical Stability</b> شفنا إن الكمبيوتر مش بيحسب بالأرقام الحقيقية، بيحسب بـ floating point محدود. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه <code>0.1 + 0.2 == 0.3</code> بترجع False في Python؟</summary>
+    <p>لأن 0.1 و0.2 مالهمش تمثيل مظبوط في الـ binary، فكل واحد فيهم متخزن بقيمة قريبة منه بس. المجموع بيطلع <span class="ltr">0.30000000000000004</span>. عشان كده بنقارن الـ floats بتسامح (tolerance) زي <code>math.isclose</code> أو <code>np.allclose</code>.</p></details>
+  <details><summary>٢. إيه هي حيلة الـ log-sum-exp (أو softmax المستقر)؟</summary>
+    <p>قبل ما تعمل <code>exp</code> اطرح أكبر قيمة من كل القيم. النتيجة رياضيًا هي هي، بس <code>exp</code> عمرها ما هتاخد رقم كبير فمفيش overflow. كل softmax في أي framework بيعمل كده من جوه.</p></details>
+  <details><summary>٣. ليه بنقسم على <code>norm</code> بحذر لما يكون ممكن يبقى صفر؟</summary>
+    <p>القسمة على صفر بتطلع inf أو nan، والـ nan بتنتشر في كل الحسابات اللي بعدها. هتشوف النهاردة إن الكود بيتشيك على <code>norm == 0</code> قبل الـ cosine similarity لنفس السبب بالظبط.</p></details>
+</section>
+
+<!-- PLAN -->
+<section>
+  <h2>خطة الجلسة (٩٠ دقيقة)</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على امبارح</div>
+    <div><b>20 min</b>الـ norms: L1 وL2 وLp وL∞ + المعمل ٠١ و٠٢</div>
+    <div><b>15 min</b>cosine وdot وMahalanobis + المعمل ٠٣</div>
+    <div><b>10 min</b>Jaccard وedit distance وKL وWasserstein</div>
+    <div><b>25 min</b>اكتب الكود بنفسك وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1: norms -->
+<section id="d14-norms">
+  <div class="station-head"><span class="tag">01</span><h2>الـ Norm: «حجم» المتجه</h2></div>
+  <p>الـ <b>norm</b> بيقيس حجم المتجه، يعني قد إيه هو بعيد عن الصفر. والسر اللي هيبسّط الدرس كله: <b>أي مسافة بين متجهين هي norm الفرق بينهم</b>.</p>
+  <div class="formula">d(a, b) = ‖a − b‖</div>
+  <p>يعني لو فهمت الـ norms، فهمت المسافات.</p>
+
+  <h3>L1 Norm: مسافة مانهاتن</h3>
+  <div class="formula">‖x‖₁ = |x₁| + |x₂| + … + |xₙ|</div>
+  <p>اسمها <b>Manhattan distance</b> عشان شبه المشي في شوارع مدينة مقسمة مربعات: تمشي على الشوارع بس، مفيش قطع بالورب. من <span class="ltr">A=(1,1)</span> لـ <span class="ltr">B=(4,5)</span>: <span class="ltr">|4−1| + |5−1| = 3 + 4 = 7</span>. يعني ٣ بلوكات شرق و٤ شمال.</p>
+  <p><b>إمتى تستخدمها؟</b> الداتا الـ sparse كتير الأبعاد (features نصية، one-hot)، ولما عايز تبقى مقاوم للـ outliers (فرق واحد ضخم مش بيسيطر)، ومشاكل اختيار الـ features.</p>
+  <div class="note"><strong>علاقتها بالـ Lasso والـ MAE:</strong> لو ضفت <span class="ltr">‖w‖₁</span> للـ loss (ده L1 regularization أو Lasso)، الأوزان الصغيرة بتتزق لـ <b>صفر بالظبط</b>، فكأن الموديل بيختار الـ features لوحده. والـ <b>MAE</b> هي متوسط مسافة L1 بين التوقع والهدف: بتعاقب كل الأخطاء بشكل خطي، فهي أقوى قدام الـ outliers من الـ MSE.</div>
+
+  <h3>L2 Norm: المسافة العادية (Euclidean)</h3>
+  <div class="formula">‖x‖₂ = √(x₁² + x₂² + … + xₙ²)</div>
+  <p>دي فيثاغورس اللي اتعلمته في المدرسة بس في n بُعد. نفس النقطتين: <span class="ltr">√(3² + 4²) = √25 = 5</span>. الخط المستقيم اللي بيقطع الشبكة بالورب.</p>
+  <p><b>إمتى؟</b> داتا continuous أبعادها قليلة لمتوسطة، والـ features في نفس الـ scale، مسافات فيزيائية (أماكن، حساسات)، ومقارنة صور على مستوى البيكسل.</p>
+  <div class="note"><strong>علاقتها بالـ Ridge والـ MSE:</strong> لو ضفت <span class="ltr">‖w‖₂²</span> للـ loss (Ridge)، الأوزان الكبيرة بتتعاقب، بس <b>مفيش وزن بيوصل لصفر بالظبط</b>؛ كلهم بيصغروا بنسبة. والـ <b>MSE</b> هي متوسط مربع مسافة L2: التربيع بيخلّي الخطأ الكبير يتعاقب أكتر بكتير من الصغير.</div>
+  <div class="formula">MAE (L1 loss): |y − ŷ|  → عقاب خطي، مقاوم للـ outliers<br>MSE (L2 loss): (y − ŷ)²  → عقاب تربيعي، حساس للـ outliers</div>
+
+  <h3>عيلة Lp كلها، وL∞</h3>
+  <p>L1 وL2 حالتين خاصتين من قانون عام:</p>
+  <div class="formula">‖x‖ₚ = (|x₁|ᵖ + |x₂|ᵖ + … + |xₙ|ᵖ)^(1/p)</div>
+  <p>كل قيمة لـ p بتدي شكل مختلف لـ «الكورة» (unit ball)، يعني كل النقط اللي بعدها عن الصفر ≤ 1:</p>
+  <div class="tablewrap"><table>
+    <tr><th>p</th><th>شكل الـ unit ball</th></tr>
+    <tr><td class="ltr">p = 1</td><td>معين (diamond)، أركانه على المحاور</td></tr>
+    <tr><td class="ltr">p = 2</td><td>دايرة / كرة عادية</td></tr>
+    <tr><td class="ltr">p = 3</td><td>superellipse، مربع حوافه مدوّرة</td></tr>
+    <tr><td class="ltr">p = ∞</td><td>مربع / hypercube، جوانبه موازية للمحاور</td></tr>
+  </table></div>
+  <p>لما p تكبر لحد ما لا نهاية، الـ norm بيبقى <b>أكبر قيمة مطلقة</b> بس. ده <b>L∞</b> أو <b>Chebyshev distance</b>: المسافة بيحددها البُعد الوحيد اللي الفرق فيه أكبر، والباقي متجاهَل.</p>
+  <div class="formula">‖x‖∞ = max(|x₁|, …, |xₙ|)      A=(1,1), B=(4,5) → max(3, 4) = 4</div>
+  <p><b>إمتى؟</b> لما أسوأ انحراف في أي بُعد هو اللي يهمك: الملك في الشطرنج (خطوة في أي اتجاه حتى بالورب = ١)، وحدود التصنيع (كل بُعد لازم يبقى جوه المواصفات).</p>
+  <div class="note ai"><strong>قاعدة هتشوفها في الكود:</strong> دايمًا <span class="ltr">L∞ ≤ L2 ≤ L1</span>. وبشكل عام لأي <span class="ltr">p₁ &lt; p₂</span>: <span class="ltr">‖x‖ₚ₂ ≤ ‖x‖ₚ₁</span>. كل ما p تكبر، الـ norm بيركز على مكونات أقل وأكبر.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: نفس الداتا، مقاييس مختلفة، جار مختلف</h3>
+      <p>النقطة الزرقا هي الـ <b>query</b>. اسحبها. كل مقياس بيعلّم أقرب نقطة ليه بلون مختلف. هتلاقي أماكن كتير المقاييس فيها <b>مش متفقة</b>.</p>
+      <p>الخط المتقطع هو طريق مانهاتن (L1) لأقرب نقطة بالـ L1، والخط المستقيم هو L2.</p>
+      <div class="note"><strong>لاحظ الـ cosine:</strong> مش فارق معاه البُعد خالص، فارق معاه الاتجاه من نقطة الصفر بس. نقطة بعيدة جدًا بس في نفس الاتجاه هتكسب عنده.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d14-nnCanvas" width="520" height="420" aria-label="اسحب نقطة الاستعلام وشوف أقرب جار بكل مقياس"></canvas>
+      <div class="readout">
+        <div><small>query</small><b id="d14-q">[1, 1]</b></div>
+        <div><small>أقرب بـ L1</small><b id="d14-n1">-</b></div>
+        <div><small>أقرب بـ L2</small><b id="d14-n2">-</b></div>
+        <div><small>أقرب بـ L∞</small><b id="d14-ni">-</b></div>
+        <div><small>أقرب بـ cosine</small><b id="d14-nc">-</b></div>
+      </div>
+      <div class="verdict" id="d14-nnVerdict"></div>
+      <div class="tablewrap"><table id="d14-nnTable" style="direction:ltr;font-family:var(--f-mono);font-size:13px"></table></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2: regularization + unit balls -->
+<section id="d14-reg">
+  <div class="station-head"><span class="tag">02</span><h2>ليه L1 بيصفّر الأوزان وL2 لأ؟</h2></div>
+  <p>الـ regularization = loss + عقاب على norm الأوزان:</p>
+  <div class="formula">Lasso (L1):   loss + λ·‖w‖₁        → أوزان sparse، بعضها صفر بالظبط، اختيار features أوتوماتيك<br>Ridge (L2):   loss + λ·‖w‖₂²       → كل الأوزان بتصغر، مفيش حاجة بتبقى صفر<br>Elastic Net:  loss + λ₁‖w‖₁ + λ₂‖w‖₂²  → sparsity من L1 + ثبات من L2</div>
+  <p>الـ Lasso حلها فيه «أركان» (مش قابلة للتفاضل عند الصفر)، والـ Ridge ناعمة في كل حتة. والـ <b>Elastic Net</b> بتجمع الاتنين، ومجموعات الـ features المترابطة بتتشال أو تفضل مع بعض.</p>
+  <p><b>الصورة الهندسية:</b> في فضاء وزنين، قيد L1 شكله معين، وقيد L2 دايرة. منحنيات الـ loss (القطوع الناقصة) غالبًا بتلمس المعين عند <b>ركن</b>، والركن ده على محور يعني وزن فيهم = صفر. أما الدايرة فمفيهاش أركان، فاللمس بيبقى في نقطة ناعمة والوزنين مش صفر.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: شوف الركن بعينك</h3>
+      <p>النقطة البرتقالي هي أحسن أوزان من غير regularization (مركز الـ loss). اسحبها برّه الشكل. النقطة الزرقا هي أحسن أوزان <b>جوه القيد</b> <span class="ltr">‖w‖ₚ ≤ 1</span>.</p>
+      <p>غيّر p: مع <b>p = 1</b> هتلاقي النقطة الزرقا بتلزق في الأركان كتير ووزن بيبقى صفر. مع <b>p = 2</b> نادرًا ما يحصل ده. ومع ∞ الشكل مربع.</p>
+      <label style="display:flex;gap:8px;align-items:center">p = <select id="d14-pSel"><option value="1">1 (Lasso)</option><option value="1.5">1.5</option><option value="2">2 (Ridge)</option><option value="3">3</option><option value="inf">∞</option></select></label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:15px"><input type="checkbox" id="d14-allBalls"> ورّيني كل الـ unit balls مع بعض</label>
+    </div>
+    <div class="instrument">
+      <canvas id="d14-regCanvas" width="520" height="420" aria-label="قيد الـ norm ومنحنيات الـ loss"></canvas>
+      <div class="readout">
+        <div><small>مركز الـ loss</small><b id="d14-rc">[2, 0.3]</b></div>
+        <div><small>w* جوه القيد</small><b id="d14-rw">-</b></div>
+        <div><small>أوزان = 0</small><b id="d14-rz">-</b></div>
+      </div>
+      <div class="verdict" id="d14-regVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: cosine, dot, mahalanobis -->
+<section id="d14-cos">
+  <div class="station-head"><span class="tag">03</span><h2>Cosine وDot Product وMahalanobis</h2></div>
+  <h3>Cosine Similarity: الزاوية بس</h3>
+  <div class="formula">cos_sim(a, b) = (a · b) / (‖a‖₂ · ‖b‖₂)       cos_dist = 1 − cos_sim</div>
+  <p>من −1 (عكس بعض) لـ +1 (نفس الاتجاه)، وصفر لو متعامدين. والـ cosine distance من 0 لـ 2. مثال: <span class="ltr">a=(1,0), b=(1,1)</span> → <span class="ltr">1/√2 = 0.707</span>، والمسافة <span class="ltr">0.293</span>.</p>
+  <p><b>ليه هو ملك الـ NLP؟</b> مقالة عن القطط طولها الضعف لسه «عن القطط». الطول هنا noise والاتجاه هو المعنى. مستندين بنفس توزيع الكلمات بس طولهم مختلف بيشاوروا لنفس الاتجاه، والـ cosine بينهم = 1. استخدمه في: TF-IDF والـ embeddings، أي مجال الطول فيه noise، الـ recommendation، والبحث في الـ vector databases.</p>
+
+  <h3>Dot Product مقابل Cosine</h3>
+  <div class="formula">a · b = ‖a‖ ‖b‖ cos(θ)</div>
+  <p>الـ cosine هو الـ dot مقسوم على الطولين. لو المتجهين <b>طولهم ١ (normalized)</b>، الاتنين نفس الرقم بالظبط. الفرق إن الـ dot فيه معلومة الطول: المتجه الأطول بياخد score أعلى. ده مفيد لما عايز الحاجات «المشهورة» تطلع فوق، فالطول بيبقى إشارة جودة أو أهمية.</p>
+  <div class="formula">a=(3,0)  b=(1,0)  c=(0,1)     dot(a,b)=3  dot(a,c)=0     cos(a,b)=1.0  cos(a,c)=0.0</div>
+  <p>عمليًا: cosine لو عايز الاتجاه بس، dot لو الطول ليه معنى. الـ vector DBs زي Pinecone وWeaviate وQdrant بتخليك تختار. ولو الـ embeddings بتاعتك L2-normalized، الاختيار مش فارق.</p>
+
+  <h3>Mahalanobis: مسافة فاهمة الارتباط</h3>
+  <p>الـ L2 بيعامل كل الأبعاد زي بعض. بس لو الـ features مترابطة أو مختلفة في الـ scale، النتيجة بتضلل. الـ Mahalanobis بتاخد الـ <b>covariance</b> بتاعة الداتا في الحسبان:</p>
+  <div class="formula">d_M(x, y) = √( (x − y)ᵀ S⁻¹ (x − y) )</div>
+  <p>تخيل إنك الأول بتعمل <b>whitening</b>: تفك الارتباط وتوحد الـ scale، وبعدين تحسب L2 عادي. لو S هي مصفوفة الوحدة، الـ Mahalanobis بتبقى L2 بالظبط.</p>
+  <p><b>مثال الطول والوزن:</b> واحد طوله 6'2" ووزنه 180 lbs طبيعي. واحد 5'0" بنفس الوزن غريب. ممكن الـ L2 يقول الاتنين بنفس البعد عن المتوسط، لكن الـ Mahalanobis بتعرف إن التاني outlier لأنها فاهمة إن الطول والوزن ماشيين مع بعض.</p>
+  <p><b>إمتى؟</b> كشف الـ outliers، التصنيف لما الـ features مختلفة الـ scale ومترابطة، لما عندك داتا كفاية تقدّر منها covariance موثوقة، ومراقبة الجودة في المصانع.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: L2 ضد Mahalanobis</h3>
+      <p>دي ٢٠٠ نقطة مترابطة (y ≈ 0.8·x + noise، زي داتا الكود بالظبط في الفكرة). اسحب النقطة البرتقالي.</p>
+      <p>الدواير الرمادي = نفس مسافة L2 من المتوسط. القطوع الزرقا = نفس مسافة Mahalanobis. جرب الزرارين: نقطة <b>على</b> اتجاه الارتباط، ونقطة <b>عمودية</b> عليه.</p>
+      <div class="btns">
+        <button type="button" id="d14-mAlong">على محور الارتباط</button>
+        <button type="button" id="d14-mPerp">عمودي على المحور</button>
+      </div>
+    </div>
+    <div class="instrument">
+      <canvas id="d14-mahCanvas" width="520" height="420" aria-label="سحابة نقط مترابطة ونقطة تقدر تسحبها"></canvas>
+      <div class="readout">
+        <div><small>النقطة</small><b id="d14-mp">-</b></div>
+        <div><small>L2 من المتوسط</small><b id="d14-ml2">-</b></div>
+        <div><small>Mahalanobis</small><b id="d14-mm">-</b></div>
+      </div>
+      <div class="verdict" id="d14-mahVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: sets, strings, distributions -->
+<section id="d14-sets">
+  <div class="station-head"><span class="tag">04</span><h2>مسافات لحاجات مش متجهات: مجموعات، نصوص، توزيعات</h2></div>
+  <h3>Jaccard: للمجموعات</h3>
+  <div class="formula">J(A, B) = |A ∩ B| / |A ∪ B|        Jaccard distance = 1 − J</div>
+  <p><span class="ltr">A={cat, dog, fish}</span> و<span class="ltr">B={cat, bird, fish, snake}</span>: التقاطع ٢، الاتحاد ٥، يعني <span class="ltr">J = 0.4</span> والمسافة <span class="ltr">0.6</span>.</p>
+  <p><b>إمتى؟</b> مقارنة tags أو categories، تشابه مستندات بوجود الكلمة (مش تكرارها)، كشف النسخ شبه المتطابقة (MinHash بيقرّب الـ Jaccard)، الـ binary features، وتقييم موديلات الـ segmentation: الـ <b>IoU</b> هو الـ Jaccard نفسه.</p>
+
+  <h3>Edit Distance (Levenshtein): للنصوص</h3>
+  <p>أقل عدد عمليات على حرف واحد (إضافة، حذف، تبديل) عشان تحوّل كلمة لكلمة. <span class="ltr">kitten → sitten → sittin → sitting</span> = <b>3</b>. بتتحسب بالـ dynamic programming: خانة <span class="ltr">(i, j)</span> = المسافة بين أول i حرف من الأولى وأول j حرف من التانية.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل صغير: جدول الـ DP</h3>
+      <p>اكتب أي كلمتين وشوف الجدول بيتملي. الخانة الأخيرة تحت على اليمين هي الإجابة. الخانات الملونة هي طريق واحد من أقل الطرق.</p>
+      <div class="mrow">
+        <label>from <input type="text" id="d14-s1" value="kitten" maxlength="12" style="font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)"></label>
+        <label>to <input type="text" id="d14-s2" value="sitting" maxlength="12" style="font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)"></label>
+      </div>
+      <p><b>بيستخدم في:</b> التصحيح الإملائي، محاذاة الـ DNA (بأوزان للعمليات)، الـ fuzzy matching، وتنضيف النصوص المكررة.</p>
+    </div>
+    <div class="instrument">
+      <div class="tablewrap"><table id="d14-dpTable" style="direction:ltr;font-family:var(--f-mono);font-size:13px;text-align:center"></table></div>
+      <div class="verdict" id="d14-dpOut"></div>
+    </div>
+  </div>
+
+  <h3>KL Divergence: مش مسافة، بس بيتستخدم كأنها مسافة</h3>
+  <div class="formula">D_KL(P ‖ Q) = Σ p(x) · log( p(x) / q(x) )</div>
+  <p>شفناها في يوم ٩. هنا المهم: هي <b>مش symmetric</b>، <span class="ltr">D_KL(P‖Q) ≠ D_KL(Q‖P)</span>، ومش بتحقق الـ triangle inequality. يعني divergence مش distance.</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li><b>Forward KL</b> <span class="ltr">D_KL(P‖Q)</span> «mean-seeking»: Q بتحاول تغطي كل قمم P.</li>
+    <li><b>Reverse KL</b> <span class="ltr">D_KL(Q‖P)</span> «mode-seeking»: Q بتركز على قمة واحدة.</li>
+  </ul>
+  <p>بتظهر في: الـ VAEs (ترم الـ KL في الـ ELBO)، الـ knowledge distillation، الـ RLHF (عقاب KL عشان الموديل ميبعدش عن الأصل)، والـ policy gradient.</p>
+
+  <h3>Wasserstein (Earth Mover's Distance)</h3>
+  <p>تخيل توزيع كوم تراب والتاني حفرة. أقل «شغل» (كمية التراب × المسافة اللي اتنقلها) عشان تملا الحفرة هو الـ Wasserstein. في بُعد واحد بيبقى مجموع الفرق المطلق بين الـ CDFs:</p>
+  <div class="formula">W₁(P, Q) = ∫ |CDF_P(x) − CDF_Q(x)| dx</div>
+  <p>ليه مهم؟ هو <b>metric حقيقي</b> (symmetric وبيحقق الـ triangle inequality)، وبيدي gradient مفيد حتى لو التوزيعين <b>مش متداخلين خالص</b>، في حين الـ KL بتروح لـ ∞. الخاصية دي هي اللي خلت الـ <b>WGAN</b> يحل عدم استقرار تدريب الـ GANs الأصلية. بيستخدم كمان في الـ optimal transport ومقارنة color histograms في البحث عن الصور.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٤: زق التوزيع وشوف مين بيفهم</h3>
+      <p>P ثابت (نص الكتلة في أول خانتين). حرّك Q يمين. لاحظ: الـ Wasserstein بيزيد بسلاسة مع كل خطوة، أما الـ KL فبتقفز لـ ∞ أول ما يبقى في خانة P فيها كتلة وQ فيها صفر.</p>
+      <label style="display:grid;gap:2px">الإزاحة = <b class="mono" id="d14-wsv">0</b><input type="range" id="d14-ws" min="0" max="4" step="1" value="0"></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d14-wCanvas" width="520" height="240" aria-label="توزيعين وقيم Wasserstein وKL"></canvas>
+      <div class="readout">
+        <div><small>Wasserstein</small><b id="d14-wW">0</b></div>
+        <div><small>KL(P‖Q)</small><b id="d14-wK">0</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5: choosing + losses + ANN -->
+<section id="d14-choose">
+  <div class="station-head"><span class="tag">05</span><h2>تختار أنهي مسافة؟ وفين بتقابلها؟</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المهمة</th><th>أحسن مسافة</th><th>ليه</th></tr>
+    <tr><td>تشابه نصوص</td><td>Cosine</td><td>الطول noise والاتجاه هو المعنى</td></tr>
+    <tr><td>مقارنة صور بالبيكسل</td><td>L2</td><td>العلاقات المكانية مهمة والـ features نفس الـ scale</td></tr>
+    <tr><td>features sparse كتير الأبعاد</td><td>L1</td><td>مقاوم، مش بيضخم الفروق الكبيرة النادرة</td></tr>
+    <tr><td>تداخل مجموعات (tags)</td><td>Jaccard</td><td>الداتا أصلًا مجموعات مش متجهات</td></tr>
+    <tr><td>مطابقة نصوص</td><td>Edit distance</td><td>العمليات شبه تعديل البني آدم</td></tr>
+    <tr><td>كشف outliers</td><td>Mahalanobis</td><td>فاهمة الارتباط والـ scales</td></tr>
+    <tr><td>مقارنة توزيعات</td><td>KL divergence</td><td>المعلومة الضايعة لما تستخدم Q بدل P</td></tr>
+    <tr><td>تدريب GAN</td><td>Wasserstein</td><td>gradient حتى من غير تداخل</td></tr>
+    <tr><td>Embeddings في vector DB</td><td>Cosine أو dot</td><td>الـ embeddings متدربة تحط المعنى في الاتجاه</td></tr>
+    <tr><td>Recommendation</td><td>Dot product</td><td>الطول ممكن يمثل شهرة أو ثقة</td></tr>
+    <tr><td>تسلسلات DNA</td><td>Weighted edit distance</td><td>تكلفة التبديل بتختلف حسب الزوج</td></tr>
+    <tr><td>جودة التصنيع</td><td>L∞</td><td>أسوأ انحراف في أي بُعد هو اللي يهم</td></tr>
+  </table></div>
+
+  <h3>الـ Loss Functions = مسافات بين التوقع والهدف</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Loss</th><th>المسافة</th><th>السلوك</th></tr>
+    <tr><td>MSE</td><td>L2 تربيع</td><td>بيعاقب الأخطاء الكبيرة جامد</td></tr>
+    <tr><td>MAE</td><td>L1</td><td>بيعاقب كل الأخطاء بالتساوي</td></tr>
+    <tr><td>Huber</td><td>L1 للأخطاء الكبيرة، L2 للصغيرة</td><td>أحسن الاتنين: مقاوم للـ outliers وgradient ناعم جنب الصفر</td></tr>
+    <tr><td>Cross-entropy</td><td>KL divergence</td><td>بيقيس عدم تطابق التوزيعات</td></tr>
+    <tr><td>Hinge</td><td class="ltr">max(0, margin − d)</td><td>بيعاقب بس اللي تحت الـ margin</td></tr>
+    <tr><td>Triplet</td><td>L2 غالبًا</td><td>بيقرّب الـ positives ويبعّد الـ negatives</td></tr>
+    <tr><td>Contrastive</td><td>L2</td><td>الأزواج الشبه قريبة، والمختلفة ورا الـ margin</td></tr>
+  </table></div>
+
+  <h3>Nearest Neighbor Search وHNSW</h3>
+  <p>كل مسافة معناها مشكلة بحث: إديني أقرب نقط للـ query. البحث الكامل <span class="ltr">O(n·d)</span> لكل query، وده بطيء جدًا مع ملايين المتجهات. فبنستخدم <b>Approximate Nearest Neighbor (ANN)</b>: نضحي بشوية دقة مقابل سرعة ضخمة.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الخوارزمية</th><th>الفكرة</th><th>مين بيستخدمها</th></tr>
+    <tr><td>KD-trees</td><td>تقسيم الفضاء على المحاور</td><td>scikit-learn (أبعاد قليلة)</td></tr>
+    <tr><td>Ball trees</td><td>كرات جوه كرات</td><td>scikit-learn (أبعاد متوسطة)</td></tr>
+    <tr><td>LSH</td><td>hash بإسقاطات عشوائية</td><td>كشف النسخ شبه المتطابقة</td></tr>
+    <tr><td>HNSW</td><td>graph متعدد الطبقات (small-world)</td><td>FAISS، Qdrant، Weaviate</td></tr>
+    <tr><td>IVF</td><td>inverted file index بالـ clusters</td><td>FAISS (مليارات)</td></tr>
+    <tr><td>Product quantization</td><td>ضغط المتجهات والبحث وهي مضغوطة</td><td>FAISS (لما الميموري قليلة)</td></tr>
+  </table></div>
+  <p><b>HNSW</b> هي المسيطرة في الـ vector DBs الحديثة. تخيلها زي الطرق: الطبقة اللي فوق طرق سريعة قليلة بنقلات طويلة، وكل ما تنزل الطرق بتبقى أكتر والنقلات أقصر، لحد ما توصل الشارع اللي فيه جارك.</p>
+</section>
+
+<!-- STATION 6: my addition -->
+<section id="d14-extra">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني: اللي الدرس ما قالهوش صريح</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> اختيار المسافة = تعريفك لكلمة «شبه». مش تفصيلة تقنية، ده قرار بيزنس: «يوزرين شبه بعض» معناها نفس الذوق (cosine) ولا نفس كمية الاستخدام كمان (dot/L2)؟</div>
+  <h3>غلطات شائعة</h3>
+  <ol class="ex">
+    <li><b>L2 على features مش متوحدة الـ scale:</b> لو feature بالجنيه (آلاف) وfeature بالسنين (عشرات)، الـ L2 هيبقى فعليًا مسافة على الفلوس بس. اعمل standardization الأول، أو استخدم Mahalanobis.</li>
+    <li><b>تخلط cosine similarity وcosine distance:</b> واحدة الأكبر أحسن والتانية الأصغر أحسن. لو رتبت غلط، الـ RAG هيرجعلك أبعد مستندات.</li>
+    <li><b>تستخدم dot product على embeddings مش normalized وانت فاكره cosine:</b> المستندات الطويلة أو اللي متجهها طويل هتطلع فوق دايمًا. لو مش متأكد، اعمل normalize واستريح.</li>
+    <li><b>تتعامل مع KL كأنها مسافة:</b> <span class="ltr">KL(P‖Q)</span> و<span class="ltr">KL(Q‖P)</span> أرقام مختلفة ومعانيها مختلفة؛ اتأكد إنت حاسب أنهي واحدة.</li>
+    <li><b>تنسى إن الـ metric في الـ vector DB بيتحدد وقت إنشاء الـ index:</b> لو الـ embedding model بتاعك متدرب على cosine واخترت L2 من غير normalization، الترتيب هيبوظ بهدوء من غير أي error.</li>
+  </ol>
+  <h3>فين بيظهر في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li><b>RAG وmemory بتاعة الـ agents:</b> كل retrieval هو nearest-neighbor بـ cosine أو dot على embeddings، غالبًا بـ HNSW.</li>
+    <li><b>Attention:</b> الـ score بين query وkey هو dot product (مقسوم على √d). يعني الـ attention نفسها «مسافة» بالـ dot.</li>
+    <li><b>Deduplication لداتا التدريب:</b> MinHash بيقرّب الـ Jaccard عشان يشيل الصفحات المكررة قبل تدريب الـ LLM.</li>
+    <li><b>RLHF:</b> عقاب الـ KL بيمنع الموديل يبعد كتير عن الموديل الأصلي وهو بيتعلم من الـ reward.</li>
+    <li><b>Fuzzy matching لأسماء الأدوات:</b> لو الـ agent كتب اسم tool غلط حرف، edit distance بتلاقي أقرب اسم صح.</li>
+  </ul>
+</section>
+
+<!-- CODE -->
+<section id="d14-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو (اللي عملته clone في يوم ١):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/01-math-foundations/14-norms-and-distances/code/distances.py</pre></div>
+  <p><b>القاعدة:</b> اكتب كل خطوة بنفسك في ملف جديد <code>my_distances.py</code> من غير copy-paste. الكود كله Python عادي من غير NumPy.</p>
+
+  <h3>خطوة ١: الـ norms</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+def l1_norm(x):                      <span class="c"># مجموع القيم المطلقة</span>
+    return sum(abs(xi) for xi in x)
+
+def l2_norm(x):                      <span class="c"># فيثاغورس</span>
+    return math.sqrt(sum(xi ** 2 for xi in x))
+
+def lp_norm(x, p):                   <span class="c"># القانون العام</span>
+    if p == float('inf'):
+        return max(abs(xi) for xi in x)
+    return sum(abs(xi) ** p for xi in x) ** (1 / p)
+
+def linf_norm(x):                    <span class="c"># أكبر قيمة مطلقة</span>
+    return max(abs(xi) for xi in x)
+
+for v in [[3, 4], [1, 1, 1, 1], [5, 0, 0], [1, 2, 3, 4, 5]]:
+    print(v, l1_norm(v), round(l2_norm(v), 3), round(lp_norm(v, 3), 3), linf_norm(v))</pre></div>
+  <details><summary>الناتج المتوقع (حساب مظبوط)</summary><pre class="term">vector           L1      L2      L3   L-inf
+(3, 4)          7.000   5.000   4.498   4.000
+(1, 1, 1, 1)    4.000   2.000   1.587   1.000
+(5, 0, 0)       5.000   5.000   5.000   5.000
+(1, 2, 3, 4, 5) 15.000  7.416   6.082   5.000</pre><p>لاحظ <span class="ltr">(5,0,0)</span>: لما يبقى في مكوّن واحد بس، كل الـ norms زي بعض.</p></details>
+
+  <h3>خطوة ٢: المسافات = norm الفرق، وcosine وdot</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def l1_distance(a, b):
+    return sum(abs(ai - bi) for ai, bi in zip(a, b))
+
+def l2_distance(a, b):
+    return math.sqrt(sum((ai - bi) ** 2 for ai, bi in zip(a, b)))
+
+def lp_distance(a, b, p):
+    diff = [ai - bi for ai, bi in zip(a, b)]
+    return lp_norm(diff, p)
+
+def linf_distance(a, b):
+    return max(abs(ai - bi) for ai, bi in zip(a, b))
+
+def dot_product(a, b):
+    return sum(ai * bi for ai, bi in zip(a, b))
+
+def cosine_similarity(a, b):
+    dot = dot_product(a, b)
+    norm_a, norm_b = l2_norm(a), l2_norm(b)
+    if norm_a == 0 or norm_b == 0:   <span class="c"># حماية من القسمة على صفر (افتكر امبارح)</span>
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+def cosine_distance(a, b):
+    return 1.0 - cosine_similarity(a, b)
+
+def normalize_vector(v):             <span class="c"># نفس الاتجاه، طول = 1</span>
+    norm = l2_norm(v)
+    if norm == 0:
+        return v[:]
+    return [vi / norm for vi in v]
+
+a, b = [1, 2, 3], [4, 0, 6]
+print(l1_distance(a, b), l2_distance(a, b), lp_distance(a, b, 3), linf_distance(a, b))
+print(cosine_distance(a, b), cosine_similarity(a, b), dot_product(a, b))</pre></div>
+  <details><summary>الناتج المتوقع (حساب مظبوط، مقرّب لـ ٤ أرقام زي الكود)</summary><pre class="term">L1 (Manhattan):   8.0000
+L2 (Euclidean):   4.6904
+L3:               3.9579
+L-inf (Chebyshev):3.0000
+Cosine distance:  0.1846
+Cosine similarity:0.8154
+Dot product:      22.0000
+
+Pair       Cosine     Dot
+A vs B     1.0000     28      (B = 2·A)
+A vs C     0.4226     5
+B vs C     0.4226     10</pre><p>A=[1,2,3]، B=[2,4,6]، C=[3,1,0]. الـ cosine شايف A وB متطابقين، والـ dot شايف B «أشبه» بسبب طوله. وبعد الـ normalization الاتنين بيطلعوا نفس الرقم.</p></details>
+
+  <h3>خطوة ٣: Mahalanobis (ومعاها inverse بالـ Gauss-Jordan)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def invert_matrix(matrix):
+    n = len(matrix)
+    <span class="c"># حط مصفوفة الوحدة جنبها: [M | I]</span>
+    augmented = [row[:] + [1.0 if i == j else 0.0 for j in range(n)]
+                 for i, row in enumerate(matrix)]
+    for col in range(n):
+        <span class="c"># partial pivoting: اختار أكبر pivot عشان الاستقرار العددي</span>
+        max_row = col
+        for row in range(col + 1, n):
+            if abs(augmented[row][col]) &gt; abs(augmented[max_row][col]):
+                max_row = row
+        augmented[col], augmented[max_row] = augmented[max_row], augmented[col]
+        pivot = augmented[col][col]
+        if abs(pivot) &lt; 1e-12:
+            raise ValueError("Matrix is singular or near-singular")
+        for j in range(2 * n):
+            augmented[col][j] /= pivot
+        for row in range(n):           <span class="c"># صفّر العمود في باقي الصفوف</span>
+            if row != col:
+                factor = augmented[row][col]
+                for j in range(2 * n):
+                    augmented[row][j] -= factor * augmented[col][j]
+    return [row[n:] for row in augmented]   <span class="c"># الشمال بقى I، واليمين بقى M⁻¹</span>
+
+def mahalanobis_distance(x, y, cov_matrix):
+    n = len(x)
+    diff = [xi - yi for xi, yi in zip(x, y)]
+    inv_cov = invert_matrix(cov_matrix)
+    temp = [0.0] * n
+    for i in range(n):
+        for j in range(n):
+            temp[i] += diff[j] * inv_cov[j][i]
+    result = sum(temp[i] * diff[i] for i in range(n))
+    return math.sqrt(max(0, result))     <span class="c"># max عشان أخطاء التقريب الصغيرة</span>
+
+def compute_covariance(data):
+    n, d = len(data), len(data[0])
+    means = [sum(data[i][j] for i in range(n)) / n for j in range(d)]
+    centered = [[data[i][j] - means[j] for j in range(d)] for i in range(n)]
+    cov = [[0.0] * d for _ in range(d)]
+    for i in range(d):
+        for j in range(d):
+            cov[i][j] = sum(centered[k][i] * centered[k][j] for k in range(n)) / (n - 1)
+    return cov</pre></div>
+  <details><summary>إيه اللي هتشوفه في demo الـ Mahalanobis؟</summary><p>الديمو بيعمل ٢٠٠ نقطة عشوائية بـ <code>random.seed(42)</code> فيها <span class="ltr">y = 0.8·x + noise</span>، وبعدين بيقارن نقطتين من المتوسط: واحدة ماشية على اتجاه الارتباط، وواحدة عمودية عليه. هتلاقي الـ L2 للنقطتين قريب من بعض، لكن الـ Mahalanobis للنقطة العمودية أكبر بوضوح. الأرقام نفسها عشوائية فقارنها باللي يطلعلك، المهم الاتجاه ده.</p></details>
+
+  <h3>خطوة ٤: Jaccard وEdit Distance</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def jaccard_similarity(set_a, set_b):
+    if not set_a and not set_b:       <span class="c"># مجموعتين فاضيين = متطابقين</span>
+        return 1.0
+    return len(set_a &amp; set_b) / len(set_a | set_b)
+
+def edit_distance(s1, s2):
+    m, n = len(s1), len(s2)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m + 1):
+        dp[i][0] = i                    <span class="c"># امسح i حرف</span>
+    for j in range(n + 1):
+        dp[0][j] = j                    <span class="c"># ضيف j حرف</span>
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if s1[i - 1] == s2[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1]          <span class="c"># نفس الحرف: ببلاش</span>
+            else:
+                dp[i][j] = 1 + min(dp[i - 1][j],     <span class="c"># حذف</span>
+                                   dp[i][j - 1],     <span class="c"># إضافة</span>
+                                   dp[i - 1][j - 1]) <span class="c"># تبديل</span>
+    return dp[m][n]
+
+print(jaccard_similarity({"cat", "dog", "fish"}, {"cat", "bird", "fish", "snake"}))
+for s1, s2 in [("kitten", "sitting"), ("sunday", "saturday"), ("python", "pytorch")]:
+    print(s1, s2, edit_distance(s1, s2))</pre></div>
+  <details><summary>الناتج المتوقع (حساب مظبوط)</summary><pre class="term">Jaccard {cat,dog,fish} vs {cat,bird,fish,snake}: 0.4000  (distance 0.6000)
+Jaccard {python,java,rust} vs نفسها:               1.0000
+Jaccard {a,b,c} vs {d,e,f}:                         0.0000
+Jaccard {ml,ai,data} vs {ml,ai,data,ops,cloud}:     0.6000
+
+'kitten' -&gt; 'sitting':      distance = 3
+'sunday' -&gt; 'saturday':     distance = 3
+'hello' -&gt; 'hello':         distance = 0
+'' -&gt; 'abc':                distance = 3
+'algorithm' -&gt; 'altruistic': distance = 6
+'python' -&gt; 'pytorch':      distance = 4</pre></details>
+
+  <h3>خطوة ٥: KL وWasserstein</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def kl_divergence(p, q):
+    total = 0.0
+    for pi, qi in zip(p, q):
+        if pi &gt; 0:
+            if qi &lt;= 0:
+                return float('inf')    <span class="c"># P عندها كتلة وQ صفر: لا نهاية</span>
+            total += pi * math.log(pi / qi)
+    return total
+
+def wasserstein_1d(p, q):
+    assert len(p) == len(q), "Distributions must have the same number of bins"
+    n = len(p)
+    cdf_p, cdf_q = [0.0] * n, [0.0] * n
+    cdf_p[0], cdf_q[0] = p[0], q[0]
+    for i in range(1, n):               <span class="c"># الـ CDF = مجموع تراكمي</span>
+        cdf_p[i] = cdf_p[i - 1] + p[i]
+        cdf_q[i] = cdf_q[i - 1] + q[i]
+    return sum(abs(cdf_p[i] - cdf_q[i]) for i in range(n))
+
+print(kl_divergence([0.9, 0.1], [0.5, 0.5]), kl_divergence([0.5, 0.5], [0.9, 0.1]))
+print(wasserstein_1d([0.5, 0.5, 0, 0], [0, 0, 0.5, 0.5]))</pre></div>
+  <details><summary>الناتج المتوقع (حساب مظبوط)</summary><pre class="term">KL(P || Q) = 0.3681 nats     P=[0.9,0.1]  Q=[0.5,0.5]
+KL(Q || P) = 0.5108 nats
+Difference: 0.1428
+
+P=[0.25]*4  Q=[0.1,0.1,0.1,0.7]:  KL(P||Q)=0.4298  KL(Q||P)=0.4458
+
+Identical               Wasserstein: 0.0000    KL: 0.0000
+Shifted right by 1      Wasserstein: 1.0000    KL: inf
+Shifted right by 2      Wasserstein: 2.0000    KL: inf
+Opposite ends           Wasserstein: 3.0000    KL: inf
+Spread vs concentrated  Wasserstein: 1.5000    KL: inf</pre></details>
+
+  <h3>خطوة ٦: أقرب جار وKNN</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def find_nearest_neighbor(query, dataset, distance_fn, **kwargs):
+    best_idx, best_dist = 0, float('inf')
+    for i, point in enumerate(dataset):
+        d = distance_fn(query, point, **kwargs)
+        if d &lt; best_dist:
+            best_dist, best_idx = d, i
+    return best_idx, best_dist
+
+def find_k_nearest(query, dataset, distance_fn, k=5, **kwargs):
+    distances = [(i, distance_fn(query, p, **kwargs)) for i, p in enumerate(dataset)]
+    distances.sort(key=lambda x: x[1])
+    return distances[:k]
+
+<span class="c"># KNN: أقرب k نقط بيصوتوا على الـ class</span>
+training_data = [([1.0, 5.0], "A"), ([1.5, 4.5], "A"), ([2.0, 4.0], "A"),
+                 ([5.0, 1.0], "B"), ([4.5, 1.5], "B"), ([4.0, 2.0], "B"),
+                 ([3.0, 3.0], "C"), ([3.5, 2.5], "C"), ([2.5, 3.5], "C")]
+query = [2.8, 2.8]
+for name, fn in [("L1", l1_distance), ("L2", l2_distance),
+                 ("Cosine", cosine_distance), ("L-inf", linf_distance)]:
+    nearest = sorted((fn(query, p), label) for p, label in training_data)[:3]
+    votes = {}
+    for d, label in nearest:
+        votes[label] = votes.get(label, 0) + 1
+    print(name, max(votes, key=votes.get), [round(d, 4) for d, _ in nearest])</pre></div>
+  <details><summary>الناتج المتوقع لنقطة <span class="ltr">[2.8, 2.8]</span> (حساب مظبوط)</summary><pre class="term">L1     → C   distances 0.4, 1.0, 1.0
+L2     → C   distances 0.2828, 0.7616, 0.7616
+Cosine → C   distances 0.0000, 0.0136, 0.0136
+L-inf  → C   distances 0.2, 0.7, 0.7</pre><p>هنا كل المقاييس اتفقت لأن الـ query في نص الـ class C. في demo تاني في الكود (<code>demo_different_neighbors</code>) بداتا عشوائية، هتشوف المقاييس <b>بتختلف</b> على أقرب نقطة، والكود بيطبع «The metrics DISAGREE» لو ده حصل. وفي <code>demo_embedding_search</code> هتلاقي ترتيب الـ cosine والـ L2 والـ dot ممكن يختلف. وفي <code>demo_regularization</code> هتلاقي L1 صفّر عدد من الأوزان بالظبط وL2 ما صفّرش ولا واحد. الأرقام دي عشوائية (بـ seed)، فقارن باللي يطلعلك.</p></details>
+
+  <h3>خطوة ٧: نفس الكلام بـ NumPy (زي ما بيحصل في الـ vector DB)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def cosine_similarity_matrix(X):
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)       <span class="c"># حماية من الصفر</span>
+    X_normalized = X / norms
+    return X_normalized @ X_normalized.T          <span class="c"># كل الأزواج مرة واحدة</span>
+
+embeddings = np.random.randn(1000, 768)           <span class="c"># 1000 مستند، كل واحد 768 رقم</span>
+sim_matrix = cosine_similarity_matrix(embeddings)  <span class="c"># shape (1000, 1000)</span>
+
+similarities = sim_matrix[0]
+top_k = np.argsort(similarities)[::-1][1:6]       <span class="c"># [1:6] عشان نشيل العنصر نفسه</span>
+print(f"Top 5 most similar to item 0: {top_k}")
+print(f"Similarities: {similarities[top_k]}")</pre></div>
+  <p>الأرقام هنا عشوائية. اللي متوقع: الـ embeddings العشوائية في 768 بُعد تقريبًا متعامدة، فالـ similarities هتطلع صغيرة جنب الصفر. ده نفس اللي بيحصل لما تعمل <code>model.encode(text)</code> وتدور في vector DB، بس الـ DB بتستخدم ANN بدل ما تقارن مع الكل.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d14-exercises">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ١ و٢ و٤ النهاردة على الأقل. ٣ و٥ أطول، ممكن تكمّلهم بكرة.</p>
+  <ol class="ex">
+    <li><b>ترتيب الـ norms:</b> احسب L1 وL2 وL∞ بين <span class="ltr">(1,2,3)</span> و<span class="ltr">(4,0,6)</span>. اتأكد إن <span class="ltr">L∞ ≤ L2 ≤ L1</span>، وأثبت ليه ده دايمًا صح.
+      <details><summary>تلميح وإجابة</summary><p>الفرق <span class="ltr">(-3, 2, -3)</span>: L1 = 8، L2 = √22 ≈ 4.69، L∞ = 3. الإثبات: <span class="ltr">max|dᵢ|² ≤ Σdᵢ²</span> (أكبر مربع جزء من المجموع)، فـ L∞ ≤ L2. و<span class="ltr">(Σ|dᵢ|)² = Σdᵢ² + حدود ضرب موجبة ≥ Σdᵢ²</span>، فـ L2 ≤ L1.</p></details></li>
+    <li><b>cosine عالي وL2 كبير (والعكس):</b> اعمل متجهين cosine بينهم &gt; 0.9 بس L2 &gt; 10، وبعدين متجهين cosine &lt; 0.3 وL2 &lt; 0.5.
+      <details><summary>تلميح</summary><p>الأولى: نفس الاتجاه تقريبًا وواحد أطول بكتير، زي <span class="ltr">[1,1]</span> و<span class="ltr">[10,10.5]</span>. التانية: متجهين صغيرين جنب الصفر في اتجاهات مختلفة، زي <span class="ltr">[0.1,0]</span> و<span class="ltr">[0,0.1]</span> (cosine = 0 وL2 ≈ 0.14). جرّبهم في المعمل ٠١ كمان.</p></details></li>
+    <li><b>أربع مقاييس، أربع إجابات:</b> اعمل دالة بتاخد dataset وquery وترجع أقرب جار بـ L1 وL2 وcosine وMahalanobis. لاقي dataset الأربعة فيها مختلفين.
+      <details><summary>تلميح</summary><p>نادي <code>find_nearest_neighbor(query, dataset, fn)</code> لكل دالة (والـ Mahalanobis محتاجة <code>cov_matrix=</code>). اقرا <code>demo_different_neighbors</code> الأول، وبعدين حرّك النقط. فكرة: نقطة بعيدة بس في نفس اتجاه الـ query تكسب الـ cosine، ونقطة على اتجاه الارتباط تكسب الـ Mahalanobis.</p></details></li>
+    <li><b>Wasserstein بالإيد:</b> بين <span class="ltr">[0.5,0.5,0,0]</span> و<span class="ltr">[0,0,0.5,0.5]</span>، وبين <span class="ltr">[0.25,0.25,0.25,0.25]</span> و<span class="ltr">[0,0,0.5,0.5]</span>. أنهي أكبر وليه؟
+      <details><summary>الإجابة</summary><p>الأولى: CDFs = <span class="ltr">[.5,1,1,1]</span> و<span class="ltr">[0,0,.5,1]</span>، الفروق <span class="ltr">.5+1+.5+0 = 2</span>. التانية: <span class="ltr">[.25,.5,.75,1]</span> و<span class="ltr">[0,0,.5,1]</span>، الفروق <span class="ltr">.25+.5+.25+0 = 1</span>. الأولى أكبر لأن كل الكتلة لازم تتنقل خانتين، أما في التانية نص الكتلة أصلًا قريب من مكانها.</p></details></li>
+    <li><b>MinHash:</b> اعمل MinHash لتقريب الـ Jaccard. ١٠٠ مجموعة عشوائية، احسب الـ Jaccard الحقيقي لكل الأزواج، وقارنه بالتقريب بـ 50 و100 و200 hash function، وارسم الخطأ.
+      <details><summary>تلميح</summary><p>لكل hash function، توقيع المجموعة = أقل hash لعناصرها. نسبة الـ hash functions اللي فيها المجموعتين ليهم نفس الأقل = تقدير الـ Jaccard. الخطأ المفروض يقل تقريبًا زي <span class="ltr">1/√k</span>. ممكن تعمل hash functions بـ <span class="ltr">(a·hash(x) + b) % prime</span> بـ a وb عشوائيين.</p></details></li>
+    <li><b>إضافة مني · اختبار الـ retriever:</b> خد ١٠ جمل، اعمل لكل جملة متجه عدّ كلمات (زي ميني RAG بتاع يوم ١). لكل query، رتّب الجمل مرة بـ cosine ومرة بـ dot ومرة بـ L2. لاقي query الترتيب فيها بيختلف، واشرح ليه (هتلاقي الجمل الطويلة بتكسب في الـ dot). بعدين اعمل normalize للمتجهات وشوف الترتيبات بقت متفقة إزاي. ده بالظبط القرار اللي هتاخده لما تختار metric لـ vector DB حقيقية.
+      <details><summary>تلميح</summary><p>بعد الـ normalization: cosine وdot نفس الترتيب بالظبط. وL2 كمان، لأن للمتجهات اللي طولها ١: <span class="ltr">‖a−b‖² = 2 − 2·cos</span>، فترتيب L2 تصاعدي = ترتيب cosine تنازلي.</p></details></li>
+  </ol>
+</section>
+
+<!-- QUIZ -->
+<section id="d14-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d14-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d14-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d14-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح L1 وL2 وL∞ وأرسم الـ unit ball بتاع كل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فهمت ليه L1 بيصفّر الأوزان وL2 لأ (المعين والدايرة)</label></li>
+    <li><label><input type="checkbox" data-ck="3"> أعرف الفرق بين cosine وdot، وإمتى يبقوا نفس الحاجة</label></li>
+    <li><label><input type="checkbox" data-ck="4"> شفت في المعمل ٠٣ إزاي Mahalanobis بتختلف عن L2</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت distances.py بإيدي وشغّلته</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Cosine / dot product</td><td>RAG، vector DBs، الـ attention scores، الـ recommendation</td></tr>
+    <tr><td>L1 / L2</td><td>MAE وMSE، Lasso وRidge (weight decay)، مقارنة الصور</td></tr>
+    <tr><td>L∞</td><td>حدود التصنيع، الشطرنج، أسوأ انحراف</td></tr>
+    <tr><td>Mahalanobis</td><td>كشف الـ outliers والـ anomalies</td></tr>
+    <tr><td>Jaccard / MinHash</td><td>IoU في الـ segmentation، deduplication لداتا تدريب الـ LLMs</td></tr>
+    <tr><td>Edit distance</td><td>التصحيح الإملائي، الـ DNA، الـ fuzzy matching</td></tr>
+    <tr><td>KL divergence</td><td>cross-entropy، VAEs، distillation، RLHF</td></tr>
+    <tr><td>Wasserstein</td><td>WGAN، optimal transport</td></tr>
+    <tr><td>HNSW / ANN</td><td>FAISS، Qdrant، Weaviate</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Statistics for Machine Learning. هنبدأ بمراجعة ٥ دقايق على المسافات.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F14-norms-and-distances" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/14-norms-and-distances</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, fmt=A.fmt, root=document.getElementById('d14-root');
+const $=id=>document.getElementById(id);
+
+// roadmap
+const rm=$('d14-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===14)s.className='now';rm.appendChild(s)}
+
+/* ---------- helpers ---------- */
+const l1=(a,b)=>Math.abs(a[0]-b[0])+Math.abs(a[1]-b[1]);
+const l2=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+const li=(a,b)=>Math.max(Math.abs(a[0]-b[0]),Math.abs(a[1]-b[1]));
+const cosd=(a,b)=>{const na=Math.hypot(a[0],a[1]),nb=Math.hypot(b[0],b[1]);if(!na||!nb)return 1;return 1-(a[0]*b[0]+a[1]*b[1])/(na*nb)};
+function lpn(v,p){if(p===Infinity)return Math.max(Math.abs(v[0]),Math.abs(v[1]));return Math.pow(Math.pow(Math.abs(v[0]),p)+Math.pow(Math.abs(v[1]),p),1/p)}
+
+/* ---------- Lab 1: nearest neighbors ---------- */
+const nc=$('d14-nnCanvas'),nx=A.setupCanvas(nc),NW=+nc.dataset.w,NH=+nc.dataset.h,NS=40,nox=60,noy=NH-50;
+const P=[[1,5.5],[2.5,1],[6,6.5],[4,4.6],[6.5,1.5],[3.2,3.2],[9,4.5],[1.4,8.5]];
+const names=P.map((_,i)=>'P'+i);
+let Q=[4.2,2.4],nDrag=false;
+const toPx=p=>[nox+p[0]*NS,noy-p[1]*NS],toW=(x,y)=>[(x-nox)/NS,(noy-y)/NS];
+const metrics=[['L1',l1,'--vec-b'],['L2',l2,'--vec-a'],['L∞',li,'--ok'],['cos',cosd,'--bad']];
+function drawNN(){
+  nx.clearRect(0,0,NW,NH);A.grid(nx,NW,NH,NS,nox,noy);
+  const best=metrics.map(([n,f])=>{let bi=0,bd=Infinity;P.forEach((p,i)=>{const d=f(Q,p);if(d<bd-1e-12){bd=d;bi=i}});return bi});
+  // cosine ray from origin
+  nx.setLineDash([2,4]);nx.strokeStyle=css('--bad');nx.lineWidth=1;const ang=Math.atan2(Q[1],Q[0]);
+  nx.beginPath();nx.moveTo(nox,noy);nx.lineTo(nox+Math.cos(ang)*900,noy-Math.sin(ang)*900);nx.stroke();nx.setLineDash([]);
+  // L1 path to L1-best
+  const b1=P[best[0]],[qx,qy]=toPx(Q);
+  nx.strokeStyle=css('--vec-b');nx.lineWidth=2;nx.setLineDash([6,4]);
+  nx.beginPath();nx.moveTo(qx,qy);nx.lineTo(toPx([b1[0],Q[1]])[0],qy);nx.lineTo(...toPx(b1));nx.stroke();nx.setLineDash([]);
+  const b2=P[best[1]];nx.strokeStyle=css('--vec-a');nx.lineWidth=2;nx.beginPath();nx.moveTo(qx,qy);nx.lineTo(...toPx(b2));nx.stroke();
+  // points with rings
+  P.forEach((p,i)=>{const [x,y]=toPx(p);
+    let r=8;metrics.forEach(([n,,c],k)=>{if(best[k]===i){nx.strokeStyle=css(c);nx.lineWidth=2.5;nx.beginPath();nx.arc(x,y,r+4,0,7);nx.stroke();r+=4}});
+    nx.fillStyle=css('--ink');nx.beginPath();nx.arc(x,y,6,0,7);nx.fill();
+    nx.font='12px JetBrains Mono, monospace';nx.fillText(names[i],x+9,y-9)});
+  nx.fillStyle=css('--vec-a');nx.beginPath();nx.arc(qx,qy,10,0,7);nx.fill();
+  nx.fillStyle=css('--paper');nx.font='bold 11px JetBrains Mono, monospace';nx.textAlign='center';nx.fillText('q',qx,qy+4);nx.textAlign='left';
+  // legend
+  nx.font='12px JetBrains Mono, monospace';metrics.forEach(([n,,c],k)=>{nx.fillStyle=css(c);nx.fillText('◯ '+n,NW-70,18+k*16)});
+  $('d14-q').textContent=`[${fmt(Q[0],1)}, ${fmt(Q[1],1)}]`;
+  ['d14-n1','d14-n2','d14-ni','d14-nc'].forEach((id,k)=>$(id).textContent=names[best[k]]);
+  const uniq=new Set(best).size,v=$('d14-nnVerdict');
+  if(uniq===1){v.textContent='كل المقاييس متفقة هنا';v.style.color=css('--ok')}
+  else{v.textContent='المقاييس مختلفة: '+uniq+' إجابات مختلفة لنفس السؤال';v.style.color=css('--bad')}
+  const t=$('d14-nnTable');t.innerHTML='<tr><th>pt</th><th>L1</th><th>L2</th><th>L∞</th><th>cos</th></tr>';
+  P.forEach((p,i)=>{const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+names[i]+'</td>'+metrics.map(([n,f],k)=>`<td style="${best[k]===i?'color:'+css(metrics[k][2])+';font-weight:600':''}">${fmt(f(Q,p),n==='cos'?3:2)}</td>`).join('');t.appendChild(tr)});
+}
+function nMove(e){if(!nDrag)return;const [x,y]=A.evPos(nc,e);let p=toW(x,y);p=[Math.max(0.1,Math.min(11,Math.round(p[0]*10)/10)),Math.max(0.1,Math.min(9,Math.round(p[1]*10)/10))];Q=p;drawNN()}
+nc.addEventListener('pointerdown',e=>{nDrag=true;nc.setPointerCapture(e.pointerId);nMove(e)});
+nc.addEventListener('pointermove',nMove);
+nc.addEventListener('pointerup',()=>nDrag=false);nc.addEventListener('pointercancel',()=>nDrag=false);
+drawNN();
+
+/* ---------- Lab 2: regularization ---------- */
+const rc=$('d14-regCanvas'),rx=A.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h,RS=110,rox=RW/2,roy=RH/2;
+let C=[2,0.3],rDrag=false;
+const H=[[1,0.5],[0.5,2]]; // loss = (w-c)^T H (w-c)
+const loss=(w)=>{const d=[w[0]-C[0],w[1]-C[1]];return H[0][0]*d[0]*d[0]+2*H[0][1]*d[0]*d[1]+H[1][1]*d[1]*d[1]};
+const rp=v=>[rox+v[0]*RS,roy-v[1]*RS];
+function pVal(){const v=$('d14-pSel').value;return v==='inf'?Infinity:+v}
+function ballPath(p,scale){rx.beginPath();for(let k=0;k<=720;k++){const t=k/720*2*Math.PI,u=[Math.cos(t),Math.sin(t)],n=lpn(u,p),w=[u[0]/n*scale,u[1]/n*scale],[x,y]=rp(w);k?rx.lineTo(x,y):rx.moveTo(x,y)}rx.closePath()}
+function solve(p){
+  if(lpn(C,p)<=1)return C.slice();
+  let best=null,bl=Infinity;const N=4000;
+  for(let k=0;k<N;k++){const t=k/N*2*Math.PI,u=[Math.cos(t),Math.sin(t)],n=lpn(u,p),w=[u[0]/n,u[1]/n],L=loss(w);if(L<bl){bl=L;best=w}}
+  return best;
+}
+function drawReg(){
+  rx.clearRect(0,0,RW,RH);A.grid(rx,RW,RH,RS/2,rox,roy);
+  const p=pVal();
+  if($('d14-allBalls').checked){[[1,'--vec-b'],[2,'--vec-a'],[3,'--ok'],[Infinity,'--bad']].forEach(([q,c])=>{ballPath(q,1);rx.strokeStyle=css(c);rx.lineWidth=1.5;rx.stroke()});
+    rx.font='12px JetBrains Mono, monospace';[['p=1','--vec-b'],['p=2','--vec-a'],['p=3','--ok'],['p=∞','--bad']].forEach(([t,c],k)=>{rx.fillStyle=css(c);rx.fillText(t,10,18+k*16)})}
+  ballPath(p,1);rx.fillStyle=css('--vec-a');rx.globalAlpha=.15;rx.fill();rx.globalAlpha=1;rx.strokeStyle=css('--vec-a');rx.lineWidth=2.5;rx.stroke();
+  const w=solve(p),Lw=loss(w);
+  // contours: ellipses (w-c)^T H (w-c) = level
+  const ev=(()=>{const a=H[0][0],b=H[0][1],d=H[1][1],tr=a+d,det=a*d-b*b,s=Math.sqrt(tr*tr/4-det),l1v=tr/2+s,l2v=tr/2-s,th=Math.atan2(l1v-a,b);return[l1v,l2v,th]})();
+  const lev=[Lw*0.25,Lw,Lw*2.2,Lw*4].filter(x=>x>1e-6);
+  lev.forEach((L,i)=>{const r1=Math.sqrt(L/ev[0]),r2=Math.sqrt(L/ev[1]);rx.beginPath();
+    for(let k=0;k<=120;k++){const t=k/120*2*Math.PI,ex=r1*Math.cos(t),ey=r2*Math.sin(t),X=C[0]+ex*Math.cos(ev[2])-ey*Math.sin(ev[2]),Y=C[1]+ex*Math.sin(ev[2])+ey*Math.cos(ev[2]),[x,y]=rp([X,Y]);k?rx.lineTo(x,y):rx.moveTo(x,y)}
+    rx.strokeStyle=css('--vec-b');rx.lineWidth=i===1?2:1;rx.globalAlpha=i===1?1:.45;rx.stroke();rx.globalAlpha=1});
+  const [cx,cy]=rp(C),[wx,wy]=rp(w);
+  rx.fillStyle=css('--vec-b');rx.beginPath();rx.arc(cx,cy,8,0,7);rx.fill();
+  rx.fillStyle=css('--vec-a');rx.beginPath();rx.arc(wx,wy,7,0,7);rx.fill();
+  rx.fillStyle=css('--ink');rx.font='12px JetBrains Mono, monospace';rx.fillText('c',cx+10,cy-8);rx.fillText('w*',wx+9,wy+16);
+  rx.fillText('w1',RW-24,roy-6);rx.fillText('w2',rox+6,14);
+  const zeros=w.filter(v=>Math.abs(v)<0.01).length;
+  $('d14-rc').textContent=`[${fmt(C[0])}, ${fmt(C[1])}]`;$('d14-rw').textContent=`[${fmt(w[0],3)}, ${fmt(w[1],3)}]`;$('d14-rz').textContent=zeros+' / 2';
+  const v=$('d14-regVerdict');
+  if(lpn(C,p)<=1){v.textContent='المركز جوه القيد أصلًا، الـ regularization مش مأثر';v.style.color=css('--muted')}
+  else if(zeros){v.textContent='لمس عند ركن: وزن بقى صفر بالظبط (sparsity)';v.style.color=css('--ok')}
+  else{v.textContent='لمس عند نقطة ناعمة: الوزنين صغروا بس مش صفر';v.style.color=css('--vec-a')}
+}
+function rMove(e){if(!rDrag)return;const [x,y]=A.evPos(rc,e);C=[Math.max(-2.2,Math.min(2.2,(x-rox)/RS)),Math.max(-1.8,Math.min(1.8,(roy-y)/RS))];drawReg()}
+rc.addEventListener('pointerdown',e=>{rDrag=true;rc.setPointerCapture(e.pointerId);rMove(e)});
+rc.addEventListener('pointermove',rMove);rc.addEventListener('pointerup',()=>rDrag=false);rc.addEventListener('pointercancel',()=>rDrag=false);
+$('d14-pSel').addEventListener('change',drawReg);$('d14-allBalls').addEventListener('change',drawReg);
+drawReg();
+
+/* ---------- Lab 3: Mahalanobis ---------- */
+function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const rnd=mulberry(42),gauss=()=>{let u=0,v=0;while(!u)u=rnd();while(!v)v=rnd();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)};
+const data=[];for(let i=0;i<200;i++){const x=gauss()*3,y=0.8*x+gauss();data.push([x,y])}
+const mean=[data.reduce((s,d)=>s+d[0],0)/200,data.reduce((s,d)=>s+d[1],0)/200];
+const S=[[0,0],[0,0]];data.forEach(d=>{const a=d[0]-mean[0],b=d[1]-mean[1];S[0][0]+=a*a;S[0][1]+=a*b;S[1][1]+=b*b});
+S[0][0]/=199;S[0][1]/=199;S[1][1]/=199;S[1][0]=S[0][1];
+const det=S[0][0]*S[1][1]-S[0][1]*S[0][1],Si=[[S[1][1]/det,-S[0][1]/det],[-S[0][1]/det,S[0][0]/det]];
+const mah=p=>{const d=[p[0]-mean[0],p[1]-mean[1]];return Math.sqrt(Math.max(0,d[0]*(Si[0][0]*d[0]+Si[0][1]*d[1])+d[1]*(Si[1][0]*d[0]+Si[1][1]*d[1])))};
+const La=Math.sqrt(S[0][0]),Lb=S[0][1]/La,Lc=Math.sqrt(S[1][1]-Lb*Lb);
+const mc=$('d14-mahCanvas'),mx=A.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h,MS=28,mox=MW/2,moy=MH/2;
+const mp=p=>[mox+(p[0]-mean[0])*MS,moy-(p[1]-mean[1])*MS];
+let Mpt=[mean[0]+1,mean[1]-3],mDrag=false;
+function drawMah(){
+  mx.clearRect(0,0,MW,MH);A.grid(mx,MW,MH,MS,mox,moy);
+  data.forEach(d=>{const [x,y]=mp(d);mx.fillStyle=css('--muted');mx.globalAlpha=.55;mx.beginPath();mx.arc(x,y,2.6,0,7);mx.fill()});mx.globalAlpha=1;
+  [1,2,3].forEach(k=>{mx.strokeStyle=css('--muted');mx.lineWidth=1;mx.setLineDash([4,4]);mx.beginPath();mx.arc(mox,moy,k*2*MS,0,7);mx.stroke();mx.setLineDash([]);
+    mx.strokeStyle=css('--vec-a');mx.lineWidth=1.8;mx.beginPath();
+    for(let i=0;i<=100;i++){const t=i/100*2*Math.PI,u=[Math.cos(t)*k,Math.sin(t)*k],pt=[mean[0]+La*u[0],mean[1]+Lb*u[0]+Lc*u[1]],[x,y]=mp(pt);i?mx.lineTo(x,y):mx.moveTo(x,y)}mx.stroke();
+    const lp=mp([mean[0]+La*k*0.7071,mean[1]+(Lb+Lc)*k*0.7071]);mx.fillStyle=css('--vec-a');mx.font='11px JetBrains Mono, monospace';mx.fillText('M='+k,lp[0]+4,lp[1])});
+  const [px,py]=mp(Mpt);A.arrow(mx,mox,moy,px,py,css('--vec-b'),2.5);
+  mx.fillStyle=css('--vec-b');mx.beginPath();mx.arc(px,py,8,0,7);mx.fill();
+  const dl2=Math.hypot(Mpt[0]-mean[0],Mpt[1]-mean[1]),dm=mah(Mpt);
+  $('d14-mp').textContent=`[${fmt(Mpt[0],1)}, ${fmt(Mpt[1],1)}]`;$('d14-ml2').textContent=fmt(dl2);$('d14-mm').textContent=fmt(dm);
+  const v=$('d14-mahVerdict');
+  if(dm>3){v.textContent='Mahalanobis بتقول: outlier واضح بالنسبة لشكل الداتا';v.style.color=css('--bad')}
+  else if(dm>2){v.textContent='غريبة شوية';v.style.color=css('--vec-b')}
+  else{v.textContent='طبيعية بالنسبة لشكل الداتا';v.style.color=css('--ok')}
+}
+function mMove(e){if(!mDrag)return;const [x,y]=A.evPos(mc,e);Mpt=[mean[0]+(x-mox)/MS,mean[1]+(moy-y)/MS];drawMah()}
+mc.addEventListener('pointerdown',e=>{mDrag=true;mc.setPointerCapture(e.pointerId);mMove(e)});
+mc.addEventListener('pointermove',mMove);mc.addEventListener('pointerup',()=>mDrag=false);mc.addEventListener('pointercancel',()=>mDrag=false);
+$('d14-mAlong').addEventListener('click',()=>{Mpt=[mean[0]+3,mean[1]+0.8*3];drawMah()});
+$('d14-mPerp').addEventListener('click',()=>{Mpt=[mean[0]+1,mean[1]-3];drawMah()});
+drawMah();
+
+/* ---------- Edit distance table ---------- */
+function dp(){
+  const s=$('d14-s1').value,t=$('d14-s2').value,m=s.length,n=t.length;
+  const D=[];for(let i=0;i<=m;i++){D.push([]);for(let j=0;j<=n;j++){if(!i)D[i][j]=j;else if(!j)D[i][j]=i;else D[i][j]=s[i-1]===t[j-1]?D[i-1][j-1]:1+Math.min(D[i-1][j],D[i][j-1],D[i-1][j-1])}}
+  const path=new Set();let i=m,j=n;path.add(i+','+j);
+  while(i>0||j>0){if(i>0&&j>0&&s[i-1]===t[j-1]&&D[i][j]===D[i-1][j-1]){i--;j--}
+    else if(i>0&&j>0&&D[i][j]===D[i-1][j-1]+1){i--;j--}
+    else if(i>0&&D[i][j]===D[i-1][j]+1){i--}else{j--}path.add(i+','+j)}
+  const tb=$('d14-dpTable');tb.textContent='';
+  const hr=document.createElement('tr');['','""',...t].forEach(c=>{const th=document.createElement('th');th.textContent=c;th.style.textAlign='center';hr.appendChild(th)});tb.appendChild(hr);
+  for(let a=0;a<=m;a++){const tr=document.createElement('tr');const th=document.createElement('th');th.textContent=a?s[a-1]:'""';tr.appendChild(th);
+    for(let b=0;b<=n;b++){const td=document.createElement('td');td.textContent=D[a][b];td.style.textAlign='center';
+      if(path.has(a+','+b)){td.style.background='color-mix(in srgb,'+css('--vec-a')+' 22%,transparent)';td.style.fontWeight='600'}tr.appendChild(td)}tb.appendChild(tr)}
+  $('d14-dpOut').textContent='edit distance = '+D[m][n];
+}
+['d14-s1','d14-s2'].forEach(id=>$(id).addEventListener('input',dp));dp();
+
+/* ---------- Lab 4: Wasserstein vs KL ---------- */
+const wc=$('d14-wCanvas'),wx=A.setupCanvas(wc),WW=+wc.dataset.w,WH=+wc.dataset.h;
+const NB=6,Pd=[0.5,0.5,0,0,0,0];
+function drawW(){
+  const s=+$('d14-ws').value,Qd=Pd.map((_,i)=>i-s>=0?Pd[i-s]:0);
+  let cp=0,cq=0,W=0;for(let i=0;i<NB;i++){cp+=Pd[i];cq+=Qd[i];W+=Math.abs(cp-cq)}
+  let K=0;for(let i=0;i<NB;i++){if(Pd[i]>0){if(Qd[i]<=0){K=Infinity;break}K+=Pd[i]*Math.log(Pd[i]/Qd[i])}}
+  $('d14-wsv').textContent=s;$('d14-wW').textContent=fmt(W,4);$('d14-wK').textContent=K===Infinity?'∞':fmt(K,4);
+  wx.clearRect(0,0,WW,WH);const bw=WW/NB,base=WH-30,hS=(WH-60)/0.6;
+  for(let i=0;i<NB;i++){
+    wx.fillStyle=css('--vec-a');wx.globalAlpha=.75;wx.fillRect(i*bw+10,base-Pd[i]*hS,bw/2-12,Pd[i]*hS);
+    wx.fillStyle=css('--vec-b');wx.fillRect(i*bw+bw/2+2,base-Qd[i]*hS,bw/2-12,Qd[i]*hS);wx.globalAlpha=1;
+    wx.fillStyle=css('--muted');wx.font='12px JetBrains Mono, monospace';wx.textAlign='center';wx.fillText('bin '+i,i*bw+bw/2,WH-10)}
+  wx.strokeStyle=css('--muted');wx.lineWidth=1;wx.beginPath();wx.moveTo(0,base);wx.lineTo(WW,base);wx.stroke();
+  wx.textAlign='left';wx.font='13px JetBrains Mono, monospace';wx.fillStyle=css('--vec-a');wx.fillText('■ P',10,18);wx.fillStyle=css('--vec-b');wx.fillText('■ Q',60,18);
+}
+$('d14-ws').addEventListener('input',drawW);drawW();
+
+/* ---------- quiz ---------- */
+A.quiz($('d14-quizBox'),[
+ ['الـ cosine similarity بين متجهين بتقيس إيه؟',['الزاوية بينهم، من غير ما تهتم بأطوالهم','المسافة الإقليدية بينهم','أكبر فرق في أي بُعد واحد','مجموع حاصل ضرب العناصر'],0,'هي جيب تمام الزاوية بعد القسمة على الطولين، من −1 لـ +1 وبتتجاهل الطول. عشان كده مسيطرة في الـ NLP، طول المستند noise.'],
+ ['ليه مسافة L1 اسمها «Manhattan distance»؟',['بتشتغل في بُعدين بس','بتحسب أكبر فرق في كل الأبعاد','اتخترعت في مانهاتن','بتقيس المسافة على شبكة، كأنك ماشي في شوارع مقسمة بلوكات'],3,'بتجمع الفروق المطلقة على كل محور، يعني أقصر طريق لما تمشي على المحاور بس من غير ورب، زي شوارع المدينة.'],
+ ['ليه L1 regularization (Lasso) بيطلع أوزان sparse وL2 (Ridge) لأ؟',['L1 بيستخدم ثابت عقاب أكبر','قيد L1 معين أركانه على المحاور اللي فيها أوزان = صفر، ومنحنيات الـ loss غالبًا بتلمسه عند الأركان','L2 بيتطبق على الـ bias بس','L1 بيقص الأوزان اللي تحت threshold لصفر'],1,'المعين أركانه على المحاور، فنقطة اللمس الأولى مع قطوع الـ loss غالبًا ركن فيه وزن صفر. الدايرة مفيهاش أركان فاللمس بيكون والوزنين مش صفر. جربها في المعمل ٠٢.'],
+ ['ميزة Wasserstein على KL divergence في مقارنة التوزيعات؟',['Wasserstein دايمًا أصغر من KL','Wasserstein بتدي gradients مفيدة حتى لو التوزيعات مش متداخلة، والـ KL بتروح لـ ∞','Wasserstein symmetric والـ KL لأ','الاختيارين B وC صح'],3,'Wasserstein metric حقيقي (symmetric وبيحقق الـ triangle inequality) وبيدي gradients من غير تداخل. الـ KL مش symmetric وبتروح لـ ∞ لو مفيش تداخل، وعشان كده الـ WGAN استبدلتها.'],
+ ['إمتى تستخدم Mahalanobis بدل Euclidean؟',['لما الـ features مختلفة في الـ scale ومترابطة مع بعض','لما عايز حساب أسرع من L2','لما كل الـ features binary','لما بتقارن نصوص مش متجهات'],0,'بتاخد الـ covariance في الحسبان: بتفك الارتباط وتوحد الـ scale وبعدين تحسب L2. الإقليدية بتعامل كل الأبعاد زي بعض.'],
+ ['عندك embeddings كلها L2-normalized (طولها ١). أنهي جملة صح؟',['الـ dot product والـ cosine similarity هيدوا نفس الترتيب بالظبط','الـ dot product هيفضّل المستندات الطويلة','الـ cosine هيطلع دايمًا صفر','لازم تستخدم L1 بدلهم'],0,'لو الطولين = ١، الـ dot = cos θ بالظبط. وكمان ترتيب L2 هيبقى نفس الترتيب لأن ‖a−b‖² = 2 − 2cos.'],
+ ['في جدول edit distance بين "kitten" و"sitting"، الخانة الأخيرة قيمتها كام؟',['2','3','4','7'],1,'3: تبديل k→s، تبديل e→i، وإضافة g. جرّبها في جدول الـ DP فوق.']
+],5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+A.checklist(14,root);
+
+A.onTheme(()=>{if(!document.body.contains(nc))return false;drawNN();drawReg();drawMah();drawW();dp()});
+})();
+</script>

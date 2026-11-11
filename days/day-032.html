@@ -1,0 +1,720 @@
+<div class="day" id="d32-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 10 · Bias-Variance Tradeoff</span>
+  <h1>اليوم ٣٢: الغلط بييجي منين؟ Bias ولا Variance ولا Noise</h1>
+  <p class="lede">أي موديل بيغلط. النهاردة هتتعلم تفرّق الغلط ده لـ ٣ مصادر: <b>bias</b> (الموديل أبسط من اللازم)، <b>variance</b> (الموديل حساس زيادة للداتا)، و<b>noise</b> (عشوائية في الداتا نفسها ملهاش حل). دي أهم مهارة تشخيص في الـ ML: هي اللي بتقولك تكبّر الموديل ولا تصغّره، تجيب داتا أكتر ولا تغيّر الموديل.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python + NumPy</b></span>
+    <span>بعده: <b>Ensemble Methods</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d32-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d32-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 31: Model Evaluation) اتعلمنا إزاي نقيس الموديل صح. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه بنقسم الداتا train / validation / test، وليه الـ test مانلمسوش غير مرة واحدة في الآخر؟</summary>الـ train للتعليم، والـ validation لاختيار الموديل والـ hyperparameters، والـ test تقدير أمين لأداء الموديل على داتا جديدة. لو بصّيت على الـ test كتير وعدّلت على أساسه، هو كمان بيتحول لـ validation والرقم بتاعه يبقى متفائل زيادة.</details>
+  <details><summary>٢. الـ K-Fold Cross-Validation بتحل مشكلة إيه؟</summary>بدل ما تعتمد على تقسيمة واحدة ممكن تكون محظوظة أو منحوسة، بتقسم الداتا K جزء، وكل جزء ياخد دوره validation، وتاخد المتوسط (والانحراف). كده التقدير أثبت.</details>
+  <details><summary>٣. الـ learning curve بترسم إيه؟</summary>الـ training error والـ validation error مقابل حجم الداتا. النهاردة هنستخدمها كأداة تشخيص أساسية: هل الداتا الزيادة هتفيد ولا لأ.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على Model Evaluation</div>
+    <div><b>15 min</b>Bias و Variance والمعادلة + معمل السهام</div>
+    <div><b>15 min</b>معمل الـ polynomial والـ U-curve والـ regularization</div>
+    <div><b>10 min</b>Double descent والتشخيص والـ learning curves</div>
+    <div><b>20 min</b>اكتب الكود وشغّله + تمرين</div>
+    <div><b>10 min</b>الكويز والـ checklist</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d32-concepts">
+  <div class="station-head"><span class="tag">01</span><h2>Bias و Variance: نوعين غلط مختلفين خالص</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p><b>تشبيه السهام:</b> تخيل إنك بتدرّب نفس الموديل كذا مرة، كل مرة على training set مختلفة من نفس المصدر. كل مرة الموديل بيرمي «سهم» (prediction) على الهدف (القيمة الحقيقية).</p>
+      <p><b>الـ Bias</b> = الغلط المنتظم. لو جبت متوسط كل السهام، قد إيه المتوسط ده بعيد عن نص الهدف؟ موديل bias بتاعه عالي «جامد» زيادة: خط مستقيم بتحاول تفصّله على قطع مكافئ هيفوّت المنحنى دايمًا مهما اديته داتا. ده اسمه <b>underfitting</b>.</p>
+      <p><b>الـ Variance</b> = قد إيه السهام متفرقة عن بعض. لو تغيير بسيط في الداتا بيغيّر الموديل جامد، يبقى الـ variance عالي. polynomial من الدرجة 20 على 15 نقطة هيعدّي على كل نقطة بالظبط بس هيتلوّى بجنون بينهم. ده اسمه <b>overfitting</b>: الموديل حفظ الـ noise بدل الإشارة.</p>
+      <div class="note"><strong>جرّب بإيدك:</strong> حرك الـ sliders وارمي. bias عالي = السهام متجمعة بس بعيد عن النص. variance عالي = متفرقة في كل حتة حتى لو متوسطها في النص.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d32-dart" width="520" height="400" aria-label="هدف سهام لتوضيح الـ bias والـ variance"></canvas>
+      <div class="mrow">
+        <label>bias <span id="d32-dbv">0.2</span><input type="range" id="d32-db" min="0" max="1.5" step="0.05" value="0.2"></label>
+        <label>variance <span id="d32-dvv">0.2</span><input type="range" id="d32-dv" min="0.05" max="1.2" step="0.05" value="0.2"></label>
+      </div>
+      <div class="readout">
+        <div><small>Bias² (من السهام)</small><b id="d32-dB">0</b></div>
+        <div><small>Variance (من السهام)</small><b id="d32-dV">0</b></div>
+        <div><small>متوسط المسافة²</small><b id="d32-dT">0</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" id="d32-throw" class="primary">ارمي ٢٠ سهم تاني</button>
+        <button type="button" data-d32dart="0.1,0.15">كويس</button>
+        <button type="button" data-d32dart="1.1,0.15">bias عالي</button>
+        <button type="button" data-d32dart="0.1,0.9">variance عالي</button>
+        <button type="button" data-d32dart="1.1,0.9">الاتنين وحشين</button>
+      </div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>Training error</th><th>Test error</th><th>الفرق بينهم</th></tr>
+    <tr><td>High bias (underfitting)</td><td>عالي</td><td>عالي</td><td>صغير</td></tr>
+    <tr><td>High variance (overfitting)</td><td>واطي</td><td>عالي</td><td>كبير</td></tr>
+  </table></div>
+
+  <h3>المعادلة: الغلط = Bias² + Variance + Noise</h3>
+  <p>لأي نقطة <span class="ltr">x</span>، ومع الـ squared loss، الـ expected error بيتقسم بالظبط كده:</p>
+  <div class="formula">Expected Error = Bias² + Variance + Noise<br>Bias² = (E[f̂(x)] − f(x))²<br>Variance = E[(f̂(x) − E[f̂(x)])²]<br>Noise = E[(y − f(x))²] = σ²</div>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li><span class="ltr">f(x)</span>: الدالة الحقيقية اللي احنا مش شايفينها.</li>
+    <li><span class="ltr">f̂(x)</span>: توقع الموديل بتاعك.</li>
+    <li><span class="ltr">E[…]</span>: المتوسط على training sets مختلفة (زي متوسط السهام).</li>
+    <li><span class="ltr">y</span>: الـ label اللي اتقاس = الدالة الحقيقية + noise.</li>
+  </ul>
+  <div class="note"><strong>الـ Noise مالوش حل:</strong> ده عشوائية في الداتا نفسها (أخطاء قياس، متغيرات ناقصة). مفيش موديل يقدر يعمل أحسن من <span class="ltr">σ²</span>. شغلتك إنك توازن بين الـ bias² والـ variance بس.</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d32-fit">
+  <div class="station-head"><span class="tag">02</span><h2>معمل: درجة الـ polynomial والمنحنى على شكل U</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>نفس تجربة الدرس: الدالة الحقيقية <code>sin(1.5x) + 0.5x</code> (الخط المتقطع)، وفوقها ٣٠ نقطة training فيها noise. احنا بنفصّل polynomial درجته d.</p>
+      <p>حرّك الـ degree من 1 لـ 15 وراقب:</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+        <li>درجة 1: خط مستقيم، بيفوّت التموّج. الـ train والـ test الاتنين عاليين → bias.</li>
+        <li>درجة متوسطة: ماشي مع الشكل الحقيقي. الـ test أقل حاجة.</li>
+        <li>درجة عالية: بيلف حوالين كل نقطة. الـ train بيقل والـ test بيعلى → variance.</li>
+      </ul>
+      <p>الرسمة اللي تحت بترسم الـ train MSE والـ test MSE لكل الدرجات على نفس الداتا. ده الـ <b>validation curve</b> والـ U اللي بتدوّر على قاعه.</p>
+      <div class="tablewrap"><table>
+        <tr><th>التعقيد</th><th>Bias</th><th>Variance</th><th>الغلط الكلي</th></tr>
+        <tr><td>قليل أوي</td><td>عالي</td><td>واطي</td><td>عالي (underfitting)</td></tr>
+        <tr><td>مظبوط</td><td>متوسط</td><td>متوسط</td><td>أقل حاجة</td></tr>
+        <tr><td>كتير أوي</td><td>واطي</td><td>عالي</td><td>عالي (overfitting)</td></tr>
+      </table></div>
+      <div class="note"><strong>جرّب:</strong> خلي الدرجة 15 والـ λ = 0، وبعدين علّي الـ λ (Ridge) بالتدريج. هتلاقي المنحنى بيهدى والـ test error بينزل، ولو زوّدتها أوي المنحنى يبقى شبه خط مسطح والـ bias يرجع يعلى.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d32-fitc" width="520" height="340" aria-label="fitting polynomial على داتا فيها noise"></canvas>
+      <div class="mrow">
+        <label>degree <span id="d32-degv">3</span><input type="range" id="d32-deg" min="1" max="15" step="1" value="3"></label>
+        <label>λ (Ridge) <span id="d32-lamv">0</span><input type="range" id="d32-lam" min="0" max="12" step="1" value="0"></label>
+      </div>
+      <div class="readout">
+        <div><small>Train MSE</small><b id="d32-tr">0</b></div>
+        <div><small>Test MSE</small><b id="d32-te">0</b></div>
+        <div><small>الفرق (gap)</small><b id="d32-gap">0</b></div>
+      </div>
+      <div class="verdict" id="d32-verd"></div>
+      <canvas id="d32-uc" width="520" height="200" aria-label="منحنى train و test error مقابل الدرجة"></canvas>
+      <div class="btns">
+        <button type="button" id="d32-newdata">داتا جديدة</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d32-showtrue" checked> ورّيني الدالة الحقيقية</label>
+      </div>
+      <small style="color:var(--muted)">في المعمل الـ x متقسّم على 3 جوه الحساب عشان الأرقام ماتنفجرش، فقيم الـ λ هنا للتوضيح مش نفس أرقام الكود بالظبط.</small>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d32-decomp">
+  <div class="station-head"><span class="tag">03</span><h2>معمل: احسب الـ Bias² والـ Variance بنفسك (زي الكود)</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>عشان نحسب الـ bias والـ variance لازم نعرف الدالة الحقيقية، وده سبب إن الكود بيستخدم داتا صناعية. الفكرة:</p>
+      <ol class="ex">
+        <li>ولّد training set جديدة من نفس التوزيع، وفصّل عليها الموديل.</li>
+        <li>كرّر كتير (الكود بيعمل 200 مرة، هنا 60 عشان السرعة). كل مرة احفظ التوقعات على شبكة x ثابتة.</li>
+        <li><span class="ltr">mean_pred</span> = متوسط التوقعات. Bias² = متوسط <span class="ltr">(mean_pred − y_true)²</span>.</li>
+        <li>Variance = متوسط تباين التوقعات عند كل نقطة.</li>
+      </ol>
+      <p>الخطوط الرفيعة هي الموديلات المختلفة، والخط التقيل متوسطها. المسافة بين التقيل والمتقطع = bias. عرض «الحزمة» = variance.</p>
+      <div class="note"><strong>لاحظ مع n_train:</strong> علّي عدد النقط والدرجة ثابتة: الـ variance بينزل، لكن الـ bias تقريبًا زي ما هو. يعني <b>الداتا الزيادة بتعالج الـ variance بس، مش الـ bias</b>.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d32-bvc" width="520" height="300" aria-label="حزمة موديلات متدربة على داتا مختلفة"></canvas>
+      <div class="mrow">
+        <label>degree <span id="d32-bdv">5</span><input type="range" id="d32-bd" min="1" max="12" step="1" value="5"></label>
+        <label>n_train <span id="d32-bnv">30</span><input type="range" id="d32-bn" min="15" max="200" step="5" value="30"></label>
+        <label>noise σ <span id="d32-bsv">0.5</span><input type="range" id="d32-bs" min="0" max="1" step="0.1" value="0.5"></label>
+        <label>λ (Ridge) <span id="d32-blv">0</span><input type="range" id="d32-bl" min="0" max="12" step="1" value="0"></label>
+      </div>
+      <div class="readout">
+        <div><small>Bias²</small><b id="d32-rb">0</b></div>
+        <div><small>Variance</small><b id="d32-rv">0</b></div>
+        <div><small>Noise σ²</small><b id="d32-rn">0</b></div>
+        <div><small>Total</small><b id="d32-rt">0</b></div>
+      </div>
+      <canvas id="d32-bars" width="520" height="190" aria-label="Bias² و Variance لكل درجة"></canvas>
+      <small style="color:var(--muted)">الأعمدة: Bias² (أزرق) فوقه Variance (برتقاني) لكل degree من 1 لـ 12، بنفس الـ n_train والـ noise والـ λ. العمود المحدد هو الدرجة الحالية.</small>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d32-reg">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Regularization: نشتري variance أقل بـ bias أكتر</h2></div>
+  <p>الـ Regularization بيزوّد الـ bias بقصد عشان يقلل الـ variance. بيربط إيد الموديل عشان ميجريش ورا الـ noise. زي ما تقول لطالب «لخّص في صفحة واحدة بس»: هيفقد شوية تفاصيل (bias) بس مش هيحفظ كلام فاضي (variance).</p>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>بيعمل إيه</th></tr>
+    <tr><td><b>L2 (Ridge)</b></td><td>بيصغّر كل الأوزان ناحية الصفر. كل الـ features موجودة بس تأثيرها أقل.</td></tr>
+    <tr><td><b>L1 (Lasso)</b></td><td>بيزق بعض الأوزان لصفر بالظبط، فبيعمل feature selection.</td></tr>
+    <tr><td><b>Dropout</b></td><td>بيقفل neurons عشوائي أثناء التدريب، فالشبكة تتعلم تمثيلات احتياطية.</td></tr>
+    <tr><td><b>Early stopping</b></td><td>بيوقف التدريب قبل ما الموديل يفصّل نفسه على الـ training data بالكامل.</td></tr>
+  </table></div>
+  <p>قوة الـ regularization (λ، الـ dropout rate، عدد الـ epochs) هي حرفيًا الزرار اللي بيحدد انت فين على منحنى الـ bias-variance: <b>regularization أكتر = bias أكتر و variance أقل</b>. في المعمل ٠٢ و٠٣ الـ λ هو الـ Ridge penalty.</p>
+  <p>الكود بيعمل نفس الحكاية بطريقتين: <code>demo_regularization_effect</code> (degree 10 و λ من 0 لـ 100) و<code>demo_regularization_sweep</code> (degree 15 و alpha من 0.001 لـ 100). λ صغير → الـ variance هو المسيطر. λ كبير → الموديل يبقى شبه ثابت والـ bias هو المسيطر. الأحسن في النص. ده نفس الـ U بتاعة الدرجة، بس بزرار مستمر بدل درجات منفصلة، وعشان كده في الشغل الحقيقي الـ regularization هو الطريقة المفضلة: بيديك تحكم دقيق من غير ما تغيّر الـ features.</p>
+</section>
+
+<!-- STATION 5 -->
+<section id="d32-dd">
+  <div class="station-head"><span class="tag">05</span><h2>Double Descent: النظرة الحديثة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>النظرية الكلاسيك بتقول: بعد الـ sweet spot، أي تعقيد زيادة بيضر. بس أبحاث من 2019 لقت حاجة غريبة: لو كمّلت تكبير الموديل لبعد الـ <b>interpolation threshold</b> (النقطة اللي الموديل عنده فيها بارامترز كفاية يعدّي على كل نقط التدريب بالظبط)، الـ test error ممكن <b>ينزل تاني</b>.</p>
+      <p>ده بيفسر ليه الـ neural networks الضخمة اللي بارامترزها أكتر بكتير من عدد الأمثلة لسه بتعمّم كويس. الـ tradeoff الكلاسيك مش غلط، بس ناقص في العصر الحديث.</p>
+      <p><b>ليه بيحصل؟</b> عند الـ threshold بالظبط، الموديل عنده بالكاد سعة تكفي يعدّي على كل النقط، فهو مجبر على حل واحد محدد جدًا، وأي تغيير بسيط في الداتا بيقلبه → الـ variance في أعلى حاجة. بعد الـ threshold فيه حلول كتير بتفصّل الداتا تمام، والـ learning algorithm (زي gradient descent بالـ implicit regularization بتاعه) بيميل يختار أبسطهم. الميل ده للحلول البسيطة هو سبب إن الموديلات الـ overparameterized بتعمّم.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d32-ddc" width="520" height="260" aria-label="رسم توضيحي لمنحنى double descent"></canvas>
+      <small style="color:var(--muted)">رسمة توضيحية للشكل بس (مش داتا حقيقية). حرّك الخط عشان تشوف انت في أنهي منطقة.</small>
+      <label style="display:grid;gap:2px">عدد البارامترز p مقارنة بعدد العينات n <input type="range" id="d32-ddp" min="0" max="100" step="1" value="20"></label>
+      <div class="verdict" id="d32-ddv"></div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th>المنطقة</th><th>البارامترز مقابل العينات</th><th>السلوك</th></tr>
+    <tr><td>Underparameterized</td><td class="ltr">p ≪ n</td><td>الـ tradeoff الكلاسيك شغال</td></tr>
+    <tr><td>Interpolation threshold</td><td class="ltr">p ~ n</td><td>الـ variance في القمة والـ test error بيقفز</td></tr>
+    <tr><td>Overparameterized</td><td class="ltr">p ≫ n</td><td>الـ implicit regularization بيشتغل والـ test error بينزل</td></tr>
+  </table></div>
+  <p>ملاحظات مهمة عن الـ double descent:</p>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li>بيحصل في الـ linear models والـ decision trees والـ neural networks.</li>
+    <li>داتا أكتر ممكن <b>تضر</b> في منطقة الـ interpolation (اسمها sample-wise double descent).</li>
+    <li>epochs أكتر ممكن تعمله برضه (epoch-wise double descent).</li>
+    <li>الـ regularization بيهدّي القمة بس مش بيلغيها.</li>
+  </ul>
+  <div class="note"><strong>عمليًا:</strong> لو بتستخدم neural networks أو tree ensembles كبيرة، متقفش عند الـ threshold. يا إما تفضل تحته بكتير (ومعاك explicit regularization)، يا إما تعدّيه بكتير. أوحش مكان تقف فيه هو عند الـ threshold بالظبط.</div>
+</section>
+
+<!-- STATION 6 -->
+<section id="d32-diag">
+  <div class="station-head"><span class="tag">06</span><h2>التشخيص: انت عندك مشكلة إيه وتعمل إيه؟</h2></div>
+  <p>أول خطوة دايمًا: قارن الـ train error بالـ test error. فيه gap كبير؟ → variance. مفيش gap بس الاتنين عاليين؟ → bias. الاتنين واطيين؟ → كويس، ابعته production.</p>
+  <div class="tablewrap"><table>
+    <tr><th>العَرَض</th><th>التشخيص</th><th>العلاج</th></tr>
+    <tr><td>train عالي، test عالي</td><td>Bias</td><td>features أكتر، موديل أعقد، regularization أقل</td></tr>
+    <tr><td>train واطي، test عالي</td><td>Variance</td><td>داتا أكتر، regularization، موديل أبسط، dropout</td></tr>
+    <tr><td>train واطي، test واطي</td><td>Good fit</td><td>Ship it</td></tr>
+    <tr><td>train بينزل و test بيطلع</td><td>overfitting بيحصل دلوقتي</td><td>Early stopping</td></tr>
+  </table></div>
+  <div class="bench" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+    <div class="note"><strong>لما المشكلة bias:</strong>
+      <ul style="margin:6px 0;padding-inline-start:18px"><li>زوّد polynomial أو interaction features</li><li>موديل أمرن (tree ensemble بدل linear)</li><li>قلّل الـ regularization</li><li>درّب أكتر (لو لسه ما وصلش لـ convergence)</li></ul></div>
+    <div class="note ai"><strong>لما المشكلة variance:</strong>
+      <ul style="margin:6px 0;padding-inline-start:18px"><li>هات training data أكتر</li><li>استخدم bagging (random forests)</li><li>زوّد الـ regularization (λ أعلى، dropout أكتر)</li><li>feature selection (شيل الـ features اللي فيها noise)</li><li>استخدم cross-validation عشان تكشفها بدري</li></ul></div>
+  </div>
+
+  <h3>الـ Ensembles كسلاح ضد الـ variance (مقدمة لبكرة)</h3>
+  <p><b>Bagging</b> (Bootstrap Aggregating): بتدرّب كذا موديل كل واحد على bootstrap sample مختلفة من الداتا، وتاخد متوسط توقعاتهم. كل موديل لوحده variance بتاعه عالي، بس المتوسط أهدى بكتير. الـ Random Forest = bagging على decision trees.</p>
+  <div class="formula">Var(average of N independent models) = σ² / N</div>
+  <p>الموديلات مش مستقلة بجد (كلهم شايفين داتا شبه بعض)، فالتقليل أقل من <span class="ltr">1/N</span>، بس لسه كبير.</p>
+  <p><b>Boosting</b> بيقلل الـ bias: بيبني موديلات ورا بعض، وكل موديل جديد بيركز على أخطاء اللي قبله (Gradient Boosting و AdaBoost). ممكن يعمل overfitting لو زوّدت موديلات كتير، فمحتاج early stopping أو regularization.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>التأثير الأساسي</th><th>الـ Bias</th><th>الـ Variance</th></tr>
+    <tr><td>Bagging</td><td>يقلل الـ variance</td><td>مفيش تغيير</td><td>بيقل</td></tr>
+    <tr><td>Boosting</td><td>يقلل الـ bias</td><td>بيقل</td><td>ممكن يزيد</td></tr>
+    <tr><td>Stacking</td><td>يقلل الاتنين</td><td>حسب الـ meta-learner</td><td>حسب الـ base models</td></tr>
+    <tr><td>Dropout</td><td>bagging ضمني</td><td>يزيد شوية</td><td>بيقل</td></tr>
+  </table></div>
+  <div class="note"><strong>قاعدة عملية:</strong> الـ base model عنده variance عالي (trees عميقة، polynomials عالية)؟ استخدم bagging. عنده bias عالي (stumps، linear بسيط)؟ استخدم boosting.</div>
+</section>
+
+<!-- STATION 7 -->
+<section id="d32-lc">
+  <div class="station-head"><span class="tag">07</span><h2>الـ Learning Curves: هل الداتا الزيادة هتفيد؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ learning curve بترسم train error و validation error مقابل حجم الـ training set. أحسن من مقارنة واحدة لأنها بتوريك «الاتجاه» وبتقولك الداتا هتنفع ولا لأ.</p>
+      <p>اختار نوع الموديل وشوف شكل المنحنى (محسوب لايف في المتصفح على الدالة بتاعة الدرس، متوسط على كذا dataset):</p>
+      <div class="btns">
+        <button type="button" data-d32lc="1">Degree 1 (high bias)</button>
+        <button type="button" data-d32lc="5">Degree 5 (balanced)</button>
+        <button type="button" data-d32lc="12">Degree 12 (high variance)</button>
+      </div>
+      <div class="note ai"><strong>الفكرة الأهم:</strong> لو المنحنيين وقفوا (plateau) والـ gap صغير بس الاتنين عاليين، الداتا الزيادة <b>ملهاش لازمة</b>، محتاج موديل أحسن. لو الـ gap كبير ولسه بيقل، الداتا هتفيد.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d32-lcc" width="520" height="280" aria-label="learning curve"></canvas>
+      <div class="verdict" id="d32-lcv"></div>
+    </div>
+  </div>
+  <div class="tablewrap"><table>
+    <tr><th>السيناريو</th><th>Train</th><th>Validation</th><th>الـ Gap</th><th>معناه</th><th>تعمل إيه</th></tr>
+    <tr><td>High bias</td><td>عالي</td><td>عالي</td><td>صغير</td><td>الموديل مش قادر يمسك النمط</td><td>features أكتر، موديل أعقد، regularization أقل</td></tr>
+    <tr><td>High variance</td><td>واطي</td><td>عالي</td><td>كبير</td><td>الموديل بيحفظ</td><td>داتا أكتر، regularization، موديل أبسط</td></tr>
+    <tr><td>Good fit</td><td>متوسط</td><td>متوسط</td><td>صغير</td><td>بيعمّم كويس</td><td>Ship it</td></tr>
+    <tr><td>High variance بيتحسن</td><td>واطي</td><td>بينزل مع الداتا</td><td>بيصغر</td><td>variance الداتا تقدر تصلحه</td><td>اجمع داتا أكتر</td></tr>
+    <tr><td>High bias ثابت</td><td>عالي</td><td>عالي وثابت</td><td>صغير وثابت</td><td>الداتا الزيادة مش هتفيد</td><td>غيّر الـ architecture</td></tr>
+  </table></div>
+  <h3>طريقتين تطلّع بيهم منحنيات</h3>
+  <ol class="ex">
+    <li><b>Learning curve:</b> الموديل ثابت، وتغيّر حجم الـ training data. بتقولك الداتا هتفيد ولا لأ.</li>
+    <li><b>Validation curve:</b> الداتا ثابتة، وتغيّر بارامتر التعقيد (degree، tree depth، عدد الـ layers). بتوريك الـ tradeoff مباشرة وبتقولك موديل مختلف هيفيد ولا لأ (ده اللي في المعمل ٠٢).</li>
+  </ol>
+  <p>اعمل الاتنين قبل ما تاخد قرار الخطوة الجاية.</p>
+</section>
+
+<!-- CODE -->
+<section id="d32-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من الـ root بتاع الريبو شغّل النسخة الأصلية مرة عشان تشوف الناتج الكامل:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/02-ml-fundamentals/10-bias-variance/code/bias_variance.py</pre></div>
+  <p><b>القاعدة:</b> بعد كده اكتب بنفسك ملف <code>my_bias_variance.py</code> خطوة خطوة. بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: داتا صناعية من دالة معروفة</h3>
+  <p>بنعرف الدالة الحقيقية، فنقدر نحسب الـ bias والـ variance بالظبط.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def true_function(x):
+    return np.sin(1.5 * x) + 0.5 * x          <span class="c"># الحقيقة اللي الموديل مش شايفها</span>
+
+def generate_data(n_samples=30, noise_std=0.5, x_range=(-3, 3), seed=None):
+    rng = np.random.RandomState(seed)
+    x = rng.uniform(x_range[0], x_range[1], n_samples)
+    y = true_function(x) + rng.normal(0, noise_std, n_samples)   <span class="c"># الحقيقة + noise</span>
+    return x, y</pre></div>
+
+  <h3>خطوة ٢: fit لـ polynomial (مع Ridge اختياري)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def fit_polynomial(x_train, y_train, degree, lam=0.0):
+    X = np.column_stack([x_train ** d for d in range(degree + 1)])   <span class="c"># أعمدة 1, x, x², ...</span>
+    if lam &gt; 0:
+        penalty = lam * np.eye(X.shape[1])
+        penalty[0, 0] = 0                       <span class="c"># مانعاقبش الـ intercept</span>
+        w = np.linalg.solve(X.T @ X + penalty, X.T @ y_train)   <span class="c"># Ridge</span>
+    else:
+        w = np.linalg.lstsq(X, y_train, rcond=None)[0]          <span class="c"># least squares عادي</span>
+    return w
+
+def predict_polynomial(x, w):
+    degree = len(w) - 1
+    X = np.column_stack([x ** d for d in range(degree + 1)])
+    return X @ w</pre></div>
+
+  <h3>خطوة ٣: التقسيم لـ Bias² و Variance</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bias_variance_decomposition(degrees, n_bootstrap=200, n_train=30,
+                                noise_std=0.5, n_test=100, lam=0.0):
+    rng = np.random.RandomState(42)
+    x_test = np.linspace(-2.5, 2.5, n_test)    <span class="c"># شبكة ثابتة نقيس عليها</span>
+    y_true = true_function(x_test)
+    results = {}
+    for degree in degrees:
+        predictions = np.zeros((n_bootstrap, n_test))
+        for b in range(n_bootstrap):           <span class="c"># training set جديدة كل مرة</span>
+            x_train, y_train = generate_data(n_samples=n_train, noise_std=noise_std,
+                                             seed=rng.randint(0, 100000))
+            w = fit_polynomial(x_train, y_train, degree, lam=lam)
+            predictions[b] = predict_polynomial(x_test, w)
+
+        mean_pred = predictions.mean(axis=0)                 <span class="c"># E[f̂(x)]</span>
+        bias_sq = np.mean((mean_pred - y_true) ** 2)         <span class="c"># بُعد المتوسط عن الحقيقة</span>
+        variance = np.mean(predictions.var(axis=0))          <span class="c"># تفرّق التوقعات</span>
+        total_error = np.mean(np.mean((predictions - y_true) ** 2, axis=1)) + noise_std ** 2
+        results[degree] = {"bias_sq": bias_sq, "variance": variance,
+                           "total_error": total_error, "noise": noise_std ** 2}
+    return results
+
+res = bias_variance_decomposition([1, 2, 3, 5, 7, 10, 15])
+for d, r in sorted(res.items()):
+    print(d, round(r["bias_sq"], 4), round(r["variance"], 4), round(r["total_error"], 4))
+print("Optimal degree:", min(res, key=lambda d: res[d]["total_error"]))</pre></div>
+  <details><summary>المفروض تلاحظ إيه في الناتج؟</summary>مع زيادة الدرجة الـ Bias² بينزل والـ Variance بيطلع، والـ Total (اللي فيه noise = 0.25 لأن σ = 0.5) بيعمل U. عمود <code>B+V+N</code> في الكود الأصلي لازم يطلع تقريبًا قد الـ Total. الأرقام بالظبط هتطلعلك لما تشغّل، قارنها بالمعمل ٠٣.</details>
+
+  <h3>خطوة ٤: التشخيص من train/test error</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>x_train, y_train = generate_data(n_samples=30, seed=42)
+x_test, y_test = generate_data(n_samples=100, seed=99)
+
+for degree in [1, 4, 15]:
+    w = fit_polynomial(x_train, y_train, degree)
+    train_mse = np.mean((predict_polynomial(x_train, w) - y_train) ** 2)
+    test_mse = np.mean((predict_polynomial(x_test, w) - y_test) ** 2)
+    gap = test_mse - train_mse
+    if train_mse &gt; 0.5 and test_mse &gt; 0.5 and gap &lt; train_mse * 0.5:
+        diagnosis = "HIGH BIAS (underfitting)"      <span class="c"># الاتنين عاليين والفرق صغير</span>
+    elif gap &gt; train_mse * 2:
+        diagnosis = "HIGH VARIANCE (overfitting)"   <span class="c"># فرق كبير</span>
+    else:
+        diagnosis = "REASONABLE FIT"
+    print(degree, round(train_mse, 4), round(test_mse, 4), diagnosis)</pre></div>
+
+  <h3>خطوة ٥: Learning curves و Regularization sweep</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>x_grid = np.linspace(-2.5, 2.5, 200)
+y_grid = true_function(x_grid)
+rng = np.random.RandomState(42)
+
+for degree in [1, 5, 12]:
+    print("degree", degree)
+    for n in [10, 20, 50, 100, 300]:
+        tr, te = [], []
+        for _ in range(50):                    <span class="c"># متوسط على 50 dataset</span>
+            xs, ys = generate_data(n_samples=n, seed=rng.randint(0, 100000))
+            w = fit_polynomial(xs, ys, degree)
+            tr.append(np.mean((predict_polynomial(xs, w) - ys) ** 2))
+            te.append(np.mean((predict_polynomial(x_grid, w) - y_grid) ** 2))
+        print(f"  n={n:&gt;4}  train={np.mean(tr):.4f}  test={np.mean(te):.4f}")
+
+<span class="c"># degree 15 ثابت و alpha بيتغير</span>
+for alpha in [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]:
+    r = bias_variance_decomposition([15], lam=alpha)[15]
+    dom = "BIAS" if r["bias_sq"] &gt; r["variance"] else "VARIANCE"
+    print(f"alpha={alpha:&gt;7}  bias={r['bias_sq']:.4f}  var={r['variance']:.4f}  {dom}")</pre></div>
+  <p>ملحوظة: الكود الأصلي بيلف الـ fit في <code>try/except (np.linalg.LinAlgError, ValueError)</code> في الـ learning curves، لأن polynomial درجة 12 على 10 نقط مثلًا ممكن يعمل مشاكل عددية.</p>
+
+  <h3>خطوة ٦: نفس الكلام بـ sklearn (اللي هتستخدمه في الشغل)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+from sklearn.model_selection import validation_curve, learning_curve, cross_val_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import Ridge
+
+rng = np.random.RandomState(0)
+X = rng.uniform(-3, 3, (200, 1))
+y = np.sin(1.5 * X[:, 0]) + 0.5 * X[:, 0] + rng.normal(0, 0.5, 200)
+
+<span class="c"># 1) validation curve: التعقيد بيتغير</span>
+pipe = make_pipeline(PolynomialFeatures(), Ridge(alpha=0.01))
+tr, va = validation_curve(pipe, X, y, param_name="polynomialfeatures__degree",
+                          param_range=list(range(1, 16)), cv=5,
+                          scoring="neg_mean_squared_error")
+print("val MSE per degree:", np.round(-va.mean(axis=1), 3))
+
+<span class="c"># 2) learning curve: حجم الداتا بيتغير</span>
+pipe = make_pipeline(PolynomialFeatures(5), Ridge(alpha=0.01))
+sizes, tr, va = learning_curve(pipe, X, y, train_sizes=np.linspace(0.1, 1.0, 10),
+                               cv=5, scoring="neg_mean_squared_error")
+print(sizes, np.round(-tr.mean(axis=1), 3), np.round(-va.mean(axis=1), 3))
+
+<span class="c"># 3) sweep للـ alpha بالـ cross-validation</span>
+for alpha in [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]:
+    pipe = make_pipeline(PolynomialFeatures(10), Ridge(alpha=alpha))
+    s = cross_val_score(pipe, X, y, cv=5, scoring="neg_mean_squared_error")
+    print(f"alpha={alpha:&gt;7.3f}  MSE={-s.mean():.4f} +/- {s.std():.4f}")</pre></div>
+  <p>الدرس بيكتب الـ validation curve بـ loop على كل degree لوحده (<code>param_range=[d]</code>)؛ أنا هنا بعته كله مرة واحدة، والنتيجة نفس الفكرة. sklearn بيرجّع <span class="ltr">neg_mean_squared_error</span> بالسالب، عشان كده بنضرب في -1.</p>
+
+  <h3>الـ workflow الكامل للتشخيص</h3>
+  <ol class="ex">
+    <li>درّب الموديل واحسب train و test error.</li>
+    <li>الاتنين عاليين؟ عندك bias. روح للخطوة ٤.</li>
+    <li>train واطي و test عالي؟ عندك variance. اعمل learning curve تشوف الداتا هتفيد ولا لأ؛ لو مش هتفيد، اعمل regularization.</li>
+    <li>اعمل validation curve على أهم بارامتر تعقيد ولاقي الـ sweet spot.</li>
+    <li>عند الـ sweet spot اعمل learning curve. لو الـ gap لسه كبير، محتاج داتا أكتر أو regularization.</li>
+    <li>جرّب Ridge/Lasso بقيم alpha مختلفة بـ <code>cross_val_score</code> واختار اللي الـ CV error بتاعه أقل.</li>
+  </ol>
+  <p>ده بياخد ١٠-١٥ دقيقة compute لأغلب الـ tabular datasets وبيوفر ساعات تخمين.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d32-ex">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة، وجرّب الفكرة الأول في المعمل ٠٣ قبل ما تكتب كود.</p>
+  <ol class="ex">
+    <li><b>من غير noise:</b> شغّل الـ decomposition بـ <code>noise_std=0</code>. الـ irreducible error بيحصله إيه؟ الدرجة المثالية بتتغير؟
+      <details><summary>تلميح</summary>الـ noise term = <span class="ltr">σ² = 0</span>. ومن غير noise مفيش حاجة «يحفظها» الموديل غلط، فالـ variance بيقل جامد والدرجة المثالية غالبًا بتطلع لفوق. حط σ = 0 في المعمل ٠٣ وشوف الأعمدة. اتأكد بالأرقام من الكود.</details></li>
+    <li><b>داتا أكتر:</b> زوّد <code>n_train</code> من 30 لـ 300. الـ variance بيحصله إيه؟ الدرجة المثالية بتتحرك؟
+      <details><summary>تلميح</summary>الـ variance بيقل، والـ bias تقريبًا ثابت. لأن الـ variance بقى أرخص، موديلات أعقد بتبقى مقبولة، فالدرجة المثالية بتميل تطلع. شوف <code>demo_data_size_effect</code>.</details></li>
+    <li><b>Ridge sweep:</b> لـ degree 15 ثابت، غيّر λ من 0 لـ 100 وارسم Bias² و Variance كدالة في λ.
+      <details><summary>تلميح</summary>استخدم <code>bias_variance_decomposition([15], lam=lam)</code> في loop، وارسم بـ matplotlib بمحور x لوغاريتمي (<code>plt.xscale("log")</code>). الـ bias بيطلع والـ variance بينزل.</details></li>
+    <li><b>دالة تانية:</b> غيّر الدالة الحقيقية لـ <code>sin(x)</code>. التقسيم بيتغير إزاي؟ لسه فيه درجة مثالية واضحة؟
+      <details><summary>تلميح</summary>عدّل <code>true_function</code> بس. <span class="ltr">sin(x)</span> على [-3, 3] أنعم من <span class="ltr">sin(1.5x)</span>، فدرجة أقل ممكن تكفي. شغّل <code>demo_complexity_tradeoff</code> وقارن الـ crossover.</details></li>
+    <li><b>Bagging بإيدك:</b> درّب 10 موديلات على bootstrap samples وخد متوسطهم. وضّح إن ده بيقلل الـ variance من غير ما يزوّد الـ bias كتير.
+      <details><summary>تلميح</summary>جوه كل round في الـ decomposition: بدل fit واحد، اعمل 10 مرات <code>idx = rng.randint(0, n, n)</code> و fit على <code>x_train[idx]</code>، وخد متوسط التوقعات. قارن الـ variance لـ degree 10 مع وبدون bagging.</details></li>
+    <li><b>إضافة مني · تشخيص موديل حقيقي:</b> عندك classifier لتصنيف تذاكر الدعم الفني: train accuracy 99% و validation 78%. اكتب ٣ خطوات بالترتيب هتعملها، وإزاي هتعرف أي واحدة نفعت.
+      <details><summary>إجابة مقترحة</summary>الـ gap كبير → variance. (١) اعمل learning curve: لو الـ validation لسه بيطلع مع الداتا، اجمع/وسّم تذاكر أكتر. (٢) زوّد الـ regularization (أو قلّل max_depth لو tree) واعمل sweep بـ cross-validation. (٣) شيل features فيها noise (زي IDs أو timestamps بتسرّب). الحكم دايمًا بالـ validation/CV score، والـ test في الآخر خالص.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d32-mine">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>حدس سريع</h3>
+  <p>الـ bias سؤال عن <b>الموديل</b> («هل الشكل ده أصلًا يقدر يمثل الحقيقة؟»)، والـ variance سؤال عن <b>الموديل + كمية الداتا مع بعض</b> («هل الداتا كفاية تثبّت الموديل ده؟»). عشان كده الداتا الزيادة بتعالج التاني بس.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li>تقيس الـ «test error» على نفس الـ test set كل مرة وتعدّل عليه. ساعتها انت بتعمل overfitting على الـ test نفسه (فاكر امبارح؟).</li>
+    <li>تفتكر إن train error = 0 حاجة كويسة. غالبًا معناها إنك حفظت.</li>
+    <li>تجري تجمع داتا لموديل عنده bias. لو المنحنيين واقفين وعاليين، الداتا مش هتنفع.</li>
+    <li>تنسى إن المعادلة <span class="ltr">Bias² + Variance + Noise</span> مضبوطة بالشكل ده للـ squared loss؛ مع losses تانية الفكرة العامة نفسها بس التقسيم مش بالبساطة دي.</li>
+    <li>في الكود اسم المتغير <code>n_bootstrap</code>، بس اللي بيحصل فعلًا إن كل مرة بيتولّد dataset جديد من نفس التوزيع (مش resampling من نفس الداتا). ده ممكن بس لأن الداتا صناعية؛ في الحقيقة مش هتقدر تعمل كده، وعشان كده بنستخدم cross-validation والـ bootstrap الحقيقي.</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li><b>Fine-tuning على داتا قليلة:</b> لو الـ train loss نازل والـ eval loss بدأ يطلع، ده overfitting؛ الحل المعتاد early stopping (الـ checkpoint الأحسن على الـ eval) أو epochs أقل أو rank أصغر في الـ LoRA (Day 1) لأنه بيقيّد التعديل.</li>
+    <li><b>Dropout و weight decay</b> موجودين في تدريب الـ transformers وهما بالظبط أدوات regularization اللي اتكلمنا عنها.</li>
+    <li><b>Prompt engineering:</b> لو ظبطت prompt على ٥ أمثلة لحد ما بقى مثالي عليهم، ممكن تكون «حفظتهم». اختبره على eval set منفصل، نفس منطق train/test.</li>
+    <li><b>Double descent</b> هو جزء من القصة ليه موديلات ضخمة جدًا بتعمّم رغم إن بارامترزها أكتر من الداتا بكتير.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d32-quiz">
+  <div class="station-head"><span class="tag">11</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d32-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d32-done">
+  <div class="station-head"><span class="tag">12</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d32-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح الفرق بين bias و variance و noise بمثال السهام</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> أعرف أكتب المعادلة <span class="ltr">Bias² + Variance + σ²</span> وأشرح كل حد</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> لعبت في المعامل وشفت الـ U والـ Ridge بيهدّي الـ polynomial</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> أقدر أشخّص موديل من train/test error ومن learning curve</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> كتبت الـ decomposition بإيدي وشغّلته</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Bias / Underfitting</td><td>موديل linear على مشكلة معقدة، موديل صغير أوي على task صعب</td></tr>
+    <tr><td>Variance / Overfitting</td><td>fine-tuning على داتا قليلة، trees عميقة من غير قيود</td></tr>
+    <tr><td>Regularization (L1/L2/dropout/early stopping)</td><td>Ridge/Lasso، weight decay و dropout في الـ transformers</td></tr>
+    <tr><td>Learning curves</td><td>قرار «نجمع داتا ولا نغيّر الموديل؟» في أي مشروع</td></tr>
+    <tr><td>Validation curves + CV</td><td>اختيار الـ hyperparameters (موضوع Day 34)</td></tr>
+    <tr><td>Bagging / Boosting</td><td>Random Forest، XGBoost (بكرة)</td></tr>
+    <tr><td>Double descent</td><td>ليه الـ deep nets الضخمة بتعمّم</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Ensemble Methods. هنبني bagging و boosting بإيدينا ونشوف إزاي بيكسروا الـ variance والـ bias، ونبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F10-bias-variance" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/10-bias-variance</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+const root=$('d32-root');
+
+// roadmap
+const rm=$('d32-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===10)s.className='now';rm.appendChild(s)}
+
+// ---------- random helpers ----------
+function rng(seed){let a=seed>>>0;return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();while(v===0)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const truth=x=>Math.sin(1.5*x)+0.5*x;
+function gen(n,sd,r){const xs=[],ys=[];for(let i=0;i<n;i++){const x=-3+6*r();xs.push(x);ys.push(truth(x)+sd*gauss(r))}return[xs,ys]}
+// polynomial ridge fit on u=x/3 (keeps numbers stable)
+function fit(xs,ys,deg,lam){
+  const p=deg+1,A=[],b=new Array(p).fill(0);
+  for(let i=0;i<p;i++)A.push(new Array(p).fill(0));
+  for(let k=0;k<xs.length;k++){const u=xs[k]/3,pw=[1];for(let d=1;d<p;d++)pw.push(pw[d-1]*u);
+    for(let i=0;i<p;i++){b[i]+=pw[i]*ys[k];for(let j=0;j<p;j++)A[i][j]+=pw[i]*pw[j]}}
+  for(let i=1;i<p;i++)A[i][i]+=lam;
+  for(let i=0;i<p;i++)A[i][i]+=1e-9;
+  // gaussian elimination with partial pivoting
+  for(let c=0;c<p;c++){let m=c;for(let r=c+1;r<p;r++)if(Math.abs(A[r][c])>Math.abs(A[m][c]))m=r;
+    [A[c],A[m]]=[A[m],A[c]];[b[c],b[m]]=[b[m],b[c]];const pv=A[c][c]||1e-12;
+    for(let r=c+1;r<p;r++){const k=A[r][c]/pv;if(!k)continue;for(let j=c;j<p;j++)A[r][j]-=k*A[c][j];b[r]-=k*b[c]}}
+  const w=new Array(p).fill(0);
+  for(let i=p-1;i>=0;i--){let s=b[i];for(let j=i+1;j<p;j++)s-=A[i][j]*w[j];w[i]=s/(A[i][i]||1e-12)}
+  return w;
+}
+function pred(w,x){const u=x/3;let s=0,pw=1;for(let i=0;i<w.length;i++){s+=w[i]*pw;pw*=u}return s}
+const mse=(w,xs,ys)=>{let s=0;for(let i=0;i<xs.length;i++){const e=pred(w,xs[i])-ys[i];s+=e*e}return s/xs.length};
+const lamOf=v=>v===0?0:Math.pow(10,(v-8)/2); // 0, 1e-3.5 ... 1e2
+
+// ---------- Station 1: dartboard ----------
+const dc=$('d32-dart'),dx=AI.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+let darts=[],dseed=7;
+function throwDarts(){const r=rng(dseed++),B=+$('d32-db').value,V=+$('d32-dv').value;darts=[];
+  for(let i=0;i<20;i++)darts.push([B*0.8+V*gauss(r)*0.7,B*0.6+V*gauss(r)*0.7]);drawDart()}
+function drawDart(){
+  const cx=DW/2,cy=DH/2,S=DH/2-20,sc=S/2.2;
+  dx.clearRect(0,0,DW,DH);
+  for(let k=5;k>=1;k--){dx.beginPath();dx.arc(cx,cy,S*k/5,0,7);dx.fillStyle=k%2?css('--soft'):css('--panel');dx.fill();dx.strokeStyle=css('--line');dx.stroke()}
+  dx.fillStyle=css('--ok');dx.beginPath();dx.arc(cx,cy,5,0,7);dx.fill();
+  let mx=0,my=0;darts.forEach(d=>{mx+=d[0];my+=d[1]});mx/=darts.length;my/=darts.length;
+  let v=0,t=0;darts.forEach(d=>{v+=(d[0]-mx)**2+(d[1]-my)**2;t+=d[0]**2+d[1]**2});v/=darts.length;t/=darts.length;
+  dx.fillStyle=css('--vec-b');darts.forEach(d=>{dx.beginPath();dx.arc(cx+d[0]*sc,cy-d[1]*sc,5,0,7);dx.fill()});
+  dx.strokeStyle=css('--vec-a');dx.lineWidth=3;const X=cx+mx*sc,Y=cy-my*sc;
+  dx.beginPath();dx.moveTo(X-9,Y-9);dx.lineTo(X+9,Y+9);dx.moveTo(X+9,Y-9);dx.lineTo(X-9,Y+9);dx.stroke();
+  if(Math.hypot(mx,my)>0.15)AI.arrow(dx,cx,cy,X,Y,css('--vec-a'),2);
+  dx.fillStyle=css('--ink');dx.font='12px JetBrains Mono, monospace';dx.fillText('X = mean of darts (bias = distance to center)',10,DH-8);
+  $('d32-dB').textContent=f(mx*mx+my*my);$('d32-dV').textContent=f(v);$('d32-dT').textContent=f(t);
+  $('d32-dbv').textContent=$('d32-db').value;$('d32-dvv').textContent=$('d32-dv').value;
+}
+['d32-db','d32-dv'].forEach(id=>$(id).addEventListener('input',()=>{dseed--;throwDarts()}));
+$('d32-throw').addEventListener('click',throwDarts);
+root.querySelectorAll('[data-d32dart]').forEach(b=>b.addEventListener('click',()=>{const[a,c]=b.dataset.d32dart.split(',');$('d32-db').value=a;$('d32-dv').value=c;throwDarts()}));
+throwDarts();
+
+// ---------- Station 2: fit lab ----------
+const fc=$('d32-fitc'),fx=AI.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+const uc=$('d32-uc'),ux=AI.setupCanvas(uc),UW=+uc.dataset.w,UH=+uc.dataset.h;
+let fseed=11,TR,TE,curve=[];
+function newData(){const r=rng(fseed++);TR=gen(30,0.5,r);TE=gen(300,0.5,r);computeCurve();drawFit()}
+function computeCurve(){const lam=lamOf(+$('d32-lam').value);curve=[];
+  for(let d=1;d<=15;d++){const w=fit(TR[0],TR[1],d,lam);curve.push([mse(w,TR[0],TR[1]),mse(w,TE[0],TE[1])])}}
+const fX=x=>(x+3)/6*FW,fY=y=>FH/2-y*FH/7;
+function drawFit(){
+  const d=+$('d32-deg').value,lv=+$('d32-lam').value,lam=lamOf(lv);
+  $('d32-degv').textContent=d;$('d32-lamv').textContent=lam?lam.toExponential(1):'0';
+  const w=fit(TR[0],TR[1],d,lam);
+  fx.clearRect(0,0,FW,FH);AI.grid(fx,FW,FH,FW/12,FW/2,FH/2);
+  if($('d32-showtrue').checked){fx.setLineDash([6,5]);fx.strokeStyle=css('--muted');fx.lineWidth=2;fx.beginPath();
+    for(let i=0;i<=200;i++){const x=-3+6*i/200;i?fx.lineTo(fX(x),fY(truth(x))):fx.moveTo(fX(x),fY(truth(x)))}fx.stroke();fx.setLineDash([])}
+  fx.fillStyle=css('--vec-b');for(let i=0;i<TR[0].length;i++){fx.beginPath();fx.arc(fX(TR[0][i]),fY(TR[1][i]),4,0,7);fx.fill()}
+  fx.save();fx.beginPath();fx.rect(0,0,FW,FH);fx.clip();
+  fx.strokeStyle=css('--vec-a');fx.lineWidth=3;fx.beginPath();
+  for(let i=0;i<=300;i++){const x=-3+6*i/300,y=Math.max(-20,Math.min(20,pred(w,x)));i?fx.lineTo(fX(x),fY(y)):fx.moveTo(fX(x),fY(y))}fx.stroke();fx.restore();
+  const tr=mse(w,TR[0],TR[1]),te=mse(w,TE[0],TE[1]);
+  $('d32-tr').textContent=f(tr,3);$('d32-te').textContent=f(te,3);$('d32-gap').textContent=f(te-tr,3);
+  const v=$('d32-verd');
+  if(tr>0.45&&te>0.45&&te-tr<tr*0.5){v.textContent='High bias: الاتنين عاليين والفرق صغير (underfitting)';v.style.color=css('--bad')}
+  else if(te-tr>tr*1.0&&te>0.4){v.textContent='High variance: train واطي و test أعلى بكتير (overfitting)';v.style.color=css('--vec-b')}
+  else{v.textContent='Fit معقول: قريب من قاع الـ U';v.style.color=css('--ok')}
+  drawU(d);
+}
+function drawU(d){
+  ux.clearRect(0,0,UW,UH);const L=40,R=UW-10,T=12,B=UH-26;
+  const ymax=Math.min(3,Math.max(...curve.map(c=>c[1]))*1.05);
+  const X=k=>L+(k-1)/14*(R-L),Y=v=>B-Math.min(v,ymax)/ymax*(B-T);
+  ux.strokeStyle=css('--line');ux.lineWidth=1;ux.beginPath();ux.moveTo(L,T);ux.lineTo(L,B);ux.lineTo(R,B);ux.stroke();
+  ux.fillStyle=css('--soft');ux.fillRect(X(d)-8,T,16,B-T);
+  [[0,'--vec-a','train'],[1,'--vec-b','test']].forEach(([i,c,l])=>{ux.strokeStyle=css(c);ux.lineWidth=2.5;ux.beginPath();
+    curve.forEach((p,k)=>{k?ux.lineTo(X(k+1),Y(p[i])):ux.moveTo(X(k+1),Y(p[i]))});ux.stroke();
+    ux.fillStyle=css(c);ux.font='12px JetBrains Mono, monospace';ux.fillText(l+' MSE',R-90,T+12+i*16)});
+  const best=curve.reduce((m,p,k)=>p[1]<curve[m][1]?k:m,0);
+  ux.fillStyle=css('--ok');ux.beginPath();ux.arc(X(best+1),Y(curve[best][1]),5,0,7);ux.fill();
+  ux.fillStyle=css('--muted');ux.font='11px JetBrains Mono, monospace';
+  for(let k=1;k<=15;k+=2)ux.fillText(k,X(k)-4,B+14);ux.fillText('degree',UW/2-20,UH-2);ux.fillText(f(ymax,1),4,T+8);ux.fillText('0',24,B);
+}
+$('d32-deg').addEventListener('input',drawFit);
+$('d32-lam').addEventListener('input',()=>{computeCurve();drawFit()});
+$('d32-showtrue').addEventListener('change',drawFit);
+$('d32-newdata').addEventListener('click',newData);
+newData();
+
+// ---------- Station 3: decomposition ----------
+const bc=$('d32-bvc'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+const kc=$('d32-bars'),kx=AI.setupCanvas(kc),KW=+kc.dataset.w,KH=+kc.dataset.h;
+const XT=[];for(let i=0;i<60;i++)XT.push(-2.5+5*i/59);
+function decomp(deg,n,sd,lam,R,keep){
+  const r=rng(42),P=[];
+  for(let b=0;b<R;b++){const[xs,ys]=gen(n,sd,r);const w=fit(xs,ys,deg,lam);P.push(XT.map(x=>pred(w,x)))}
+  let bias=0,vr=0;const mean=XT.map((x,i)=>{let s=0;for(const p of P)s+=p[i];return s/R});
+  XT.forEach((x,i)=>{bias+=(mean[i]-truth(x))**2;let v=0;for(const p of P)v+=(p[i]-mean[i])**2;vr+=v/R});
+  return{bias:bias/XT.length,variance:vr/XT.length,mean,P:keep?P:null};
+}
+let barTimer=null;
+function drawDecomp(){
+  const deg=+$('d32-bd').value,n=+$('d32-bn').value,sd=+$('d32-bs').value,lam=lamOf(+$('d32-bl').value);
+  $('d32-bdv').textContent=deg;$('d32-bnv').textContent=n;$('d32-bsv').textContent=sd;$('d32-blv').textContent=lam?lam.toExponential(1):'0';
+  const res=decomp(deg,n,sd,lam,60,true);
+  const X=x=>(x+3)/6*BW,Y=y=>BH/2-y*BH/7;
+  bx.clearRect(0,0,BW,BH);AI.grid(bx,BW,BH,BW/12,BW/2,BH/2);
+  bx.save();bx.beginPath();bx.rect(0,0,BW,BH);bx.clip();
+  bx.strokeStyle=css('--vec-b');bx.globalAlpha=.22;bx.lineWidth=1;
+  res.P.slice(0,40).forEach(p=>{bx.beginPath();p.forEach((y,i)=>{const yy=Math.max(-20,Math.min(20,y));i?bx.lineTo(X(XT[i]),Y(yy)):bx.moveTo(X(XT[i]),Y(yy))});bx.stroke()});
+  bx.globalAlpha=1;bx.setLineDash([6,5]);bx.strokeStyle=css('--muted');bx.lineWidth=2;bx.beginPath();
+  XT.forEach((x,i)=>i?bx.lineTo(X(x),Y(truth(x))):bx.moveTo(X(x),Y(truth(x))));bx.stroke();bx.setLineDash([]);
+  bx.strokeStyle=css('--vec-a');bx.lineWidth=3.5;bx.beginPath();res.mean.forEach((y,i)=>i?bx.lineTo(X(XT[i]),Y(y)):bx.moveTo(X(XT[i]),Y(y)));bx.stroke();bx.restore();
+  bx.fillStyle=css('--ink');bx.font='12px JetBrains Mono, monospace';bx.fillText('thin = one model each   thick = average   dashed = truth',8,BH-8);
+  const noise=sd*sd;
+  $('d32-rb').textContent=f(res.bias,4);$('d32-rv').textContent=f(res.variance,4);$('d32-rn').textContent=f(noise,4);$('d32-rt').textContent=f(res.bias+res.variance+noise,4);
+  clearTimeout(barTimer);barTimer=setTimeout(()=>drawBars(deg,n,sd,lam),60);
+}
+function drawBars(sel,n,sd,lam){
+  if(!document.body.contains(kc))return;
+  const rows=[];for(let d=1;d<=12;d++){const r=decomp(d,n,sd,lam,40,false);rows.push([r.bias,r.variance])}
+  kx.clearRect(0,0,KW,KH);const L=10,B=KH-20,T=10,bw=(KW-L*2)/12;
+  const tot=rows.map(r=>r[0]+r[1]);const ymax=Math.min(Math.max(...tot),Math.max(1,Math.min(...tot)*6))*1.05;
+  const H=v=>Math.min(v,ymax)/ymax*(B-T);
+  rows.forEach((r,i)=>{const x=L+i*bw+4,w=bw-8,h1=H(r[0]),h2=Math.min(H(r[0]+r[1]),B-T)-h1;
+    if(i+1===sel){kx.fillStyle=css('--soft');kx.fillRect(x-3,T-6,w+6,B-T+6)}
+    kx.fillStyle=css('--vec-a');kx.fillRect(x,B-h1,w,h1);kx.fillStyle=css('--vec-b');kx.fillRect(x,B-h1-h2,w,h2);
+    kx.fillStyle=css('--muted');kx.font='11px JetBrains Mono, monospace';kx.textAlign='center';kx.fillText(i+1,x+w/2,KH-6);kx.textAlign='left'});
+  const best=tot.reduce((m,v,k)=>v<tot[m]?k:m,0);
+  kx.fillStyle=css('--ok');kx.font='12px JetBrains Mono, monospace';kx.textAlign='center';kx.fillText('best',L+best*bw+bw/2,T+4);kx.textAlign='left';
+}
+['d32-bd','d32-bn','d32-bs','d32-bl'].forEach(id=>$(id).addEventListener('input',drawDecomp));
+drawDecomp();
+
+// ---------- Station 5: double descent sketch ----------
+const ddc=$('d32-ddc'),ddx=AI.setupCanvas(ddc),GW=+ddc.dataset.w,GH=+ddc.dataset.h;
+const ddCurve=t=>{const a=0.55*Math.exp(-(((t-0.0)/0.18)**2))+0.25,peak=0.9*Math.exp(-(((t-0.5)/0.06)**2)),tail=t>0.5?-0.18*(t-0.5):0;return Math.max(0.12,a+peak+tail-0.15*t)};
+function drawDD(){
+  const L=30,R=GW-10,T=10,B=GH-30,t=+$('d32-ddp').value/100;
+  ddx.clearRect(0,0,GW,GH);
+  ddx.fillStyle=css('--soft');ddx.fillRect(L+(0.44)*(R-L),T,0.12*(R-L),B-T);
+  ddx.strokeStyle=css('--line');ddx.beginPath();ddx.moveTo(L,T);ddx.lineTo(L,B);ddx.lineTo(R,B);ddx.stroke();
+  ddx.strokeStyle=css('--vec-b');ddx.lineWidth=3;ddx.beginPath();
+  for(let i=0;i<=200;i++){const s=i/200,x=L+s*(R-L),y=B-ddCurve(s)/1.2*(B-T);i?ddx.lineTo(x,y):ddx.moveTo(x,y)}ddx.stroke();
+  const x=L+t*(R-L);ddx.strokeStyle=css('--vec-a');ddx.lineWidth=2;ddx.beginPath();ddx.moveTo(x,T);ddx.lineTo(x,B);ddx.stroke();
+  ddx.fillStyle=css('--vec-a');ddx.beginPath();ddx.arc(x,B-ddCurve(t)/1.2*(B-T),6,0,7);ddx.fill();
+  ddx.fillStyle=css('--muted');ddx.font='11px JetBrains Mono, monospace';
+  ddx.fillText('p << n',L+4,GH-10);ddx.fillText('p ~ n',L+0.46*(R-L),GH-10);ddx.fillText('p >> n',R-50,GH-10);ddx.fillText('test error',L+4,T+10);
+  const v=$('d32-ddv');
+  if(t<0.4){v.textContent='Underparameterized: الـ tradeoff الكلاسيك (U) شغال';v.style.color=css('--ink')}
+  else if(t<=0.6){v.textContent='Interpolation threshold: الـ variance في القمة. أوحش مكان';v.style.color=css('--bad')}
+  else{v.textContent='Overparameterized: الـ implicit regularization بينزّل الـ error تاني';v.style.color=css('--ok')}
+}
+$('d32-ddp').addEventListener('input',drawDD);drawDD();
+
+// ---------- Station 7: learning curves ----------
+const lc=$('d32-lcc'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+const SIZES=[15,20,30,50,75,100,150,200,300];const lcCache={};let lcDeg=5;
+const XG=[];for(let i=0;i<100;i++)XG.push(-2.5+5*i/99);
+function lcData(deg){if(lcCache[deg])return lcCache[deg];const r=rng(99),out=[];
+  SIZES.forEach(n=>{let tr=0,te=0;const K=20;for(let k=0;k<K;k++){const[xs,ys]=gen(n,0.5,r);const w=fit(xs,ys,deg,0);tr+=mse(w,xs,ys);let s=0;XG.forEach(x=>{s+=(pred(w,x)-truth(x))**2});te+=s/XG.length}
+    out.push([tr/K,te/K])});return lcCache[deg]=out}
+function drawLC(){
+  const D=lcData(lcDeg),L=40,R=LW-10,T=12,B=LH-30;
+  const ymax=0.9;const X=i=>L+Math.log(SIZES[i]/15)/Math.log(20)*(R-L),Y=v=>B-Math.min(v,ymax)/ymax*(B-T);
+  lx.clearRect(0,0,LW,LH);lx.strokeStyle=css('--line');lx.lineWidth=1;lx.beginPath();lx.moveTo(L,T);lx.lineTo(L,B);lx.lineTo(R,B);lx.stroke();
+  [[0,'--vec-a','train MSE'],[1,'--vec-b','test MSE (vs truth)']].forEach(([j,c,l])=>{lx.strokeStyle=css(c);lx.lineWidth=2.5;lx.beginPath();
+    D.forEach((p,i)=>i?lx.lineTo(X(i),Y(p[j])):lx.moveTo(X(i),Y(p[j])));lx.stroke();lx.fillStyle=css(c);D.forEach((p,i)=>{lx.beginPath();lx.arc(X(i),Y(p[j]),3,0,7);lx.fill()});
+    lx.font='12px JetBrains Mono, monospace';lx.fillText(l,R-150,T+12+j*16)});
+  lx.fillStyle=css('--muted');lx.font='11px JetBrains Mono, monospace';
+  SIZES.forEach((s,i)=>{if(i%2===0||i===SIZES.length-1)lx.fillText(s,X(i)-8,B+14)});lx.fillText('n_train (log)',LW/2-40,LH-2);lx.fillText(ymax,6,T+8);lx.fillText('0',26,B);
+  const last=D[D.length-1],v=$('d32-lcv');
+  if(lcDeg===1){v.textContent='Degree 1: المنحنيين بيتقابلوا عند error عالي ويقفوا. داتا أكتر مش هتنفع';v.style.color=css('--bad')}
+  else if(lcDeg===12){v.textContent='Degree 12: الـ gap كبير في الأول وبيقل مع الداتا. variance الداتا بتعالجه';v.style.color=css('--vec-b')}
+  else{v.textContent='Degree 5: الاتنين بيوصلوا لـ error واطي والـ gap صغير';v.style.color=css('--ok')}
+  void last;
+}
+root.querySelectorAll('[data-d32lc]').forEach(b=>b.addEventListener('click',()=>{lcDeg=+b.dataset.d32lc;drawLC()}));
+drawLC();
+
+// ---------- quiz ----------
+AI.quiz($('d32-quizBox'),[
+ ['موديل linear بيحاول يفصّل علاقة منحنية بوضوح (quadratic). أنهي مصدر غلط هو المسيطر؟',['Bias: الموديل جامد ومش قادر يمسك النمط غير الخطي','Variance: الموديل بيتغير جامد مع الداتا','Irreducible noise: الداتا فيها noise كتير','ولا حاجة: المفروض يفصّل تمام'],0,'خط مستقيم مش هيمسك منحنى مهما شاف داتا. ده غلط منتظم من افتراض غلط = bias، يعني underfitting.'],
+ ['التقسيم فيه ٣ حدود. أنهي واحد مفيش موديل يقدر يقلله؟',['التلاتة ممكن يوصلوا لصفر','Variance','Irreducible noise (σ²)','Bias²'],2,'الـ noise جاي من عشوائية الداتا نفسها (أخطاء قياس، متغيرات ناقصة). Expected error = bias² + variance + noise.'],
+ ['L2 regularization بيزوّد الـ bias ويقلل الـ variance. ليه ده مفيد؟',['التقليل في الـ variance ممكن يكون أكبر من الزيادة في الـ bias فالغلط الكلي يقل','بيخلي التدريب أسرع','بيلغي الـ irreducible noise','دايمًا بيحسّن train و test accuracy الاتنين'],0,'بتدفع شوية bias وتكسب variance أقل بكتير. لما الموديل عامل overfitting، المجموع بيقل.'],
+ ['موديل training error بتاعه 2% و test error بتاعه 25%. التشخيص الأقرب؟',['Noise عالي: الداتا فيها noise كتير','High bias: الموديل بسيط أوي','High variance: الموديل حفظ الـ training data ومش بيعمّم','الموديل calibrated تمام'],2,'train واطي + test عالي + gap كبير = overfitting. العلاج: regularization، موديل أبسط، داتا أكتر.'],
+ ['دربت نفس الـ architecture على 50 training subset عشوائية، والتوقعات بتختلف جامد بينهم. ده معناه إيه؟',['Noise عالي: الـ target عشوائي','High bias: الموديل بيفوّت النمط الحقيقي دايمًا','الـ learning rate عالي','High variance: الموديل حساس جدًا للداتا اللي بيشوفها'],3,'ده تعريف الـ variance بالظبط: قد إيه التوقعات بتتغير لما تغيّر الـ training data.'],
+ ['(سؤال مني) الـ learning curve: المنحنيين وقفوا (plateau)، الـ gap صغير، بس الاتنين عاليين. تعمل إيه؟',['اجمع داتا أكتر بأي تمن','غيّر لموديل أعقد أو زوّد features أو قلّل الـ regularization','زوّد الـ dropout','اعمل early stopping بدري'],1,'ده high bias. الداتا الزيادة مش هتفيد لأنها بتعالج الـ variance بس.'],
+ ['(سؤال مني) في الـ double descent، أوحش مكان تقف فيه هو:',['تحت الـ interpolation threshold بكتير','عند الـ interpolation threshold بالظبط (p ~ n)','بعد الـ threshold بكتير (p ≫ n)','مفيش فرق'],1,'عند الـ threshold الموديل مجبر على حل واحد بيعدّي على كل النقط، فالـ variance في القمة والـ test error بيقفز.']
+],5,()=>{const c=root.querySelector('[data-ck="c7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+AI.checklist(32,root);
+
+// redraw on theme change
+AI.onTheme(()=>{if(!document.body.contains(dc))return false;drawDart();drawFit();drawDecomp();drawDD();drawLC()});
+})();
+</script>

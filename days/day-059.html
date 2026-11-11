@@ -1,0 +1,624 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 03 · CNNs — LeNet to ResNet</span>
+  <h1>اليوم ٥٩: ٣٠ سنة CNNs في درس واحد، من LeNet لحد ResNet</h1>
+  <p class="lede">كل CNN مشهورة في آخر ٣٠ سنة هي نفس الوصفة: <b>conv ← nonlinearity ← downsample</b>، ومعاها فكرة جديدة واحدة بس. النهاردة هتتعلم الأفكار دي بالترتيب، وهتشوف بعينك ليه الـ <span class="ltr">+ x</span> البسيطة بتاعة ResNet خلّت الشبكات اللي فيها ١٠٠ layer تتدرب، وهي نفس الـ skip connection اللي جوه كل LLM.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python + PyTorch</b></span>
+    <span>قبله: <b>Convolutions from Scratch</b></span>
+    <span>بعده: <b>Image Classification</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 lessons</span>
+    <div class="roadmap" id="d59-roadmap" aria-label="دروس الفيز الرابعة"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d59-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر الـ convolution</h2></div>
+  <p>إمبارح بنيت الـ convolution بإيدك. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. صورة 32×32، kernel 3×3، padding=1، stride=2. الـ output كام؟</summary>
+    <p>بالقانون <span class="ltr">(H − K + 2P) / S + 1 = (32 − 3 + 2) / 2 + 1 = 16</span> (بالقسمة الصحيحة). يعني الـ stride=2 بيقسم الحجم على ٢، ودي بالظبط الطريقة اللي ResNet بتصغّر بيها الصورة النهاردة.</p></details>
+  <details><summary>٢. لو رصّيت ٣ convs كل واحد 3×3 (stride 1)، الـ receptive field يبقى كام؟</summary>
+    <p><span class="ltr">1 + L·(K − 1) = 1 + 3·2 = 7</span>. يعني آخر pixel شايف رقعة 7×7 من الصورة الأصلية. هتحتاج الفكرة دي حالًا عشان تفهم VGG.</p></details>
+  <details><summary>٣. الـ im2col بيعمل إيه وليه؟</summary>
+    <p>بيفرد كل window من الدخل في عمود في مصفوفة كبيرة، فالـ convolution كلها تبقى عملية matmul واحدة كبيرة، ودي اللي الـ GPU بيحبها.</p></details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين</div>
+    <div><b>20 min</b>الأفكار الأربعة: LeNet، AlexNet، VGG/Inception، ResNet</div>
+    <div><b>15 min</b>المعامل: shapes، الـ gradient، الـ receptive field</div>
+    <div><b>25 min</b>اكتب LeNet و VGGBlock و BasicBlock بإيدك</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1: the four ideas -->
+<section id="d59-ideas">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الفرق جه من الـ architecture</h2></div>
+  <p>سنة 2011 أحسن classifier على ImageNet كان بيجيب حوالي <b>74%</b> top-5 accuracy. سنة 2012 AlexNet جابت <b>85%</b>. سنة 2015 ResNet جابت <b>96%</b>. نفس الداتا تقريبًا، ومفيش جيل GPU جديد يفسر القفزة دي. الفرق كله جه من <b>أفكار في التصميم</b>.</p>
+  <p>ليه ده يهمك كـ AI engineer؟ لأن أي backbone هتشحنه النهاردة هو تركيبة من نفس القطع دي، والأفكار بتتنقل: الـ grouped convs راحت من الـ CNNs للـ transformers، والـ residual connections راحت من ResNet لكل LLM موجود، والـ batch norm عايش جوه الـ diffusion models.</p>
+  <div class="note"><strong>تطعيم ضد غلطة شائعة:</strong> إنك تمسك أكبر موديل متاح في حين إن شبكة في حجم LeNet كانت هتحل المشكلة. MNIST مش محتاجة ResNet. لما تعرف منحنى الـ scaling بتاع كل عيلة، تعرف تقف فين عليه.</div>
+
+  <div class="tablewrap"><table>
+    <tr><th>السنة</th><th>العيلة</th><th>الفكرة الجديدة الوحيدة</th></tr>
+    <tr><td class="ltr">1998</td><td>LeNet-5</td><td>conv + pool + FC للأرقام، اتدربت على CPU، حوالي 60k بارامتر</td></tr>
+    <tr><td class="ltr">2012</td><td>AlexNet</td><td>أعمق + ReLU + dropout + اتنين GPU، كسبت ImageNet بفرق ١٠ نقط</td></tr>
+    <tr><td class="ltr">2014</td><td>VGG / Inception</td><td>رصّ 3×3 (VGG)، أحجام فلاتر متوازية (Inception)</td></tr>
+    <tr><td class="ltr">2015</td><td>ResNet</td><td>identity skip connections بتفتح الباب لتدريب ١٠٠+ layer</td></tr>
+  </table></div>
+
+  <h3>LeNet-5 (1998): القالب اللي الكل ورثه</h3>
+  <p>الشبكة اللي عملها Yann LeCun عشان يقرا الأرقام المكتوبة بخط الإيد. حوالي ٦٠ ألف بارامتر بس: بلوكين conv + pool، وبعدهم fully connected layers، وكل الـ activations كانت <code>tanh</code> والـ pooling كان average.</p>
+  <div class="formula">(1,32,32) → conv5 → (6,28,28) → avgpool → (6,14,14) → conv5 → (16,10,10) → avgpool → (16,5,5) → flatten 400 → 120 → 84 → 10</div>
+  <p>تشبيه: LeNet زي مصنع فيه خطين إنتاج. كل خط بيطلّع «تفاصيل» (conv) وبعدين بيلخصها في حجم أصغر (pool)، وفي الآخر مدير (الـ FC head) بيبص على الملخص ويقرر ده رقم كام. أي حاجة الناس بتسميها CNN النهاردة هي LeNet بـ layers أكتر، channels أعرض، و activations أحسن.</p>
+
+  <h3>AlexNet (2012): تلات تغييرات كسرت ImageNet</h3>
+  <ol class="ex">
+    <li><b>ReLU بدل tanh.</b> الـ tanh بتتشبع (saturate) للقيم الكبيرة الموجبة والسالبة فالـ gradient بيموت. الـ ReLU مش بتتشبع في الموجب، والتدريب بقى أسرع حوالي ٦ مرات.</li>
+    <li><b>Dropout</b> في الـ FC head. الـ regularization بقت layer مش حيلة.</li>
+    <li><b>عمق وعرض.</b> ٥ conv layers و٣ dense، حوالي 60M بارامتر، متدربة على اتنين GPU والموديل متقسم بينهم.</li>
+  </ol>
+  <p>الصورة المشهورة في الورقة بتبين الموديل كأنه مسارين متوازيين. ده كان حل لقيود الـ hardware وقتها، مش فكرة تصميم. بس التلات أفكار اللي فوق لسه موجودين في كل موديل بتستخدمه.</p>
+
+  <h3>VGG (2014): بس 3×3، وروح عميق</h3>
+  <p>VGG سألت سؤال بسيط: إيه اللي يحصل لو استخدمنا 3×3 بس، ونزلنا عميق؟ البلوك: <span class="ltr">conv3×3 → conv3×3 → pool2×2</span>، ومتكرر لحد 16 أو 19 layer.</p>
+  <p>الملاحظة الذكية: اتنين 3×3 ورا بعض شايفين نفس رقعة الـ 5×5 اللي conv واحد 5×5 بيشوفها، بس ببارامترات أقل وفيه ReLU زيادة في النص:</p>
+  <div class="formula">2 · (3·3·C²) = 18C²   vs   5·5·C² = 25C²</div>
+  <p>والبساطة دي (نوع بلوك واحد متكرر) خلت VGG نقطة المرجع لكل اللي جه بعدها. التمن: <b>138M</b> بارامتر، بطيئة في التدريب وغالية في الـ inference. جرّب الحسبة بنفسك في المعمل ٠٣.</p>
+
+  <h3>Inception (2014، نفس السنة): كل أحجام الفلاتر مرة واحدة</h3>
+  <p>Google ردّت على سؤال «أستخدم kernel حجمه كام؟» بإجابة: كلهم، بالتوازي.</p>
+  <div class="formula">input → [ 1×1 conv | 3×3 conv | 5×5 conv | 3×3 maxpool ] → concat على محور الـ channels → البلوك اللي بعده</div>
+  <p>كل فرع متخصص: الـ 1×1 بيخلط الـ channels، الـ 3×3 للـ texture المحلي، الـ 5×5 للأنماط الأكبر، والـ pooling لـ features مش فارق معاها الإزاحة. الـ concat بيسيب الـ layer اللي بعده يختار الفرع المفيد. Inception v1 كمان حطت 1×1 convs جوه كل فرع كـ <b>bottleneck</b> عشان عدد البارامترات يفضل معقول.</p>
+  <p>تشبيه: لجنة فيها ٤ خبرا، واحد بيبص بعدسة مكبرة، وواحد من بعيد، وكلهم بيكتبوا تقاريرهم في ملف واحد (concat)، والمدير اللي بعدهم ياخد اللي يفيده.</p>
+</section>
+
+<!-- STATION 2: degradation + ResNet -->
+<section id="d59-resnet">
+  <div class="station-head"><span class="tag">02</span><h2>مشكلة الـ Degradation وحل ResNet</h2></div>
+  <p>في 2015، VGG-19 كانت شغالة و VGG-32 لأ. العمق المفروض يساعد، بس بعد حوالي ٢٠ layer الـ <b>training loss</b> والـ test loss الاتنين بقوا أسوأ. خلي بالك: ده <b>مش overfitting</b> (الـ overfitting بيبوّظ الـ test بس). ده الـ optimizer نفسه فاشل يلاقي أوزان كويسة، لأن الـ gradient بيتضرب في رقم مع كل layer:</p>
+  <div class="formula">dL/dW₁ = dL/dy · df_L/df_{L−1} · … · df₂/df₁ · df₁/dW₁</div>
+  <p>كل حد في الضرب ده تقريبًا = (حجم الوزن) × (الـ gain بتاع الـ activation). اضرب ١٠٠ منهم كل واحد أقل من ١ والـ gradient يبقى صفر عمليًا. VGG اشتغلت لحد ١٩ layer لأن الـ batch norm (اللي اتنشر في نفس الوقت) حافظ على الـ activations في حجم معقول، بس حتى الـ batch norm ما قدرش ينقذ عمق أكتر من حوالي ٣٠ layer.</p>
+
+  <h3>الفكرة اللي صلحت كل حاجة</h3>
+  <div class="formula">standard block:  y = F(x)        residual block:  y = F(x) + x</div>
+  <p>الـ <span class="ltr">+ x</span> معناها إن البلوك يقدر دايمًا «ما يعملش حاجة» لو خلّى <span class="ltr">F(x)</span> = صفر. يعني شبكة ResNet فيها ١٠٠٠ layer في أسوأ الأحوال مش هتبقى أوحش من شبكة layer واحدة، لأن كل بلوك زيادة عنده باب طوارئ. بالضمان ده الـ optimizer بيبقى مستعد يخلي كل بلوك <b>مفيد شوية</b>، و«مفيد شوية» متكررة ١٠٠ مرة = state-of-the-art.</p>
+  <p>تشبيه: بدل ما كل موظف في السلسلة يكتب التقرير من الأول (وأي غلطة تتراكم)، كل واحد بياخد التقرير زي ما هو ويضيف تعديلاته في الهامش. لو معندوش حاجة مفيدة، بيعدّي التقرير زي ما هو.</p>
+  <div class="formula">x ──► [conv → BN → ReLU → conv → BN] = F(x) ──► (+) ──► ReLU ──► y
+  └──────────── identity skip ─────────────┘</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: شوف الـ gradient بيموت (أو لأ)</h3>
+      <p>ده موديل لعبة بسيط (scalar): في الشبكة العادية كل layer بتضرب الـ gradient في <b>g</b>. في الـ residual، مشتقة البلوك = <span class="ltr">1 + b</span> (الـ 1 جاية من الـ skip، و b من الفرع F اللي غالبًا بيبدأ صغير). الرسم بيبين حجم الـ gradient اللي واصل لكل layer بمقياس log.</p>
+      <p>زوّد العمق لـ ١٠٠ وخلّي g = 0.8، وشوف الخط العادي بيقع لتحت خالص، والـ residual فاضل قريب من ١.</p>
+      <div class="note"><strong>تنبيه أمانة:</strong> الشبكات الحقيقية فيها مصفوفات مش أرقام، فده تبسيط عشان الفكرة توصل: حاصل ضرب أرقام أقل من ١ بيموت، وحاصل ضرب أرقام حوالين ١ بيعيش.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d59-gradCanvas" width="520" height="300" aria-label="حجم الجريدينت عبر الطبقات"></canvas>
+      <div class="mrow">
+        <label>depth L = <span id="d59-gLv">50</span><input type="range" id="d59-gL" min="2" max="120" step="1" value="50"></label>
+        <label>plain gain g = <span id="d59-gGv">0.8</span><input type="range" id="d59-gG" min="0.5" max="1.2" step="0.01" value="0.8"></label>
+        <label>residual branch b = <span id="d59-gBv">0.01</span><input type="range" id="d59-gB" min="-0.05" max="0.05" step="0.005" value="0.01"></label>
+      </div>
+      <div class="readout">
+        <div><small>gradient @ layer 1 (plain)</small><b id="d59-gPlain">—</b></div>
+        <div><small>gradient @ layer 1 (residual)</small><b id="d59-gRes">—</b></div>
+      </div>
+      <div class="verdict" id="d59-gVerdict"></div>
+    </div>
+  </div>
+
+  <h3>نوعين بلوك هتشوفهم في كل حتة</h3>
+  <ul class="checklist">
+    <li><b>BasicBlock</b> (ResNet-18 و ResNet-34): اتنين conv 3×3، والـ skip حوالين الاتنين.</li>
+    <li><b>Bottleneck</b> (ResNet-50 و -101 و -152): <span class="ltr">1×1 down → 3×3 → 1×1 up</span>، والـ skip حوالين التلاتة. أرخص لما عدد الـ channels يبقى كبير لأن الـ 3×3 بيشتغل على عرض مخفّض.</li>
+  </ul>
+  <p>ولما الـ skip يعدّي على downsample (<span class="ltr">stride=2</span>) أو الـ channels تتغير، الـ shapes مش هتبقى زي بعض ومينفعش تجمعهم. ساعتها الـ identity بيتبدل بـ <b>1×1 conv بـ stride 2</b> عشان يظبط الشكل.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>أداة صغيرة: الـ shortcut هيبقى إيه؟</h3>
+      <p>اختار <code>in_c</code> و <code>out_c</code> و <code>stride</code>، وشوف الـ shortcut اللي لازم تحطه وعدد بارامتراته. ده نفس الشرط اللي في الكود: <span class="ltr">if stride != 1 or in_c != out_c</span>.</p>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>in_c <select id="d59-sIn"><option>32</option><option selected>64</option><option>128</option><option>256</option></select></label>
+        <label>out_c <select id="d59-sOut"><option>32</option><option>64</option><option selected>128</option><option>256</option></select></label>
+        <label>stride <select id="d59-sStr"><option>1</option><option selected>2</option></select></label>
+        <label>input H×W <select id="d59-sHW"><option>32</option><option selected>16</option><option>8</option></select></label>
+      </div>
+      <div class="readout">
+        <div><small>main branch out</small><b id="d59-sMain">—</b></div>
+        <div><small>shortcut</small><b id="d59-sKind">—</b></div>
+        <div><small>shortcut params</small><b id="d59-sPar">—</b></div>
+      </div>
+      <div class="verdict" id="d59-sMsg"></div>
+    </div>
+  </div>
+
+  <h3>ليه الـ residuals أكبر من موضوع الصور</h3>
+  <p>الفكرة ما كانتش عن تصنيف الصور أصلًا. كانت عن تحويل الشبكات العميقة من «ادعي إن الـ gradient يعيش» لأداة هندسية موثوقة وتكبر. كل transformer هتقرا عنه في الفيزات الجاية فيه نفس الـ skip connection في كل بلوك. من غير ResNet مفيش GPT.</p>
+</section>
+
+<!-- STATION 3: shapes tracer -->
+<section id="d59-shapes">
+  <div class="station-head"><span class="tag">03</span><h2>معمل: تتبّع الـ shapes والبارامترات</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>اختار موديل من التلاتة اللي هتكتبهم النهاردة، ودوس «شغّل» وشوف الصورة ماشية layer ورا layer: الـ spatial بيصغر والـ channels بتكبر. تحت كل خطوة عدد البارامترات.</p>
+      <p>لاحظ في TinyResNet إن <b>layer4</b> لوحدها فيها حوالي ٧٥% من البارامترات، لأن الـ conv بارامتراته بتكبر مع <span class="ltr">C²</span>. ولاحظ في LeNet إن الـ FC layers هي اللي واكلة الميزانية، زي VGG-16 بالظبط.</p>
+      <div class="note ai"><strong>تمرّن على التوقع:</strong> قبل ما تدوس، قول الـ shape الجاي بصوت عالي. ده الهدف الرابع من أهداف الدرس: تقرا أي backbone وتتوقع الـ output shape وعدد البارامترات قبل ما تبص في الكود.</div>
+      <div class="btns">
+        <button type="button" data-d59m="lenet">LeNet5</button>
+        <button type="button" data-d59m="vgg">MiniVGG</button>
+        <button type="button" data-d59m="res" class="primary">TinyResNet</button>
+        <button type="button" id="d59-play">▶ شغّل</button>
+      </div>
+    </div>
+    <div class="instrument">
+      <canvas id="d59-shapeCanvas" width="520" height="260" aria-label="الطبقات وأشكالها"></canvas>
+      <div class="readout">
+        <div><small>layer</small><b id="d59-lName">—</b></div>
+        <div><small>output shape</small><b id="d59-lShape">—</b></div>
+        <div><small>params في الطبقة</small><b id="d59-lPar">—</b></div>
+        <div><small>الإجمالي</small><b id="d59-lTot">—</b></div>
+      </div>
+      <ul class="rank-list" id="d59-parList"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: receptive field -->
+<section id="d59-rf">
+  <div class="station-head"><span class="tag">04</span><h2>معمل: ليه VGG بتحب الـ 3×3</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>حرّك عدد طبقات الـ 3×3 المرصوصة <b>n</b> وعدد الـ channels <b>C</b>. المربعات بتبين الـ receptive field بيكبر إزاي: <span class="ltr">RF = 1 + 2n</span>. وقارن بارامترات الرصة ببارامترات kernel واحد كبير شايف نفس الرقعة.</p>
+      <p>عند n=1 الاتنين نفس الحاجة. من n=2 الرصة بتكسب في البارامترات، وكمان بتاخد <b>n</b> ReLU بدل واحدة، يعني قدرة تعبيرية أعلى.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d59-rfCanvas" width="520" height="260" aria-label="الريسبتيف فيلد"></canvas>
+      <div class="mrow">
+        <label>n (stacked 3×3) = <span id="d59-rNv">2</span><input type="range" id="d59-rN" min="1" max="5" step="1" value="2"></label>
+        <label>C = <span id="d59-rCv">64</span><input type="range" id="d59-rC" min="0" max="5" step="1" value="2"></label>
+      </div>
+      <div class="readout">
+        <div><small>receptive field</small><b id="d59-rRF">5×5</b></div>
+        <div><small>stack of 3×3</small><b id="d59-rStack">—</b></div>
+        <div><small>one big kernel</small><b id="d59-rBig">—</b></div>
+        <div><small>توفير</small><b id="d59-rSave">—</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d59-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جوه فولدر الريبو (لو محتاج PyTorch نزّله الأول):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>pip install torch torchvision
+python3 phases/04-computer-vision/03-cnns-lenet-to-resnet/code/main.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_cnns.py</code> واكتب كل كلاس بنفسك، ولما تخلّص كل خطوة اطبع الـ shape والبارامترات واتأكد إنها زي المتوقع.</p>
+
+  <h3>خطوة ١: LeNet-5</h3>
+  <p>نسخة أمينة للأصل: tanh و average pooling. التنازل الوحيد للحداثة إننا هنستخدم <code>nn.CrossEntropyLoss</code> بعدين بدل الـ Gaussian connections الأصلية.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class LeNet5(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.conv1 = nn.Conv2d(1, 6, kernel_size=5)    <span class="c"># 1×32×32 → 6×28×28</span>
+        self.conv2 = nn.Conv2d(6, 16, kernel_size=5)   <span class="c"># 6×14×14 → 16×10×10</span>
+        self.pool = nn.AvgPool2d(2)                    <span class="c"># بيقسم الحجم على 2</span>
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)          <span class="c"># 400 → 120</span>
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, num_classes)
+
+    def forward(self, x):
+        x = self.pool(torch.tanh(self.conv1(x)))
+        x = self.pool(torch.tanh(self.conv2(x)))
+        x = torch.flatten(x, 1)                        <span class="c"># سيب الـ batch، افرد الباقي</span>
+        x = torch.tanh(self.fc1(x))
+        x = torch.tanh(self.fc2(x))
+        return self.fc3(x)                             <span class="c"># logits، من غير softmax</span>
+
+net = LeNet5()
+x = torch.randn(1, 1, 32, 32)
+print(f"output: {net(x).shape}")
+print(f"params: {sum(p.numel() for p in net.parameters()):,}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">output: torch.Size([1, 10])
+params: 61,706</pre></details>
+
+  <h3>خطوة ٢: بلوك VGG و MiniVGG</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class VGGBlock(nn.Module):
+    def __init__(self, in_c, out_c):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_c, out_c, kernel_size=3, padding=1)   <span class="c"># same padding</span>
+        self.bn1 = nn.BatchNorm2d(out_c)
+        self.conv2 = nn.Conv2d(out_c, out_c, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_c)
+        self.pool = nn.MaxPool2d(2)                                      <span class="c"># نص الحجم</span>
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        return self.pool(x)
+
+class MiniVGG(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.stack = nn.Sequential(
+            VGGBlock(3, 32),      <span class="c"># 32×32 → 16×16</span>
+            VGGBlock(32, 64),     <span class="c"># → 8×8</span>
+            VGGBlock(64, 128),    <span class="c"># → 4×4</span>
+        )
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),   <span class="c"># أي حجم → 1×1</span>
+            nn.Flatten(),
+            nn.Linear(128, num_classes),
+        )
+
+    def forward(self, x):
+        return self.head(self.stack(x))
+
+net = MiniVGG()
+x = torch.randn(1, 3, 32, 32)
+print(f"output: {net(x).shape}")
+print(f"params: {sum(p.numel() for p in net.parameters()):,}")</pre></div>
+  <p>تلات بلوكات على دخل في حجم CIFAR، adaptive pool، و linear واحدة. حوالي 290k بارامتر، كفاية جدًا لـ CIFAR-10.</p>
+
+  <h3>خطوة ٣: BasicBlock بتاع ResNet</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class BasicBlock(nn.Module):
+    def __init__(self, in_c, out_c, stride=1):
+        super().__init__()
+        <span class="c"># bias=False: الـ BN عنده beta بيعمل شغل الـ bias</span>
+        self.conv1 = nn.Conv2d(in_c, out_c, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_c)
+        self.conv2 = nn.Conv2d(out_c, out_c, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_c)
+        if stride != 1 or in_c != out_c:          <span class="c"># الشكل اتغير؟ لازم 1×1 conv</span>
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_c, out_c, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_c),
+            )
+        else:
+            self.shortcut = nn.Identity()          <span class="c"># نفس الشكل: عدّي x زي ما هو</span>
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))            <span class="c"># لسه من غير ReLU</span>
+        out = out + self.shortcut(x)               <span class="c"># y = F(x) + x</span>
+        return F.relu(out)                         <span class="c"># الـ ReLU بعد الجمع</span></pre></div>
+
+  <h3>خطوة ٤: TinyResNet</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class TinyResNet(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.stem = nn.Sequential(                  <span class="c"># 3 channels → 32</span>
+            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+        )
+        self.layer1 = self._make_group(32, 32, num_blocks=2, stride=1)    <span class="c"># 32×32</span>
+        self.layer2 = self._make_group(32, 64, num_blocks=2, stride=2)    <span class="c"># 16×16</span>
+        self.layer3 = self._make_group(64, 128, num_blocks=2, stride=2)   <span class="c"># 8×8</span>
+        self.layer4 = self._make_group(128, 256, num_blocks=2, stride=2)  <span class="c"># 4×4</span>
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(256, num_classes),
+        )
+
+    def _make_group(self, in_c, out_c, num_blocks, stride):
+        blocks = [BasicBlock(in_c, out_c, stride=stride)]   <span class="c"># أول بلوك بس بيصغّر</span>
+        for _ in range(num_blocks - 1):
+            blocks.append(BasicBlock(out_c, out_c, stride=1))
+        return nn.Sequential(*blocks)
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        return self.head(x)
+
+net = TinyResNet()
+x = torch.randn(1, 3, 32, 32)
+print(f"output: {net(x).shape}")
+print(f"params: {sum(p.numel() for p in net.parameters()):,}")</pre></div>
+  <p>أربع مجموعات، كل واحدة فيها بلوكين. stride 2 في أول المجموعات ٢ و٣ و٤، وعدد الـ channels بيتضاعف مع كل downsample. حوالي 2.8M بارامتر. دي نفس الوصفة اللي بتكبر لحد ResNet-152.</p>
+
+  <h3>خطوة ٥: قارن التلاتة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def summary(name, net, x):
+    net.eval()                                  <span class="c"># مهم عشان الـ BatchNorm</span>
+    with torch.no_grad():
+        y = net(x)
+    params = sum(p.numel() for p in net.parameters())
+    trainable = sum(p.numel() for p in net.parameters() if p.requires_grad)
+    print(f"{name:12s}  input {tuple(x.shape)} -> output {tuple(y.shape)}   "
+          f"params {params:>10,}   trainable {trainable:>10,}")
+
+def per_group_params(net):
+    return {name: sum(p.numel() for p in mod.parameters()) for name, mod in net.named_children()}
+
+summary("LeNet5",     LeNet5(),     torch.randn(1, 1, 32, 32))
+summary("MiniVGG",    MiniVGG(),    torch.randn(1, 3, 32, 32))
+summary("TinyResNet", TinyResNet(), torch.randn(1, 3, 32, 32))
+
+print("\nTinyResNet parameters by group:")
+for name, n in per_group_params(TinyResNet()).items():
+    print(f"  {name:8s}  {n:>10,}")</pre></div>
+  <details><summary>الناتج المتوقع (الأرقام محسوبة من تعريف الـ layers)</summary><pre class="term">LeNet5        input (1, 1, 32, 32) -> output (1, 10)   params     61,706   trainable     61,706
+MiniVGG       input (1, 3, 32, 32) -> output (1, 10)   params    289,194   trainable    289,194
+TinyResNet    input (1, 3, 32, 32) -> output (1, 10)   params  2,797,610   trainable  2,797,610
+
+TinyResNet parameters by group:
+  stem             928
+  layer1        37,120
+  layer2       131,712
+  layer3       525,568
+  layer4     2,099,712
+  head           2,570</pre></details>
+  <p>تلات موديلات، تلات عصور، فرق كبير في عدد البارامترات. على CIFAR-10 بعد كام epoch تدريب، الدرس بيقول تقريبًا: LeNet حوالي 60%، MiniVGG حوالي 89%، TinyResNet حوالي 93%.</p>
+
+  <h3>خطوة ٦ (Use It): الموديلات الجاهزة من torchvision</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torchvision.models import resnet18, ResNet18_Weights, vgg16, VGG16_Weights
+
+r18 = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)   <span class="c"># بينزّل أوزان ImageNet</span>
+r18.eval()
+print(f"ResNet-18 params: {sum(p.numel() for p in r18.parameters()):,}")
+print(r18.layer1[0])                                      <span class="c"># أول BasicBlock</span>
+
+v16 = vgg16(weights=VGG16_Weights.IMAGENET1K_V1)
+v16.eval()
+print(f"VGG-16   params: {sum(p.numel() for p in v16.parameters()):,}")
+
+<span class="c"># Transfer learning في ٣ سطور: جمّد الـ backbone وبدّل الـ head</span>
+for p in r18.parameters():
+    p.requires_grad = False
+r18.fc = nn.Linear(r18.fc.in_features, 10)</pre></div>
+  <p>ResNet-18 فيها 11.7M بارامتر، و VGG-16 فيها 138M. الـ top-1 على ImageNet قريب (69.8% مقابل 71.6%). يعني الـ residuals كسبتك كفاءة في البارامترات حوالي ١٢ مرة. عشان كده عيلة ResNet سيطرت من 2016 لحد ما ViT ظهرت في 2021، ولسه مسيطرة في الـ deployments اللي الـ compute فيها هو القيد.</p>
+  <p>والـ transfer learning دايمًا نفس الوصفة: حمّل pretrained، جمّد الـ backbone، بدّل الـ classifier head. كده عندك classifier لـ ١٠ classes ورث الـ representations اللي ImageNet دفعت تمنها. (ده موضوع درس بعد بكرة بالتفصيل.)</p>
+  <div class="note"><strong>اللي الدرس بيطلّعه (Ship It):</strong> الريبو فيه <code>outputs/prompt-backbone-selector.md</code> (prompt بيختار عيلة الـ CNN المناسبة حسب المهمة وحجم الداتا والـ compute) و <code>outputs/skill-residual-block-reviewer.md</code> (skill بتراجع PyTorch module وتطلع غلطات الـ skip connection). افتحهم واقراهم.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d59-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل) عدّ البارامترات بإيدك</b> لـ TinyResNet layer بـ layer، وقارن بـ <code>sum(p.numel() for p in net.parameters())</code>. الميزانية رايحة فين أكتر: convs ولا BN ولا الـ head؟
+      <details><summary>تلميح وإجابة</summary>conv بدون bias = <span class="ltr">in·out·k·k</span>، والـ BN = <span class="ltr">2·C</span> (gamma و beta، والـ running stats مش parameters). مثال: أول BasicBlock في layer2 (32→64، stride 2): <span class="ltr">32·64·9 + 128 + 64·64·9 + 128 + 32·64 + 128 = 57,600</span>. لو جمعت كله: الـ BN كلها حوالي 4,800، والـ head = 2,570، والباقي (حوالي 99.7%) convs، و layer4 لوحدها حوالي ٧٥% من الإجمالي.</details></li>
+    <li><b>(متوسط) Bottleneck block:</b> اعمل بلوك <span class="ltr">1×1 → 3×3 → 1×1</span> بـ skip، وابني بيه شبكة على طريقة ResNet-50 لـ CIFAR، وقارن البارامترات بـ TinyResNet.
+      <details><summary>تلميح</summary>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Bottleneck(nn.Module):
+    expansion = 4
+    def __init__(self, in_c, mid_c, stride=1):
+        super().__init__()
+        out_c = mid_c * self.expansion
+        self.c1 = nn.Conv2d(in_c, mid_c, 1, bias=False);  self.b1 = nn.BatchNorm2d(mid_c)
+        self.c2 = nn.Conv2d(mid_c, mid_c, 3, stride=stride, padding=1, bias=False); self.b2 = nn.BatchNorm2d(mid_c)
+        self.c3 = nn.Conv2d(mid_c, out_c, 1, bias=False); self.b3 = nn.BatchNorm2d(out_c)
+        self.shortcut = nn.Identity()
+        if stride != 1 or in_c != out_c:
+            self.shortcut = nn.Sequential(nn.Conv2d(in_c, out_c, 1, stride=stride, bias=False),
+                                          nn.BatchNorm2d(out_c))
+    def forward(self, x):
+        out = F.relu(self.b1(self.c1(x)))
+        out = F.relu(self.b2(self.c2(out)))
+        out = self.b3(self.c3(out))
+        return F.relu(out + self.shortcut(x))</pre></div>
+      ResNet-50 بتستخدم <span class="ltr">[3, 4, 6, 3]</span> بلوكات في المجموعات الأربعة. خلي بالك إن الـ in_c للمجموعة اللي بعدها = <span class="ltr">mid_c · 4</span>.</details></li>
+    <li><b>(صعب) أعِد تجربة He et al.:</b> شيل الـ skip من BasicBlock، ودرّب شبكة «plain» فيها ٣٤ بلوك وشبكة ResNet فيها ٣٤ بلوك على CIFAR-10 لمدة ١٠ epochs لكل واحدة. ارسم training loss مقابل epoch، واطلع بنفس نتيجة Figure 1: الشبكة العميقة العادية بتقف عند loss أعلى من أختها الأقصر.
+      <details><summary>تلميح</summary>اعمل flag <code>use_skip</code> في الـ BasicBlock: <code>out = out + self.shortcut(x) if self.use_skip else out</code>. استخدم نفس الـ optimizer والـ lr والـ seed للاتنين، وسجّل متوسط الـ loss لكل epoch في list وارسمها بـ matplotlib. شغّل على GPU (Colab) لو جهازك بطيء. وقارن كمان بشبكة plain أقصر (مثلًا ٨ بلوكات) عشان تشوف الـ degradation نفسه.</details></li>
+    <li><b>إضافة مني · ResNet كـ embedding model:</b> في شغل حقيقي كتير بتحتاج «بحث بالصور» (ألاقي الصور الشبيهة). حمّل <code>resnet18</code> pretrained، بدّل <code>r18.fc = nn.Identity()</code> فيطلّع متجه 512 رقم لكل صورة، وطلّع embeddings لـ ٢٠ صورة عندك، ورتّبهم بالـ cosine similarity مع صورة سؤال.
+      <details><summary>تلميح</summary>استخدم <code>ResNet18_Weights.IMAGENET1K_V1.transforms()</code> عشان تجهز الصور بنفس الـ preprocessing اللي الموديل اتدرب عليه، وما تنساش <code>r18.eval()</code> و <code>torch.no_grad()</code>. اعمل normalize للمتجهات وبعدين الـ cosine = dot product. ده نفس اللي بيحصل في الـ retrieval في الـ RAG بس للصور (افتكر يوم ١).</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d59-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ما قالوش بصراحة</h2></div>
+  <h3>الحدس: الـ residual = «عدّل» مش «اكتب من الأول»</h3>
+  <p>البلوك العادي لازم يتعلم التحويل كله <span class="ltr">H(x)</span>. البلوك الـ residual بيتعلم الفرق بس <span class="ltr">F(x) = H(x) − x</span>. لو التحويل المثالي قريب من «سيبه زي ما هو»، تعلّم «فرق صغير» أسهل بكتير من تعلّم «نسخة طبق الأصل» من خلال طبقات non-linear.</p>
+  <h3>غلطات شائعة هتقابلها</h3>
+  <ol class="ex">
+    <li><b>نسيت الـ shortcut لما الـ stride أو الـ channels اتغيروا</b> ← هتاخد error في الجمع إن الـ shapes مش زي بعض. القاعدة: <span class="ltr">stride != 1 or in_c != out_c</span> = 1×1 conv.</li>
+    <li><b>حطيت ReLU قبل الجمع على الفرع الأخير</b> ← في الـ BasicBlock الأصلي التاني بيبقى <span class="ltr">conv → BN</span> بس، والـ ReLU بعد الجمع.</li>
+    <li><b>سبت <code>bias=True</code> قبل BN</b> ← مش هيبوّظ النتيجة بس بارامترات ضايعة، لأن الـ BN بيشيل المتوسط أصلًا.</li>
+    <li><b>نسيت <code>model.eval()</code></b> ← الـ BatchNorm هيستخدم إحصائيات الـ batch بدل الـ running stats، والنتايج في الـ inference هتتغير من batch للتاني.</li>
+    <li><b>Flatten بعد آخر conv بدل global average pool</b> ← ده اللي خلى VGG-16 تقيلة. الـ <code>AdaptiveAvgPool2d(1)</code> بيخلي الـ head صغير ويشتغل مع أي حجم صورة.</li>
+  </ol>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <p>كل بلوك في الـ transformer شكله تقريبًا: <span class="ltr">x = x + Attention(Norm(x))</span> وبعدين <span class="ltr">x = x + MLP(Norm(x))</span>. الـ <span class="ltr">x</span> اللي بيعدّي من أول الموديل لآخره بيسموه أحيانًا «الـ residual stream»، وكل layer بتضيف عليه تعديلها. ولما تستخدم vision encoder مع LLM (موديل بيشوف صور)، الـ encoder ده ممكن يبقى CNN أو ViT، والاتنين بيعتمدوا على الـ skip connections.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d59-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز</h2></div>
+  <div class="quiz" id="d59-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d59-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d59-checklist">
+    <li><label><input type="checkbox" data-ck="ideas"> أقدر أقول الفكرة الجديدة لكل عيلة: LeNet، AlexNet، VGG، Inception، ResNet</label></li>
+    <li><label><input type="checkbox" data-ck="degrade"> فاهم الفرق بين الـ degradation والـ overfitting وليه <span class="ltr">+ x</span> بتحله</label></li>
+    <li><label><input type="checkbox" data-ck="labs"> لعبت في معمل الـ gradient ومعمل الـ shapes</label></li>
+    <li><label><input type="checkbox" data-ck="code"> كتبت LeNet5 و VGGBlock و BasicBlock و TinyResNet بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت تمرين على الأقل (عدّ البارامترات بالإيد)</label></li>
+    <li><label><input type="checkbox" data-ck="quiz" id="d59-ckQuiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Residual connection</td><td>كل بلوك في أي transformer و LLM، الـ diffusion U-Nets</td></tr>
+    <tr><td>ReLU / non-saturating activations</td><td>كل الشبكات الحديثة (ومعاها GELU في الـ transformers)</td></tr>
+    <tr><td>Batch norm</td><td>الـ CNN backbones، الـ diffusion models</td></tr>
+    <tr><td>Stacked 3×3 convs</td><td>ResNet، معظم الـ CNN backbones</td></tr>
+    <tr><td>1×1 conv / bottleneck</td><td>ResNet-50+، Inception، تغيير عدد الـ channels بسعر رخيص</td></tr>
+    <tr><td>Backbone + head</td><td>Transfer learning، الـ detection والـ segmentation، image embeddings للبحث</td></tr>
+    <tr><td>Global average pool</td><td>الـ heads الحديثة بدل FC layers تقيلة</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Image Classification. هتاخد الـ backbones دي وتدرّبها بجد على داتا. وهنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F03-cnns-lenet-to-resnet" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/03-cnns-lenet-to-resnet</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,fmt=AI.fmt;
+const sci=v=>v===0?'0':(Math.abs(v)>=0.01&&Math.abs(v)<1000?fmt(v,3)+'':v.toExponential(2));
+
+// roadmap: Phase 4 has 25 lessons, today is #3
+const rm=$('d59-roadmap');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===3)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab: gradient flow ----------
+const gc=$('d59-gradCanvas'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+function drawGrad(){
+  const L=+$('d59-gL').value,g=+$('d59-gG').value,b=+$('d59-gB').value;
+  $('d59-gLv').textContent=L;$('d59-gGv').textContent=fmt(g,2);$('d59-gBv').textContent=fmt(b,3);
+  // gradient reaching layer k (k=1 is earliest) = product of factors of layers above it
+  const plain=[],res=[];
+  for(let k=1;k<=L;k++){plain.push(Math.pow(g,L-k));res.push(Math.pow(1+b,L-k))}
+  gx.clearRect(0,0,GW,GH);
+  const padL=46,padB=26,padT=12,W=GW-padL-10,H=GH-padB-padT;
+  const lo=-10,hi=4; // log10 range
+  const Y=v=>{const l=Math.max(lo,Math.min(hi,Math.log10(Math.max(v,1e-300))));return padT+(hi-l)/(hi-lo)*H};
+  const X=k=>padL+(L===1?0:(k-1)/(L-1))*W;
+  gx.strokeStyle=css('--grid');gx.lineWidth=1;gx.fillStyle=css('--muted');gx.font='11px JetBrains Mono, monospace';gx.textAlign='right';
+  for(let l=lo;l<=hi;l+=2){const y=Y(Math.pow(10,l));gx.beginPath();gx.moveTo(padL,y);gx.lineTo(GW-10,y);gx.stroke();gx.fillText('1e'+l,padL-4,y+4)}
+  gx.strokeStyle=css('--muted');gx.setLineDash([4,4]);gx.beginPath();gx.moveTo(padL,Y(1));gx.lineTo(GW-10,Y(1));gx.stroke();gx.setLineDash([]);
+  gx.textAlign='center';gx.fillText('layer 1 (أول الشبكة)',padL+60,GH-6);gx.fillText('layer '+L,GW-40,GH-6);
+  [[plain,css('--vec-b'),'plain'],[res,css('--vec-a'),'residual']].forEach(([arr,c,n],j)=>{
+    gx.strokeStyle=c;gx.lineWidth=2.5;gx.beginPath();arr.forEach((v,i)=>{const x=X(i+1),y=Y(v);i?gx.lineTo(x,y):gx.moveTo(x,y)});gx.stroke();
+    gx.fillStyle=c;gx.textAlign='left';gx.font='bold 12px JetBrains Mono, monospace';gx.fillText(n,padL+8,padT+14+j*16);
+  });
+  $('d59-gPlain').textContent=sci(plain[0]);$('d59-gRes').textContent=sci(res[0]);
+  const v=$('d59-gVerdict');
+  if(plain[0]<1e-4){v.textContent='الـ gradient في الشبكة العادية مات تقريبًا: أول layers مش هتتعلم حاجة';v.style.color=css('--bad')}
+  else if(plain[0]>1e3){v.textContent='الـ gradient في الشبكة العادية انفجر (exploding)';v.style.color=css('--bad')}
+  else{v.textContent='الاتنين لسه عايشين عند العمق ده';v.style.color=css('--ok')}
+}
+['d59-gL','d59-gG','d59-gB'].forEach(id=>$(id).addEventListener('input',drawGrad));drawGrad();
+
+// ---------- Shortcut tool ----------
+function shortcut(){
+  const i=+$('d59-sIn').value,o=+$('d59-sOut').value,s=+$('d59-sStr').value,hw=+$('d59-sHW').value;
+  const out=Math.floor((hw+2-3)/s)+1;
+  $('d59-sMain').textContent=o+'×'+out+'×'+out;
+  const need=s!==1||i!==o;
+  $('d59-sKind').textContent=need?'1×1 conv, stride '+s+' + BN':'nn.Identity()';
+  $('d59-sPar').textContent=need?(i*o+2*o).toLocaleString('en'):'0';
+  const m=$('d59-sMsg');
+  m.textContent=need?'x شكله '+i+'×'+hw+'×'+hw+' والفرع الرئيسي '+o+'×'+out+'×'+out+': لازم نظبط الشكل قبل الجمع':'نفس الشكل: x بيعدّي زي ما هو ببلاش';
+  m.style.color=need?css('--vec-b'):css('--ok');
+}
+['d59-sIn','d59-sOut','d59-sStr','d59-sHW'].forEach(id=>$(id).addEventListener('change',shortcut));shortcut();
+
+// ---------- Lab: shape tracer ----------
+const MODELS={
+ lenet:[['input',[1,32,32],0],['conv1 5×5',[6,28,28],156],['avgpool',[6,14,14],0],['conv2 5×5',[16,10,10],2416],['avgpool',[16,5,5],0],['flatten',[400],0],['fc1',[120],48120],['fc2',[84],10164],['fc3',[10],850]],
+ vgg:[['input',[3,32,32],0],['VGGBlock 3→32',[32,16,16],10272],['VGGBlock 32→64',[64,8,8],55680],['VGGBlock 64→128',[128,4,4],221952],['avgpool+flatten',[128],0],['linear',[10],1290]],
+ res:[['input',[3,32,32],0],['stem',[32,32,32],928],['layer1',[32,32,32],37120],['layer2 (s=2)',[64,16,16],131712],['layer3 (s=2)',[128,8,8],525568],['layer4 (s=2)',[256,4,4],2099712],['avgpool+flatten',[256],0],['fc',[10],2570]]
+};
+let cur='res',step=-1,timer=null;
+const sc=$('d59-shapeCanvas'),sx=AI.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+function drawShapes(){
+  const Ls=MODELS[cur],n=Ls.length,slot=(SW-20)/n,mid=SH/2;
+  sx.clearRect(0,0,SW,SH);
+  Ls.forEach((l,i)=>{
+    const sh=l[1],ch=sh[0],sp=sh.length>1?sh[1]:1;
+    const h=sh.length>1?Math.max(8,sp/32*(SH-80)):Math.max(6,Math.min(SH-80,Math.log2(ch+1)*12));
+    const w=Math.max(4,Math.min(slot-8,Math.log2(ch+1)*4.2));
+    const x=10+i*slot+(slot-w)/2,y=mid-h/2-10;
+    const active=i<=step||step<0;
+    sx.globalAlpha=active?1:.25;
+    sx.fillStyle=sh.length>1?css('--vec-a'):css('--vec-b');
+    sx.fillRect(x,y,w,h);
+    if(i===step){sx.strokeStyle=css('--ink');sx.lineWidth=2;sx.strokeRect(x-3,y-3,w+6,h+6)}
+    sx.fillStyle=css('--ink');sx.font='10px JetBrains Mono, monospace';sx.textAlign='center';
+    sx.fillText(sh.join('×'),10+i*slot+slot/2,SH-26);
+    sx.save();sx.translate(10+i*slot+slot/2,SH-12);sx.fillStyle=css('--muted');sx.fillText(l[0].split(' ')[0],0,0);sx.restore();
+    sx.globalAlpha=1;
+  });
+  const k=step<0?n-1:step,l=Ls[k];
+  const tot=Ls.slice(0,k+1).reduce((a,b)=>a+b[2],0);
+  $('d59-lName').textContent=l[0];$('d59-lShape').textContent='('+l[1].join(', ')+')';
+  $('d59-lPar').textContent=l[2].toLocaleString('en');$('d59-lTot').textContent=tot.toLocaleString('en');
+}
+function parList(){
+  const Ls=MODELS[cur].filter(l=>l[2]>0),T=Ls.reduce((a,b)=>a+b[2],0),ul=$('d59-parList');ul.innerHTML='';
+  Ls.forEach(l=>{const li=document.createElement('li');const pct=l[2]/T*100;
+    li.innerHTML='<span class="ltr" style="font-size:13px"></span><span class="bar"><i style="width:'+pct+'%"></i></span><span class="num">'+fmt(pct,1)+'%</span>';
+    li.firstChild.textContent=l[0];ul.appendChild(li)});
+}
+document.querySelectorAll('[data-d59m]').forEach(b=>b.addEventListener('click',()=>{
+  cur=b.dataset.d59m;step=-1;clearInterval(timer);
+  document.querySelectorAll('[data-d59m]').forEach(x=>x.classList.toggle('primary',x===b));
+  drawShapes();parList()}));
+$('d59-play').addEventListener('click',()=>{
+  clearInterval(timer);step=0;drawShapes();
+  const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  if(reduce){step=-1;drawShapes();return}
+  timer=setInterval(()=>{if(!document.body.contains(sc)){clearInterval(timer);return}
+    step++;if(step>=MODELS[cur].length){clearInterval(timer);step=-1}drawShapes()},800);
+});
+drawShapes();parList();
+
+// ---------- Lab: receptive field ----------
+const Cs=[16,32,64,128,256,512];
+const rc=$('d59-rfCanvas'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+function drawRF(){
+  const n=+$('d59-rN').value,C=Cs[+$('d59-rC').value],rf=1+2*n;
+  $('d59-rNv').textContent=n;$('d59-rCv').textContent=C;$('d59-rRF').textContent=rf+'×'+rf;
+  const stack=n*9*C*C,big=rf*rf*C*C;
+  $('d59-rStack').textContent=stack.toLocaleString('en')+' ('+(9*n)+'C²)';
+  $('d59-rBig').textContent=big.toLocaleString('en')+' ('+(rf*rf)+'C²)';
+  $('d59-rSave').textContent=fmt((1-stack/big)*100,1)+'%';
+  rx.clearRect(0,0,RW,RH);
+  const N=11,cell=Math.min((RH-30)/N,22),ox=(RW-N*cell)/2,oy=8,c0=Math.floor(N/2);
+  rx.strokeStyle=css('--line');rx.lineWidth=1;
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++)rx.strokeRect(ox+i*cell,oy+j*cell,cell,cell);
+  for(let l=n;l>=1;l--){const r=l;rx.fillStyle=css('--vec-a');rx.globalAlpha=0.12+0.5*(n-l+1)/n*0.5;
+    rx.fillRect(ox+(c0-r)*cell,oy+(c0-r)*cell,(2*r+1)*cell,(2*r+1)*cell)}
+  rx.globalAlpha=1;rx.fillStyle=css('--vec-b');rx.fillRect(ox+c0*cell+2,oy+c0*cell+2,cell-4,cell-4);
+  rx.strokeStyle=css('--ink');rx.lineWidth=2;rx.strokeRect(ox+(c0-n)*cell,oy+(c0-n)*cell,rf*cell,rf*cell);
+  rx.fillStyle=css('--ink');rx.font='12px JetBrains Mono, monospace';rx.textAlign='center';
+  rx.fillText(n+' × conv3×3  →  RF '+rf+'×'+rf,RW/2,RH-6);
+}
+['d59-rN','d59-rC'].forEach(id=>$(id).addEventListener('input',drawRF));drawRF();
+
+// ---------- Quiz ----------
+const Q=[
+ ['إيه الفكرة اللي AlexNet (2012) جابتها وخلت تدريب CNNs عميقة على GPU عملي؟',['Residual connections','Depthwise separable convolutions','استبدال tanh بـ ReLU اللي مش بتتشبع، وده سرّع التدريب حوالي ٦ مرات','Batch normalization'],2,'الـ tanh بتتشبع للقيم الكبيرة فالـ gradient بيموت. الـ ReLU خطية في الموجب ومش بتتشبع، ودي أكبر حاجة سرّعت التدريب. الـ dropout والـ GPUs كانوا مهمين، بس الـ ReLU هي اللي فتحت الباب للعمق.'],
+ ['ليه VGG فضّلت رصّ 3×3 بدل kernel واحد كبير؟',['اتنين 3×3 بيغطوا نفس الـ 5×5 ببارامترات أقل (18C² مقابل 25C²) وفيه ReLU زيادة بينهم','الـ 3×3 مش بتتأثر باللف (rotation-invariant) والـ 5×5 لأ','الـ kernels الصغيرة أسرع على CPU','الـ kernels الكبيرة مينفعش تتدرب بـ SGD'],0,'نفس الرقعة، بارامترات أقل، و non-linearity زيادة بتزود القدرة التعبيرية. VGG بنت architecture كاملة على الملاحظة دي.'],
+ ['ResNet عملت y = F(x) + x. ده بيحل مشكلة إيه؟',['الـ activations اللي بتختفي في layers فيها ReLU','استهلاك الذاكرة في الـ backprop','مشكلة الـ degradation: بعد حوالي ٢٠ layer عادية الـ training loss بيسوء لأن الـ optimizer بيتعب يتعلم identity من خلال layers كتير non-linear','الـ overfitting في الـ classifier head'],2,'البلوك الـ residual يقدر يبقى identity بإنه يخلي F = صفر، فده default آمن. بالباب ده كل بلوك زيادة يقدر يحسّن الشبكة شوية، وكده الـ ١٠٠+ layer بقت قابلة للتدريب.'],
+ ['في BasicBlock بـ in_channels=64 و out_channels=128 و stride=2، دور الـ shortcut إيه؟',['placeholder بيتشال وقت الـ inference','max-pool بيقسم الحجم على ٢','دايمًا identity والفرع الرئيسي هو اللي بيغير الشكل','1×1 conv بـ stride 2 بيظبط عدد الـ channels والحجم عشان ينفع يتجمع مع الفرع الرئيسي'],3,'لما الـ channels أو الـ stride يتغيروا، الـ shapes بتختلف ومينفعش تجمع. الـ shortcut بيبقى 1×1 conv بـ stride 2 و C_out channels وغالبًا وراه BN. الـ identity بيتستخدم بس لما in_c == out_c و stride == 1.'],
+ ['ResNet-18 فيها حوالي 11.7M بارامتر وبتقرب أو تغلب VGG-16 (138M) على ImageNet. ده بيقول إيه عن VGG؟',['الـ kernels بتاعتها صغيرة جدًا','اتدربت بـ optimizer أوحش','معظم بارامترات VGG ضايعة في الـ FC head الضخم والعمق الزيادة اللي من غير residuals مش بيضيف بكفاءة','الـ accuracy بتاعتها اتقاست غلط'],2,'VGG-16 بارامتراتها أغلبها في التلات dense layers اللي على 25088 activation. ResNet-18 بتستبدل ده بـ global average pool + linear واحدة وبتستخدم residual blocks، فبتكسب كفاءة حوالي ١٢ مرة.'],
+ ['(إضافة مني) تلات convs 3×3 ورا بعض بيغطوا receptive field قد إيه، وبارامتراتهم قد إيه مقارنة بـ conv واحد بنفس الرقعة؟',['5×5، و 27C² مقابل 25C²','7×7، و 27C² مقابل 49C²','9×9، و 27C² مقابل 81C²','7×7، و 49C² مقابل 27C²'],1,'RF = 1 + 3·2 = 7. الرصة 3·9·C² = 27C² والـ 7×7 الواحد 49C². جرّبها في المعمل ٠٤ بـ n=3.'],
+ ['(إضافة مني) فين بتلاقي نفس فكرة الـ skip بتاعة ResNet في الـ transformer؟',['في الـ tokenizer','x = x + Attention(Norm(x)) وبعدين x = x + MLP(Norm(x)) في كل بلوك','في الـ softmax بس','مش موجودة، الـ transformers بتستخدم LSTM بدلها'],1,'كل بلوك transformer بيجمع ناتج الـ attention والـ MLP على الـ x الأصلي. ده نفس y = F(x) + x، وهو اللي بيخلي موديلات فيها عشرات الـ layers تتدرب.']
+];
+AI.quiz($('d59-quizBox'),Q,5,()=>{const c=$('d59-ckQuiz');c.checked=true;AI.store.set('aiefs-d59-quiz','1')});
+
+// ---------- Checklist ----------
+AI.checklist(59,$('d59-checklist'));
+
+// ---------- Theme ----------
+AI.onTheme(()=>{if(!document.body.contains(gc))return false;drawGrad();shortcut();drawShapes();parList();drawRF()});
+})();
+</script>

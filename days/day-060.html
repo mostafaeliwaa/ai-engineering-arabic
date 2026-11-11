@@ -1,0 +1,664 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 04 · Image Classification</span>
+  <h1>اليوم ٦٠: Image Classification من أول البيكسل لحد الـ confusion matrix</h1>
+  <p class="lede">الـ classifier هو function بتاخد بيكسلز وتطلّع توزيع احتمالات على الـ classes. والباقي كله <b>سباكة</b> (plumbing). النهاردة هتبني الـ pipeline كاملة بإيدك: dataset، augmentation، normalisation، training loop، evaluation، وهتتعلم <b>mixup</b> و<b>label smoothing</b> وإزاي تقرا الـ confusion matrix.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python + PyTorch</b></span>
+    <span>قبله: <b>CNNs — LeNet to ResNet</b></span>
+    <span>بعده: <b>Transfer Learning &amp; Fine-Tuning</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 lessons</span>
+    <div class="roadmap" id="d60-roadmap" aria-label="دروس الفيز الرابعة"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d60-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر امبارح</h2></div>
+  <p>امبارح مشينا في تاريخ الـ CNNs: LeNet ← AlexNet ← VGG/Inception ← ResNet. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. إيه الفكرة الكبيرة في ResNet؟ وليه مهمة؟</summary>الـ residual (skip) connection: <span class="ltr">y = F(x) + x</span>. الـ block بيتعلم «الفرق» بس، ولو مش محتاج يعمل حاجة يقدر يقرب من الـ identity بسهولة. ده حل مشكلة الـ degradation (الشبكة الأعمق كانت بتطلع أوحش حتى على الـ training) وخلّى الـ gradient يعدي في شبكات ١٠٠+ layer. ونفس الفكرة موجودة في كل LLM.</details>
+  <details><summary>٢. ليه VGG فضّل كذا 3×3 ورا بعض بدل kernel كبير واحد؟</summary>اتنين 3×3 بيدّوا نفس الـ receptive field بتاع 5×5، وتلاتة بيدّوا 7×7، بس بـ parameters أقل وnonlinearity أكتر بينهم.</details>
+  <details><summary>٣. النهاردة هنستخدم classifier صغير بيخلص بـ <code>AdaptiveAvgPool2d(1)</code>. ده بيعمل إيه؟</summary>بياخد متوسط كل channel على المساحة كلها، فيطلع vector طوله عدد الـ channels مهما كان حجم الصورة. ده الـ global average pooling اللي ResNet بيستخدمه قبل الـ Linear الأخير.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين</div>
+    <div><b>15 min</b>الـ pipeline والـ cross-entropy (معمل ٠١)</div>
+    <div><b>15 min</b>Augmentation و Mixup و Label smoothing (معمل ٠٢)</div>
+    <div><b>10 min</b>Evaluation والـ confusion matrix (معمل ٠٣)</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1: pipeline -->
+<section id="d60-pipe">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الباجز مش في الموديل، في الـ pipeline</h2></div>
+  <p>أي task في الرؤية بتتشحن في الآخر بترجع لـ classification بشكل ما: الـ <b>detection</b> بيصنّف مناطق، الـ <b>segmentation</b> بيصنّف كل بيكسل، والـ <b>retrieval</b> بيرتّب حسب القرب من مراكز الـ classes. فلو ظبطت الـ classification (الـ data loop، الـ augmentation، الـ loss، الـ evaluation) المهارة دي بتنتقل لكل اللي جاي في الفيز.</p>
+  <p>أغلب الباجز مش في الموديل نفسه. بتكون في حاجات زي: normalisation بايظ، training set مش متلخبط (unshuffled)، augmentation بتغيّر معنى الـ label، validation split متلوث بداتا من الـ training، أو learning rate بيفرقع بهدوء بعد epoch 30. الـ CNN اللي ممكن يجيب 93% على CIFAR-10 بـ setup سليم، بيجيب عادةً 70–75% بـ setup بايظ، <b>والـ loss curve شكلها معقول طول الوقت</b>. عشان كده الدرس بيبني كل حتة بإيده من غير ما يستخدم حاجة من <code>torchvision.datasets</code> ممكن تخبي باج.</p>
+  <div class="formula">Dataset → Augment → Normalise → DataLoader(batch+shuffle) → Model(CNN) → Logits (N, C)<br>Logits → Cross-entropy → Backward → Optimizer step → Scheduler step → (تاني للموديل)<br>Logits → Argmax (وقت الـ eval)</div>
+  <p>فكّر فيها زي خط إنتاج في مصنع: لو ماكينة واحدة في النص بتعمل غلطة صغيرة، المنتج بيطلع «شكله سليم» بس جودته واطية، ومحدش بيلاحظ غير لما يفحص كويس. كل سهم في الخط ده مكان ممكن يستخبى فيه باج:</p>
+  <ul class="checklist">
+    <li>• الـ cross-entropy بتاخد <b>logits خام</b> مش ناتج softmax. لو كتبت <code>model(x).softmax()</code> قبل الـ loss، الـ gradient بيبقى غلط وانت مش واخد بالك.</li>
+    <li>• الـ augmentation بتتطبق على الـ input بس مش على الـ label، <b>ماعدا mixup</b> اللي بيخلط الاتنين.</li>
+    <li>• <code>optimizer.zero_grad()</code> لازم مرة كل step. لو نسيتها الـ gradients بتتراكم وشكلها كأن الـ learning rate مجنون.</li>
+  </ul>
+  <p>ولا واحد من دول بيرمي error. كلهم بيخلّوا منحنى التعلم «يفرش» وخلاص.</p>
+
+  <h3>Logits و Softmax و Cross-entropy</h3>
+  <p>الـ classifier بيطلّع <code>C</code> رقم لكل صورة اسمهم <b>logits</b> (درجات خام، ممكن سالبة أو كبيرة). الـ softmax بيحوّلهم لتوزيع احتمالات مجموعه 1:</p>
+  <div class="formula">softmax(z)ᵢ = exp(zᵢ) / Σⱼ exp(zⱼ)</div>
+  <p>والـ cross-entropy بتقيس «سالب لوج احتمال الـ class الصح». لو الموديل واثق في الإجابة الصح، الاحتمال قريب من 1 واللوج قريب من صفر، فالـ loss صغيرة:</p>
+  <div class="formula">CE(z, y) = −log(softmax(z)_y) = −z_y + log(Σⱼ exp(zⱼ))</div>
+  <p>الشكل اليمين (log-sum-exp) هو الشكل المستقر رقميًا. الـ <code>nn.CrossEntropyLoss</code> في PyTorch بيعمل softmax + NLL في عملية واحدة وبياخد logits خام على طول. لو انت عملت softmax بنفسك الأول، انت بتحسب <span class="ltr">log(softmax(softmax(z)))</span>، ودي كمية ملهاش معنى.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: العب في الـ logits وشوف الـ loss</h3>
+      <p>عندك ٤ classes. حرّك الـ logits، واختار الـ class الصح، وشوف الاحتمالات والـ loss.</p>
+      <div class="note"><strong>جرّب الباج:</strong> فعّل «softmax مرتين». لاحظ إن الاحتمالات بتتكبس ناحية التوزيع المتساوي (0.25 لكل واحد تقريبًا)، والـ loss بتعلق في حتة قريبة من <span class="ltr">log 4 ≈ 1.39</span> مهما كبّرت الـ logit الصح. ده بالظبط اللي بيخلّي التدريب «يقف» بعد كام step.</div>
+      <div class="note ai"><strong>وجرّب label smoothing:</strong> حرّك <span class="ltr">ε</span> وشوف الـ target بقى مش one-hot. الـ loss مبقتش توصل لصفر حتى لو الموديل واثق جدًا، وده بالظبط اللي بيمنعه يطلّع logits حادة بزيادة.</div>
+    </div>
+    <div class="instrument">
+      <div class="mrow" id="d60-logits"></div>
+      <label style="display:flex;gap:8px;align-items:center">الـ class الصح: <select id="d60-ytrue"><option value="0">cat</option><option value="1">dog</option><option value="2" selected>car</option><option value="3">ship</option></select></label>
+      <label style="display:grid;gap:2px">label smoothing ε = <b class="mono" id="d60-epsv">0</b><input type="range" id="d60-eps" min="0" max="0.3" step="0.01" value="0"></label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d60-dbl"> softmax مرتين (الباج)</label>
+      <canvas id="d60-ceCanvas" width="520" height="240" aria-label="احتمالات الـ classes والـ target"></canvas>
+      <div class="readout">
+        <div><small>CE loss</small><b id="d60-ce">0</b></div>
+        <div><small>p(صح)</small><b id="d60-pt">0</b></div>
+        <div><small>argmax</small><b id="d60-am">-</b></div>
+      </div>
+      <div class="verdict" id="d60-ceVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2: augmentation -->
+<section id="d60-aug">
+  <div class="station-head"><span class="tag">02</span><h2>ليه الـ Augmentation بيشتغل؟ و Mixup و Cutmix و Label smoothing</h2></div>
+  <p>الـ CNN عنده inductive bias للـ translation (بسبب الـ weight sharing)، بس <b>معندوش</b> invariance جاهزة للـ crops أو الـ flips أو تغيير الألوان أو إن حتة من الصورة تكون مستخبية. الطريقة الوحيدة إنه يتعلمها إنك توريه بيكسلز فيها التغييرات دي. كل random transform بتقول للموديل: «الصورتين دول ليهم نفس الـ label، اتعلم features بتتجاهل الفرق».</p>
+  <div class="tablewrap"><table>
+    <tr><th>التحويل</th><th>الصورة بقت</th><th>الـ label</th></tr>
+    <tr><td>Original crop</td><td>كلب باصص شمال</td><td>dog</td></tr>
+    <tr><td>Flip</td><td>كلب باصص يمين (بيكسلز مختلفة)</td><td>dog</td></tr>
+    <tr><td>Rotate(+15)</td><td>كلب مايل شوية</td><td>dog</td></tr>
+    <tr><td>Colour jitter</td><td>كلب في نور أدفى</td><td>dog</td></tr>
+    <tr><td>RandomErasing</td><td>كلب ناقص منه حتة</td><td>dog</td></tr>
+  </table></div>
+  <div class="note"><strong>القاعدة:</strong> الـ augmentation لازم يحافظ على الـ label. الـ cutout والـ rotation على رقم ممكن يقلبوا «6» لـ «9». في داتا زي دي بتستخدم rotation صغيرة وتختار augmentations تحترم طبيعة الأرقام.</div>
+  <p><b>Reflect pad قبل الـ crop، مش zero pad:</b> الـ random crop بيحط padding حوالين الصورة ويقص 32×32 من مكان عشوائي. لو الـ padding أسود (أصفار)، الصورة بيبقى فيها حواف سودا واضحة، والموديل ممكن يتعلم يبص على الركن ويعرف الـ crop اتعمل فين، يعني «يغش» على الـ augmentation. الـ reflect بيعمل مراية لبيكسلز الحافة فالصورة تفضل شكلها طبيعي. جرّب الفرق في المعمل تحت.</p>
+
+  <h3>Mixup و Cutmix</h3>
+  <p>الـ augmentation العادي بيغيّر البيكسلز ويسيب الـ label one-hot. الـ mixup والـ cutmix بيكسروا القاعدة دي وبيخلطوا الاتنين:</p>
+  <div class="formula">Mixup:  λ ~ Beta(α, α)    x = λ·xᵢ + (1−λ)·xⱼ    y = λ·yᵢ + (1−λ)·yⱼ<br>Cutmix: الزق مستطيل عشوائي من xⱼ جوه xᵢ ،  y = خلط حسب نسبة المساحة</div>
+  <p>تشبيه: بدل ما تقول للطالب «دي قطة ١٠٠٪»، بتوريه صورة نصها قطة ونصها عربية وتقوله «دي ٦٠٪ قطة و٤٠٪ عربية». كده هو مبيحفظش targets حادة، وبيتعلم ينتقل بنعومة بين الـ classes. النتيجة: <b>الـ training loss بيعلى، والـ test accuracy بيعلى</b>. وده أرخص upgrade للـ robustness في أي classifier.</p>
+
+  <h3>Label smoothing</h3>
+  <p>قريب الـ mixup. بدل ما تدرّب على <span class="ltr">[0, 0, 1, 0, 0]</span> بتدرّب على <span class="ltr">[ε/C, ε/C, 1−ε+ε/C, ε/C, ε/C]</span> بـ <span class="ltr">ε</span> صغيرة زي 0.1 (يعني خلطت الـ one-hot بتوزيع متساوي، فالمجموع لسه 1). بيمنع الموديل يطلّع logits حادة بلا حدود، وبيحسّن الـ calibration تقريبًا ببلاش. موجود جوه <code>nn.CrossEntropyLoss(label_smoothing=0.1)</code> من PyTorch 1.10.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: augmentation بعينك</h3>
+      <p>دول صورتين 32×32 متولدين بنفس طريقة الـ <code>synthetic_cifar</code> بتاعة الدرس: كل class ليه لون وتردد موجة مختلف + noise. اختار الـ classes وجرّب التحويلات.</p>
+      <ul class="checklist">
+        <li>• <b>Flip / Crop:</b> شوف الـ crop بـ zero pad (حواف سودا) vs reflect.</li>
+        <li>• <b>Cutout:</b> مربع 8×8 بيتصفّر في مكان عشوائي.</li>
+        <li>• <b>Mixup:</b> حرّك <span class="ltr">λ</span> وشوف الصورة والـ label بيتخلطوا مع بعض.</li>
+        <li>• <b>Cutmix:</b> مستطيل من الصورة B جوه A، والـ label حسب المساحة.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>class A <select id="d60-ca"></select></label>
+        <label>class B <select id="d60-cb"></select></label>
+      </div>
+      <canvas id="d60-augCanvas" width="520" height="210" aria-label="صورة A وصورة B والناتج بعد التحويل"></canvas>
+      <div class="btns">
+        <button type="button" data-d60aug="none">الأصل</button>
+        <button type="button" data-d60aug="flip">Flip</button>
+        <button type="button" data-d60aug="cropz">Crop (zero pad)</button>
+        <button type="button" data-d60aug="cropr">Crop (reflect)</button>
+        <button type="button" data-d60aug="cutout">Cutout 8×8</button>
+        <button type="button" data-d60aug="mixup" class="primary">Mixup</button>
+        <button type="button" data-d60aug="cutmix">Cutmix</button>
+      </div>
+      <label style="display:grid;gap:2px">λ = <b class="mono" id="d60-lamv">0.7</b><input type="range" id="d60-lam" min="0" max="1" step="0.01" value="0.7"></label>
+      <div class="btns"><button type="button" id="d60-beta">اسحب λ من Beta(0.2, 0.2)</button></div>
+      <div class="readout">
+        <div><small>label الناتج</small><b id="d60-ylab">A: 1.00</b></div>
+        <div><small>التحويل</small><b id="d60-mode">none</b></div>
+      </div>
+      <p style="font-size:14px;color:var(--muted)" id="d60-augNote"></p>
+    </div>
+  </div>
+  <p>لاحظ لما تسحب <span class="ltr">λ</span> من <span class="ltr">Beta(0.2, 0.2)</span>: أغلب الوقت بتطلع قريبة من 0 أو 1 (يعني الصورة غالبًا واحدة منهم مع لمسة من التانية)، وأحيانًا في النص. ده توزيع على شكل حرف U، وده اللي الكود بيستخدمه بـ <code>alpha=0.2</code>.</p>
+</section>
+
+<!-- STATION 3: evaluation -->
+<section id="d60-eval">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Evaluation أبعد من الـ accuracy</h2></div>
+  <p>الـ accuracy الإجمالية بتخبي عدم التوازن. classifier ثنائي على داتا 90–10 بيقول الـ class الأكبر دايمًا هيجيب 90%. الأدوات اللي بتقولك فعلًا إيه اللي بيحصل:</p>
+  <ul class="checklist">
+    <li>• <b>Per-class accuracy:</b> رقم لكل class، بيطلّعلك على طول الـ classes الضعيفة.</li>
+    <li>• <b>Confusion matrix:</b> جدول C×C، الخانة (صف i، عمود j) = عدد صور الـ class الحقيقي i اللي اتوقعت j. القطر = الصح، وبره القطر هو المكان اللي موديلك «عايش» فيه.</li>
+    <li>• <b>Top-1 / Top-5:</b> هل الإجابة الصح في أعلى ١ أو أعلى ٥ توقعات؟ الـ Top-5 مهم في ImageNet عشان فيه classes زي «Norwich terrier» و«Norfolk terrier» صعب فعلًا تفرق بينهم.</li>
+    <li>• <b>Calibration (ECE):</b> لما الموديل يقول «أنا متأكد ٨٠٪»، هل بيطلع صح ٨٠٪ من المرات؟ الشبكات الحديثة over-confident بشكل منتظم، والحل temperature scaling أو label smoothing.</li>
+  </ul>
+  <div class="formula">precision = TP / (TP + FP)     recall = TP / (TP + FN)     F1 = 2·P·R / (P + R)</div>
+  <p>في الـ confusion matrix: الـ TP هو القطر، الـ FP = مجموع العمود ناقص القطر (حاجات اتقال عليها الـ class ده وهي مش هو)، والـ FN = مجموع الصف ناقص القطر (حاجات هي الـ class ده بس اتقال عليها حاجة تانية).</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: اقرا الـ confusion matrix</h3>
+      <p>اختار سيناريو، ودوس على أي خانة عشان تزوّد أخطاء فيها (Shift + ضغطة تقلل). شوف الـ accuracy والـ per-class metrics بيتغيروا.</p>
+      <div class="note"><strong>السيناريوهات:</strong> «3↔5» = الموديل بيخلط بين class 3 و5 بس. «الأغلبية» = داتا فيها class 0 كبير جدًا والموديل بيقول 0 دايمًا تقريبًا: الـ accuracy عالية بس الـ recall للباقي صفر تقريبًا.</div>
+      <div class="tablewrap"><table id="d60-pcr"></table></div>
+    </div>
+    <div class="instrument">
+      <canvas id="d60-cmCanvas" width="520" height="520" aria-label="confusion matrix تفاعلية"></canvas>
+      <div class="btns">
+        <button type="button" data-d60cm="good">موديل كويس</button>
+        <button type="button" data-d60cm="pair">3↔5</button>
+        <button type="button" data-d60cm="major">الأغلبية</button>
+        <button type="button" data-d60cm="noisy">ضعيف عمومًا</button>
+      </div>
+      <div class="readout">
+        <div><small>Accuracy</small><b id="d60-acc">-</b></div>
+        <div><small>Macro F1</small><b id="d60-mf1">-</b></div>
+        <div><small>أكبر خلطة</small><b id="d60-top">-</b></div>
+      </div>
+      <div class="verdict" id="d60-cmVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d60-code">
+  <div class="station-head"><span class="tag">04</span><h2>طبّق بإيدك: الـ pipeline كاملة</h2></div>
+  <p>من جذر الريبو (لو محتاج PyTorch: <code>pip install torch numpy</code>):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/04-image-classification/code/main.py</pre></div>
+  <p><b>القاعدة:</b> اكتب الكود بنفسك في <code>my_classifier.py</code> خطوة بخطوة، وبص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: dataset صناعي شبه CIFAR</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from torch.optim import SGD
+from torch.optim.lr_scheduler import CosineAnnealingLR
+
+def get_device():                       <span class="c"># CUDA، بعدين Apple MPS، بعدين CPU</span>
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+def synthetic_cifar(num_per_class=300, num_classes=10, seed=0):
+    rng = np.random.default_rng(seed)
+    X, Y = [], []
+    for c in range(num_classes):
+        centre = rng.uniform(0, 1, (3,))  <span class="c"># لون مميز لكل class</span>
+        freq = 2 + c                      <span class="c"># تردد موجة مختلف لكل class</span>
+        for _ in range(num_per_class):
+            yy, xx = np.meshgrid(np.linspace(0, 1, 32), np.linspace(0, 1, 32), indexing="ij")
+            r = np.sin(xx * freq) * 0.5 + centre[0]
+            g = np.cos(yy * freq) * 0.5 + centre[1]
+            b = (xx + yy) * 0.5 * centre[2]
+            img = np.stack([r, g, b], axis=-1) + rng.normal(0, 0.08, (32, 32, 3))  <span class="c"># noise</span>
+            img = np.clip(img, 0, 1).astype(np.float32)
+            X.append(img); Y.append(c)
+    X = np.stack(X); Y = np.array(Y)
+    idx = rng.permutation(len(X))         <span class="c"># لخبط الترتيب</span>
+    return X[idx], Y[idx]
+
+class ArrayDataset(Dataset):
+    def __init__(self, X, Y, transform=None):
+        self.X, self.Y, self.transform = X, Y, transform
+    def __len__(self):
+        return len(self.X)
+    def __getitem__(self, i):
+        img = self.X[i]
+        if self.transform is not None:
+            img = self.transform(img)
+        <span class="c"># HWC → CHW عشان PyTorch</span>
+        img = torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1).float()
+        return img, int(self.Y[i])</pre></div>
+
+  <h3>خطوة ٢: Normalisation و Augmentation</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def standardize(mean, std):
+    mean = np.array(mean, dtype=np.float32)
+    std = np.array(std, dtype=np.float32)
+    def _fn(img):
+        return (img - mean) / std         <span class="c"># لكل channel</span>
+    return _fn
+
+def random_hflip(p=0.5):
+    def _fn(img):
+        if np.random.random() &lt; p:
+            return img[:, ::-1, :].copy() <span class="c"># اقلب العرض</span>
+        return img
+    return _fn
+
+def random_crop(pad=4):
+    def _fn(img):
+        h, w = img.shape[:2]
+        padded = np.pad(img, ((pad, pad), (pad, pad), (0, 0)), mode="reflect")  <span class="c"># reflect مش zeros</span>
+        y = np.random.randint(0, 2 * pad + 1)
+        x = np.random.randint(0, 2 * pad + 1)
+        return padded[y:y + h, x:x + w, :]
+    return _fn
+
+def compose(*fns):
+    def _fn(img):
+        for fn in fns:
+            img = fn(img)
+        return img
+    return _fn</pre></div>
+
+  <h3>خطوة ٣: Mixup و soft cross-entropy</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def mixup_batch(x, y, num_classes, alpha=0.2):
+    if alpha &lt;= 0:
+        return x, F.one_hot(y, num_classes).float()
+    lam = float(np.random.beta(alpha, alpha))           <span class="c"># λ من Beta</span>
+    idx = torch.randperm(x.size(0), device=x.device)    <span class="c"># كل صورة تتخلط مع واحدة عشوائية من نفس الـ batch</span>
+    x_mixed = lam * x + (1 - lam) * x[idx]
+    y_onehot = F.one_hot(y, num_classes).float()
+    y_mixed = lam * y_onehot + (1 - lam) * y_onehot[idx]
+    return x_mixed, y_mixed
+
+def soft_cross_entropy(logits, soft_targets):
+    log_probs = F.log_softmax(logits, dim=-1)           <span class="c"># مستقر رقميًا</span>
+    return -(soft_targets * log_probs).sum(dim=-1).mean()</pre></div>
+  <p>الـ <code>soft_cross_entropy</code> هي cross-entropy ضد توزيع soft، ولو الـ target one-hot بالظبط بترجع الـ CE العادية.</p>
+
+  <h3>خطوة ٤: الموديل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MiniClassifier(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 32, 3, padding=1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),                               <span class="c"># 32 → 16</span>
+            nn.Conv2d(32, 64, 3, padding=1, bias=False), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, 3, padding=1, bias=False), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),                               <span class="c"># 16 → 8</span>
+            nn.Conv2d(64, 128, 3, padding=1, bias=False), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+        )
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1), nn.Flatten(),         <span class="c"># global average pool</span>
+            nn.Linear(128, num_classes),                   <span class="c"># logits خام، من غير softmax</span>
+        )
+    def forward(self, x):
+        return self.head(self.features(x))</pre></div>
+
+  <h3>خطوة ٥: الـ training loop والـ evaluation</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def train_one_epoch(model, loader, optimizer, device, num_classes, use_mixup=True):
+    model.train()                                   <span class="c"># invariant 1</span>
+    total, correct, loss_sum = 0, 0, 0.0
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        if use_mixup:
+            x_m, y_soft = mixup_batch(x, y, num_classes)
+            logits = model(x_m)
+            loss = soft_cross_entropy(logits, y_soft)
+        else:
+            logits = model(x)
+            loss = F.cross_entropy(logits, y, label_smoothing=0.1)
+        optimizer.zero_grad()                       <span class="c"># invariant 2: قبل backward</span>
+        loss.backward()
+        optimizer.step()
+        loss_sum += loss.item() * x.size(0)         <span class="c"># invariant 3: .item()</span>
+        total += x.size(0)
+        with torch.no_grad():                       <span class="c"># مع mixup ده تقريب بس</span>
+            pred = logits.argmax(dim=-1)
+            correct += (pred == y).sum().item()
+    return loss_sum / total, correct / total
+
+@torch.no_grad()                                    <span class="c"># invariant 4</span>
+def evaluate(model, loader, device, num_classes):
+    model.eval()
+    total, correct, loss_sum = 0, 0, 0.0
+    cm = torch.zeros(num_classes, num_classes, dtype=torch.long)
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        logits = model(x)
+        loss = F.cross_entropy(logits, y)
+        pred = logits.argmax(dim=-1)                <span class="c"># invariant 5: argmax على الـ logits</span>
+        for t, p in zip(y.cpu(), pred.cpu()):
+            cm[t, p] += 1                           <span class="c"># صف = الحقيقة، عمود = التوقع</span>
+        loss_sum += loss.item() * x.size(0)
+        total += x.size(0)
+        correct += (pred == y).sum().item()
+    return loss_sum / total, correct / total, cm
+
+def per_class_report(cm):
+    tp = cm.diag().float()
+    fp = cm.sum(dim=0).float() - tp                 <span class="c"># العمود ناقص القطر</span>
+    fn = cm.sum(dim=1).float() - tp                 <span class="c"># الصف ناقص القطر</span>
+    prec = tp / (tp + fp).clamp_min(1)
+    rec = tp / (tp + fn).clamp_min(1)
+    f1 = 2 * prec * rec / (prec + rec).clamp_min(1e-9)
+    return prec, rec, f1</pre></div>
+  <p><b>الـ ٥ invariants</b> اللي تراجعها في أي training loop: (١) <code>model.train()</code> قبل التدريب و<code>model.eval()</code> قبل التقييم عشان الـ dropout والـ batchnorm، (٢) <code>zero_grad()</code> قبل <code>backward()</code>، (٣) <code>.item()</code> وانت بتجمع الأرقام عشان الـ graph ميفضلش عايش في الميموري، (٤) <code>@torch.no_grad()</code> في التقييم، (٥) argmax على الـ logits مش الـ softmax (نفس النتيجة بعملية أقل).</p>
+
+  <h3>خطوة ٦: جمّع كله</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def main():
+    torch.manual_seed(0)
+    X, Y = synthetic_cifar(num_per_class=200)
+    split = int(0.9 * len(X))                       <span class="c"># 90% train / 10% val</span>
+    X_train, Y_train = X[:split], Y[:split]
+    X_val, Y_val = X[split:], Y[split:]
+
+    mean, std = [0.5, 0.5, 0.5], [0.25, 0.25, 0.25]
+    train_tf = compose(random_hflip(), random_crop(pad=4), standardize(mean, std))
+    eval_tf = standardize(mean, std)                <span class="c"># مفيش augmentation في الـ eval</span>
+
+    train_loader = DataLoader(ArrayDataset(X_train, Y_train, train_tf), batch_size=128, shuffle=True, num_workers=0)
+    val_loader = DataLoader(ArrayDataset(X_val, Y_val, eval_tf), batch_size=256, shuffle=False, num_workers=0)
+
+    device = get_device()
+    model = MiniClassifier(num_classes=10).to(device)
+    optimizer = SGD(model.parameters(), lr=0.05, momentum=0.9, weight_decay=5e-4, nesterov=True)
+    scheduler = CosineAnnealingLR(optimizer, T_max=5)
+
+    for epoch in range(5):
+        current_lr = scheduler.get_last_lr()[0]
+        tr_loss, tr_acc = train_one_epoch(model, train_loader, optimizer, device, 10, use_mixup=True)
+        va_loss, va_acc, cm = evaluate(model, val_loader, device, 10)
+        scheduler.step()                            <span class="c"># مرة كل epoch</span>
+        print(f"epoch {epoch}  lr {current_lr:.4f}  "
+              f"train {tr_loss:.3f}/{tr_acc:.3f}  val {va_loss:.3f}/{va_acc:.3f}")
+
+    prec, rec, f1 = per_class_report(cm)
+    print("\nper-class metrics:")
+    for c in range(10):
+        print(f"  class {c}  prec {prec[c]:.3f}  rec {rec[c]:.3f}  f1 {f1[c]:.3f}")
+
+if __name__ == "__main__":
+    main()</pre></div>
+  <details><summary>شكل الناتج المتوقع</summary>
+    <p>٥ سطور واحد لكل epoch بالشكل ده (الأرقام بتختلف حسب الجهاز)، وبعدين ١٠ سطور per-class:</p>
+    <pre class="term">epoch 0  lr 0.0500  train …/…  val …/…
+...
+epoch 4  lr …  train …/…  val …/…
+
+per-class metrics:
+  class 0  prec …  rec …  f1 …
+  ...</pre>
+    <p>الدرس بيقول إن على الداتا الصناعية دي الـ val accuracy بتوصل لقريب من الكمال في حوالي ٥ epochs، وده المقصود: الـ pipeline سليمة والموديل قادر يتعلم اللي ينفع يتعلم. لاحظ إن الـ train accuracy أقل من الـ val غالبًا، لأنها محسوبة على صور متخلطة بالـ mixup.</p>
+  </details>
+
+  <h3>خطوة ٧: اطبع الـ confusion matrix</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def print_confusion(cm, labels=None):
+    c = cm.shape[0]
+    labels = labels or [str(i) for i in range(c)]
+    print(f"{'':>6}" + "".join(f"{l:>5}" for l in labels))       <span class="c"># العناوين = التوقعات</span>
+    for i in range(c):
+        print(f"{labels[i]:>6}" + "".join(f"{v:>5}" for v in cm[i].tolist()))
+    <span class="c"># وبعدها اطبع prec/rec/f1 لكل class زي per_class_report</span></pre></div>
+  <p>الصفوف = الـ classes الحقيقية، الأعمدة = التوقعات. لو فيه تجمّع بره القطر بين 3 و5 يبقى الموديل بيخلط بينهم، وده بيديك نقطة بداية: داتا أكتر لـ classes دي بالذات أو augmentation مخصوص.</p>
+
+  <h3>Use It: نفس الكلام بـ torchvision على CIFAR-10 الحقيقي</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torchvision.datasets import CIFAR10
+from torchvision.transforms import Compose, RandomCrop, RandomHorizontalFlip, ToTensor, Normalize
+
+mean = (0.4914, 0.4822, 0.4465)    <span class="c"># محسوبة على CIFAR-10 train، مش ImageNet</span>
+std = (0.2470, 0.2435, 0.2616)
+train_tf = Compose([
+    RandomCrop(32, padding=4, padding_mode="reflect"),
+    RandomHorizontalFlip(),
+    ToTensor(),
+    Normalize(mean, std),
+])
+eval_tf = Compose([ToTensor(), Normalize(mean, std)])
+
+train_ds = CIFAR10(root="./data", train=True,  download=True, transform=train_tf)
+val_ds   = CIFAR10(root="./data", train=False, download=True, transform=eval_tf)</pre></div>
+  <p>حاجتين: الـ mean/std <b>خاصة بالداتا</b> (محسوبة على CIFAR-10 training set)، والـ reflect pad هو الافتراضي المتعارف عليه. لو نسخت أرقام ImageNet هنا، الدرس بيقول إنها تسريب ~1% accuracy محدش بيلاحظه.</p>
+  <div class="note ai"><strong>Ship It:</strong> الدرس بيطلّع ملفين في <code>outputs/</code>: prompt بيراجع أي training script على الـ ٥ invariants ويطلّع أول مخالفة، و skill بياخد confusion matrix وأسماء الـ classes ويلخّص الأخطاء ويقترح أهم تصليح واحد.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d60-ex">
+  <div class="station-head"><span class="tag">05</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل) Mixup ولا لأ:</b> درّب نفس الموديل بـ mixup ومن غيره ٥ epochs على الداتا الصناعية. ارسم train وval loss للاتنين. اشرح ليه الـ train loss مع mixup أعلى بس الـ val accuracy زي بعض أو أحسن.
+      <details><summary>تلميح</summary>نادي <code>train_one_epoch(..., use_mixup=False)</code> في التجربة التانية (هتستخدم label smoothing 0.1). خزّن الأرقام في list وارسم بـ matplotlib. السبب: مع mixup الـ targets نفسها soft فمستحيل الـ loss يوصل لصفر، والموديل بيتدرب على مهمة أصعب، بس اللي بيتعلمه بيعمم أحسن.</details></li>
+    <li><b>(متوسط) Cutout + ablation:</b> اعمل Cutout (صفّر مربع 8×8 عشوائي في كل صورة تدريب) وقارن: من غير augmentation، hflip+crop، hflip+crop+cutout، hflip+crop+mixup. اكتب الـ val accuracy لكل واحد.
+      <details><summary>تلميح</summary><pre>def cutout(size=8):
+    def _fn(img):
+        h, w = img.shape[:2]
+        y = np.random.randint(0, h - size + 1)
+        x = np.random.randint(0, w - size + 1)
+        img = img.copy(); img[y:y+size, x:x+size, :] = 0
+        return img
+    return _fn</pre>حطّه في الـ compose <b>قبل</b> الـ standardize (عشان الصفر يبقى أسود فعلًا). ثبّت الـ seed في كل تجربة عشان المقارنة تبقى عادلة. على الداتا الصناعية الفروق ممكن تبقى صغيرة لأنها سهلة.</details></li>
+    <li><b>(صعب) CIFAR-100 و ResNet-34:</b> ابني pipeline لـ CIFAR-100 (١٠٠ class، نفس الحجم) وحاول توصل لنتيجة ResNet-34 المنشورة في حدود 1%. إضافي: جرّب ٣ learning rates و٢ weight decays، سجّل في CSV، وطلّع جدول أكتر الخلطات من الـ confusion matrix.
+      <details><summary>تلميح</summary>احسب mean/std على CIFAR-100 train نفسه. ده محتاج GPU ووقت؛ ابدأ بـ <code>torchvision.models.resnet34(num_classes=100)</code> وغيّر أول conv لـ 3×3 stride 1 وشيل الـ maxpool لأن الصور 32×32 صغيرة. لأكتر الخلطات: صفّر القطر، واعمل <code>topk</code> على الـ matrix بعد ما تفردها.</details></li>
+    <li><b>إضافة مني · فحص pipeline حقيقي:</b> خد أي training script قديم عندك (أو كود من الإنترنت) وعدّي عليه بالـ ٥ invariants + ٣ باجز الـ pipeline (softmax قبل الـ CE، augmentation على الـ val، الـ mean/std غلط). اكتب تقرير صغير: كل invariant اتحقق ولا لأ ورقم السطر. بعدين اعمل <code>sanity_check(model, loader)</code> تدرّب على batch واحد ١٠٠ step وتتأكد إن الـ loss بيقرب من الصفر (overfit a single batch).
+      <details><summary>تلميح</summary>لو الموديل مش قادر يحفظ batch واحد، الباج غالبًا في الـ loss أو الـ labels أو الـ zero_grad، مش في البيانات. استخدم <code>use_mixup=False</code> وشيل الـ label smoothing في الاختبار ده، وإلا الـ loss مش هيوصل لصفر أصلًا. ده نفس اللي الـ prompt بتاع <code>outputs/</code> بيعمله، بس بإيدك.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d60-extra">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني: اللي الدرس مقالوش صراحة</h2></div>
+  <h3>حدس: الـ classifier = embedding + طبقة dot products</h3>
+  <p>آخر <code>Linear(128, 10)</code> في الموديل هو ١٠ متجهات (صف لكل class). الـ logit بتاع كل class هو dot product بين الـ feature vector بتاع الصورة ومتجه الـ class ده. يعني الـ CNN كله شغلته يحط الصور في فضاء ١٢٨ بُعد بحيث كل صورة تبقى «في نفس اتجاه» متجه الـ class بتاعها. ده نفس الـ dot product من يوم ١، وده ليه الـ retrieval بيشتغل بالقرب من مراكز الـ classes.</p>
+  <h3>أخطاء شائعة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الغلطة</th><th>العَرَض</th><th>الحل</th></tr>
+    <tr><td>نسيت <code>model.eval()</code></td><td>الـ val accuracy بيتنطط وبيختلف كل مرة تشغّل</td><td>eval قبل التقييم و train بعده</td></tr>
+    <tr><td>حسبت mean/std على كل الداتا (train + val)</td><td>تسريب بسيط، الأرقام أحلى من الحقيقة</td><td>احسبهم على الـ train بس</td></tr>
+    <tr><td>طبقت random augmentation على الـ val</td><td>الـ val accuracy متذبذب وأوطى</td><td>الـ eval_tf = normalise بس</td></tr>
+    <tr><td><code>shuffle=False</code> في الـ train loader والداتا مترتبة بالـ class</td><td>الـ loss بيتنطط جامد، والـ batchnorm بيشوف class واحد كل batch</td><td><code>shuffle=True</code></td></tr>
+    <tr><td>جمعت <code>loss</code> بدل <code>loss.item()</code></td><td>الميموري بتزيد كل batch لحد ما يحصل OOM</td><td><code>.item()</code></td></tr>
+    <tr><td>نفس الصورة (أو near-duplicate) في train و val</td><td>accuracy عالية جدًا وبعدين بتنهار في الـ production</td><td>dedup قبل الـ split</td></tr>
+  </table></div>
+  <h3>فين بيظهر في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li>• الـ LLM نفسه classifier عملاق: كل token جديد هو classification على الـ vocabulary (عشرات الآلاف من الـ classes) بـ logits وsoftmax وcross-entropy. نفس المعادلة بالظبط.</li>
+    <li>• label smoothing اتستخدم في تدريب الـ Transformer الأصلي للترجمة.</li>
+    <li>• الـ temperature اللي بتحطها في API الـ LLM هي نفس فكرة temperature scaling: بتقسم الـ logits على رقم قبل الـ softmax.</li>
+    <li>• في الـ agents، أي «router» بيختار tool أو intent هو classifier. والـ confusion matrix هي أحسن أداة تعرف بيها الـ router بيخلط بين أي tools، والـ calibration مهمة عشان تقرر «لو الثقة أقل من كذا، اسأل اليوزر».</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d60-quiz">
+  <div class="station-head"><span class="tag">07</span><h2>كويز</h2></div>
+  <div class="quiz" id="d60-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d60-done">
+  <div class="station-head"><span class="tag">08</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d60-check">
+    <li><label><input type="checkbox" data-ck="pipe"> أقدر أرسم الـ pipeline من الذاكرة وأقول كل خطوة ممكن يستخبى فيها باج إيه</label></li>
+    <li><label><input type="checkbox" data-ck="ce"> فهمت ليه الـ CE بتاخد logits خام وجربت باج الـ softmax مرتين</label></li>
+    <li><label><input type="checkbox" data-ck="mix"> لعبت في mixup وcutmix وفهمت ليه الـ train loss بيعلى</label></li>
+    <li><label><input type="checkbox" data-ck="cm"> أقدر أحسب precision وrecall من confusion matrix</label></li>
+    <li><label><input type="checkbox" data-ck="code"> كتبت الكود بإيدي وشغّلت main.py</label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="quiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Logits + Cross-entropy</td><td>كل classifier، والـ next-token prediction في كل LLM</td></tr>
+    <tr><td>Augmentation</td><td>تدريب أي موديل رؤية، والـ self-supervised learning (زي SimCLR)</td></tr>
+    <tr><td>Mixup / Cutmix</td><td>وصفات تدريب الـ CNNs والـ Vision Transformers الحديثة</td></tr>
+    <tr><td>Label smoothing</td><td>الـ Transformer الأصلي، ووصفات ImageNet</td></tr>
+    <tr><td>Confusion matrix / per-class</td><td>تقييم أي classifier، الـ routers في الـ agents، فلاتر الـ moderation</td></tr>
+    <tr><td>Calibration / temperature</td><td>الـ temperature في الـ LLMs، قرارات «اسأل اليوزر لو مش متأكد»</td></tr>
+    <tr><td>Top-k accuracy</td><td>ImageNet، والـ retrieval (recall@k) في الـ RAG</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Transfer Learning &amp; Fine-Tuning. بدل ما تدرّب من الصفر، هتاخد backbone متدرب وتعدّله على داتاك. وهنبدأ بتسخين على الـ pipeline بتاعة النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F04-image-classification" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/04-image-classification</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+
+// roadmap
+const rm=$('d60-roadmap');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===4)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: softmax / CE ----------
+const CN=['cat','dog','car','ship'];let Z=[1.0,0.5,2.0,-0.5];
+const lg=$('d60-logits');
+CN.forEach((n,i)=>{const l=document.createElement('label');l.innerHTML=n+' logit <span>'+Z[i]+'</span><input type="range" min="-5" max="8" step="0.1" value="'+Z[i]+'">';
+  const inp=l.querySelector('input'),sp=l.querySelector('span');inp.addEventListener('input',()=>{Z[i]=+inp.value;sp.textContent=f(Z[i],1);drawCE()});lg.appendChild(l)});
+const cc=$('d60-ceCanvas'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+const softmax=z=>{const m=Math.max(...z),e=z.map(v=>Math.exp(v-m)),s=e.reduce((a,b)=>a+b,0);return e.map(v=>v/s)};
+function drawCE(){
+  const y=+$('d60-ytrue').value,eps=+$('d60-eps').value,dbl=$('d60-dbl').checked,C=4;
+  $('d60-epsv').textContent=f(eps,2);
+  let p=softmax(Z);if(dbl)p=softmax(p);
+  const t=CN.map((_,i)=>i===y?1-eps+eps/C:eps/C);
+  const ce=-t.reduce((a,ti,i)=>a+ti*Math.log(Math.max(p[i],1e-12)),0);
+  cx.clearRect(0,0,CW,CH);
+  const bw=CW/C,base=CH-34,hmax=base-20;
+  CN.forEach((n,i)=>{const x0=i*bw+14,w=bw-28;
+    cx.fillStyle=css('--soft');cx.fillRect(x0,base-hmax,w,hmax);
+    cx.fillStyle=i===y?css('--ok'):css('--vec-a');cx.fillRect(x0,base-hmax*p[i],w*0.6,hmax*p[i]);
+    cx.fillStyle=css('--vec-b');cx.globalAlpha=.75;cx.fillRect(x0+w*0.62,base-hmax*t[i],w*0.38,hmax*t[i]);cx.globalAlpha=1;
+    cx.fillStyle=css('--ink');cx.font='13px JetBrains Mono, monospace';cx.textAlign='center';
+    cx.fillText(n,x0+w/2,base+16);cx.fillText(f(p[i],2),x0+w*0.3,base-hmax*p[i]-5);
+  });
+  cx.textAlign='left';cx.font='11px JetBrains Mono, monospace';cx.fillStyle=css('--vec-a');cx.fillText('■ p (softmax)',6,12);
+  cx.fillStyle=css('--vec-b');cx.fillText('■ target',120,12);cx.fillStyle=css('--muted');cx.fillText('uniform = 0.25',210,12);
+  cx.strokeStyle=css('--muted');cx.setLineDash([4,4]);cx.beginPath();cx.moveTo(0,base-hmax*.25);cx.lineTo(CW,base-hmax*.25);cx.stroke();cx.setLineDash([]);
+  $('d60-ce').textContent=f(ce,3);$('d60-pt').textContent=f(p[y],3);
+  const am=p.indexOf(Math.max(...p));$('d60-am').textContent=CN[am];
+  const v=$('d60-ceVerdict');
+  if(dbl){v.textContent='باج: الاحتمالات اتكبست ناحية 0.25، والـ gradient تقريبًا مات';v.style.color=css('--bad')}
+  else if(am===y&&p[y]>0.8){v.textContent='الموديل واثق وصح: loss صغيرة';v.style.color=css('--ok')}
+  else if(am===y){v.textContent='صح بس مش واثق قوي';v.style.color=css('--muted')}
+  else{v.textContent='غلط: الـ loss كبيرة والـ gradient هيزق الـ logit الصح لفوق';v.style.color=css('--bad')}
+}
+['d60-ytrue','d60-eps','d60-dbl'].forEach(id=>$(id).addEventListener('input',drawCE));$('d60-dbl').addEventListener('change',drawCE);
+drawCE();
+
+// ---------- Lab 2: augmentation ----------
+function rng(seed){let s=seed>>>0||1;return()=>{s^=s<<13;s>>>=0;s^=s>>17;s^=s<<5;s>>>=0;return s/4294967296}}
+const centres=[];{const r=rng(7);for(let c=0;c<10;c++)centres.push([r(),r(),r()])}
+function gauss(r){let u=0,v=0;while(!u)u=r();while(!v)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function makeImg(c,seed){const r=rng(seed),ce=centres[c],fq=2+c,img=new Float32Array(32*32*3);
+  for(let i=0;i<32;i++)for(let j=0;j<32;j++){const yy=i/31,xx=j/31,k=(i*32+j)*3;
+    const v=[Math.sin(xx*fq)*.5+ce[0],Math.cos(yy*fq)*.5+ce[1],(xx+yy)*.5*ce[2]];
+    for(let ch=0;ch<3;ch++)img[k+ch]=Math.min(1,Math.max(0,v[ch]+gauss(r)*.08))}return img}
+const sa=$('d60-ca'),sb=$('d60-cb');
+for(let c=0;c<10;c++){[sa,sb].forEach(s=>{const o=document.createElement('option');o.value=c;o.textContent='class '+c;s.appendChild(o)})}
+sa.value=1;sb.value=7;
+let mode='none',lam=0.7,rnd=rng(42),aug={},IA,IB;
+function regen(){IA=makeImg(+sa.value,11+ +sa.value);IB=makeImg(+sb.value,99+ +sb.value);newRand()}
+function newRand(){aug={cy:Math.floor(rnd()*9),cx:Math.floor(rnd()*9),oy:Math.floor(rnd()*25),ox:Math.floor(rnd()*25),
+  bw:8+Math.floor(rnd()*12),bh:8+Math.floor(rnd()*12)};aug.by=Math.floor(rnd()*(33-aug.bh));aug.bx=Math.floor(rnd()*(33-aug.bw))}
+const px=(img,i,j,ch)=>img[(i*32+j)*3+ch];
+function refl(k){const n=32;if(k<0)return -k;if(k>=n)return 2*n-2-k;return k}
+function transform(){const out=new Float32Array(32*32*3);let la=1;
+  for(let i=0;i<32;i++)for(let j=0;j<32;j++)for(let ch=0;ch<3;ch++){let v=px(IA,i,j,ch);
+    if(mode==='flip')v=px(IA,i,31-j,ch);
+    else if(mode==='cropz'||mode==='cropr'){const si=i+aug.cy-4,sj=j+aug.cx-4;
+      if(mode==='cropz')v=(si<0||si>31||sj<0||sj>31)?0:px(IA,si,sj,ch);else v=px(IA,refl(si),refl(sj),ch)}
+    else if(mode==='cutout'){if(i>=aug.oy&&i<aug.oy+8&&j>=aug.ox&&j<aug.ox+8)v=0}
+    else if(mode==='mixup')v=lam*px(IA,i,j,ch)+(1-lam)*px(IB,i,j,ch);
+    else if(mode==='cutmix'){if(i>=aug.by&&i<aug.by+aug.bh&&j>=aug.bx&&j<aug.bx+aug.bw)v=px(IB,i,j,ch)}
+    out[(i*32+j)*3+ch]=v}
+  if(mode==='mixup')la=lam;if(mode==='cutmix')la=1-aug.bw*aug.bh/1024;
+  return [out,la]}
+const ac=$('d60-augCanvas'),ax=AI.setupCanvas(ac),AW=+ac.dataset.w,AH=+ac.dataset.h;
+function blit(img,x0,y0,s){for(let i=0;i<32;i++)for(let j=0;j<32;j++){const k=(i*32+j)*3;
+  ax.fillStyle='rgb('+Math.round(img[k]*255)+','+Math.round(img[k+1]*255)+','+Math.round(img[k+2]*255)+')';ax.fillRect(x0+j*s,y0+i*s,s+.5,s+.5)}}
+const notes={none:'الصورة زي ما هي.',flip:'اتقلبت أفقيًا. نفس الـ label.',cropz:'لاحظ الحواف السودا: إشارة صناعية الموديل ممكن يستغلها عشان يعرف مكان الـ crop.',cropr:'الحواف اتملت بمراية للبيكسلز، فالصورة لسه شكلها طبيعي.',cutout:'مربع 8×8 اتصفّر. الموديل لازم يعتمد على باقي الصورة.',mixup:'البيكسلز والـ label اتخلطوا بنفس الـ λ.',cutmix:'مستطيل من B جوه A، والـ label = نسبة المساحة.'};
+function drawAug(){const [o,la]=transform(),s=5,g=(AW-3*s*32)/4;
+  ax.clearRect(0,0,AW,AH);blit(IA,g,24,s);blit(IB,2*g+160,24,s);blit(o,3*g+320,24,s);
+  ax.fillStyle=css('--ink');ax.font='13px JetBrains Mono, monospace';ax.textAlign='center';
+  ax.fillText('A (class '+sa.value+')',g+80,16);ax.fillText('B (class '+sb.value+')',2*g+240,16);ax.fillText('result',3*g+400,16);
+  ax.fillText('y = '+f(la,2)+'·A + '+f(1-la,2)+'·B',3*g+400,AH-6);ax.textAlign='left';
+  $('d60-ylab').textContent='A: '+f(la,2)+(la<1?' · B: '+f(1-la,2):'');$('d60-mode').textContent=mode;$('d60-lamv').textContent=f(lam,2);
+  $('d60-augNote').textContent=notes[mode]}
+document.querySelectorAll('[data-d60aug]').forEach(b=>b.addEventListener('click',()=>{mode=b.dataset.d60aug;newRand();drawAug()}));
+$('d60-lam').addEventListener('input',e=>{lam=+e.target.value;if(mode!=='mixup')mode='mixup';drawAug()});
+function gammaS(a){/* Marsaglia-Tsang for a<1 via boost */const b=a<1?a+1:a,d=b-1/3,c=1/Math.sqrt(9*d);let x,v;
+  for(;;){do{x=gauss(rnd);v=1+c*x}while(v<=0);v=v*v*v;const u=rnd();if(Math.log(u)<.5*x*x+d-d*v+d*Math.log(v))break}
+  let g=d*v;if(a<1)g*=Math.pow(rnd(),1/a);return g}
+$('d60-beta').addEventListener('click',()=>{const x=gammaS(.2),y=gammaS(.2);lam=x/(x+y);if(!isFinite(lam))lam=.5;$('d60-lam').value=lam;mode='mixup';drawAug()});
+[sa,sb].forEach(s=>s.addEventListener('change',()=>{regen();drawAug()}));
+regen();drawAug();
+
+// ---------- Lab 3: confusion matrix ----------
+const K=10;let CM=[];
+function scen(k){const r=rng(k==='good'?3:k==='pair'?5:k==='major'?9:13);CM=[];
+  for(let i=0;i<K;i++){const row=new Array(K).fill(0);
+    if(k==='major'){const n=i===0?900:11;for(let t=0;t<n;t++){const q=r();row[i===0?(q<.99?0:1+Math.floor(r()*9)):(q<.15?i:0)]++}}
+    else{const n=100,acc=k==='good'?.94:k==='pair'?.95:.6;
+      for(let t=0;t<n;t++){const q=r();let j;
+        if(k==='pair'&&(i===3||i===5)){j=q<.62?i:q<.95?(i===3?5:3):Math.floor(r()*K)}
+        else j=q<acc?i:Math.floor(r()*K);row[j]++}}
+    CM.push(row)}drawCM()}
+const mc=$('d60-cmCanvas'),mx=AI.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h,PAD=40,cs=(MW-PAD-10)/K;
+function stats(){const tp=CM.map((r,i)=>r[i]),rs=CM.map(r=>r.reduce((a,b)=>a+b,0)),cs2=[...Array(K)].map((_,j)=>CM.reduce((a,r)=>a+r[j],0));
+  const tot=rs.reduce((a,b)=>a+b,0),pr=tp.map((t,i)=>t/Math.max(1,cs2[i])),rc=tp.map((t,i)=>t/Math.max(1,rs[i])),
+  f1=pr.map((p,i)=>2*p*rc[i]/Math.max(1e-9,p+rc[i]));return{tp,tot,pr,rc,f1,rs}}
+function drawCM(){const S=stats();mx.clearRect(0,0,MW,MH);
+  let mxOff=1,top=[0,1,0];for(let i=0;i<K;i++)for(let j=0;j<K;j++)if(i!==j&&CM[i][j]>top[2])top=[i,j,CM[i][j]];
+  for(let i=0;i<K;i++){const rmax=Math.max(1,S.rs[i]);for(let j=0;j<K;j++){const v=CM[i][j],a=v/rmax;
+    mx.fillStyle=i===j?css('--ok'):css('--bad');mx.globalAlpha=v?0.12+0.88*a:0.04;mx.fillRect(PAD+j*cs+1,PAD+i*cs+1,cs-2,cs-2);mx.globalAlpha=1;
+    mx.fillStyle=a>.5?css('--paper'):css('--ink');mx.font='12px JetBrains Mono, monospace';mx.textAlign='center';
+    if(v)mx.fillText(v,PAD+j*cs+cs/2,PAD+i*cs+cs/2+4)}}
+  mx.fillStyle=css('--muted');mx.font='12px JetBrains Mono, monospace';
+  for(let k=0;k<K;k++){mx.fillText(k,PAD+k*cs+cs/2,PAD-6);mx.fillText(k,PAD/2,PAD+k*cs+cs/2+4)}
+  mx.textAlign='left';mx.fillText('predicted →',PAD,12);mx.save();mx.translate(10,PAD+60);mx.rotate(Math.PI/2);mx.fillText('true →',0,0);mx.restore();
+  const acc=S.tp.reduce((a,b)=>a+b,0)/Math.max(1,S.tot),mf1=S.f1.reduce((a,b)=>a+b,0)/K;
+  $('d60-acc').textContent=f(acc*100,1)+'%';$('d60-mf1').textContent=f(mf1,3);$('d60-top').textContent=top[2]?top[0]+'→'+top[1]+' ('+top[2]+')':'-';
+  const v=$('d60-cmVerdict');
+  if(acc>.85&&mf1<.5){v.textContent='الـ accuracy بتكدب: عالية بس الـ macro F1 واطي، الـ classes الصغيرة ضايعة';v.style.color=css('--bad')}
+  else if(top[2]>15){v.textContent='الأخطاء متركزة في زوج واحد: افحص صور '+top[0]+' و'+top[1]+' بعينك';v.style.color=css('--vec-b')}
+  else if(acc>.9){v.textContent='موديل صحي: القطر غامق والأخطاء متفرقة';v.style.color=css('--ok')}
+  else{v.textContent='أخطاء منتشرة في كل حتة: غالبًا مشكلة في الـ pipeline أو الموديل صغير';v.style.color=css('--muted')}
+  let h='<tr><th>class</th><th>prec</th><th>rec</th><th>f1</th></tr>';
+  for(let k=0;k<K;k++)h+='<tr><td class="ltr">'+k+'</td><td class="ltr">'+f(S.pr[k],2)+'</td><td class="ltr"'+(S.rc[k]<.5?' style="color:var(--bad)"':'')+'>'+f(S.rc[k],2)+'</td><td class="ltr">'+f(S.f1[k],2)+'</td></tr>';
+  $('d60-pcr').innerHTML=h}
+mc.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(mc,e),j=Math.floor((x-PAD)/cs),i=Math.floor((y-PAD)/cs);
+  if(i<0||j<0||i>=K||j>=K)return;
+  if(e.shiftKey){if(CM[i][j]>0){CM[i][j]--;CM[i][i]++}}else if(i!==j){if(CM[i][i]>0){CM[i][i]--;CM[i][j]+=1}}else CM[i][i]++;
+  drawCM()});
+document.querySelectorAll('[data-d60cm]').forEach(b=>b.addEventListener('click',()=>scen(b.dataset.d60cm)));
+scen('good');
+
+// ---------- quiz ----------
+const Q=[
+ ['الموديل بيطلّع logits خام شكلها (N, C). كتبت <code>loss = cross_entropy(softmax(logits), y)</code>. إيه اللي هيبوظ؟'.replace(/<[^>]+>/g,''),['الـ cross_entropy بتعمل softmax جواها، فانت بتحسب softmax(softmax(logits)) فالاحتمالات بتقرب من المتساوية والـ gradients بتبقى ملهاش لازمة','ولا حاجة، ده الاستخدام الصح','الـ cross_entropy هترمي ValueError على الـ shape','الـ accuracy هتقل 1/C بالظبط'],0,'الـ cross_entropy في PyTorch مستنية logits خام وبتدمج log_softmax وNLL جواها عشان الاستقرار. الـ softmax مرتين بيكبس الـ logits ناحية التساوي والـ gradients بتقرب من الصفر. الـ loss شكلها معقول كام step وبعدين بتقف. ابعت logits خام دايمًا.'],
+ ['classifier لـ 10 classes جاب accuracy 92%. class 0 فيه 9,000 مثال، والـ 9 الباقيين متقسم عليهم 1,000 (حوالي 111 لكل واحد). الرقم ده بيخبي إيه؟',['الموديل ممكن يكون بيقول class 0 لكل حاجة ويجيب 90% (9000/10000)، والـ 2% الباقيين ممكن ييجوا من أي class. الـ per-class precision/recall هو اللي بيقولك الحقيقة','ولا حاجة، الـ accuracy هي الـ accuracy','الموديل أكيد بيعمل overfitting','الـ validation loss غلط'],0,'على تقسيمة 9000/1000، إنك تقول الأغلبية دايمًا بيجيب 90%. يعني 92% ممكن تخبي ٩ classes صغيرين كل واحد حوالي 20% بس. عشان كده الـ accuracy لوحدها عمرها ما تبرر إنك تشحن classifier.'],
+ ['الـ Mixup بيبدل الـ one-hot labels بـ soft targets زي λ·yᵢ + (1−λ)·yⱼ. ليه ده بيحسن التعميم؟',['بيضاعف الـ batch size الفعلي','بيضمن train loss = صفر','بيخليك تدرب بـ learning rate أكبر','بيجبر الموديل يطلّع توقعات ناعمة بين الـ classes بدل ما يحفظ targets حادة، فالـ calibration والـ test accuracy بيتحسنوا'],3,'الـ one-hot بيزق الـ logits تبقى حادة جدًا عند كل نقطة تدريب، وده بيبوظ الـ calibration ويشجع الـ overfitting. الخلط المحدب بين الـ inputs والـ labels بيخلي الـ classifier يتصرف بنعومة بين النقط.'],
+ ['غيّرت <code>padding_mode="zeros"</code> لـ <code>"reflect"</code> في الـ RandomCrop على CIFAR-10. ليه الـ reflect أحسن؟'.replace(/<[^>]+>/g,''),['الـ zero padding بيعمل حواف سودا الموديل بيتعلم يعتمد عليها؛ الـ reflect بيعمل مراية لبيكسلز الحافة فالـ crops تفضل شكلها صور طبيعية','الـ reflect مطلوب للـ batch normalization','الـ reflect بيغير حجم الـ output','الـ reflect أسرع'],0,'الحواف السودا بتسرّب معلومة عن مكان الـ crop، والشبكة ممكن تبص على الركن و«تلغي» الـ augmentation ضمنيًا. الـ reflect بيحافظ على شكل الصورة الطبيعي فمفيش غش.'],
+ ['الـ confusion matrix بتقول إن أغلب الأخطاء class 3 اتوقع 5 و class 5 اتوقع 3. إيه أهم خطوة جاية؟',['كبّر الـ batch size','غيّر من SGD لـ Adam','بص على عينة من صور 3 و5 اللي الموديل بيخلط فيها؛ ممكن يكونوا متشابهين فعلًا، أو labels غلط، أو محتاج augmentation مخصوص أو إعادة labeling','زوّد داتا لكل الـ classes بالتساوي'],2,'لما الأخطاء متركزة في زوج واحد بره القطر، المشكلة محددة. افحص الصور دي: غالبًا هتلاقي labels غلط أو classes شبه بعض أو invariance بسيطة الموديل ماتعلمهاش. التغييرات العامة نادرًا ما بتفيد هنا.'],
+ ['(سؤال مني) بـ label smoothing ε = 0.1 و C = 5، الـ target للـ class الصح بيبقى كام؟',['0.9','0.92','1.0','0.1'],1,'1 − ε + ε/C = 1 − 0.1 + 0.02 = 0.92، وكل class تاني 0.02. المجموع 0.92 + 4×0.02 = 1.'],
+ ['(سؤال مني) نسيت <code>model.eval()</code> قبل التقييم، والموديل فيه BatchNorm. إيه اللي هيحصل غالبًا؟'.replace(/<[^>]+>/g,''),['ولا حاجة، BatchNorm بيتصرف نفس الطريقة','الـ BatchNorm هيستخدم إحصائيات الـ batch الحالي ويحدّث الـ running stats، فنتايج التقييم هتبقى متذبذبة وبتعتمد على تركيبة الـ batch','الكود هيرمي error','الـ gradients هتتحسب في التقييم بس من غير مشاكل'],1,'في وضع train الـ BatchNorm بيطبّع بإحصائيات الـ batch نفسه وبيحدّث الـ running mean/var. في eval بيستخدم الـ running stats الثابتة. عشان كده invariant رقم ١ أول حاجة تراجعها.']
+];
+AI.quiz($('d60-quizBox'),Q,5,()=>{const c=document.querySelector('#d60-check input[data-ck="quiz"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+AI.checklist(60,$('d60-check'));
+
+// theme
+AI.onTheme(()=>{if(!document.body.contains(cc))return false;drawCE();drawAug();drawCM()});
+})();
+</script>

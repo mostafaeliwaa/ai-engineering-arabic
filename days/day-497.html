@@ -1,0 +1,653 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 69 · End-to-End RAG System</span>
+  <h1>اليوم ٤٩٧: ركّب الست قطع في pipeline واحد، وخلّي الـ eval يحكم</h1>
+  <p class="lede">طول الدروس اللي فاتت بنيت قطع لوحدها: <b>chunker</b>، <b>hybrid retriever</b>، <b>cross-encoder reranker</b>، <b>query rewriter</b>، و<b>eval</b>. النهاردة بتركّبهم في ملف واحد، وتضيف <b>answer generator</b> بيستشهد بمصادره وبيقول «I do not know» لما مش واثق، وفي الآخر demo بيقفل نفسه بـ exit code يقول نجح ولا فشل. ده شكل السيستم اللي بتشحنه فعلًا.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>النوع: <b>Build</b></span>
+    <span>اللغة: <b>Python + PyTorch</b></span>
+    <span>قبله: <b>RAG Evaluation</b></span>
+    <span>بعده: <b>Task Spec Format</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone projects (Day 431 → 515)</span>
+    <div class="roadmap" id="d497-roadmap" aria-label="أيام الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d497-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت الـ eval بتاع الـ RAG. جاوب في دماغك الأول وبعدين افتح.</p>
+  <ol class="ex">
+    <li>الـ gold فيه ٣ documents، والـ top-5 جاب الـ ٣ كلهم. الـ recall@5 كام؟ وليه الـ recall هو الرقم اللي الناس بتقوله أكتر في الـ RAG؟
+      <details><summary>الإجابة</summary>recall@5 = 3/3 = 1.0. لأن الـ generator يقدر يتجاهل chunk زيادة مش مهمة، لكن مستحيل يطلّع إجابة من chunk عمره ما شافها.</details></li>
+    <li>الـ gold doc طلع في المركز التاني. الـ reciprocal rank بتاع السؤال ده كام؟
+      <details><summary>الإجابة</summary>1/2 = 0.5. والـ MRR هو متوسط الرقم ده على كل الأسئلة، وبيدّي وزن كبير جدًا للمركز الأول.</details></li>
+    <li>إيه الفرق بين <b>faithfulness</b> و<b>answer relevance</b>؟
+      <details><summary>الإجابة</summary>الـ faithfulness: هل كل claim في الإجابة متسند على الـ context اللي اتجاب؟ (مفيش اختراع). الـ answer relevance: هل الإجابة أصلًا بترد على السؤال؟ ممكن إجابة تبقى faithful ١٠٠٪ ومش relevant خالص.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة ونص</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>المشكلة + شكل الـ pipeline + معمل ١</div>
+    <div><b>20 min</b>الـ generator والـ refuse + معمل ٢</div>
+    <div><b>10 min</b>الـ demo اللي بيقفل نفسه + معمل ٣</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 -->
+<section id="d497-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: ست قطع شغالة لوحدها مش بتثبت أي حاجة</h2></div>
+  <p>كل قطعة كسبت في الـ demo بتاعها. بس ده مش معناه إن السيستم كسبان:</p>
+  <ul class="checklist">
+    <li>• الـ <b>chunker</b> ممكن يكسب في recall@5 على الـ corpus، ويخسر في recall@5 بتاع السيستم كله، لأن الـ retriever مش عارف يرتّب الـ chunks اللي هو طلّعها.</li>
+    <li>• الـ <b>reranker</b> ممكن يرفع الـ MRR على candidates صناعية، ويفشل على candidates حقيقية جاية من الـ bi-encoder، لأن الـ recall بتاع الـ bi-encoder عند الـ budget بتاع الـ rerank أصلًا قليل (الـ reranker مش هيرتّب حاجة مش موجودة قدامه).</li>
+    <li>• الـ <b>query rewriter</b> ممكن يطلّع الـ gold doc لفوق في سؤال، ويبوّظ السؤال اللي بعده لأن الـ LLM الـ mock رجّع hypothetical بايظ.</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> فريق كورة كل لاعب فيه بطل في التمرين لوحده. ده مش بيقولك الفريق هيكسب الماتش. الماتش نفسه هو الاختبار. هنا الماتش = الـ pipeline كله شغال end to end على نفس الـ qrels، بنفس الـ metric، من ملف orchestrator واحد بيوصّل كل حاجة ببعض.</div>
+  <p>لو الأرقام على الـ pipeline المتجمّع عدّت الأرقام في الـ demos المنفصلة، تبقى أثبتّ إن السيستم شغال. ده اللي بيتسمى <b>integration test</b>.</p>
+</section>
+
+<!-- 02 -->
+<section id="d497-wiring">
+  <div class="station-head"><span class="tag">02</span><h2>التوصيل: الـ pipeline جراف صغير، وكل stage دالة ليها توقيع ثابت</h2></div>
+  <p>المستندات بتدخل <b>Chunker</b> → بتتحط في <b>Hybrid Index</b>. السؤال بيدخل <b>Query Rewriter</b> → <b>Hybrid Retriever</b> (بيقرا من الـ index) → <b>Cross-Encoder Reranker</b> → <b>Answer Generator</b> (اللي بياخد السؤال الأصلي كمان) → إجابة بمصادر → <b>Eval</b> → تقرير الـ demo.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الـ Stage</th><th>بياخد</th><th>بيطلّع</th></tr>
+    <tr><td>Chunker</td><td>نص الـ document</td><td>List of <code>Chunk</code></td></tr>
+    <tr><td>Retriever</td><td>الـ query string</td><td>أحسن N chunk (top-N)</td></tr>
+    <tr><td>Rewriter (اختياري)</td><td>الـ query string</td><td>rewrites + hypothetical</td></tr>
+    <tr><td>Reranker</td><td>query + candidates</td><td>أحسن K chunk ومعاهم cross scores</td></tr>
+    <tr><td>Generator</td><td>query + الـ top-K</td><td>إجابة نصية فيها citations</td></tr>
+  </table></div>
+  <p>لما كل توقيع ثابت، التركيب بيبقى سهل. كلاس <code>Pipeline</code> شايل الخمس stages، وفيه method اسمها <code>query</code> بتشغّلهم بالترتيب. وكل stage <b>ممكن تتبدّل</b>: حط chunker أو retriever أو reranker تاني والـ pipeline لسه شغال.</p>
+  <div class="note"><strong>تشبيه:</strong> زي فيش الكهربا الموحّد. طالما كل جهاز ليه نفس الفيشة، تقدر تشيل التلاجة وتحط واحدة جديدة من غير ما تعيد تمديد البيت. الـ stage interface هي الفيشة.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الطلب ماشي جوه الـ pipeline</h3>
+      <p>دوس «شغّل سؤال» وتابع الطلب وهو بيعدّي على كل stage. دوس على أي مربع في الرسم عشان تشوف بياخد إيه ويطلّع إيه، وزمنه التقريبي في الكود (الـ <code>latency_ms</code>).</p>
+      <p>جرّب «بدّل الـ reranker»: الـ stage بيتغير لونها بس كل الأسهم زي ما هي. ده معنى إن الـ interface ثابتة.</p>
+      <div class="note ai"><strong>لاحظ:</strong> فيه سهم من السؤال الأصلي على طول للـ Generator. الـ generator بيستخدم السؤال الأصلي مش الـ rewrite، عشان الإجابة ترد على اللي اليوزر سأله فعلًا.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d497-flowCv" width="520" height="300" aria-label="رسم مراحل الـ RAG pipeline"></canvas>
+      <div class="btns">
+        <button type="button" class="primary" id="d497-run">شغّل سؤال</button>
+        <button type="button" id="d497-swap">بدّل الـ reranker</button>
+      </div>
+      <div class="note" id="d497-flowInfo">دوس على أي stage في الرسم.</div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 -->
+<section id="d497-gen">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Answer Generator: بيستشهد بمصادره، وبيرفض لما مش واثق</h2></div>
+  <p>الـ generator آخر stage، وأسهل واحدة تبوظ. الدرس بيشحن <b>mock generator</b> ثابت (deterministic) بيعمل كده:</p>
+  <ol class="ex">
+    <li>بياخد الـ top-K chunks بعد الـ rerank.</li>
+    <li>بيختار لحد chunk-ين فيهم أعلى تداخل في الكلمات المهمة (content tokens، يعني من غير stop words زي the وis) مع السؤال. (في الكود بيبص على أول ٣ بس.)</li>
+    <li>بيطلّع إجابة = أول جملة من كل chunk مختارة، وبعد كل جملة anchor بالشكل <code>[doc_id:chunk_index]</code>.</li>
+    <li>لو مفيش chunk عدّت الـ refuse threshold، بيرجّع «I do not know» من غير أي citation.</li>
+  </ol>
+  <p>الـ <b>citation anchor</b> هو المرجع <span class="ltr">(doc_id, chunk_index)</span> اللي متعلّق في كل claim، عشان أي UI أو مراجع يقدر يرجع لكل جملة ويلاقي مصدرها بالظبط.</p>
+  <p>في الـ production بتبدّل الـ mock بـ LLM حقيقي، بالـ prompt ده:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>You are answering a question using only the snippets below.
+Cite every claim with the anchor in parentheses.
+If the snippets do not answer the question, say "I do not know".
+
+Question: {query}
+
+Snippets:
+{enumerated chunks with anchors}
+
+Answer:</pre></div>
+  <p><b>Refuse-on-low-confidence:</b> ده السبب الوحيد إن الـ score بتاع المركز الأول من الـ cross-encoder بيتسجّل. لو الـ score ده تحت الـ threshold بتاع الـ corpus، الـ generator بيرفض. ده صمام الأمان ضد الإجابات المتألّفة (hallucination). لو الـ rank-1 score واطي باستمرار، فده الموديل بيقولك إن مفيش حاجة في الـ corpus بترد على السؤال ده.</p>
+  <div class="note"><strong>تشبيه:</strong> موظف خدمة عملا كويس بيقولك «مش متأكد، هراجع» بدل ما يألّف رد. الـ «I do not know» مش فشل، ده حماية.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: pipeline صغير شغال في المتصفح</h3>
+      <p>ده نقل لأجزاء من الكود لـ JavaScript على نفس الـ corpus بتاع الدرس (١٢ document). الـ tokenizer والـ stop words والـ BM25 والـ mock embedding والـ RRF واختيار الـ rewriter والـ generator منقولين من <code>main.py</code>.</p>
+      <p><b>تبسيط مهم:</b> مفيش cross-encoder هنا (محتاج PyTorch وتدريب). بدله الـ rerank score = <span class="ltr">overlap + 2×RRF</span>، فالأرقام مش هي نفس أرقام الكود. الفكرة هي اللي تهمنا.</p>
+      <p>اختار سؤال، وحرّك الـ refuse threshold، وشوف امتى الإجابة بتتحول لـ «I do not know». جرّب السؤال اللي ملوش علاقة بالـ corpus.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:4px">السؤال
+        <select id="d497-qsel"></select></label>
+      <label style="display:grid;gap:4px;direction:ltr">refuse threshold = <span id="d497-thv">0.05</span><input type="range" id="d497-th" min="0" max="0.6" step="0.01" value="0.05"></label>
+      <div class="readout">
+        <div><small>rewriter strategy</small><b id="d497-strat">-</b></div>
+        <div><small>top-1 score</small><b id="d497-top1">-</b></div>
+        <div><small>recall@5</small><b id="d497-rec">-</b></div>
+        <div><small>MRR</small><b id="d497-mrr">-</b></div>
+      </div>
+      <ol class="rank-list" id="d497-rank"></ol>
+      <div class="note ai" style="direction:ltr;text-align:left;font-family:var(--f-mono);font-size:14px" id="d497-ans"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 -->
+<section id="d497-demo">
+  <div class="station-head"><span class="tag">04</span><h2>الـ demo اللي بيقفل نفسه (self-terminating)</h2></div>
+  <p>الـ demo بيشغّل كل حاجة end to end: بيطبع تفصيل كل stage لسؤال واحد، وبعدين بيشغّل الـ eval على الأربع أسئلة بتوع الـ fixture qrels، ويطبع جدول metrics، وبيخرج بـ <b>exit status = 0</b> لو كل الـ metrics عدّت الـ thresholds. لو أي metric وقعت تحت الحد، بيخرج بـ status مش صفر ورسالة فيها اسم الـ metric اللي فشلت.</p>
+  <p>ده بالظبط شكل الـ <b>CI smoke test</b>: الـ pipeline شغال offline، سريع، وثابت. والـ thresholds معمولة ضيقة قصد على الـ fixture، عشان أي regression في أي درس من الست يوقّع الـ demo.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Metric</th><th>الـ threshold في الكود</th></tr>
+    <tr><td><code>recall@5</code></td><td class="mono">0.75</td></tr>
+    <tr><td><code>precision@1</code></td><td class="mono">0.50</td></tr>
+    <tr><td><code>mrr</code></td><td class="mono">0.60</td></tr>
+    <tr><td><code>faithfulness</code></td><td class="mono">0.75</td></tr>
+    <tr><td><code>answer_relevance</code></td><td class="mono">0.75</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: بوابة الـ CI</h3>
+      <p>كل عمود metric، والخط المتقطع هو الـ threshold بتاعها. اسحب أي عمود لفوق أو لتحت (أو اختار سيناريو) وشوف الـ exit code والرسالة اللي الـ demo هيطبعها.</p>
+      <div class="note ai"><strong>لاحظ:</strong> metric واحدة بس تقع تكفي إن الـ merge يتمنع. الـ CI مش بيعمل متوسط، بيعمل AND.</div>
+      <div class="btns">
+        <button type="button" data-d497s="ok" class="primary">كله تمام</button>
+        <button type="button" data-d497s="chunk">غيّرنا الـ chunker</button>
+        <button type="button" data-d497s="gen">الـ generator بيألّف</button>
+      </div>
+    </div>
+    <div class="instrument">
+      <canvas id="d497-ciCv" width="520" height="280" aria-label="أعمدة الـ metrics والـ thresholds"></canvas>
+      <pre id="d497-ciOut" style="font-size:12.5px"></pre>
+    </div>
+  </div>
+</section>
+
+<!-- 05 -->
+<section id="d497-fail">
+  <div class="station-head"><span class="tag">05</span><h2>أعطال الـ demo هيخبّيها عنك</h2></div>
+  <ul class="checklist">
+    <li><b>Chunker boundary drift:</b> لو غيّرت استراتيجية الـ chunker بين المرة اللي عملت فيها labeling للـ qrels والـ demo، الـ gold doc ids مش هتطابق تاني. الحل: ثبّت استراتيجية الـ chunker جوه ملف الـ qrels. والـ demo فيه header بيقول اسم الـ chunker.</li>
+    <li><b>الـ training set بتاع الـ reranker بيتسرّب للـ eval:</b> الـ training triples في درس ٦٦ فيها أسئلة شبه أسئلة الـ eval. في الـ production افصل أسئلة الـ eval تمامًا. أسئلة الـ eval في الـ demo مختلفة قصد عن أسئلة تدريب الـ rerank.</li>
+    <li><b>الـ mock generator بيخبّي خطر الـ hallucination:</b> الـ mock مستحيل يألّف لأنه بيطلّع نص من الـ chunks بس. فلازم تختبر بموديل حقيقي قبل ما تشحن.</li>
+    <li><b>مفيش streaming:</b> الـ pipeline بيرجّع الإجابة كاملة في الآخر. سيستم production هيعمل stream لخرج الـ generator. ده برا نطاق الدرس، والـ metrics بتاعة الإجابة شغالة على النص النهائي في الحالتين.</li>
+    <li><b>الـ latency هنا offline:</b> نداءات الـ LLM الـ mock زمنها ثابت، والنداءات الحقيقية هي اللي بتاكل الوقت. حط latency budget للـ request، لأن التوقيت لكل stage في الدرس بيقيس شغل الـ CPU بس.</li>
+  </ul>
+</section>
+
+<!-- 06 -->
+<section id="d497-use">
+  <div class="station-head"><span class="tag">06</span><h2>Use it و Ship it: إزاي ده بيتشحن</h2></div>
+  <ul class="checklist">
+    <li>• حط الـ pipeline في ملف orchestrator واحد بـ stage interfaces واضحة. متفرّقش التوصيل على الريبو كله.</li>
+    <li>• شغّل الـ eval قبل أي merge بيلمس أي stage. لو الـ eval نزل، الـ merge مش بيدخل.</li>
+    <li>• احفظ الـ metric trace بتاع كل CI run، عشان تعرف أي تبديل stage هو اللي عمل الـ regression.</li>
+    <li>• اعمل <b>smoke set</b> من ٢٠ سؤال (جزء من الـ regression set) يخلص في أقل من ٣٠ ثانية مع كل PR، والـ regression set الكامل يشتغل بالليل (nightly).</li>
+  </ul>
+  <p>ملف الـ pipeline ده هو الشكل اللي باقي دروس Track F في الفيز ١٩ بتفترضه. الدروس اللي بعد كده ممكن تضيف أتمتة الـ ingestion، و re-index تدريجي، و telemetry، وطبقة serving فوقه. نص الـ retrieval والـ rerank والـ rewrite والـ eval خلص هنا.</p>
+</section>
+
+<!-- 07 CODE -->
+<section id="d497-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: الكود خطوة خطوة</h2></div>
+  <p>الكود محتاج PyTorch (عشان الـ cross-encoder الصغير). من جوه فولدر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+pip install torch
+python3 phases/19-capstone-projects/69-end-to-end-rag-system/code/main.py
+echo $?   <span class="c"># لازم يطبع 0 لو كل الـ metrics عدّت</span>
+
+<span class="c"># والتستات:</span>
+python3 phases/19-capstone-projects/69-end-to-end-rag-system/code/tests/test_pipeline.py</pre></div>
+  <p><b>الناتج المتوقع (شكله):</b> بلوك <code>== ingest + train ==</code> فيه <code>chunks indexed: 12</code> (كل document أقصر من 400 حرف فبيطلع chunk واحدة)، بعدين <code>== one query trace ==</code> للسؤال التالت فيه الـ strategy والـ top-k والإجابة والـ citations والـ latency، بعدين <code>== eval ==</code> فيه سطر <code>PASS</code> أو <code>FAIL</code> لكل metric، وفي الآخر <code>== demo PASSED ==</code> وexit code صفر. الأرقام نفسها هتشوفها لما تشغّل.</p>
+  <p><b>القاعدة:</b> افتح ملف <code>my_rag.py</code> واكتب الخطوات دي بإيدك. الـ BM25 والـ dense والـ cross-encoder انت كاتبهم في دروس ٦٥ و٦٦، فهنا ركّز على التوصيل.</p>
+
+  <h3>خطوة ١: الـ Chunk والـ Chunker</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class Chunk:
+    doc_id: str
+    chunk_index: int
+    text: str
+
+    def anchor(self) -> str:          <span class="c"># ده الـ citation anchor</span>
+        return f"{self.doc_id}:{self.chunk_index}"
+
+@dataclass
+class Chunker:
+    target: int = 400                 <span class="c"># أقصى طول للـ chunk بالحروف</span>
+    separators: tuple = ("\n\n", "\n", ". ", " ")   <span class="c"># recursive split من درس 64</span>
+
+    def chunk(self, doc_id, text):
+        pieces = _recursive_split(text, self.separators, self.target)
+        return [Chunk(doc_id, i, p.strip()) for i, p in enumerate(pieces) if p.strip()]</pre></div>
+
+  <h3>خطوة ٢: الـ Hybrid Index (BM25 + dense + RRF)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def rrf(rankings, k=60):
+    score = defaultdict(float); by_anchor = {}
+    for ranks in rankings:
+        for rank, (c, _) in enumerate(ranks):
+            score[c.anchor()] += 1.0 / (k + rank + 1)   <span class="c"># المركز بس اللي بيفرق</span>
+            by_anchor[c.anchor()] = c
+    fused = sorted(score.items(), key=lambda x: -x[1])
+    return [(by_anchor[a], s) for a, s in fused]
+
+@dataclass
+class HybridIndex:
+    bm25: BM25Index = field(default_factory=BM25Index)
+    dense: DenseIndex = field(default_factory=DenseIndex)
+
+    def add(self, c):
+        self.bm25.add(c); self.dense.add(c)
+
+    def search(self, query, k_each=8, k_out=12):
+        b = self.bm25.search(query, k_each)
+        d = self.dense.search(query, k_each)
+        return [c for c, _ in rrf([b, d])[:k_out]]
+
+    def search_with_hypothetical(self, query, hypothetical, k_each=8, k_out=12):
+        b = self.bm25.search(query, k_each)                     <span class="c"># BM25 على السؤال الأصلي</span>
+        d = self.dense.search_vec(mock_embed(hypothetical), k_each)  <span class="c"># dense على إجابة HyDE</span>
+        return [c for c, _ in rrf([b, d])[:k_out]]</pre></div>
+
+  <h3>خطوة ٣: الـ Rewriter بيختار استراتيجية</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Rewriter:
+    def pick_strategy(self, query):
+        if " and " in query.lower():
+            return "decompose"        <span class="c"># سؤالين في سؤال: قسّمه</span>
+        if any(t in tokenize(query) for t in ("api", "function", "endpoint", "config")):
+            return "hyde"             <span class="c"># كلام تقني: ولّد إجابة افتراضية</span>
+        return "multiquery"           <span class="c"># الافتراضي</span>
+
+    def rewrite_multiquery(self, query):
+        base = query.strip().rstrip("?")
+        toks = [t for t in tokenize(base) if t not in _STOP]
+        variants = [base]
+        if toks:
+            variants.append(" ".join(toks))   <span class="c"># نسخة من غير stop words</span>
+        return list(dict.fromkeys(v for v in variants if v))
+
+    def rewrite_decompose(self, query):
+        parts = re.split(r"\s+and\s+", query, flags=re.IGNORECASE)
+        out = [p.strip().rstrip("?") for p in parts if p.strip()]
+        return out or [query.strip().rstrip("?")]</pre></div>
+
+  <h3>خطوة ٤: الـ rerank بيخلط الـ cross-encoder مع الـ overlap</h3>
+  <p>الـ cross-encoder الصغير ده (طبقة attention واحدة، متدرّب ٨٠ epoch على ١٧ triple فيهم hard negatives) بيبقى noisy على أسئلة برا التدريب. فالكود بيضيف إشارة lexical overlap بوزن <code>overlap_weight=0.3</code>.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def rerank(model, query, candidates, top_k, overlap_weight=0.3):
+    if not candidates:
+        return []
+    model.eval()
+    ids, tids = [], []
+    for c in candidates:
+        a, b = tokenize_pair(query, c.text, max_len=model.max_len)  <span class="c"># [CLS] q [SEP] d [SEP]</span>
+        ids.append(a); tids.append(b)
+    with torch.no_grad():
+        ce_scores = model(torch.tensor(ids), torch.tensor(tids)).tolist()
+    q_tokens = _content_tokens(query)
+    blended = []
+    for c, ce in zip(candidates, ce_scores):
+        overlap = len(q_tokens & _content_tokens(c.text)) / max(1, len(q_tokens))
+        blended.append((c, ce + overlap_weight * overlap))   <span class="c"># الخلطة</span>
+    blended.sort(key=lambda x: -x[1])
+    return blended[:top_k]</pre></div>
+
+  <h3>خطوة ٥: الـ generator بالـ citations والرفض</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>REFUSE_THRESHOLD = 0.05
+REFUSE_TEXT = "I do not know."
+
+def generate_answer(query, ranked):
+    if not ranked:
+        return REFUSE_TEXT, []
+    top_chunk, top_score = ranked[0]
+    if top_score &lt; REFUSE_THRESHOLD:        <span class="c"># صمام الأمان</span>
+        return REFUSE_TEXT, []
+    q_tokens = _content_tokens(query)
+    scored = [(c, len(q_tokens &amp; _content_tokens(c.text)), s) for c, s in ranked[:3]]
+    scored.sort(key=lambda x: (-x[1], -x[2]))   <span class="c"># الأكتر overlap الأول</span>
+    selected = [t for t in scored if t[1] > 0][:2] or [scored[0]]
+    sentences, citations = [], []
+    for c, _, _ in selected:
+        first = re.split(r"(?&lt;=[.!?])\s+", c.text.strip(), maxsplit=1)[0]
+        sentences.append(f"{first} [{c.anchor()}]")   <span class="c"># جملة + anchor</span>
+        citations.append(c.anchor())
+    return " ".join(sentences), citations</pre></div>
+
+  <h3>خطوة ٦: الـ Pipeline نفسه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class Pipeline:
+    chunker: Chunker = field(default_factory=Chunker)
+    index: HybridIndex = field(default_factory=HybridIndex)
+    rewriter: Rewriter = field(default_factory=Rewriter)
+    reranker: CrossEncoder = field(default_factory=CrossEncoder)
+    top_n: int = 12      <span class="c"># candidates داخلة الـ rerank</span>
+    top_k: int = 5       <span class="c"># اللي طالعة للـ generator</span>
+
+    def ingest(self, docs):
+        for doc_id, text in docs:
+            for chunk in self.chunker.chunk(doc_id, text):
+                self.index.add(chunk)
+
+    def query(self, question):
+        lat = {}
+        t0 = time.perf_counter()
+        strategy = self.rewriter.pick_strategy(question)
+        hypothetical = self.rewriter.rewrite_hyde(question) if strategy == "hyde" else None
+        subqueries = []
+        if strategy == "multiquery":
+            subqueries = self.rewriter.rewrite_multiquery(question)
+        elif strategy == "decompose":
+            subqueries = self.rewriter.rewrite_decompose(question)
+        t1 = time.perf_counter(); lat["rewrite"] = (t1 - t0) * 1000
+
+        if hypothetical:
+            candidates = self.index.search_with_hypothetical(question, hypothetical, k_out=self.top_n)
+        elif len(subqueries) > 1:
+            rankings = [[(c, 1.0) for c in self.index.search(q, k_out=self.top_n)] for q in subqueries]
+            candidates = [c for c, _ in rrf(rankings)[: self.top_n]]   <span class="c"># دمج نتايج كل subquery</span>
+        else:
+            candidates = self.index.search(question, k_out=self.top_n)
+        t2 = time.perf_counter(); lat["retrieve"] = (t2 - t1) * 1000
+
+        ranked = rerank(self.reranker, question, candidates, self.top_k)
+        t3 = time.perf_counter(); lat["rerank"] = (t3 - t2) * 1000
+
+        answer, citations = generate_answer(question, ranked)   <span class="c"># السؤال الأصلي</span>
+        t4 = time.perf_counter(); lat["generate"] = (t4 - t3) * 1000
+        return Result(answer, citations, ranked, strategy, lat)</pre></div>
+
+  <h3>خطوة ٧: الـ metrics على مستوى الـ doc</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def doc_level_mrr(retrieved, gold):
+    seen, rank = set(), 0
+    for c, _ in retrieved:
+        if c.doc_id in seen:          <span class="c"># كذا chunk من نفس الـ doc = مركز واحد</span>
+            continue
+        seen.add(c.doc_id); rank += 1
+        if c.doc_id in gold:
+            return 1.0 / rank
+    return 0.0
+
+def faithfulness_score(answer, top_k):
+    if not top_k:
+        return 1.0 if answer == REFUSE_TEXT else 0.0   <span class="c"># الرفض الصح = faithful</span>
+    ctx = set().union(*(_content_tokens(c.text) for c, _ in top_k))
+    body = re.sub(r"\[[^\]]+\]", "", answer)            <span class="c"># شيل الـ anchors الأول</span>
+    claims = [s.strip() for s in re.split(r"(?&lt;=[.!?])\s+", body.strip()) if s.strip()]
+    <span class="c"># claim متسندة لو ≥ 40% من كلماتها المهمة موجودة في الـ context</span>
+    ...
+
+def answer_relevance_score(query, answer):
+    q = _content_tokens(query)
+    a = _content_tokens(re.sub(r"\[[^\]]+\]", "", answer))
+    return 1.0 if q and len(q &amp; a) / len(q) >= 0.3 else 0.0</pre></div>
+
+  <h3>خطوة ٨: الـ demo والـ exit code</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>THRESHOLDS = {"recall@5": 0.75, "precision@1": 0.50, "mrr": 0.60,
+              "faithfulness": 0.75, "answer_relevance": 0.75}
+
+def run_demo():
+    p = build_pipeline()               <span class="c"># ingest + train reranker</span>
+    ...                                <span class="c"># اطبع trace لسؤال واحد</span>
+    metrics = run_eval(p)              <span class="c"># متوسط على EVAL_QUERIES الأربعة</span>
+    failed = [n for n, t in THRESHOLDS.items() if metrics[n] &lt; t]
+    for n, t in THRESHOLDS.items():
+        print(f"  {'PASS' if metrics[n] >= t else 'FAIL'}  {n:&lt;18} {metrics[n]:.3f}  (threshold {t:.2f})")
+    if failed:
+        print(f"== demo FAILED: {failed} ==")
+        return 1
+    print("== demo PASSED ==")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(run_demo())               <span class="c"># ده اللي الـ CI بيقراه</span></pre></div>
+</section>
+
+<!-- 08 EX -->
+<section id="d497-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Strategy selector جوه الـ rewriter:</b> استخدم heuristics درس ٦٧ (طول السؤال، وجود conjunctions، نسبة الـ jargon) عشان تختار HyDE أو multi-query أو decomposition.
+      <details><summary>تلميح</summary>احسب <code>jargon_ratio</code> = عدد الكلمات التقنية (من قايمة زي api, endpoint, config, threshold, multipart…) على عدد الـ content tokens. مثلًا: conjunction → decompose، ratio عالية → hyde، سؤال قصير جدًا (٣ كلمات أو أقل) → multiquery عشان توسّعه. وشغّل الـ eval بعدها واتأكد إن الـ thresholds لسه عدّية.</details></li>
+    <li><b>LLM حقيقي للـ generator ورا env flag:</b> الافتراضي الـ mock. قيس فرق الـ latency.
+      <details><summary>تلميح</summary><code>if os.getenv("RAG_REAL_LLM") == "1":</code> نادي الـ API بالـ prompt template اللي في القسم ٣، وإلا استخدم <code>generate_answer</code>. قارن <code>result.latency_ms["generate"]</code> في الحالتين. هتلاقي الـ generate بقى أكبر stage بفرق ضخم، وده بالظبط عطل «الـ latency هنا offline». وخلي بالك: لازم تـparse الـ anchors من رد الموديل عشان تملا <code>citations</code>.</details></li>
+    <li><b>فلاج <code>--corpus path</code>:</b> حمّل corpus حقيقي وشغّل الـ eval والـ threshold check تاني.
+      <details><summary>تلميح</summary><code>argparse</code>، واقرا كل ملف <code>.md</code>/<code>.txt</code> في الفولدر كـ <span class="ltr">(filename, text)</span>. هتحتاج qrels جديدة للـ corpus ده، لأن <code>EVAL_QUERIES</code> مربوطة بـ d1..d12. ومع corpus حقيقي هتلاقي الـ chunker بيطلّع أكتر من chunk للـ doc، وهنا الـ metrics على مستوى الـ doc (زي <code>doc_level_mrr</code> اللي بيتجاهل التكرار) بتفرق.</details></li>
+    <li><b>فلاج <code>--strategy</code> للـ chunker:</b> قيس مساهمة كل استراتيجية في الـ recall الكلي.
+      <details><summary>تلميح</summary>استخدم استراتيجيات درس ٦٤ (fixed، recursive، …) واعمل جدول recall@5 لكل واحدة على نفس الـ qrels. افتكر عطل «chunker boundary drift»: لو الـ qrels معمولة على مستوى الـ chunk، تغيير الاستراتيجية بيبوّظ الـ gold ids. عشان كده الـ metrics هنا على مستوى الـ doc_id.</details></li>
+    <li><b>Streaming generator:</b> اعمل interface بيطلّع الإجابة حتة حتة، ودخّله في الـ eval، واتأكد إن الـ faithfulness بيتحسب على النص النهائي مش على أول حتة.
+      <details><summary>تلميح</summary>اعمل generator function بـ <code>yield</code> لكل جملة. في الـ eval اجمع: <code>answer = "".join(stream)</code> وبعدين احسب. اكتب test بيحسب الـ faithfulness على أول جملة بس وعلى الكل، ويتأكد إن الـ eval بيستخدم الكل.</details></li>
+    <li><b>إضافة مني · سجل الـ trace في كل CI run:</b> عدّل <code>run_demo</code> يكتب ملف <code>rag_metrics.json</code> فيه الـ metrics واسم الـ chunker وعدد الـ chunks ومتوسط الـ latency لكل stage، وخلي سكريبت صغير يقارن ملفين ويطبع أي metric نزلت أكتر من 0.05.
+      <details><summary>الإجابة المقترحة</summary><code>json.dump({"chunker": "recursive-400", "chunks": len(p.index.bm25.chunks), "metrics": metrics, "latency": avg_lat}, open("rag_metrics.json", "w"), indent=2)</code>. والمقارنة: لكل key في <code>metrics</code>، لو <code>old - new &gt; 0.05</code> اطبعه واخرج بـ 1. ده بالظبط «persist the metric trace» اللي في Use It، وبيخليك تعرف أي PR بوّظ أي stage.</details></li>
+  </ol>
+</section>
+
+<!-- 09 EXTRA -->
+<section id="d497-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: حاجات الدرس مقالهاش صريح</h2></div>
+  <ul class="checklist">
+    <li><b>بص على الـ strategy اللي بتتختار فعلًا:</b> لو تتبعت <code>pick_strategy</code> على الأربع أسئلة بتوع الـ eval، مفيش واحد فيهم فيه " and " ولا كلمة من (api, function, endpoint, config)، فالأربعة بيروحوا <code>multiquery</code>. يعني جدول <code>_REWRITE_HYDE</code> اللي في الكود مش بيتستخدم في الـ eval ده خالص. الدرس: لما تضيف stage، اتأكد إنها بتشتغل فعلًا في الـ eval، واطبع الـ strategy في الـ trace زي ما الـ demo بيعمل.</li>
+    <li><b>الـ refuse threshold مش رقم عالمي:</b> الـ <code>0.05</code> ده مظبوط على score الـ cross-encoder الصغير ده بالخلطة بتاعته. أي تغيير في الـ reranker (موديل تاني، overlap_weight تاني) بيغيّر توزيع الـ scores، ولازم تعيد ظبط الـ threshold. الطريقة: شوف توزيع الـ top-1 score للأسئلة اللي ليها إجابة مقابل أسئلة مالهاش، وحط الحد في النص.</li>
+    <li><b>الـ faithfulness هنا lexical:</b> الـ metric بتقول claim متسندة لو ٤٠٪ من كلماتها موجودة في الـ context. ده رخيص وثابت للـ CI، لكن موديل حقيقي ممكن يعكس المعنى بنفس الكلمات («is aborted» بدل «is not aborted») وياخد درجة عالية. في الـ production بيستخدموا LLM-as-judge أو NLI لده.</li>
+    <li><b>Smoke set مقابل regression set:</b> الـ ٤ أسئلة هنا smoke set صغير جدًا. سؤال واحد بيتغير = الـ metric تتحرك ٠٫٢٥. عشان كده الـ thresholds هنا ضيقة ومحسوبة على الـ fixture، ومينفعش تنقلها زي ما هي لـ corpus حقيقي.</li>
+    <li><b>فين ده في الـ agents:</b> أي agent بيستخدم أداة <code>search_docs</code> هو بالظبط الـ pipeline ده متغلّف كـ tool. الـ citations بتخلي الـ agent يقدر يرجّع المصدر لليوزر، والـ «I do not know» بتخلي الـ agent يقرر يدوّر بطريقة تانية بدل ما يكمّل على معلومة غلط.</li>
+  </ul>
+</section>
+
+<!-- 10 QUIZ -->
+<section id="d497-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d497-quizBox"></div>
+</section>
+
+<!-- 11 WRAP -->
+<section id="d497-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d497-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه الـ integration test هو الحكم الوحيد الصادق للسيستم</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أكتب التوقيع (input/output) بتاع كل stage من الخمسة</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ citation anchor والـ refuse-on-low-confidence وجربتهم في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="4"> شغّلت <code>main.py</code> وشفت <code>demo PASSED</code> والـ exit code صفر</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الـ Pipeline والـ generator بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Pipeline بـ stage interfaces</td><td>أي سيستم RAG في الـ production، وأدوات زي LangChain وLlamaIndex اللي مبنية على مراحل قابلة للتبديل</td></tr>
+    <tr><td>Citation anchors</td><td>مساعدين البحث اللي بيحطوا [1] [2] جنب كل جملة، وأدوات الـ enterprise search</td></tr>
+    <tr><td>Refuse-on-low-confidence</td><td>شات بوتس الدعم الفني، وأي agent محتاج يقرر يدوّر تاني ولا يرد</td></tr>
+    <tr><td>Self-terminating demo + exit code</td><td>الـ CI gates قبل أي merge، والـ eval harnesses</td></tr>
+    <tr><td>Smoke set / nightly regression</td><td>فرق الـ AI اللي بتشغّل eval سريع مع كل PR وكامل بالليل</td></tr>
+    <tr><td>Per-stage latency</td><td>الـ observability والـ tracing للـ LLM apps</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Task Spec Format. ندخل على شكل وصف المهام اللي الـ eval بيقراها.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F69-end-to-end-rag-system" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/69-end-to-end-rag-system</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=497,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d497-roadmap').closest('.day');
+
+// roadmap: phase 19 = days 431..515
+const rm=$('d497-roadmap');
+for(let i=431;i<=515;i++){const s=document.createElement('span');s.textContent=i;s.style.width='38px';if(i===N)s.className='now';rm.appendChild(s)}
+setTimeout(()=>{const nw=rm.querySelector('.now');if(nw)rm.scrollLeft=nw.offsetLeft-rm.clientWidth/2},50);
+
+// ================= Lab 1: flow =================
+const fc=$('d497-flowCv'),fx=AI.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+const ST=[
+ {k:'docs',l:'Documents',x:10,y:30,w:100,h:40,info:'المستندات الخام. في الـ demo: 12 document من d1 لـ d12.'},
+ {k:'chunk',l:'Chunker',x:150,y:30,w:100,h:40,info:'بياخد نص الـ document ويطلّع List of Chunk. الافتراضي recursive split بـ target = 400 حرف. ده بيحصل مرة واحدة وقت الـ ingest مش مع كل سؤال.'},
+ {k:'index',l:'Hybrid Index',x:290,y:30,w:110,h:40,info:'BM25 + dense (mock embedding) + RRF بـ k = 60. كل chunk بتتضاف في الاتنين.'},
+ {k:'q',l:'Query',x:10,y:150,w:100,h:40,info:'سؤال اليوزر. لاحظ إنه رايح لمكانين: الـ rewriter والـ generator.'},
+ {k:'rw',l:'Rewriter',x:150,y:150,w:100,h:40,t:'rewrite',info:'بياخد السؤال ويطلّع rewrites أو hypothetical. بيختار decompose لو فيه " and "، وhyde لو فيه api/function/endpoint/config، وإلا multiquery.'},
+ {k:'ret',l:'Retriever',x:290,y:150,w:110,h:40,t:'retrieve',info:'بياخد السؤال (أو الـ subqueries) ويطلّع top-N = 12 chunk. مع multiquery بيدمج نتايج كل subquery بـ RRF.'},
+ {k:'rr',l:'Reranker',x:290,y:240,w:110,h:40,t:'rerank',info:'بياخد السؤال + الـ 12 candidate ويطلّع top-K = 5 بـ cross scores. الـ score = cross-encoder + 0.3 × overlap.'},
+ {k:'gen',l:'Generator',x:150,y:240,w:100,h:40,t:'generate',info:'بياخد السؤال الأصلي + الـ top-5 ويطلّع إجابة فيها [doc_id:chunk_index]. لو الـ top-1 score أقل من 0.05 بيقول I do not know.'},
+ {k:'eval',l:'Eval → exit',x:10,y:240,w:100,h:40,info:'recall@5, precision@1, MRR, faithfulness, answer relevance على 4 أسئلة. كلهم عدّوا الـ threshold → exit 0، غير كده → exit 1.'}
+];
+const EDGES=[['docs','chunk'],['chunk','index'],['q','rw'],['rw','ret'],['index','ret'],['ret','rr'],['rr','gen'],['gen','eval']];
+const byK={};ST.forEach(s=>byK[s.k]=s);
+let swapped=false,sel=null,anim=-1,animT=0,raf=0;
+const PATH=['q','rw','ret','rr','gen','eval'];
+function ctr(s){return[s.x+s.w/2,s.y+s.h/2]}
+function edgePts(a,b){const[ax,ay]=ctr(a),[bx,by]=ctr(b);
+  // clip to box edges
+  const clip=(s,x,y,tx,ty)=>{const dx=tx-x,dy=ty-y;const sx=dx?(s.w/2)/Math.abs(dx):1e9,sy=dy?(s.h/2)/Math.abs(dy):1e9;const t=Math.min(sx,sy);return[x+dx*t,y+dy*t]};
+  const p1=clip(a,ax,ay,bx,by),p2=clip(b,bx,by,ax,ay);return[p1[0],p1[1],p2[0],p2[1]]}
+function drawFlow(){
+  fx.clearRect(0,0,FW,FH);
+  EDGES.forEach(([a,b])=>{const p=edgePts(byK[a],byK[b]);AI.arrow(fx,p[0],p[1],p[2],p[3],css('--muted'),1.6)});
+  // query -> generator bypass
+  fx.setLineDash([5,4]);const q=byK.q,g=byK.gen;AI.arrow(fx,q.x+q.w/2,q.y+q.h,g.x+20,g.y,css('--vec-b'),1.6);fx.setLineDash([]);
+  fx.font='11px JetBrains Mono, monospace';fx.fillStyle=css('--vec-b');fx.fillText('original query',q.x+50,q.y+q.h+38);
+  const activeK=anim>=0?PATH[Math.min(anim,PATH.length-1)]:null;
+  ST.forEach(s=>{
+    const on=s.k===activeK,isSel=sel===s.k;
+    let col=css('--line');if(s.k==='rr'&&swapped)col=css('--vec-b');
+    fx.fillStyle=on?css('--vec-a'):css('--panel');fx.strokeStyle=isSel?css('--ink'):(s.k==='rr'&&swapped?css('--vec-b'):css('--vec-a'));fx.lineWidth=isSel?2.5:1.5;
+    fx.beginPath();fx.roundRect?fx.roundRect(s.x,s.y,s.w,s.h,6):fx.rect(s.x,s.y,s.w,s.h);fx.fill();fx.stroke();
+    if(s.k==='rr'&&swapped&&!on){fx.fillStyle=css('--vec-b');fx.globalAlpha=.18;fx.fillRect(s.x,s.y,s.w,s.h);fx.globalAlpha=1}
+    fx.fillStyle=on?css('--paper'):css('--ink');fx.font='600 13px JetBrains Mono, monospace';fx.textAlign='center';
+    fx.fillText(s.k==='rr'&&swapped?'Reranker v2':s.l,s.x+s.w/2,s.y+s.h/2+4);fx.textAlign='left';
+  });
+  // moving packet
+  if(anim>=0&&anim<PATH.length-1){const a=byK[PATH[anim]],b=byK[PATH[anim+1]];const p=edgePts(a,b);const t=animT;
+    const px=p[0]+(p[2]-p[0])*t,py=p[1]+(p[3]-p[1])*t;fx.fillStyle=css('--vec-b');fx.beginPath();fx.arc(px,py,7,0,Math.PI*2);fx.fill()}
+  // latency legend
+  fx.fillStyle=css('--muted');fx.font='11px JetBrains Mono, monospace';
+  fx.fillText('timed: rewrite · retrieve · rerank · generate',150,FH-6);
+}
+function step(){animT+=0.035;if(animT>=1){animT=0;anim++;const s=byK[PATH[Math.min(anim,PATH.length-1)]];showInfo(s.k)}
+  drawFlow();if(anim<PATH.length-1&&document.body.contains(fc))raf=requestAnimationFrame(step);else{setTimeout(()=>{if(!document.body.contains(fc))return;anim=-1;drawFlow()},900)}}
+function showInfo(k){const s=byK[k];$('d497-flowInfo').innerHTML='<strong>'+(s.k==='rr'&&swapped?'Reranker v2':s.l)+(s.t?' <span class="mono">(latency_ms["'+s.t+'"])</span>':'')+':</strong> '+s.info+(s.k==='rr'&&swapped?' <b>اتبدّل بموديل تاني، ونفس التوقيع (query, candidates) → top-K، فباقي الـ pipeline مش حاسس بحاجة.</b>':'')}
+$('d497-run').addEventListener('click',()=>{cancelAnimationFrame(raf);anim=0;animT=0;showInfo('q');raf=requestAnimationFrame(step)});
+$('d497-swap').addEventListener('click',e=>{swapped=!swapped;e.target.textContent=swapped?'رجّع الـ reranker الأصلي':'بدّل الـ reranker';sel='rr';showInfo('rr');drawFlow()});
+fc.addEventListener('pointerdown',e=>{const[x,y]=AI.evPos(fc,e);const s=ST.find(s=>x>=s.x&&x<=s.x+s.w&&y>=s.y&&y<=s.y+s.h);if(s){sel=s.k;showInfo(s.k);drawFlow()}});
+drawFlow();
+
+// ================= Lab 2: mini pipeline =================
+const STOP=new Set(["the","a","an","is","are","of","to","in","on","at","for","with","and","or","as","by","do","you","we","our","how","what","where","when","which","before","after"]);
+const tok=t=>(t.toLowerCase().match(/[a-z0-9]+/g)||[]);
+const ctok=t=>new Set(tok(t).filter(w=>!STOP.has(w)&&w.length>1));
+const CORPUS=[
+["d1","AbortMultipartOnFail aborts an in-flight S3 multipart upload and decrements the per-bucket retry budget."],
+["d2","Large files are split into parts. Cancelled uploads release the reserved keys after three failed parts."],
+["d3","The abort threshold is configured per bucket at three failed parts. Past that threshold the upload is aborted."],
+["d4","Authorization is centralized in check_permission which evaluates a policy against principal, resource, and action."],
+["d5","The policy engine wraps an OPA runtime and exposes evaluate; cached for a configured TTL."],
+["d6","Production search combines lexical and semantic retrieval through reciprocal rank fusion at k = 60."],
+["d7","Long-running jobs accept a cancellation signal that stops the worker and releases the queue slot."],
+["d8","Plan for one kilobyte per vector at 256 dimensions in float32 inside the in-memory ANN index."],
+["d9","Stale records are dropped from the in-memory cache after a TTL. This is unrelated to the upload abort threshold."],
+["d10","The worker pool is sized by p95 demand. Long-running workers are recycled when the pool is overprovisioned."],
+["d11","A central permission gate inherits roles from the parent group. This document does not describe the authorization implementation; see d4."],
+["d12","Multiple query results can be combined by simple union or by intersection. Production engines prefer rank fusion; see d6."]
+].map(([d,t])=>({d,i:0,t,a:d+':0'}));
+const QS=[
+ ["what is the threshold before a multipart upload is dropped",["d3","d1"]],
+ ["where is the central permission gate",["d4"]],
+ ["how do production search engines fuse two retrievers",["d6"]],
+ ["how do you stop a long-running worker",["d7"]],
+ ["what is the config of the api endpoint and the retry budget",["d1"]],
+ ["what is the best pizza in cairo",[]]
+];
+// BM25
+const tfs=CORPUS.map(c=>{const m={};tok(c.t).forEach(w=>m[w]=(m[w]||0)+1);return m});
+const dls=CORPUS.map(c=>tok(c.t).length),avg=dls.reduce((a,b)=>a+b,0)/dls.length,df={};
+tfs.forEach(m=>Object.keys(m).forEach(w=>df[w]=(df[w]||0)+1));
+function bm25(q,k){const n=CORPUS.length,sc=new Array(n).fill(0);
+  tok(q).forEach(w=>{const d=df[w]||0;if(!d)return;const idf=Math.log((n-d+.5)/(d+.5)+1);
+    tfs.forEach((m,i)=>{const fq=m[w]||0;if(!fq)return;sc[i]+=idf*fq*2.5/(fq+1.5*(1-.75+.75*dls[i]/avg))})});
+  return CORPUS.map((c,i)=>[c,sc[i]]).sort((a,b)=>b[1]-a[1]).slice(0,k).filter(x=>x[1]>0)}
+// mock embed (port of _stable_hash / mock_embed)
+function sh(t){let h=0;for(const ch of t){h=(Math.imul(h,1315423911)^ch.charCodeAt(0))>>>0}return h}
+function emb(t,dim=96){const v=new Array(dim).fill(0);tok(t).forEach(w=>{const h=sh(w);v[h%dim]+=1;v[(h>>>7)%dim]+=.5;for(let i=0;i<w.length-1;i++){const bg=((w.charCodeAt(i)*31+w.charCodeAt(i+1))>>>0);v[bg%dim]+=.25}});const n=Math.sqrt(v.reduce((a,x)=>a+x*x,0))||1;return v.map(x=>x/n)}
+const VECS=CORPUS.map(c=>emb(c.t));
+function dense(q,k){const qv=emb(q);return CORPUS.map((c,i)=>[c,VECS[i].reduce((a,x,j)=>a+x*qv[j],0)]).sort((a,b)=>b[1]-a[1]).slice(0,k)}
+function rrf(lists,k=60){const s={},by={};lists.forEach(l=>l.forEach(([c],r)=>{s[c.a]=(s[c.a]||0)+1/(k+r+1);by[c.a]=c}));return Object.keys(s).sort((a,b)=>s[b]-s[a]).map(a=>[by[a],s[a]])}
+const hsearch=(q,kout=12)=>rrf([bm25(q,8),dense(q,8)]).slice(0,kout).map(x=>x[0]);
+function pick(q){if(q.toLowerCase().includes(' and '))return'decompose';if(tok(q).some(t=>['api','function','endpoint','config'].includes(t)))return'hyde';return'multiquery'}
+function mq(q){const b=q.trim().replace(/\?+$/,'');const t=tok(b).filter(w=>!STOP.has(w));const v=[b];if(t.length)v.push(t.join(' '));return[...new Set(v.filter(Boolean))]}
+function dec(q){const p=q.split(/\s+and\s+/i).map(s=>s.trim().replace(/\?+$/,'')).filter(Boolean);return p.length?p:[q.trim()]}
+function first(t){return t.trim().split(/(?<=[.!?])\s+/)[0]}
+function run(qi,th){
+  const [q,gold]=QS[qi],strat=pick(q);let cands,fusedScore={};
+  let subs=strat==='multiquery'?mq(q):strat==='decompose'?dec(q):[q];
+  // hyde: no hypothetical table for custom query in this lab -> plain search (same as code when rewrite_hyde returns None)
+  let fused;
+  if(subs.length>1){fused=rrf(subs.map(s=>hsearch(s).map(c=>[c,1]))).slice(0,12)}
+  else{fused=rrf([bm25(q,8),dense(q,8)]).slice(0,12)}
+  const qt=ctok(q);
+  const ranked=fused.map(([c,s])=>{const ov=[...qt].filter(w=>ctok(c.t).has(w)).length/Math.max(1,qt.size);return[c,ov+2*s]}).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  // generate (port)
+  let ans,cites=[];
+  if(!ranked.length||ranked[0][1]<th){ans='I do not know.'}
+  else{const sc=ranked.slice(0,3).map(([c,s])=>[c,[...qt].filter(w=>ctok(c.t).has(w)).length,s]).sort((a,b)=>b[1]-a[1]||b[2]-a[2]);
+    let selc=sc.filter(x=>x[1]>0).slice(0,2);if(!selc.length)selc=[sc[0]];
+    ans=selc.map(([c])=>first(c.t)+' ['+c.a+']').join(' ');cites=selc.map(x=>x[0].a)}
+  // metrics
+  const g=new Set(gold);let rec=gold.length?new Set(ranked.slice(0,5).map(x=>x[0].d).filter(d=>g.has(d))).size/gold.length:NaN;
+  let mrr=0;for(let i=0;i<ranked.length;i++){if(g.has(ranked[i][0].d)){mrr=1/(i+1);break}}
+  return{strat,ranked,ans,cites,rec,mrr:gold.length?mrr:NaN,gold:g}
+}
+const qsel=$('d497-qsel');QS.forEach((x,i)=>{const o=document.createElement('option');o.value=i;o.textContent=(i<4?'e'+(i+1)+': ':i===4?'(مركّب) ':'(برا الـ corpus) ')+x[0];qsel.appendChild(o)});
+function lab2(){const th=+$('d497-th').value;$('d497-thv').textContent=th.toFixed(2);
+  const r=run(+qsel.value,th);$('d497-strat').textContent=r.strat;$('d497-top1').textContent=r.ranked.length?f(r.ranked[0][1],3):'-';
+  $('d497-rec').textContent=isNaN(r.rec)?'n/a':f(r.rec,2);$('d497-mrr').textContent=isNaN(r.mrr)?'n/a':f(r.mrr,2);
+  const mx=Math.max(...r.ranked.map(x=>x[1]),.01),ul=$('d497-rank');ul.innerHTML='';
+  r.ranked.forEach(([c,s])=>{const li=document.createElement('li');const isG=r.gold.has(c.d);
+    li.innerHTML='<span class="mono" style="direction:ltr">'+c.a+(isG?' ✓':'')+'</span><span class="bar"><i style="width:'+(s/mx*100)+'%;background:'+(s<th?'var(--bad)':isG?'var(--ok)':'var(--vec-a)')+'"></i></span><span class="num">'+f(s,3)+'</span>';ul.appendChild(li)});
+  $('d497-ans').textContent='answer: '+r.ans+(r.cites.length?'\ncitations: '+JSON.stringify(r.cites):'\ncitations: []');$('d497-ans').style.whiteSpace='pre-wrap'}
+qsel.addEventListener('change',lab2);$('d497-th').addEventListener('input',lab2);lab2();
+
+// ================= Lab 3: CI gate =================
+const cc=$('d497-ciCv'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+const MN=['recall@5','precision@1','mrr','faithfulness','answer_relevance'],TH=[.75,.5,.6,.75,.75];
+const SCN={ok:[1,.75,.875,1,1],chunk:[.5,.25,.4,1,.75],gen:[1,.75,.875,.5,.75]};
+let vals=SCN.ok.slice(),drag=-1;
+const top=20,bot=CH-50,bw=60,gap=(CW-40-bw*5)/4;
+const yOf=v=>bot-(bot-top)*v,xOf=i=>20+i*(bw+gap);
+function drawCI(){cx.clearRect(0,0,CW,CH);
+  cx.strokeStyle=css('--grid');cx.lineWidth=1;for(let v=0;v<=1.001;v+=.25){cx.beginPath();cx.moveTo(10,yOf(v));cx.lineTo(CW-10,yOf(v));cx.stroke()}
+  const failed=[];
+  MN.forEach((m,i)=>{const x=xOf(i),ok=vals[i]>=TH[i];if(!ok)failed.push(m);
+    cx.fillStyle=ok?css('--ok'):css('--bad');cx.globalAlpha=.85;cx.fillRect(x,yOf(vals[i]),bw,bot-yOf(vals[i]));cx.globalAlpha=1;
+    cx.setLineDash([5,4]);cx.strokeStyle=css('--ink');cx.lineWidth=2;cx.beginPath();cx.moveTo(x-6,yOf(TH[i]));cx.lineTo(x+bw+6,yOf(TH[i]));cx.stroke();cx.setLineDash([]);
+    cx.fillStyle=css('--ink');cx.font='600 12px JetBrains Mono, monospace';cx.textAlign='center';cx.fillText(vals[i].toFixed(3),x+bw/2,yOf(vals[i])-6);
+    cx.font='11px JetBrains Mono, monospace';cx.fillStyle=css('--muted');cx.fillText(m.replace('answer_relevance','ans_rel').replace('faithfulness','faithful'),x+bw/2,bot+16);
+    cx.fillText('≥'+TH[i].toFixed(2),x+bw/2,bot+32);cx.textAlign='left'});
+  let out='== eval ==\n';MN.forEach((m,i)=>{out+='  '+(vals[i]>=TH[i]?'PASS':'FAIL')+'  '+m.padEnd(18)+' '+vals[i].toFixed(3)+'  (threshold '+TH[i].toFixed(2)+')\n'});
+  out+='\n'+(failed.length?"== demo FAILED: ['"+failed.join("', '")+"'] ==\n$ echo $?\n1   ← CI blocks the merge":'== demo PASSED ==\n$ echo $?\n0   ← CI lets the merge in');
+  $('d497-ciOut').textContent=out}
+function hit(e){const[x,y]=AI.evPos(cc,e);for(let i=0;i<5;i++){if(x>=xOf(i)-8&&x<=xOf(i)+bw+8)return i}return-1}
+function setV(e){const[,y]=AI.evPos(cc,e);vals[drag]=Math.round(Math.min(1,Math.max(0,(bot-y)/(bot-top)))*40)/40;drawCI()}
+cc.addEventListener('pointerdown',e=>{drag=hit(e);if(drag>=0){cc.setPointerCapture(e.pointerId);setV(e)}});
+cc.addEventListener('pointermove',e=>{if(drag>=0)setV(e)});
+cc.addEventListener('pointerup',()=>drag=-1);
+root.querySelectorAll('[data-d497s]').forEach(b=>b.addEventListener('click',()=>{root.querySelectorAll('[data-d497s]').forEach(x=>x.classList.remove('primary'));b.classList.add('primary');vals=SCN[b.dataset.d497s].slice();drawCI()}));
+drawCI();
+
+// ================= Quiz =================
+AI.quiz($('d497-quizBox'),[
+ ['ليه الـ integration test هو الحكم الصادق الوحيد لـ RAG pipeline من ست قطع؟',['القطع شغالة على أجهزة مختلفة','الـ chunker هو القطعة الوحيدة اللي تهم','سيرفرات الـ production مش بتشغّل تستات الـ stages لوحدها','الـ metric بتاع كل stage لوحدها مش بيتنبأ بالـ metric بتاع السيستم لأن كل stage بتأثر في اللي بعدها؛ الحكم الوحيد هو الـ pipeline كله end to end على نفس الـ qrels'],3,'المكاسب المنفصلة مش بتتجمع لوحدها؛ الـ pipeline بيتحكم عليه بالخرج المشترك.'],
+ ['إيه دور الـ refuse-on-low-confidence في الـ answer generator؟',['بيسجل كل رفض على الديسك','بيرجّع «I do not know» لما الـ top-1 score من الـ reranker يبقى تحت threshold خاص بالـ corpus، عشان يمنع إجابات متألّفة لما الـ context اللي اتجاب مش بيرد على السؤال','بيمنع الأسئلة الأطول من 100 token','بيعمل retrieval تاني بـ chunker مختلف'],1,'لو الـ rank-1 score واطي باستمرار، فده الموديل بيقولك إن مفيش حاجة في الـ corpus بترد على السؤال؛ ارفض بدل ما تألّف.'],
+ ['ليه الـ training triples بتوع الـ rerank لازم يبقوا منفصلين عن أسئلة الـ eval؟',['عشان نمنع الـ train-test leakage؛ لو أسئلة الـ eval متداخلة مع التدريب، الـ eval هيبان سحري والـ regression test مش هيمسك الـ drift الحقيقي','لأن الـ RRF مش بيعرف يدمج قوايم متداخلة','لأن الـ cross-encoder محتاج vocabularies مختلفة','عشان نوفر memory على الـ GPU'],0,'الفصل الصارم ده النظافة الأساسية؛ غير كده الـ metric بتاع الـ rerank مش هيتنبأ بسلوك الـ production.'],
+ ['إيه فايدة الـ exit code بتاع الـ demo اللي بيقفل نفسه؟',['Python بيطلبه','الـ reranker بيستخدمه كـ training signal','شكلي بس','بيحمل pass/fail مقابل الـ thresholds؛ الـ CI smoke test يقدر يشغّل الـ demo ويمنع الـ merge لو الـ exit مش صفر'],3,'Exit 0 = الـ thresholds اتحققت؛ غير صفر = regression. ده العقد اللي الـ CI gate بيقراه.'],
+ ['الـ citation anchor في الـ pipeline ده شكله إيه؟',['JSON-RPC envelope','[doc_id:chunk_index]','Markdown link فيه الـ URL بتاع المصدر','الـ embedding vector نفسه'],1,'الـ generator بيطلّع (doc_id, chunk_index) كـ anchor عشان أي UI أو مراجع يرجّع كل claim لمصدرها.'],
+ ['أنهي failure mode مش باين مع الـ mock generator ولازم يتختبر بـ LLM حقيقي قبل الشحن؟',['الـ Latency','الـ Hallucination: الـ mock بيطلّع نص من الـ chunks بس ومستحيل يألّف؛ LLM حقيقي ممكن يتجاهل الـ chunks ويطلّع إجابات مش متسندة','الـ Tokenization','حجم الـ vector index'],1,'الـ mock مش بيختبر أمان الـ generator ضد المحتوى المتألّف؛ ده محتاج موديل حقيقي.'],
+ ['(سؤال مني) غيّرت الـ reranker بموديل أكبر، وفجأة الـ generator بقى يرد على أسئلة برا الـ corpus خالص. إيه أول حاجة تراجعها؟',['تزود الـ top_n لـ 50','الـ REFUSE_THRESHOLD، لأن توزيع الـ scores اتغير مع الموديل الجديد والحد القديم بقى واطي بالنسبة له','تغيّر الـ chunker','تشيل الـ RRF'],1,'الـ threshold مظبوط على scores موديل معين. أي تبديل للـ reranker يستلزم إعادة ظبطه على أسئلة ليها إجابة وأسئلة مالهاش.'],
+ ['(سؤال مني) في الـ pipeline، الـ generator بياخد أنهي سؤال؟',['الـ hypothetical بتاع HyDE','آخر subquery من الـ decomposition','السؤال الأصلي بتاع اليوزر','نسخة الـ multiquery من غير stop words'],2,'في Pipeline.query: generate_answer(question, ranked). الـ rewrites للـ retrieval بس، والإجابة لازم ترد على اللي اليوزر سأله فعلًا.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(fc))return false;drawFlow();drawCI()});
+})();
+</script>

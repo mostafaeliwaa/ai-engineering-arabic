@@ -1,0 +1,632 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 70 · Task Spec Format</span>
+  <h1>اليوم ٤٩٨: اقفل العقد قبل ما تكتب أي scoring</h1>
+  <p class="lede">النهاردة بنبدأ حتة الـ <b>eval harness</b>. قبل ما نحسب أي metric، هنثبّت <b>شكل التاسك</b> نفسه: سطر JSON واحد في ملف <code>tasks.jsonl</code>، بأسماء حقول ثابتة، وقايمة metrics مقفولة، وقواعد post-process محددة. وهنكتب <b>validator</b> صارم يرفض أي سطر مش ماشي على العقد ده.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (stdlib بس)</span>
+    <span>النوع: <b>Build</b></span>
+    <span>قبله: <b>End-to-End RAG System</b></span>
+    <span>بعده: <b>Classical Metrics</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Days 431–515</span>
+    <div class="roadmap" id="d498-roadmap" aria-label="أيام فيز مشاريع التخرج"></div>
+  </div>
+</header>
+
+<section id="d498-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ RAG pipeline بتاع امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>امبارح ركّبنا ٥ مراحل ورا بعض. إيه هما بالترتيب؟
+      <details><summary>الإجابة</summary>Chunker ← Hybrid Retriever (BM25 + dense + RRF) ← Query Rewriter (اختياري، قبل الـ retrieval) ← Cross-Encoder Reranker ← Generator بيطلّع إجابة فيها citations زي <code>[doc_id:chunk_index]</code>.</details></li>
+    <li>الـ generator بيقول «I do not know» إمتى؟ وليه ده مهم؟
+      <details><summary>الإجابة</summary>لما مفيش chunk فيه overlap كفاية مع السؤال (أو لما score الـ reranker للأول تحت الـ threshold). ده صمام الأمان ضد الـ hallucination: أحسن يرفض من إنه يألف.</details></li>
+    <li>الـ demo بتاع امبارح كان «self-terminating». يعني إيه، وليه شكله شكل CI test؟
+      <details><summary>الإجابة</summary>بيشتغل offline وdeterministic، يطبع النتايج، ويخرج بـ exit code 0 لو كل الـ metrics فوق الـ thresholds، وغير صفر لو أي metric وقع. ده بالظبط اللي الـ CI محتاجه عشان يوقف الـ merge. النهاردة بنبني الأساس اللي أي eval زي ده هيقف عليه.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة ونص</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>ليه spec مقفول + شكل الـ record والحقول</div>
+    <div><b>20 min</b>المعامل التلاتة: الـ validator، جدول الأزواج، الـ post-process</div>
+    <div><b>30 min</b>اكتب <code>main.py</code> بإيدك وشغّل الـ tests</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d498-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه نقفل الـ spec؟</h2></div>
+  <p>أي codebase بحثي بيتراكم فيه سكريبتات eval أسرع بكتير من الـ tests. بعد ست شهور: كل notebook ليه شكل JSON خاص بيه، وكل metric متكتبة مرتين بطريقتين، ومفيش أي run تقدر تقارنه بالتاني. الحل ممل جدًا ومهم جدًا: <b>اختار schema، اكتب validator، وارفض أي حاجة تانية.</b></p>
+  <div class="note"><strong>تشبيه:</strong> فكّر في الـ spec زي مقاس الفيشة والبريزة في البيت. أي جهاز (موديل) وأي بريزة (metric) شغالين مع بعض لأن المقاس ثابت. لو كل واحد عمل فيشة على مزاجه، هتحتاج adapter لكل جهاز. الـ validator هنا هو اللي بيرفض الفيشة اللي مقاسها غلط قبل ما تحرق البيت.</div>
+  <p>الشكل مستوحى من أفكار BIG-bench وHELM وharnesses على طريقة lm-eval، بس أسماء الحقول بتاعتنا. والقاعدة الذهبية: <b>كل حقل ليه صاحب واحد</b>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>مين</th><th>بيقرا إيه</th></tr>
+    <tr><td>الـ runner</td><td>بيقرا التاسك (الـ prompt والـ few-shot) ويكلّم الموديل</td></tr>
+    <tr><td>الـ post-process</td><td>بينضّف الـ generation حسب القاعدة المكتوبة في التاسك</td></tr>
+    <tr><td>الـ metric</td><td>بيقرا الـ targets ويقارن</td></tr>
+  </table></div>
+  <p>ومفيش حقل بيتعدّل في نص الـ pipeline. التاسك بيدخل زي ما هو ويخرج زي ما هو.</p>
+</section>
+
+<section id="d498-shape">
+  <div class="station-head"><span class="tag">02</span><h2>شكل الـ record</h2></div>
+  <p>التاسك = JSON object على <b>سطر واحد</b>. الـ harness بيقرا <code>tasks.jsonl</code> ويـ validate كل سطر لوحده. السطر البايظ بيتلغي هو بس، مش الـ run كله.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>{
+  "task_id": "arith_001",
+  "category": "arithmetic",
+  "prompt": "Compute the result. Question: 17 + 24\nAnswer:",
+  "targets": ["41"],
+  "metric_name": "exact_match",
+  "few_shot_examples": [
+    {"prompt": "Question: 2 + 2\nAnswer:", "completion": "4"}
+  ],
+  "post_process": "strip_whitespace",
+  "metadata": {"difficulty": "easy"}
+}</pre></div>
+  <p><b>الحقول الإجبارية (٦):</b> <code>task_id</code>، <code>category</code>، <code>prompt</code>، <code>targets</code>، <code>metric_name</code>، <code>post_process</code>. <b>الاختيارية (٢):</b> <code>few_shot_examples</code> و<code>metadata</code>. وأي حقل تالت برا دول = <b>رفض</b>.</p>
+
+  <h3>قواعد كل حقل</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الحقل</th><th>القاعدة</th></tr>
+    <tr><td><code>task_id</code></td><td>string من غير مسافات (في الكود: <span class="ltr">[A-Za-z0-9_-]+</span>)، وفريد على مستوى الملف كله.</td></tr>
+    <tr><td><code>category</code></td><td>واحدة من: <span class="ltr">arithmetic, mcq, code_exec, classification, summary</span>. والـ category بتحدد أنهي metric مسموح.</td></tr>
+    <tr><td><code>prompt</code></td><td>string مش فاضي، ممنوع trailing whitespace في آخره، وممنوع يكون جواه few-shot block مكتوب بإيد الكاتب. الـ few-shot بيتركّب في الـ runner.</td></tr>
+    <tr><td><code>targets</code></td><td>list مش فاضية من strings. في <code>exact_match</code> أي واحد يطابق يكفي. في <code>f1</code> و<code>rouge_l</code> بناخد أعلى score. في الـ mcq لازم عنصر واحد بس، حرف من A لـ E.</td></tr>
+    <tr><td><code>metric_name</code></td><td>قايمة مقفولة: <span class="ltr">exact_match, f1, bleu_4, rouge_l, accuracy, code_exec</span>. metric جديد = درس جديد وسطر جديد هنا.</td></tr>
+    <tr><td><code>few_shot_examples</code></td><td>list من <span class="ltr">{prompt, completion}</span>، أقصى حاجة ٨ عشان الـ prompt ميتنفخش.</td></tr>
+    <tr><td><code>post_process</code></td><td>واحدة بس من: <span class="ltr">none, strip_whitespace, lower, extract_letter, extract_code_block, extract_first_line</span>. ممنوع تجمع قاعدتين.</td></tr>
+    <tr><td><code>metadata</code></td><td>object حر (صعوبة، موضوع، لغة...)، الـ validator بيتأكد بس إنه dict.</td></tr>
+  </table></div>
+  <div class="note ai"><strong>ليه الـ few-shot جوه التاسك ومش في الـ runner؟</strong> لأن اختيار الأمثلة جزء من تعريف الـ eval نفسه، مش من طريقة كلام الموديل. لما الأمثلة تبقى مربوطة بالتاسك، كل موديل بيشوف نفس الـ prompt بالحرف، فالفرق الوحيد في النتيجة بيبقى الموديل نفسه.</div>
+</section>
+
+<section id="d498-validator">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Validator: بوابة على كل سطر</h2></div>
+  <p>الـ validator بيمشي على كل سطر بالترتيب ده، وأول قاعدة تقع بيسجّل error ويكمّل على السطر اللي بعده:</p>
+  <div class="formula">parse JSON → required fields → unknown fields → types/values → category-metric pair → embedded few-shot → task_id unique</div>
+  <p>وبيرجّع حاجتين: list بالتاسكات السليمة، وlist بالـ errors (رقم السطر، الـ task_id، القاعدة اللي اتكسرت، والحقل الغلطان). الـ runner بيرفض يبدأ لو فيه أي error، إلا لو حطيت flag صريح <code>--allow-bad-tasks</code>.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: جرّب الـ validator بنفسك</h3>
+      <p>ده نفس منطق <code>validate_task</code> متحوّل لـ JavaScript. اختار حالة جاهزة أو عدّل الـ JSON بإيدك، وشوف أنهي مرحلة في البوابة وقفته.</p>
+      <div class="btns" id="d498-presets"></div>
+      <div class="note ai"><strong>لاحظ:</strong> الـ validator بيقف عند <b>أول</b> مشكلة في السطر. سطر فيه ٣ غلطات هيطلعلك error واحد بس. صلّحه وشغّل تاني هتلاقي اللي بعده.</div>
+    </div>
+    <div class="instrument">
+      <textarea id="d498-json" rows="9" spellcheck="false" aria-label="JSON التاسك" style="direction:ltr;text-align:left;font-family:var(--f-mono);font-size:13px;width:100%;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px"></textarea>
+      <canvas id="d498-gate" width="520" height="190" aria-label="مراحل الـ validator"></canvas>
+      <div class="verdict" id="d498-verdict" style="direction:ltr;text-align:left;font-family:var(--f-mono);font-size:14px"></div>
+    </div>
+  </div>
+</section>
+
+<section id="d498-pairs">
+  <div class="station-head"><span class="tag">04</span><h2>جدول الأزواج: category × metric</h2></div>
+  <p>مش أي metric ينفع مع أي category. BLEU على حرف واحد (إجابة MCQ) مالوش أي معنى. فالكود فيه قاموس <code>LEGAL_CATEGORY_METRIC</code> بيحدد المسموح:</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: دوس على أي خانة</h3>
+      <p>الأخضر مسموح، والفاضي مرفوض بـ <code>illegal_pair</code>. دوس على خانة عشان تشوف السبب.</p>
+      <div class="note"><strong>الفكرة:</strong> <code>code_exec</code> ليه metric واحد بس (نفسه)، لأن الطريقة الوحيدة تعرف إن الكود صح إنك تشغّله. والـ summary هي الوحيدة اللي بتقبل bleu_4 وrouge_l لأنها نص حر.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d498-pairCv" width="520" height="260" aria-label="جدول الأزواج المسموحة"></canvas>
+      <div id="d498-pairMsg" style="font-size:15px"></div>
+    </div>
+  </div>
+</section>
+
+<section id="d498-pp">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Few-shot rendering والـ Post-process</h2></div>
+  <p><b>الـ rendering:</b> الـ runner بيحط كل مثال (prompt + مسافة + completion) قبل الـ prompt، ويفصل بينهم بسطر فاضي (<code>"\n\n"</code>). نفس الكود لكل الموديلات، فالكاتب بيكتب الأمثلة مرة واحدة بس مش مرة لكل provider.</p>
+  <p><b>الـ post-process:</b> بيشتغل بعد الـ generation وقبل الـ metric. deterministic ومن غير state:</p>
+  <div class="tablewrap"><table>
+    <tr><th>القاعدة</th><th>بتعمل إيه</th><th>بتتستخدم فين</th></tr>
+    <tr><td><code>none</code></td><td>بترجّع النص زي ما هو</td><td>لما الـ metric نفسه بيتعامل مع الخام</td></tr>
+    <tr><td><code>strip_whitespace</code></td><td>بتشيل المسافات من الأول والآخر</td><td>الحساب</td></tr>
+    <tr><td><code>lower</code></td><td>بتصغّر الحروف</td><td>الـ classification</td></tr>
+    <tr><td><code>extract_letter</code></td><td>أول حرف من A لـ E</td><td>الـ MCQ</td></tr>
+    <tr><td><code>extract_code_block</code></td><td>جسم أول block محاط بـ ```</td><td>الـ code-exec</td></tr>
+    <tr><td><code>extract_first_line</code></td><td>أول سطر مش فاضي</td><td>الـ summary</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: ملعب الـ post-process والـ few-shot</h3>
+      <p>اكتب أي «رد موديل» واختار القاعدة. وتحت، حرّك عدد أمثلة الـ few-shot وشوف الـ prompt اللي هيروح للموديل بيكبر إزاي، وإمتى الـ validator يرفض.</p>
+      <div class="note ai"><strong>جرّب:</strong> اكتب <code>Definitely not sure</code> واختار <code>extract_letter</code>. هتطلع <b>D</b>! الكود عنده fallback بيمسك أول حرف كبير من A لـ E حتى لو جوه كلمة. ده تصميم مقصود في الكود بس ليه تمن.</div>
+    </div>
+    <div class="instrument">
+      <textarea id="d498-gen" rows="4" spellcheck="false" aria-label="رد الموديل" style="direction:ltr;text-align:left;font-family:var(--f-mono);font-size:13px;width:100%;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px">Answer: C is correct</textarea>
+      <div class="btns" id="d498-rules"></div>
+      <div class="readout"><div><small>بعد الـ post-process</small><b id="d498-ppOut"></b></div></div>
+      <label style="font-family:var(--f-mono);font-size:13px;direction:ltr">few_shot_examples = <span id="d498-kv">1</span><input type="range" id="d498-k" min="0" max="10" value="1"></label>
+      <pre id="d498-render" style="max-height:200px"></pre>
+      <div class="verdict" id="d498-kVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<section id="d498-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب <code>main.py</code></h2></div>
+  <p>من فولدر الريبو شغّل الأصل الأول عشان تعرف الناتج المتوقع، وبعدها الـ tests:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/70-task-spec-format/code/main.py
+<span class="c"># الـ tests (unittest، مش محتاج pytest):</span>
+python3 phases/19-capstone-projects/70-task-spec-format/code/tests/test_spec.py</pre></div>
+  <p>الناتج المتوقع من الـ demo (شكله، من قراية الكود):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>good fixture: validated=10 errors=0
+bad fixture: validated=0 errors=10
+  {'line_number': 1, 'task_id': '?', 'rule': 'missing_required', 'field': 'task_id', 'detail': 'required field'}
+  {'line_number': 2, 'task_id': 'bad space', 'rule': 'bad_value', 'field': 'task_id', ...}
+  {'line_number': 3, 'task_id': 'wrong_cat', 'rule': 'bad_value', 'field': 'category', ...}
+  {'line_number': 4, 'task_id': 'bad_pair', 'rule': 'illegal_pair', 'field': 'metric_name', ...}
+  {'line_number': 5, 'task_id': 'no_target', 'rule': 'bad_type', 'field': 'targets', ...}
+sample render len=... pp='4'</pre></div>
+  <p>والـ exit code = 0. <b>القاعدة:</b> افتح <code>my_spec.py</code> واكتب الخطوات دي بإيدك. متعملش Copy غير وانت بتقارن.</p>
+
+  <h3>خطوة ١: الثوابت (العقد نفسه)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import json, os, re, sys
+from dataclasses import dataclass, field
+
+<span class="c"># الحقول: ٦ إجباري + ٢ اختياري، وغيرهم مرفوض</span>
+REQUIRED_FIELDS = ("task_id", "category", "prompt", "targets", "metric_name", "post_process")
+OPTIONAL_FIELDS = ("few_shot_examples", "metadata")
+ALLOWED_FIELDS = set(REQUIRED_FIELDS) | set(OPTIONAL_FIELDS)
+
+<span class="c"># القوايم المقفولة</span>
+CATEGORIES = ("arithmetic", "mcq", "code_exec", "classification", "summary")
+METRICS = ("exact_match", "f1", "bleu_4", "rouge_l", "accuracy", "code_exec")
+POST_PROCESS = ("none", "strip_whitespace", "lower",
+                "extract_letter", "extract_code_block", "extract_first_line")
+
+<span class="c"># مين يمشي مع مين</span>
+LEGAL_CATEGORY_METRIC = {
+    "arithmetic": {"exact_match", "f1"},
+    "mcq": {"exact_match", "accuracy"},
+    "code_exec": {"code_exec"},
+    "classification": {"exact_match", "accuracy", "f1"},
+    "summary": {"exact_match", "f1", "bleu_4", "rouge_l"},
+}
+
+FEW_SHOT_MAX = 8
+TASK_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+MCQ_TARGET_RE = re.compile(r"^[A-E]$")</pre></div>
+
+  <h3>خطوة ٢: شكل الـ error والـ TaskSpec</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class ValidationError:
+    line_number: int
+    task_id: str
+    rule: str          <span class="c"># اسم القاعدة اللي اتكسرت</span>
+    field_name: str    <span class="c"># الحقل الغلطان</span>
+    detail: str
+
+    def to_dict(self):
+        return {"line_number": self.line_number, "task_id": self.task_id,
+                "rule": self.rule, "field": self.field_name, "detail": self.detail}
+
+@dataclass
+class TaskSpec:
+    task_id: str
+    category: str
+    prompt: str
+    targets: list
+    metric_name: str
+    post_process: str
+    few_shot_examples: list = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)</pre></div>
+
+  <h3>خطوة ٣: الفحوصات واحدة واحدة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _check_required(record):
+    for f in REQUIRED_FIELDS:
+        if f not in record:
+            return ("missing_required", f)
+    return None
+
+def _check_unknown_fields(record):
+    for k in record.keys():
+        if k not in ALLOWED_FIELDS:
+            return ("unknown_field", k)
+    return None
+
+def _check_types(record):
+    if not isinstance(record["task_id"], str):
+        return ("bad_type", "task_id", "must be string")
+    if not TASK_ID_RE.match(record["task_id"]):
+        return ("bad_value", "task_id", "must match [A-Za-z0-9_-]+")
+    if record["category"] not in CATEGORIES:
+        return ("bad_value", "category", f"must be one of {sorted(CATEGORIES)}")
+    if not isinstance(record["prompt"], str) or not record["prompt"]:
+        return ("bad_type", "prompt", "must be non-empty string")
+    if record["prompt"] != record["prompt"].rstrip():   <span class="c"># مسافة في الآخر؟ مرفوض</span>
+        return ("bad_value", "prompt", "trailing whitespace not allowed")
+    if not isinstance(record["targets"], list) or not record["targets"]:
+        return ("bad_type", "targets", "must be non-empty list")
+    for t in record["targets"]:
+        if not isinstance(t, str):
+            return ("bad_type", "targets", "all elements must be strings")
+    if record["metric_name"] not in METRICS:
+        return ("bad_value", "metric_name", f"must be one of {sorted(METRICS)}")
+    if record["post_process"] not in POST_PROCESS:
+        return ("bad_value", "post_process", f"must be one of {sorted(POST_PROCESS)}")
+    if "few_shot_examples" in record:
+        fs = record["few_shot_examples"]
+        if not isinstance(fs, list):
+            return ("bad_type", "few_shot_examples", "must be list")
+        if len(fs) > FEW_SHOT_MAX:
+            return ("bad_value", "few_shot_examples", f"max {FEW_SHOT_MAX} entries")
+        for ex in fs:
+            if not isinstance(ex, dict):
+                return ("bad_type", "few_shot_examples", "entries must be objects")
+            if "prompt" not in ex or "completion" not in ex:
+                return ("bad_type", "few_shot_examples", "needs prompt and completion")
+            if not isinstance(ex["prompt"], str) or not isinstance(ex["completion"], str):
+                return ("bad_type", "few_shot_examples", "prompt/completion must be strings")
+    if "metadata" in record and not isinstance(record["metadata"], dict):
+        return ("bad_type", "metadata", "must be object")
+    return None
+
+def _check_category_metric(record):
+    cat, metric = record["category"], record["metric_name"]
+    if metric not in LEGAL_CATEGORY_METRIC[cat]:
+        return ("illegal_pair", "metric_name", f"{metric} not allowed for category {cat}")
+    if cat == "mcq":                              <span class="c"># الـ mcq: target واحد وحرف A-E</span>
+        if len(record["targets"]) != 1:
+            return ("bad_value", "targets", "mcq needs exactly one target")
+        if not MCQ_TARGET_RE.match(record["targets"][0]):
+            return ("bad_value", "targets", "mcq target must be a letter A-E")
+    return None
+
+def _embedded_few_shot(prompt):
+    <span class="c"># لو لقينا أكتر من علامة سؤال/مثال، غالبًا الكاتب حط few-shot جوه الـ prompt</span>
+    lowered = prompt.lower()
+    hits = sum(lowered.count(m) for m in ("question:", "q:", "example:"))
+    return hits > 1</pre></div>
+
+  <h3>خطوة ٤: <code>validate_task</code> (أول مشكلة توقف السطر)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def validate_task(record, line_number=0):
+    errors = []
+    if not isinstance(record, dict):
+        return [ValidationError(line_number, "?", "bad_type", "_root", "not an object")]
+    tid = str(record.get("task_id", "?"))
+    m = _check_required(record)
+    if m:
+        return [ValidationError(line_number, tid, m[0], m[1], "required field")]
+    u = _check_unknown_fields(record)
+    if u:
+        return [ValidationError(line_number, tid, u[0], u[1], "not in allowed fields")]
+    t = _check_types(record)
+    if t:
+        return [ValidationError(line_number, tid, t[0], t[1], t[2])]
+    p = _check_category_metric(record)
+    if p:
+        return [ValidationError(line_number, tid, p[0], p[1], p[2])]
+    if _embedded_few_shot(record["prompt"]) and not record.get("few_shot_examples"):
+        errors.append(ValidationError(line_number, tid, "embedded_few_shot", "prompt",
+                      "few-shot in prompt body without few_shot_examples list"))
+    return errors</pre></div>
+
+  <h3>خطوة ٥: <code>validate_file</code> (سطر سطر + التكرار)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def validate_file(path):
+    validated, errors, seen_ids = [], [], set()
+    with open(path, "r", encoding="utf-8") as fp:
+        for i, raw in enumerate(fp, start=1):
+            line = raw.strip()
+            if not line:
+                continue                          <span class="c"># السطور الفاضية بنتجاهلها</span>
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:   <span class="c"># JSON بايظ: سجّل وكمّل</span>
+                errors.append(ValidationError(i, "?", "bad_json", "_line", str(exc)))
+                continue
+            line_errors = validate_task(record, line_number=i)
+            if line_errors:
+                errors.extend(line_errors)
+                continue
+            tid = record["task_id"]
+            if tid in seen_ids:                   <span class="c"># الـ uniqueness على الملف كله</span>
+                errors.append(ValidationError(i, tid, "duplicate_task_id", "task_id", "already seen"))
+                continue
+            seen_ids.add(tid)
+            validated.append(TaskSpec(
+                task_id=tid, category=record["category"], prompt=record["prompt"],
+                targets=list(record["targets"]), metric_name=record["metric_name"],
+                post_process=record["post_process"],
+                few_shot_examples=list(record.get("few_shot_examples", [])),
+                metadata=dict(record.get("metadata", {}))))
+    return validated, errors</pre></div>
+
+  <h3>خطوة ٦: الـ render والـ post-process</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def render_prompt(task):
+    parts = [f"{ex['prompt']} {ex['completion']}" for ex in task.few_shot_examples]
+    parts.append(task.prompt)
+    return "\n\n".join(parts)                     <span class="c"># سطر فاضي بين كل مثال</span>
+
+CODE_BLOCK_RE = re.compile(r"```(?:[a-zA-Z0-9_]*)\n(.*?)```", re.DOTALL)
+LETTER_RE = re.compile(r"(?:^|[^A-Za-z])([A-E])(?:[^A-Za-z]|$)")  <span class="c"># حرف لوحده</span>
+LETTER_FALLBACK_RE = re.compile(r"[A-E]")                          <span class="c"># أي حرف كبير A-E</span>
+
+def post_process(text, rule):
+    if rule == "none":
+        return text
+    if rule == "strip_whitespace":
+        return text.strip()
+    if rule == "lower":
+        return text.lower()
+    if rule == "extract_letter":
+        m = LETTER_RE.search(text)
+        if m:
+            return m.group(1)
+        m2 = LETTER_FALLBACK_RE.search(text)
+        return m2.group(0) if m2 else ""
+    if rule == "extract_code_block":
+        m = CODE_BLOCK_RE.search(text)
+        return m.group(1) if m else text          <span class="c"># مفيش block؟ رجّع النص كله</span>
+    if rule == "extract_first_line":
+        for line in text.splitlines():
+            if line.strip():
+                return line.strip()
+        return ""
+    raise ValueError(f"unknown post_process rule: {rule}")</pre></div>
+
+  <h3>خطوة ٧: الـ fixtures والـ demo</h3>
+  <p>الكود الأصلي فيه <code>fixture_tasks()</code> بـ ١٠ تاسكات سليمة (٢ حساب، ٢ MCQ، ٢ code_exec، ٢ classification، ٢ summary) و<code>bad_fixture_tasks()</code> بـ ١٠ تاسكات كل واحدة بتكسر قاعدة مختلفة. انقل منهم ٣ أو ٤ بإيدك، وبعدين اكتب الـ demo:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def write_jsonl(path, records):
+    with open(path, "w", encoding="utf-8") as fp:
+        for r in records:
+            fp.write(json.dumps(r) + "\n")        <span class="c"># سطر = تاسك</span>
+
+def load_fixtures(out_dir):
+    good = os.path.join(out_dir, "tasks.jsonl")
+    bad = os.path.join(out_dir, "tasks_bad.jsonl")
+    write_jsonl(good, fixture_tasks())
+    write_jsonl(bad, bad_fixture_tasks())
+    return good, bad
+
+def demo():
+    import tempfile
+    good, bad = load_fixtures(tempfile.mkdtemp(prefix="aie_l70_"))
+    ok_tasks, ok_errors = validate_file(good)
+    print(f"good fixture: validated={len(ok_tasks)} errors={len(ok_errors)}")
+    bad_tasks, bad_errors = validate_file(bad)
+    print(f"bad fixture: validated={len(bad_tasks)} errors={len(bad_errors)}")
+    for err in bad_errors[:5]:
+        print(f"  {err.to_dict()}")
+    if ok_tasks:
+        rendered = render_prompt(ok_tasks[0])
+        print(f"sample render len={len(rendered)} pp={post_process('  4  \n', 'strip_whitespace')!r}")
+    if ok_errors:
+        return 1                                  <span class="c"># الـ fixture السليم فيه غلط</span>
+    if len(bad_errors) != len(bad_fixture_tasks()):
+        return 2                                  <span class="c"># قاعدة مش بتمسك اللي المفروض تمسكه</span>
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(demo())</pre></div>
+  <div class="note"><strong>اقرا الـ tests:</strong> <code>test_spec.py</code> بيثبّت كل قاعدة وكل post-process: record صغير سليم يعدّي، حذف أي حقل إجباري يطلع <code>missing_required</code>، حقل غريب يطلع <code>unknown_field</code>، ٩ أمثلة few-shot تترفض، سطرين بنفس الـ id يطلعوا <code>duplicate_task_id</code>، سطر JSON بايظ يطلع <code>bad_json</code> والسطر اللي بعده يعدّي عادي، و<code>post_process("x", "wat")</code> يرمي <code>ValueError</code>.</div>
+</section>
+
+<section id="d498-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>الدرس مفيهوش قسم تمارين رسمي، فدي تمارين مبنية على «Going further» وعلى الـ tests:</p>
+  <ol class="ex">
+    <li><b>(من Going further)</b> عايز تضيف category جديدة اسمها <code>translation</code>. إيه الحاجات اللي لازم تتضاف معاها عشان الإضافة تبقى «سليمة»؟
+      <details><summary>تلميح / إجابة</summary>الدرس بيقول: ممنوع category من غير metric وpost-process rule وتاسك fixture واحد على الأقل. يعني: تضيفها في <code>CATEGORIES</code>، وتضيف سطر في <code>LEGAL_CATEGORY_METRIC</code> (مثلًا <code>{"bleu_4", "rouge_l"}</code>)، وتاسك أو اتنين في <code>fixture_tasks()</code>، وتاسك بايظ ليها في <code>bad_fixture_tasks()</code>، وtest جديد. وتتعامل معاها زي database migration: review وversion وtests.</details></li>
+    <li>اكتب record لـ MCQ سليم، وبعدين اكسره بـ ٣ طرق مختلفة وتوقّع الـ rule والـ field لكل واحدة قبل ما تجرّب في المعمل ١.
+      <details><summary>أمثلة</summary><code>targets: ["A","B"]</code> ← <span class="ltr">bad_value / targets</span>. <code>targets: ["correct"]</code> ← <span class="ltr">bad_value / targets</span>. <code>metric_name: "f1"</code> ← <span class="ltr">illegal_pair / metric_name</span>.</details></li>
+    <li>ليه <code>_embedded_few_shot</code> بيرفض <code>"Q: 1+1 A: 2\nQ: 3+3\nA:"</code> ومش بيرفض <code>"Q: 1+1\nA:"</code>؟ وإمتى بيعدّي حتى لو فيه أكتر من علامة؟
+      <details><summary>الإجابة</summary>الأول فيه <code>q:</code> مرتين (hits = 2 &gt; 1)، التاني مرة واحدة. والـ error بيطلع بس لو مفيش <code>few_shot_examples</code> list، فلو التاسك فيه list أمثلة الفحص ده مش بيرفض.</details></li>
+    <li>عدّل <code>validate_task</code> بحيث يجمع <b>كل</b> المشاكل في السطر بدل ما يقف عند أول واحدة. الـ tests هتقع؟
+      <details><summary>تلميح</summary>أيوه، كذا test بيعمل <code>assertEqual(len(errs), 1)</code>. وفيه سبب للتصميم الأصلي: لو الحقل مش موجود، الفحوصات اللي بعده هتعمل KeyError. فلازم تحافظ على الـ early return بعد الـ required check على الأقل.</details></li>
+    <li><b>(تمرين عملي مني)</b> عندك ملف eval قديم في شغلك شكله <code>{"q": ..., "a": ..., "type": "mc"}</code>. اكتب <code>migrate.py</code> يحوّله لـ <code>tasks.jsonl</code> على الـ spec ده: يولّد <code>task_id</code> فريد، يحوّل <code>type</code> لـ category، يختار metric وpost_process مناسبين، ويشيل أي trailing whitespace. شغّل الـ validator على الناتج وخلي الـ CI يرفض لو فيه error.
+      <details><summary>تلميح</summary>خليه يطبع عدد السطور اللي اتحوّلت وعدد اللي اترفضت مع السبب. ده بالظبط اللي بيحصل في أي فريق بيوحّد evals متفرقة: الـ migration + الـ validator كـ gate. والـ mc اللي إجابته نص بدل حرف لازم تحوّلها لحرف أو تحطها classification.</details></li>
+  </ol>
+</section>
+
+<section id="d498-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: أخطاء هتقع فيها، وفين ده في شغل الـ LLMs</h2></div>
+  <ul class="ex" style="display:grid;gap:10px;padding-inline-start:22px;margin:0">
+    <li><b>الـ fallback بتاع extract_letter:</b> زي ما شفت في المعمل ٣، <code>"Definitely not sure"</code> بيطلع <b>D</b>. يعني موديل رد بكلام إنجليزي عادي ممكن ياخد درجة بالصدفة. في eval حقيقي فكّر تخلّي الموديل يرد بصيغة محددة، أو تراجع عيّنة من الحالات اللي عدّت من الـ fallback.</li>
+    <li><b>الـ trailing whitespace مش تفصيلة:</b> مسافة في آخر الـ prompt بعد <code>Answer:</code> بتغيّر الـ tokenization، وده ممكن يغيّر أول token الموديل بيطلّعه. عشان كده الـ validator بيرفضها.</li>
+    <li><b>«هضيف الحقل ده بس مؤقتًا»:</b> أول ما تسمح بحقول مجهولة، كل واحد هيحط حقله، وبعد شهور الـ schema الحقيقي بقى «اللي في الداتا». الرفض الصارم هو اللي بيخلي الـ spec المصدر الوحيد للحقيقة.</li>
+    <li><b>الـ validator مش بيشيك إن الـ post_process مناسب للـ category:</b> مثلًا mcq مع <code>lower</code> هيعدّي من البوابة، بس الـ target حرف كبير، فـ exact_match هيقع دايمًا. ده مكان كويس تضيف فيه قاعدة بنفسك.</li>
+    <li><b>فين بتشوف ده في الدنيا:</b> أي benchmark بيتوزع كـ JSONL، أي «eval set» بيتعمل لـ RAG أو agent في شركة، والـ regression suites اللي بتشتغل في CI قبل ما تغيّر prompt أو موديل. لو الـ spec مش ثابت، مش هتعرف هل الموديل الجديد أحسن ولا الـ eval اتغيّر.</li>
+  </ul>
+</section>
+
+<section id="d498-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d498-quizBox"></div>
+</section>
+
+<section id="d498-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أعد الـ ٦ حقول الإجبارية والـ ٢ الاختياريين من دماغي</label></li>
+    <li><label><input type="checkbox" data-ck="2"> كسرت records في المعمل ١ وتوقعت الـ rule قبل ما أشوفه</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه mcq + bleu_4 مرفوض وليه code_exec ليه metric واحد</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم الـ post-process rules الست وجربت fallback الـ extract_letter</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت <code>main.py</code> بإيدي والـ demo طلع exit code 0 والـ tests عدّت</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>فين ده بيظهر؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الفكرة</th><th>فين بتقابلها</th></tr>
+    <tr><td>JSONL task records</td><td>الـ benchmarks العامة وeval sets الشركات، داتا الـ fine-tuning</td></tr>
+    <tr><td>Closed metric vocabulary</td><td>الـ harness بيعمل dispatch على حقل واحد (الدروس ٧١–٧٣)</td></tr>
+    <tr><td>Few-shot جوه التاسك</td><td>مقارنة موديلات من providers مختلفة بنفس الـ prompt بالحرف</td></tr>
+    <tr><td>Post-process rules</td><td>تحويل رد الموديل الحر لحاجة تتقاس: حرف، كود، سطر</td></tr>
+    <tr><td>Validator كـ gate</td><td>الـ CI قبل أي eval run، وقبل ما تدخل داتا جديدة للـ pipeline</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Classical Metrics. هنكتب أول scoring functions اللي بتقرا الـ <code>metric_name</code> ده: exact_match وf1 وBLEU وROUGE-L.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F70-task-spec-format" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/70-task-spec-format</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=498,$=id=>document.getElementById(id),css=AI.css;
+const root=$('d498-roadmap').closest('.day');
+
+// roadmap: phase 19 = days 431..515
+const rm=$('d498-roadmap');
+for(let i=431;i<=515;i++){const s=document.createElement('span');s.textContent=i;s.style.width='38px';if(i===N)s.className='now';rm.appendChild(s)}
+const nowEl=rm.querySelector('.now');if(nowEl){rm.scrollLeft=nowEl.offsetLeft-rm.clientWidth/2}
+
+// ---------- validator port ----------
+const REQ=["task_id","category","prompt","targets","metric_name","post_process"],OPT=["few_shot_examples","metadata"];
+const CATS=["arithmetic","mcq","code_exec","classification","summary"];
+const METS=["exact_match","f1","bleu_4","rouge_l","accuracy","code_exec"];
+const PPS=["none","strip_whitespace","lower","extract_letter","extract_code_block","extract_first_line"];
+const LEGAL={arithmetic:["exact_match","f1"],mcq:["exact_match","accuracy"],code_exec:["code_exec"],classification:["exact_match","accuracy","f1"],summary:["exact_match","f1","bleu_4","rouge_l"]};
+const isObj=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
+const srt=a=>"['"+[...a].sort().join("', '")+"']";
+function validate(r){
+  // returns [stageIndex, rule, field, detail] or [stageIndex,null]
+  if(!isObj(r))return[1,'bad_type','_root','not an object'];
+  for(const f of REQ)if(!(f in r))return[1,'missing_required',f,'required field'];
+  for(const k of Object.keys(r))if(!REQ.includes(k)&&!OPT.includes(k))return[2,'unknown_field',k,'not in allowed fields'];
+  if(typeof r.task_id!=='string')return[3,'bad_type','task_id','must be string'];
+  if(!/^[A-Za-z0-9_\-]+$/.test(r.task_id))return[3,'bad_value','task_id','must match [A-Za-z0-9_-]+'];
+  if(!CATS.includes(r.category))return[3,'bad_value','category','must be one of '+srt(CATS)];
+  if(typeof r.prompt!=='string'||!r.prompt)return[3,'bad_type','prompt','must be non-empty string'];
+  if(r.prompt!==r.prompt.replace(/\s+$/,''))return[3,'bad_value','prompt','trailing whitespace not allowed'];
+  if(!Array.isArray(r.targets)||!r.targets.length)return[3,'bad_type','targets','must be non-empty list'];
+  for(const t of r.targets)if(typeof t!=='string')return[3,'bad_type','targets','all elements must be strings'];
+  if(!METS.includes(r.metric_name))return[3,'bad_value','metric_name','must be one of '+srt(METS)];
+  if(!PPS.includes(r.post_process))return[3,'bad_value','post_process','must be one of '+srt(PPS)];
+  if('few_shot_examples' in r){const fs=r.few_shot_examples;
+    if(!Array.isArray(fs))return[3,'bad_type','few_shot_examples','must be list'];
+    if(fs.length>8)return[3,'bad_value','few_shot_examples','max 8 entries'];
+    for(const ex of fs){if(!isObj(ex))return[3,'bad_type','few_shot_examples','entries must be objects'];
+      if(!('prompt' in ex)||!('completion' in ex))return[3,'bad_type','few_shot_examples','needs prompt and completion'];
+      if(typeof ex.prompt!=='string'||typeof ex.completion!=='string')return[3,'bad_type','few_shot_examples','prompt/completion must be strings']}}
+  if('metadata' in r&&!isObj(r.metadata))return[3,'bad_type','metadata','must be object'];
+  if(!LEGAL[r.category].includes(r.metric_name))return[4,'illegal_pair','metric_name',r.metric_name+' not allowed for category '+r.category];
+  if(r.category==='mcq'){if(r.targets.length!==1)return[4,'bad_value','targets','mcq needs exactly one target'];
+    if(!/^[A-E]$/.test(r.targets[0]))return[4,'bad_value','targets','mcq target must be a letter A-E']}
+  const lo=r.prompt.toLowerCase();let hits=0;['question:','q:','example:'].forEach(m=>{hits+=lo.split(m).length-1});
+  if(hits>1&&!(Array.isArray(r.few_shot_examples)&&r.few_shot_examples.length))return[5,'embedded_few_shot','prompt','few-shot in prompt body without few_shot_examples list'];
+  return[6,null];
+}
+const base={task_id:"mcq_001",category:"mcq",prompt:"Which planet is closest to the sun?\nA) Earth\nB) Mercury\nC) Venus\nD) Mars\nAnswer:",targets:["B"],metric_name:"exact_match",post_process:"extract_letter",metadata:{topic:"astronomy"}};
+const mod=f=>{const r=JSON.parse(JSON.stringify(base));f(r);return JSON.stringify(r,null,1)};
+const presets=[
+ ['سليم',mod(()=>{})],
+ ['من غير task_id',mod(r=>{delete r.task_id})],
+ ['حقل غريب',mod(r=>{r.rogue=true})],
+ ['id فيه مسافة',mod(r=>{r.task_id='bad space'})],
+ ['category غلط',mod(r=>{r.category='logic'})],
+ ['trailing space',mod(r=>{r.prompt+='   '})],
+ ['mcq + bleu_4',mod(r=>{r.metric_name='bleu_4'})],
+ ['targets: ["A","B"]',mod(r=>{r.targets=['A','B']})],
+ ['few-shot في الـ prompt',mod(r=>{r.prompt='Q: 2+2 A: 4\nQ: 3+3\nA:';r.category='arithmetic';r.targets=['6'];r.post_process='strip_whitespace'})],
+ ['9 أمثلة',mod(r=>{r.few_shot_examples=Array.from({length:9},()=>({prompt:'p',completion:'c'}))})],
+ ['JSON بايظ','{"task_id": "x", "category": '],
+];
+const pb=$('d498-presets');
+presets.forEach(([l,j],i)=>{const b=document.createElement('button');b.type='button';b.textContent=l;b.addEventListener('click',()=>{$('d498-json').value=j;runVal()});pb.appendChild(b)});
+const gc=$('d498-gate'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+const stages=['parse','required','unknown','types','pair','few-shot','OK'];
+let lastStage=6,lastFail=false;
+function drawGate(){
+  gx.clearRect(0,0,GW,GH);const n=stages.length,w=(GW-20)/n;
+  stages.forEach((s,i)=>{const x=10+i*w,y=60,bw=w-10,bh=44;
+    let col=css('--line'),fill=css('--panel');
+    if(i<lastStage||(i===lastStage&&!lastFail)){col=css('--ok');fill=css('--soft')}
+    if(i===lastStage&&lastFail){col=css('--bad')}
+    gx.fillStyle=fill;gx.fillRect(x,y,bw,bh);gx.strokeStyle=col;gx.lineWidth=i===lastStage?3:1.5;gx.strokeRect(x,y,bw,bh);
+    gx.fillStyle=i>lastStage?css('--muted'):css('--ink');gx.font='12px JetBrains Mono, monospace';gx.textAlign='center';gx.fillText(s,x+bw/2,y+27);
+    if(i<n-1)AI.arrow(gx,x+bw,y+bh/2,x+w,y+bh/2,css('--muted'),1.5)});
+  gx.textAlign='left';gx.font='13px JetBrains Mono, monospace';
+  const x=10+lastStage*(GW-20)/n+((GW-20)/n-10)/2;
+  if(lastFail){AI.arrow(gx,x,104,x,150,css('--bad'),2);gx.fillStyle=css('--bad');gx.textAlign='center';gx.fillText('record error → next line',Math.min(Math.max(x,90),GW-90),170)}
+  else{gx.fillStyle=css('--ok');gx.textAlign='center';gx.fillText('validated → TaskSpec',GW/2,30)}
+  gx.textAlign='left';
+}
+function runVal(){
+  const v=$('d498-verdict');let r;
+  try{r=JSON.parse($('d498-json').value)}catch(e){lastStage=0;lastFail=true;drawGate();v.style.color=css('--bad');v.textContent='rule=bad_json  field=_line\n'+e.message;return}
+  const res=validate(r);
+  if(res[1]===null){lastStage=6;lastFail=false;v.style.color=css('--ok');v.textContent='✓ errors = []  (task_id="'+r.task_id+'")'}
+  else{lastStage=res[0];lastFail=true;v.style.color=css('--bad');v.textContent='rule='+res[1]+'  field='+res[2]+'\ndetail: '+res[3]}
+  v.style.whiteSpace='pre-wrap';drawGate();
+}
+$('d498-json').value=presets[0][1];$('d498-json').addEventListener('input',runVal);runVal();
+
+// ---------- Lab 2: pair matrix ----------
+const pc=$('d498-pairCv'),px=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+const why={
+ 'mcq|bleu_4':'BLEU بيقيس تداخل n-grams، وعلى حرف واحد مالوش معنى.','mcq|rouge_l':'ROUGE-L على حرف واحد مالوش معنى.','mcq|f1':'الإجابة حرف واحد، يا صح يا غلط؛ مفيش «تداخل جزئي».','mcq|code_exec':'مفيش كود يتشغّل في سؤال اختياري.',
+ 'code_exec|*':'الكود مش بيتقاس بالنص؛ لازم يتشغّل على الـ asserts. فـ code_exec بس.',
+ 'arithmetic|bleu_4':'الرقم صح أو غلط، مش ترجمة.','arithmetic|rouge_l':'الرقم صح أو غلط، مش ملخص.','arithmetic|accuracy':'مش في القاموس للحساب؛ exact_match بيعمل نفس الشغل على مستوى التاسك.','arithmetic|code_exec':'مفيش كود يتشغّل.',
+ 'classification|bleu_4':'الـ label كلمة واحدة، مش نص حر.','classification|rouge_l':'الـ label كلمة واحدة، مش نص حر.','classification|code_exec':'مفيش كود يتشغّل.',
+ 'summary|accuracy':'الملخص نص حر؛ مفيش label واحد صح عشان accuracy.','summary|code_exec':'مفيش كود يتشغّل.'};
+let sel=null;const L=120,T=40,cw=(PW-L-10)/METS.length,ch=(PH-T-10)/CATS.length;
+function drawPairs(){
+  px.clearRect(0,0,PW,PH);px.font='11px JetBrains Mono, monospace';px.textAlign='center';px.fillStyle=css('--muted');
+  METS.forEach((m,j)=>px.fillText(m,L+j*cw+cw/2,T-12));
+  px.textAlign='right';CATS.forEach((c,i)=>px.fillText(c,L-8,T+i*ch+ch/2+4));
+  CATS.forEach((c,i)=>METS.forEach((m,j)=>{const x=L+j*cw,y=T+i*ch,ok=LEGAL[c].includes(m);
+    px.fillStyle=ok?css('--ok'):css('--panel');px.globalAlpha=ok?.35:1;px.fillRect(x+2,y+2,cw-4,ch-4);px.globalAlpha=1;
+    px.strokeStyle=sel&&sel[0]===i&&sel[1]===j?css('--vec-b'):css('--line');px.lineWidth=sel&&sel[0]===i&&sel[1]===j?3:1;px.strokeRect(x+2,y+2,cw-4,ch-4);
+    px.fillStyle=ok?css('--ink'):css('--bad');px.textAlign='center';px.font='15px JetBrains Mono, monospace';px.fillText(ok?'✓':'✗',x+cw/2,y+ch/2+5);px.font='11px JetBrains Mono, monospace'}));
+  px.textAlign='left';
+}
+pc.addEventListener('pointerdown',e=>{const[x,y]=AI.evPos(pc,e);const j=Math.floor((x-L)/cw),i=Math.floor((y-T)/ch);
+  if(i<0||j<0||i>=CATS.length||j>=METS.length)return;sel=[i,j];drawPairs();
+  const c=CATS[i],m=METS[j],ok=LEGAL[c].includes(m),msg=$('d498-pairMsg');
+  msg.innerHTML='';const b=document.createElement('b');b.className='ltr';b.textContent=c+' + '+m;msg.appendChild(b);
+  msg.appendChild(document.createTextNode(ok?' ← مسموح.':' ← مرفوض (illegal_pair). '+(why[c+'|'+m]||why[c+'|*']||'')));
+  if(ok&&c==='mcq')msg.appendChild(document.createTextNode(' وكمان لازم target واحد بس، حرف A–E.'))});
+drawPairs();$('d498-pairMsg').textContent='دوس على أي خانة.';
+
+// ---------- Lab 3: post-process + render ----------
+function pp(t,rule){
+  if(rule==='none')return t;if(rule==='strip_whitespace')return t.trim();if(rule==='lower')return t.toLowerCase();
+  if(rule==='extract_letter'){const m=t.match(/(?:^|[^A-Za-z])([A-E])(?:[^A-Za-z]|$)/);if(m)return m[1];const m2=t.match(/[A-E]/);return m2?m2[0]:''}
+  if(rule==='extract_code_block'){const m=t.match(/```(?:[a-zA-Z0-9_]*)\n([\s\S]*?)```/);return m?m[1]:t}
+  if(rule==='extract_first_line'){for(const l of t.split(/\r?\n/))if(l.trim())return l.trim();return ''}
+}
+let rule='extract_letter';const rb=$('d498-rules');
+PPS.forEach(r=>{const b=document.createElement('button');b.type='button';b.textContent=r;b.dataset.r=r;b.style.fontFamily='var(--f-mono)';b.style.fontSize='12px';
+  b.addEventListener('click',()=>{rule=r;paintRules();runPP()});rb.appendChild(b)});
+function paintRules(){rb.querySelectorAll('button').forEach(b=>b.classList.toggle('primary',b.dataset.r===rule))}
+function runPP(){const o=pp($('d498-gen').value,rule);$('d498-ppOut').textContent=JSON.stringify(o)}
+$('d498-gen').addEventListener('input',runPP);paintRules();runPP();
+const shots=[['Question: 2 + 2\nAnswer:','4'],['Question: 5 + 3\nAnswer:','8'],['Question: 10 + 7\nAnswer:','17'],['Question: 6 + 6\nAnswer:','12'],['Question: 9 + 1\nAnswer:','10'],['Question: 3 + 4\nAnswer:','7'],['Question: 8 + 8\nAnswer:','16'],['Question: 20 + 5\nAnswer:','25'],['Question: 1 + 0\nAnswer:','1'],['Question: 7 + 2\nAnswer:','9']];
+function runRender(){const k=+$('d498-k').value;$('d498-kv').textContent=k;
+  const parts=shots.slice(0,k).map(s=>s[0]+' '+s[1]);parts.push('Compute the result.\nQuestion: 17 + 24\nAnswer:');
+  const txt=parts.join('\n\n');$('d498-render').textContent=txt;
+  const v=$('d498-kVerdict');
+  if(k>8){v.style.color=css('--bad');v.textContent='مرفوض: bad_value / few_shot_examples (max 8) · طول الـ prompt = '+txt.length+' حرف'}
+  else{v.style.color=css('--ok');v.textContent='مقبول · طول الـ prompt = '+txt.length+' حرف'}}
+$('d498-k').addEventListener('input',runRender);runRender();
+
+// ---------- quiz ----------
+AI.quiz($('d498-quizBox'),[
+ ['ليه نقفل الـ schema بتاع التاسك قبل ما نكتب أي scoring code؟',['عشان يثبّت العقد فالـ metrics والـ runners والـ post-processors يتفقوا على أسماء الحقول','عشان يسمح بأي اسم metric جديد من غير أي تغيير','عشان الـ JSON parser يشتغل أسرع','عشان نستغنى عن الـ validator'],0,'الـ schema هو العقد اللي كل حاجة بعده بتقرا منه. لما تثبّته تقدر تغيّر أي component لوحده من غير ما تكسر الباقي.'],
+ ['إيه القايمة المقفولة اللي حقل metric_name بيقبلها؟',['أي string الكاتب يختاره','exact_match وf1 بس','أي حاجة الـ runner متظبط يعرفها','exact_match, f1, bleu_4, rouge_l, accuracy, code_exec'],3,'الدرس مثبّت الـ metrics على ٦ أسماء. إضافة واحد جديد محتاجة درس جديد وسطر جديد في الـ validator.'],
+ ['الـ validator بيعمل إيه لما يلاقي حقل top-level مش معروف؟',['يطلّع warning ويقبل الـ record','يشيله ويكمّل','يغيّر اسمه لـ metadata.unknown','يرجّع validation error ويرفض الـ record'],3,'الحقول المجهولة خطر على المدى الطويل. الرفض بيخلي الـ schema هو المصدر الوحيد للحقيقة.'],
+ ['ليه الـ few-shot examples متربطة بالتاسك بدل ما الـ runner يحسبها؟',['الـ few-shot بيتستخدم بس في الـ fine-tuning','نية الكاتب جزء من الـ eval، وربط الأمثلة بالتاسك بيشيل الاختلاف في تركيب الـ prompt بين الموديلات','عشان يوفّر مساحة على الديسك','الـ runner مالوش file I/O'],1,'تركيب الـ few-shot جزء من تعريف الـ eval، مش من واجهة الموديل. لما يبقى في التاسك، كل موديل بيشوف نفس الـ prompt.'],
+ ['أنهي زوج category-metric مرفوض في الـ validator؟',['code_exec + code_exec','summary + rouge_l','arithmetic + exact_match','mcq + bleu_4'],3,'BLEU على حرف واحد مالوش معنى. الـ mcq مسموحله exact_match أو accuracy بس.'],
+ ['قاعدة extract_letter بترجّع إيه لو الـ generation هي `Answer: C is correct`؟',['Answer','string فاضي','النص كله زي ما هو','C'],3,'بترجّع أول حرف A–E واقف لوحده. الـ A في Answer لازقة في حروف فمش بتتحسب، فالنتيجة C.'],
+ ['(سؤال مني) ملف فيه ٣ سطور: سليم، JSON بايظ، وسليم تالت بنفس task_id بتاع الأول. validate_file هيرجّع إيه؟',['validated=1 وerrors=2 (bad_json وduplicate_task_id)','validated=0 والـ run كله بيقف عند أول error','validated=2 وerrors=1','validated=3 لأن التكرار مش بيتفحص'],0,'كل سطر بيتفحص لوحده: الأول يعدّي، التاني bad_json ويكمّل، التالت duplicate_task_id. السطر البايظ بيلغي نفسه بس.'],
+ ['(سؤال مني) موديل رد على MCQ بـ "Definitely not sure". extract_letter هيطلّع إيه في الكود ده؟',['string فاضي','D','N','Error'],1,'مفيش حرف A–E واقف لوحده، فبيشتغل الـ fallback ويمسك أول حرف كبير A–E في أي مكان: الـ D في Definitely. خلي بالك من الحالة دي في الـ evals الحقيقية.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(gc))return false;drawGate();drawPairs();runVal();runRender()});
+})();
+</script>

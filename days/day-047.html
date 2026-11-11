@@ -1,0 +1,701 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 04 · Activation Functions</span>
+  <h1>اليوم ٤٧: من غير activation، الـ 100 layer بتوعك = layer واحدة</h1>
+  <p class="lede">امبارح شفنا الـ gradient وهو راجع لورا layer بـ layer، وكل مرة بيتضرب في مشتقة الـ activation. النهاردة هنفهم الحتة دي نفسها: ليه لازم يبقى فيه <b>nonlinearity</b>، وليه الـ <b>sigmoid</b> بيموّت الـ gradient، وليه الـ <b>ReLU</b> خلّى الـ deep learning ممكن، وليه الـ <b>GELU</b> بقى الـ default في الـ transformers. وهتكتب كل الـ activations ومشتقاتها بإيدك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python (و Julia اختياري)</b></span>
+    <span>بعده: <b>Loss Functions</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d47-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d47-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 46) بنينا الـ backpropagation من الصفر. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ backward pass بيستخدم قاعدة إيه عشان يحسب الـ gradient لكل weight؟</summary>الـ <b>chain rule</b>: بنمشي من الـ loss لورا، وكل node بتضرب الـ gradient اللي جايلها في المشتقة المحلية بتاعتها وتعدّيه للي قبلها.</details>
+  <details><summary>٢. ليه الـ forward pass لازم يخزّن القيم الوسطانية (z و a)؟</summary>لأن الـ backward محتاجها عشان يحسب المشتقات، زي <span class="ltr">a(1−a)</span> بتاعة الـ sigmoid. يعني بندفع memory عشان نكسب سرعة: pass واحدة لورا بدل ملايين الحسابات.</details>
+  <details><summary>٣. أقصى قيمة لمشتقة الـ sigmoid كام؟ وده بيعمل إيه بعد ١٠ layers؟</summary>0.25 عند <span class="ltr">z = 0</span>. بعد ١٠ layers الـ gradient بيتضرب في <span class="ltr">0.25¹⁰ ≈ 0.000001</span>، وده الـ vanishing gradient. الدرس قال إن الحل في Lesson 04، اللي هو النهاردة.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>ليه الـ nonlinearity لازمة (الإثبات)</div>
+    <div><b>15 min</b>الـ activations واحدة واحدة + معمل ٠١</div>
+    <div><b>10 min</b>الـ vanishing gradient + معمل ٠٢</div>
+    <div><b>10 min</b>الـ dead neurons + معمل ٠٣ والـ softmax</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>التمارين والكويز</div>
+  </div>
+</section>
+
+<!-- WHY NONLINEARITY -->
+<section id="d47-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الـ layers الـ linear بتنهار لـ layer واحدة</h2></div>
+  <p>الـ linear layer بتحسب <span class="ltr">f(x) = Wx + b</span>. حط اتنين ورا بعض وشوف إيه اللي بيحصل:</p>
+  <div class="formula">h = W₁x + b₁   →   y = W₂h + b₂ = W₂(W₁x + b₁) + b₂ = (W₂W₁)x + (W₂b₁ + b₂) = Ax + c</div>
+  <p>طلعت layer واحدة بمصفوفة <span class="ltr">A = W₂W₁</span> و bias <span class="ltr">c</span>. ضرب المصفوفات بيتجمع (composable): إنك تضرب في A وبعدين في B هو نفس إنك تضرب في AB. يعني لو رصّيت ١٠ layers linear، أو ١٠٠، هيبقى عندك نفس قوة layer واحدة بالظبط. كل الـ parameters دي وكل العمق ده على الفاضي.</p>
+  <p>الكلام ده مش نظري. الـ deep linear network حرفيًا <b>مش هتعرف</b> تتعلم XOR، ولا تفصل داتا على شكل spiral، ولا تعرف وش. من غير activation، العمق مجرد وهم.</p>
+  <p>الحل: نحط دالة <b>nonlinear</b> <span class="ltr">g()</span> بين الـ layers:</p>
+  <div class="formula">h = g(W₁x + b₁)   →   y = W₂ · g(W₁x + b₁) + b₂   ← مينفعش تختصرها لـ Ax + c</div>
+  <p>هنا الاختصار بيقف. الـ network بقت تقدر تمثل دوال فيها انحناءات، وكل layer زيادة معاها activation بتزوّد قدرتها على التمثيل.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ linear layers زي إنك تبني شكل بمساطر بس: مهما رصّيت مساطر فوق بعض، هتطلع خط مستقيم. الـ activation زي «مفصّلة» بتسمحلك تثني المسطرة. كتير من المفصّلات = تقدر تقرّب أي منحنى.</div>
+  <div class="note ai"><strong>لكن خد بالك:</strong> اختيار الـ activation الغلط ليه تمن. ممكن الـ gradients تختفي (sigmoid في network عميقة)، أو تنفجر (activations ملهاش سقف من غير initialization كويس)، أو الـ neurons تموت للأبد (ReLU مع bias سالب كبير). الـ activation اللي بتختارها بتحدد هل الـ network هتتعلم أصلًا ولا لأ.</div>
+</section>
+
+<!-- THE FUNCTIONS + LAB 1 -->
+<section id="d47-funcs">
+  <div class="station-head"><span class="tag">02</span><h2>الـ activations واحدة واحدة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: شوف الدالة ومشتقتها</h3>
+      <p>اختار activation، واسحب النقطة على المحور الأفقي (أو استخدم الـ slider). الخط الملون هو الدالة، والخط المتقطع هو <b>المشتقة</b>، يعني اللي الـ gradient بيتضرب فيه وهو راجع.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> في الـ sigmoid حط x = 4: المشتقة بقت قريبة من صفر (ده الـ <b>saturation</b>). في الـ ReLU حط x سالب: المشتقة صفر بالظبط. في الـ GELU شوف إن فيه قيم سالبة صغيرة تحت الصفر.</div>
+      <label style="display:flex;gap:8px;align-items:center">الـ activation: <select id="d47-actSel">
+        <option value="sigmoid">Sigmoid</option><option value="tanh">Tanh</option><option value="relu" selected>ReLU</option><option value="leaky">Leaky ReLU</option><option value="gelu">GELU</option><option value="swish">Swish / SiLU</option>
+      </select></label>
+      <label style="display:grid;gap:2px">x = <b class="mono" id="d47-xv">1</b><input type="range" id="d47-x" min="-5" max="5" step="0.05" value="1"></label>
+      <label style="display:grid;gap:2px">α بتاع الـ Leaky ReLU = <b class="mono" id="d47-av">0.01</b><input type="range" id="d47-alpha" min="0" max="0.3" step="0.01" value="0.01"></label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d47-ghost" checked> ورّيني باقي الدوال باهت</label>
+    </div>
+    <div class="instrument">
+      <canvas id="d47-actCanvas" width="520" height="380" aria-label="رسم الـ activation ومشتقتها"></canvas>
+      <div class="readout">
+        <div><small>f(x)</small><b id="d47-fx">1</b></div>
+        <div><small>f′(x)</small><b id="d47-dfx">1</b></div>
+        <div><small>المدى (range)</small><b id="d47-range">[0, ∞)</b></div>
+      </div>
+      <div class="verdict" id="d47-actVerdict"></div>
+    </div>
+  </div>
+
+  <h3>Sigmoid: الأصلية</h3>
+  <div class="formula">sigmoid(x) = 1 / (1 + e^(−x))      sigmoid′(x) = sigmoid(x) · (1 − sigmoid(x))</div>
+  <p>المدى (0, 1). ناعمة وليها مشتقة في كل حتة، وبتحوّل أي رقم لقيمة شبه الاحتمال. بس فيها مشكلتين:</p>
+  <ol class="ex">
+    <li><b>الـ vanishing gradient:</b> أقصى مشتقة 0.25 عند x = 0. في الـ backprop الـ gradients بتتضرب في بعض عبر الـ layers، فبعد ١٠ layers: <span class="ltr">0.25¹⁰ = 0.000000953674</span>، أقل من جزء من مليون من الإشارة الأصلية. الـ layers الأولى بتتجمد: الـ loss شكله بينزل بسبب الـ layers الأخيرة، بس الأولى مش بتتعلم. الـ deep sigmoid networks ببساطة مش بتتدرب.</li>
+    <li><b>مش zero-centered:</b> الطلعة دايمًا موجبة (من 0 لـ 1)، فالـ gradients على weights الـ layer اللي بعدها بتطلع كلها بنفس الإشارة. ده بيخلي الـ gradient descent يمشي «zig-zag» بدل ما يروح على طول.</li>
+  </ol>
+
+  <h3>Tanh: الـ sigmoid المتوسّطة</h3>
+  <div class="formula">tanh(x) = (eˣ − e⁻ˣ) / (eˣ + e⁻ˣ)      tanh′(x) = 1 − tanh(x)²</div>
+  <p>المدى (−1, 1) و zero-centered، فمشكلة الـ zig-zag راحت. أقصى مشتقة 1.0 عند x = 0، يعني أحسن من الـ sigmoid بـ ٤ مرات. بس الـ vanishing لسه موجود: مع المدخلات الكبيرة موجب أو سالب المشتقة بتقرب من صفر. ١٠ layers لسه بيسحقوا الـ gradient، بس بشكل أخف.</p>
+
+  <h3>ReLU: الاختراق</h3>
+  <div class="formula">relu(x) = max(0, x)      relu′(x) = 1 لو x &gt; 0 ، 0 لو x ≤ 0</div>
+  <p>Rectified Linear Unit. انتشرت في الـ deep learning على إيد Nair و Hinton سنة 2010 (والدالة نفسها موجودة من شغل Fukushima سنة 1969)، وغيّرت كل حاجة. المدى <span class="ltr">[0, ∞)</span>. للمدخلات الموجبة المشتقة <b>1 بالظبط</b>، فالـ gradient بيعدّي زي ما هو من غير ما يصغر. ده السبب إن الـ deep networks بقت تتدرب.</p>
+  <p><b>نقطة الضعف: الـ dead neuron.</b> لو الـ weighted input بتاع neuron سالب دايمًا (bias سالب كبير أو initialization وحشة)، الطلعة دايمًا صفر، والـ gradient دايمًا صفر، فمش بيتحدّث أبدًا. مات للأبد. الدرس بيقول إن عمليًا من 10% لـ 40% من الـ neurons في ReLU network ممكن تموت أثناء التدريب. هتشوفها بعينك في معمل ٠٣.</p>
+
+  <h3>Leaky ReLU: أبسط علاج</h3>
+  <div class="formula">leaky_relu(x) = x لو x &gt; 0 ، αx لو x ≤ 0      (α عادة 0.01)</div>
+  <p>الجزء السالب بقى ليه ميل صغير بدل صفر، فالـ neuron «الميت» لسه بيوصله إشارة gradient ويقدر يرجع.</p>
+
+  <h3>GELU: الـ default الحديث</h3>
+  <div class="formula">gelu(x) = x · Φ(x)  ≈  0.5 · x · (1 + tanh(√(2/π) · (x + 0.044715 · x³)))</div>
+  <p>Gaussian Error Linear Unit، من Hendrycks و Gimpel سنة 2016. الـ default في BERT و GPT ومعظم الـ transformers الحديثة. <span class="ltr">Φ(x)</span> هي الـ CDF بتاعة التوزيع الطبيعي القياسي، والمعادلة اللي بعدها هي التقريب المستخدم عمليًا.</p>
+  <p>ناعمة في كل حتة، وبتسمح بقيم سالبة صغيرة (مش بتقص عند الصفر زي الـ ReLU)، وليها تفسير احتمالي: <b>بتوزن كل مدخل بقد إيه هو غالبًا موجب</b> تحت توزيع Gaussian. يعني بدل «بوابة» يا مفتوحة يا مقفولة، هي بوابة بتتفتح بالتدريج. الـ gating الناعم ده بيدي gradient flow أحسن وبيتجنب مشكلة الـ dead neurons، وعشان كده بيتفوق على الـ ReLU في الـ transformers.</p>
+
+  <h3>Swish / SiLU</h3>
+  <div class="formula">swish(x) = x · sigmoid(x)</div>
+  <p>من Ramachandran وزمايله سنة 2017، واتلقت بـ <b>automated search</b> في فضاء الـ activation functions: Google خلّت search بيصمم أجزاء من الـ neural networks. زي الـ GELU: ناعمة، non-monotonic (بتنزل شوية تحت الصفر وبعدين تطلع)، وبتسمح بقيم سالبة صغيرة. الفرق إن الـ Swish بتستخدم sigmoid للـ gating والـ GELU بتستخدم الـ Gaussian CDF. عمليًا الأداء قريب جدًا. الـ Swish في EfficientNet وبعض موديلات الـ vision، والـ GELU مسيطرة في موديلات اللغة.</p>
+
+  <div class="tablewrap"><table>
+    <tr><th>الدالة</th><th>المدى</th><th>أقصى مشتقة</th><th>نقطة الضعف</th></tr>
+    <tr><td>Sigmoid</td><td class="ltr">(0, 1)</td><td class="ltr">0.25</td><td>saturation من الناحيتين + مش zero-centered</td></tr>
+    <tr><td>Tanh</td><td class="ltr">(−1, 1)</td><td class="ltr">1.0</td><td>لسه بيعمل saturation</td></tr>
+    <tr><td>ReLU</td><td class="ltr">[0, ∞)</td><td class="ltr">1 (للموجب)</td><td>dead neurons</td></tr>
+    <tr><td>Leaky ReLU</td><td class="ltr">(−∞, ∞)</td><td class="ltr">1</td><td>α ثابت لازم تختاره</td></tr>
+    <tr><td>GELU</td><td class="ltr">≈ (−0.17, ∞)</td><td>أكبر شوية من 1</td><td>أغلى في الحساب شوية</td></tr>
+    <tr><td>Swish</td><td class="ltr">≈ (−0.28, ∞)</td><td>أكبر شوية من 1</td><td>نفس الـ GELU تقريبًا</td></tr>
+  </table></div>
+</section>
+
+<!-- LAB 2 VANISHING -->
+<section id="d47-vanish">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Vanishing Gradient: الضرب المتكرر</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>تخيل الـ gradient زي رسالة بتتنقل في «التليفون الخربان»: كل layer بتهمسها للي قبلها بعد ما تضربها في مشتقة الـ activation بتاعتها. لو المشتقة 0.25، الرسالة بتوصل ربع قوتها كل مرة. بعد ١٠ مرات مفيش رسالة.</p>
+      <h3>معمل ٠٢: كام layer قبل ما الإشارة تموت؟</h3>
+      <p>المحور الرأسي <b>log₁₀</b> لحجم الـ gradient (0 = الإشارة كاملة، −6 = جزء من مليون). كل خط بيوري <span class="ltr">f′(z)</span> مضروبة في نفسها عبر الـ layers.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> ابدأ بـ «نفس z في كل layer» و z = 0: الـ sigmoid بيوصل −6 عند ١٠ layers بالظبط (<span class="ltr">0.25¹⁰</span>). بعدين حوّل لـ «z عشوائي»: الـ sigmoid والـ tanh بيقعوا، والـ ReLU يا 1 يا صفر (أول z سالب بيقفل الـ path ده خالص).</div>
+      <label style="display:grid;gap:2px">عدد الـ layers = <b class="mono" id="d47-nv">10</b><input type="range" id="d47-n" min="2" max="50" step="1" value="10"></label>
+      <label style="display:flex;gap:8px;align-items:center">الـ pre-activation: <select id="d47-mode"><option value="fixed">نفس z في كل layer</option><option value="rand">z عشوائي لكل layer</option></select></label>
+      <label style="display:grid;gap:2px" id="d47-zwrap">z = <b class="mono" id="d47-zv">0</b><input type="range" id="d47-z" min="-4" max="4" step="0.1" value="0"></label>
+      <label style="display:grid;gap:2px">انتشار z العشوائي σ = <b class="mono" id="d47-sv">1.5</b><input type="range" id="d47-s" min="0.2" max="4" step="0.1" value="1.5"></label>
+      <div class="btns"><button type="button" id="d47-reseed">قرعة جديدة</button></div>
+    </div>
+    <div class="instrument">
+      <canvas id="d47-vgCanvas" width="520" height="340" aria-label="حجم الـ gradient مع العمق"></canvas>
+      <ul class="rank-list" id="d47-vgList"></ul>
+    </div>
+  </div>
+  <div class="note ai"><strong>تحذير على المعمل ده:</strong> هنا بنتابع path واحد ومش بنحسب الـ weights. في network حقيقية فيه paths كتير، والـ weights و الـ initialization ليهم دور كبير (ده موضوع Lesson 08: Weight Initialization). بس الفكرة الأساسية صح: <b>لو المشتقة أقل من 1 بشكل منتظم، الإشارة بتقل بشكل أُسّي مع العمق.</b> ولو المضروب الفعلي أكبر من 1 بشكل منتظم، بيحصل العكس: <b>exploding gradient</b>.</div>
+  <p>الدرس فيه رسم بيلخص الـ gradient عند Layer 1 في network عمقها ١٠: Sigmoid حوالي <span class="ltr">0.000001</span>، Tanh حوالي <span class="ltr">0.001</span>، ReLU حوالي <span class="ltr">1.0</span>، GELU حوالي <span class="ltr">0.8</span>. دي أرقام تقريبية للتوضيح.</p>
+</section>
+
+<!-- LAB 3 DEAD NEURONS -->
+<section id="d47-dead">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Dead Neurons: neuron مابيشتغلش أبدًا</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>عندنا layer فيها ٢٠ neuron، وكل neuron عنده ٥ weights عشوائية و bias. هندخّل ٥٠٠ input عشوائي ونعد كل neuron اشتغل (طلعته أكبر من صفر) كام مرة. ده نفس الـ dead neuron detector اللي هتكتبه في خطوة ٤.</p>
+      <h3>معمل ٠٣: زق الـ biases لتحت</h3>
+      <p>الـ slider بيحرك متوسط الـ biases. في الكود الأصلي المتوسط صفر. لما تزقه سالب، ده بيقلد اللي بيحصل لو الـ learning rate كبير ودفع الـ biases لتحت أثناء التدريب.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> خلّي الـ activation ReLU وانزل بالمتوسط لـ −4: neurons كتير بتبقى <b>DEAD</b> (أحمر)، والـ gradient اللي بيوصلها صفر. بعدين حوّل لـ Leaky ReLU أو GELU: نفس الـ neurons لسه بيوصلها gradient صغير، فتقدر ترجع تتعلم.</div>
+      <label style="display:grid;gap:2px">متوسط الـ bias = <b class="mono" id="d47-bv">0</b><input type="range" id="d47-b" min="-6" max="2" step="0.1" value="0"></label>
+      <label style="display:flex;gap:8px;align-items:center">الـ activation: <select id="d47-dAct"><option value="relu">ReLU</option><option value="leaky">Leaky ReLU (α=0.01)</option><option value="gelu">GELU</option></select></label>
+      <div class="btns"><button type="button" id="d47-dReseed">network جديدة</button></div>
+    </div>
+    <div class="instrument">
+      <canvas id="d47-deadCanvas" width="520" height="300" aria-label="معدل اشتغال كل neuron"></canvas>
+      <div class="readout">
+        <div><small>Dead (عمره ما اشتغل)</small><b id="d47-dDead">0</b></div>
+        <div><small>Weak (&lt;5%)</small><b id="d47-dWeak">0</b></div>
+        <div><small>Healthy</small><b id="d47-dOk">20</b></div>
+        <div><small>متوسط |f′| للميتين</small><b id="d47-dGrad">—</b></div>
+      </div>
+      <div class="verdict" id="d47-dVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- SOFTMAX -->
+<section id="d47-softmax">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Softmax: activation الطلعة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <div class="formula">softmax(xᵢ) = e^(xᵢ) / Σⱼ e^(xⱼ)</div>
+      <p>دي <b>مش</b> بتتحط في الـ hidden layers. بتاخد vector من الـ scores الخام (اسمها <b>logits</b>) وتحوّله لتوزيع احتمالات: كل قيمة بين 0 و 1، والمجموع 1 بالظبط. عشان كده هي الـ activation القياسية في آخر layer للـ multi-class classification.</p>
+      <p>أكبر logit بياخد أعلى احتمال، بس عكس الـ <code>argmax</code>، الـ softmax ليها مشتقة (differentiable) وبتحافظ على معلومة «قد إيه الموديل واثق» بالنسبة للباقي.</p>
+      <p>الدرس فيه رسم لـ <b>temperature</b>: لو قسمت الـ logits على T قبل الـ softmax، T صغيرة بتخلي التوزيع «حاد» (قريب من argmax)، و T كبيرة بتخليه «مسطّح».</p>
+      <div class="note"><strong>جرب بإيدك:</strong> خلّي الـ logits <span class="ltr">[2, 1, 0.1, −1]</span> وحرك T. وبعدين خلّيهم كلهم زي بعض: الاحتمالات بتتساوى مهما كانت قيمتهم (زي <span class="ltr">softmax([10,10,10]) = [1/3, 1/3, 1/3]</span>).</div>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>logit A <span id="d47-l0v">2</span><input type="range" id="d47-l0" min="-4" max="6" step="0.1" value="2"></label>
+        <label>logit B <span id="d47-l1v">1</span><input type="range" id="d47-l1" min="-4" max="6" step="0.1" value="1"></label>
+        <label>logit C <span id="d47-l2v">0.1</span><input type="range" id="d47-l2" min="-4" max="6" step="0.1" value="0.1"></label>
+        <label>logit D <span id="d47-l3v">-1</span><input type="range" id="d47-l3" min="-4" max="6" step="0.1" value="-1"></label>
+      </div>
+      <label style="display:grid;gap:2px">Temperature T = <b class="mono" id="d47-tv">1</b><input type="range" id="d47-t" min="0.1" max="5" step="0.05" value="1"></label>
+      <ul class="rank-list" id="d47-smList"></ul>
+      <div class="readout"><div><small>المجموع</small><b id="d47-smSum">1.000</b></div><div><small>أعلى احتمال</small><b id="d47-smMax">—</b></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- WHICH WHEN -->
+<section id="d47-choose">
+  <div class="station-head"><span class="tag">06</span><h2>تختار أنهي امتى؟</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المكان</th><th>الحالة</th><th>استخدم</th></tr>
+    <tr><td rowspan="4">Hidden layers</td><td>Transformer / NLP</td><td><b>GELU</b></td></tr>
+    <tr><td>CNN / Vision</td><td><b>ReLU</b> أو Swish</td></tr>
+    <tr><td>RNN / LSTM</td><td><b>Tanh</b> للـ hidden state و sigmoid للـ gates</td></tr>
+    <tr><td>MLP بسيط</td><td><b>ReLU</b></td></tr>
+    <tr><td rowspan="3">Output layer</td><td>Binary classification</td><td><b>Sigmoid</b></td></tr>
+    <tr><td>Multi-class classification</td><td><b>Softmax</b></td></tr>
+    <tr><td>Regression</td><td><b>Linear</b> (من غير activation)</td></tr>
+  </table></div>
+  <p>نصيحة الدرس: ابدأ بالـ defaults دي، وغيّرها بس لما يبقى عندك دليل. لو neurons بتموت في الـ ReLU network بتاعتك، حوّل لـ GELU. ومتجريش على الـ Leaky ReLU غير لو عندك سبب محدد، لأن الـ GELU بيحل مشكلة الـ dead neurons وبيدي gradient flow أحسن. ولو بتبني من الصفر النهاردة، غالبًا مش هتستخدم RNNs أصلًا.</p>
+</section>
+
+<!-- CODE -->
+<section id="d47-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب كل الـ activations</h2></div>
+  <p>من الـ root بتاع الريبو، شغّل الأصل الأول عشان تشوف الصورة كاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/03-deep-learning-core/04-activation-functions/code/main.py
+<span class="c"># اختياري: نفس الدرس بـ Julia (stdlib بس)</span>
+julia phases/03-deep-learning-core/04-activation-functions/code/main.jl</pre></div>
+  <p><b>القاعدة:</b> بعد ما تشوف الناتج، افتح ملف جديد <code>my_activations.py</code> واكتب الخطوات دي بإيدك. كل دالة بتاخد float واحد وترجع float، وكل derivative بتاخد نفس المدخل وترجع الـ gradient.</p>
+
+  <h3>خطوة ١: كل الدوال ومشتقاتها</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+
+def sigmoid(x):
+    x = max(-500, min(500, x))          <span class="c"># نحمي exp من الـ overflow</span>
+    return 1.0 / (1.0 + math.exp(-x))
+
+def sigmoid_derivative(x):
+    s = sigmoid(x)
+    return s * (1 - s)                  <span class="c"># أقصاها 0.25 عند x=0</span>
+
+def tanh_act(x):
+    return math.tanh(x)
+
+def tanh_derivative(x):
+    t = math.tanh(x)
+    return 1 - t * t                    <span class="c"># أقصاها 1</span>
+
+def relu(x):
+    return max(0.0, x)
+
+def relu_derivative(x):
+    return 1.0 if x > 0 else 0.0        <span class="c"># صفر بالظبط للسالب</span>
+
+def leaky_relu(x, alpha=0.01):
+    return x if x > 0 else alpha * x
+
+def leaky_relu_derivative(x, alpha=0.01):
+    return 1.0 if x > 0 else alpha      <span class="c"># دايمًا فيه gradient</span>
+
+def gelu(x):                            <span class="c"># تقريب الـ tanh</span>
+    return 0.5 * x * (1 + math.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * x ** 3)))
+
+def gelu_derivative(x):                 <span class="c"># مشتقة x·Φ(x) الدقيقة = Φ + x·pdf</span>
+    phi = 0.5 * (1 + math.erf(x / math.sqrt(2)))
+    pdf = math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+    return phi + x * pdf
+
+def swish(x):
+    return x * sigmoid(x)
+
+def swish_derivative(x):
+    s = sigmoid(x)
+    return s + x * s * (1 - s)          <span class="c"># product rule</span>
+
+def softmax(xs):
+    max_x = max(xs)                     <span class="c"># نطرح الأكبر عشان exp ماتنفجرش</span>
+    exps = [math.exp(x - max_x) for x in xs]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+for x in [-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0]:
+    print(f"  x={x:5.1f}  sigmoid={sigmoid(x):.4f}  tanh={tanh_act(x):.4f}  "
+          f"relu={relu(x):.4f}  gelu={gelu(x):.4f}  swish={swish(x):.4f}")
+print(f"\n  softmax([2.0, 1.0, 0.1]) = {softmax([2.0, 1.0, 0.1])}")
+print(f"  softmax([10, 10, 10])    = {softmax([10.0, 10.0, 10.0])}")</pre></div>
+  <details><summary>الناتج المتوقع (حسبته من المعادلات نفسها)</summary><pre class="term">  x= -2.0  sigmoid=0.1192  tanh=-0.9640  relu=0.0000  gelu=-0.0454  swish=-0.2384
+  x= -1.0  sigmoid=0.2689  tanh=-0.7616  relu=0.0000  gelu=-0.1588  swish=-0.2689
+  x= -0.5  sigmoid=0.3775  tanh=-0.4621  relu=0.0000  gelu=-0.1543  swish=-0.1888
+  x=  0.0  sigmoid=0.5000  tanh=0.0000  relu=0.0000  gelu=0.0000  swish=0.0000
+  x=  0.5  sigmoid=0.6225  tanh=0.4621  relu=0.5000  gelu=0.3457  swish=0.3112
+  x=  1.0  sigmoid=0.7311  tanh=0.7616  relu=1.0000  gelu=0.8412  swish=0.7311
+  x=  2.0  sigmoid=0.8808  tanh=0.9640  relu=2.0000  gelu=1.9546  swish=1.7616
+
+  softmax([2.0, 1.0, 0.1]) = [0.659001..., 0.242432..., 0.098565...]
+  softmax([10, 10, 10])    = [0.333333..., 0.333333..., 0.333333...]</pre></details>
+
+  <h3>خطوة ٢: فين الـ gradient بيموت؟</h3>
+  <p>نحسب المشتقة عند ١٠٠ نقطة من −5 لـ 5، ونعد كام نقطة المشتقة فيها أقل من 0.01.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def gradient_scan(name, derivative_fn, start=-5, end=5, n=100):
+    step = (end - start) / n
+    near_zero = 0
+    healthy = 0
+    for i in range(n):
+        x = start + i * step
+        g = derivative_fn(x)
+        if abs(g) &lt; 0.01:               <span class="c"># تقريبًا مفيش gradient</span>
+            near_zero += 1
+        else:
+            healthy += 1
+    pct_dead = near_zero / n * 100
+    print(f"{name:15s}: {healthy:3d} healthy, {near_zero:3d} near-zero ({pct_dead:.0f}% dead zone)")
+
+gradient_scan("Sigmoid", sigmoid_derivative)
+gradient_scan("Tanh", tanh_derivative)
+gradient_scan("ReLU", relu_derivative)
+gradient_scan("Leaky ReLU", leaky_relu_derivative)
+gradient_scan("GELU", gelu_derivative)
+gradient_scan("Swish", swish_derivative)</pre></div>
+  <details><summary>الناتج المتوقع (حسبته من المعادلات نفسها)</summary><pre class="term">Sigmoid        :  91 healthy,   9 near-zero (9% dead zone)
+Tanh           :  59 healthy,  41 near-zero (41% dead zone)
+ReLU           :  49 healthy,  51 near-zero (51% dead zone)
+Leaky ReLU     : 100 healthy,   0 near-zero (0% dead zone)
+GELU           :  80 healthy,  20 near-zero (20% dead zone)
+Swish          :  99 healthy,   1 near-zero (1% dead zone)</pre></details>
+  <div class="note"><strong>اقرا الأرقام دي صح:</strong> الـ sigmoid طالع «9% بس» مع إنها أسوأ واحدة في الـ deep networks! ليه؟ لأن مشتقتها نادرًا ما تقل عن 0.01 في المدى ده، بس عمرها ما تعدّي <b>0.25</b>. المشكلة مش «نقط ميتة»، المشكلة إن كل layer بتضرب في رقم صغير. الـ scan ده بيقيس حاجة واحدة بس (هل فيه مناطق مسطحة)، ومعمل ٠٢ بيقيس التانية (الضرب عبر العمق). وكمان الـ ReLU طالع 51% لأن نص المدخلات سالبة (ومعاهم x=0 بالظبط).</div>
+
+  <h3>خطوة ٣: تجربة الـ vanishing عبر ١٠ layers</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def vanishing_gradient_experiment(activation_fn, name, n_layers=10, n_inputs=5):
+    random.seed(42)
+    values = [random.gauss(0, 1) for _ in range(n_inputs)]
+
+    print(f"\n{name} through {n_layers} layers:")
+    for layer in range(n_layers):
+        weights = [random.gauss(0, 1) for _ in range(n_inputs)]
+        z = sum(w * v for w, v in zip(weights, values))
+        activated = activation_fn(z)
+        magnitude = abs(activated)
+        bar = "#" * int(magnitude * 20)  <span class="c"># رسمة نصية للحجم</span>
+        print(f"  Layer {layer+1:2d}: magnitude = {magnitude:.6f} {bar}")
+        values = [activated] * n_inputs   <span class="c"># الطلعة تبقى دخل الـ layer الجاية</span>
+
+vanishing_gradient_experiment(sigmoid, "Sigmoid")
+vanishing_gradient_experiment(relu, "ReLU")
+vanishing_gradient_experiment(gelu, "GELU")</pre></div>
+  <p>الأرقام بالظبط بتعتمد على الـ random seed، فركّز على الشكل: الـ sigmoid بيحبس القيم بين 0 و 1، والـ ReLU والـ GELU ممكن الـ magnitude يكبر أو يقع لصفر على حسب الـ weights.</p>
+
+  <h3>خطوة ٤: الـ Dead Neuron Detector</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def dead_neuron_detector(n_inputs=5, hidden_size=20, n_samples=1000):
+    random.seed(0)
+    weights = [[random.gauss(0, 1) for _ in range(n_inputs)] for _ in range(hidden_size)]
+    biases = [random.gauss(0, 1) for _ in range(hidden_size)]
+
+    fire_counts = [0] * hidden_size
+    for _ in range(n_samples):
+        inputs = [random.gauss(0, 1) for _ in range(n_inputs)]
+        for neuron_idx in range(hidden_size):
+            z = sum(w * x for w, x in zip(weights[neuron_idx], inputs)) + biases[neuron_idx]
+            if relu(z) > 0:               <span class="c"># الـ neuron اشتغل</span>
+                fire_counts[neuron_idx] += 1
+
+    dead = sum(1 for c in fire_counts if c == 0)
+    rarely_fire = sum(1 for c in fire_counts if 0 &lt; c &lt; n_samples * 0.05)
+    healthy = hidden_size - dead - rarely_fire
+
+    print(f"\nDead Neuron Report ({hidden_size} neurons, {n_samples} samples):")
+    print(f"  Dead (never fired):     {dead}")
+    print(f"  Barely alive (&lt;5%):     {rarely_fire}")
+    print(f"  Healthy:                {healthy}")
+    print(f"  Dead neuron rate:       {dead/hidden_size*100:.1f}%")
+
+    for i, c in enumerate(fire_counts):
+        status = "DEAD" if c == 0 else "WEAK" if c &lt; n_samples * 0.05 else "OK"
+        bar = "#" * (c * 40 // n_samples)
+        print(f"  Neuron {i:2d}: {c:4d}/{n_samples} fires [{status:4s}] {bar}")
+
+dead_neuron_detector()</pre></div>
+
+  <h3>خطوة ٥: سباق Sigmoid vs ReLU vs GELU على داتا دايرة</h3>
+  <p>نفس الـ network (2 → 8 hidden → 1) على داتا: النقط جوه الدايرة <span class="ltr">x² + y² &lt; 1.5</span> = class 1، وبره = class 0. الـ output دايمًا sigmoid، واللي بيتغير هو الـ hidden activation بس.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_circle_data(n=200, seed=42):
+    random.seed(seed)
+    data = []
+    for _ in range(n):
+        x = random.uniform(-2, 2)
+        y = random.uniform(-2, 2)
+        label = 1.0 if x * x + y * y &lt; 1.5 else 0.0
+        data.append(([x, y], label))
+    return data
+
+class ActivationNetwork:
+    def __init__(self, activation_fn, activation_deriv, hidden_size=8, lr=0.1):
+        random.seed(0)                    <span class="c"># نفس الـ init للتلاتة = مقارنة عادلة</span>
+        self.act = activation_fn
+        self.act_d = activation_deriv
+        self.lr = lr
+        self.hidden_size = hidden_size
+        self.w1 = [[random.gauss(0, 0.5) for _ in range(2)] for _ in range(hidden_size)]
+        self.b1 = [0.0] * hidden_size
+        self.w2 = [random.gauss(0, 0.5) for _ in range(hidden_size)]
+        self.b2 = 0.0
+
+    def forward(self, x):
+        self.x = x
+        self.z1 = []
+        self.h = []
+        for i in range(self.hidden_size):
+            z = self.w1[i][0] * x[0] + self.w1[i][1] * x[1] + self.b1[i]
+            self.z1.append(z)              <span class="c"># نخزن z للـ backward</span>
+            self.h.append(self.act(z))
+        self.z2 = sum(self.w2[i] * self.h[i] for i in range(self.hidden_size)) + self.b2
+        self.out = sigmoid(self.z2)
+        return self.out
+
+    def backward(self, target):
+        error = self.out - target
+        d_out = error * self.out * (1 - self.out)
+        for i in range(self.hidden_size):
+            d_h = d_out * self.w2[i] * self.act_d(self.z1[i])   <span class="c"># هنا الـ activation بتأثر</span>
+            self.w2[i] -= self.lr * d_out * self.h[i]
+            for j in range(2):
+                self.w1[i][j] -= self.lr * d_h * self.x[j]
+            self.b1[i] -= self.lr * d_h
+        self.b2 -= self.lr * d_out
+
+    def train(self, data, epochs=200):
+        losses = []
+        for epoch in range(epochs):
+            total_loss = 0
+            correct = 0
+            for x, y in data:
+                pred = self.forward(x)
+                self.backward(y)
+                total_loss += (pred - y) ** 2
+                if (pred >= 0.5) == (y >= 0.5):
+                    correct += 1
+            avg_loss = total_loss / len(data)
+            accuracy = correct / len(data) * 100
+            losses.append(avg_loss)
+            if epoch % 50 == 0 or epoch == epochs - 1:
+                print(f"    Epoch {epoch:3d}: loss={avg_loss:.4f}, accuracy={accuracy:.1f}%")
+        return losses
+
+data = make_circle_data()
+configs = [("Sigmoid", sigmoid, sigmoid_derivative),
+           ("ReLU", relu, relu_derivative),
+           ("GELU", gelu, gelu_derivative)]
+results = {}
+for name, act_fn, act_d_fn in configs:
+    print(f"\n--- Training with {name} ---")
+    net = ActivationNetwork(act_fn, act_d_fn, hidden_size=8, lr=0.1)
+    results[name] = net.train(data, epochs=200)
+
+print("\n=== Final Loss Comparison ===")
+for name, losses in results.items():
+    improvement = (1 - losses[-1] / losses[0]) * 100 if losses[0] > 0 else 0
+    print(f"  {name:10s}: start={losses[0]:.4f} -> end={losses[-1]:.4f} (improvement: {improvement:.1f}%)")</pre></div>
+  <p>بص على الـ loss والـ accuracy عند كل 50 epoch لكل activation، وقارن مين نزل أسرع. اكتب الأرقام اللي طلعتلك في ورقة، هتحتاجها في تمرين ٥.</p>
+
+  <h3>خطوة ٦: نفس الكلام في PyTorch (اللي هتستخدمه فعلًا)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+x = torch.randn(4, 10)
+relu_out = F.relu(x)
+gelu_out = F.gelu(x)
+sigmoid_out = torch.sigmoid(x)
+swish_out = F.silu(x)                 <span class="c"># SiLU = Swish</span>
+
+logits = torch.randn(4, 5)
+probs = F.softmax(logits, dim=1)      <span class="c"># كل صف مجموعه 1</span>
+
+model = nn.Sequential(
+    nn.Linear(10, 64),
+    nn.GELU(),
+    nn.Linear(64, 32),
+    nn.GELU(),
+    nn.Linear(32, 5),                 <span class="c"># logits، من غير activation</span>
+)</pre></div>
+  <p>الدرس كمان بيطلّع ملف <code>outputs/prompt-activation-selector.md</code>: prompt جاهز تستخدمه مع أي LLM عشان يساعدك تختار الـ activation لأي architecture. افتحه واقراه.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d47-exercises">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل على الأقل ٢ النهاردة. أنصحك بـ ٢ و ٤ لأنهم بيوروك الفكرة بأرقامك انت.</p>
+  <ol class="ex">
+    <li><b>PReLU:</b> اعمل Parametric ReLU، يعني α في الجزء السالب بقت parameter بيتعلم. دربها على الـ circle dataset وقارنها بالـ Leaky ReLU الثابتة.
+      <details><summary>تلميح</summary>ضيف <code>self.alpha = [0.01] * hidden_size</code> (α لكل neuron). المشتقة بالنسبة لـ α هي <code>z</code> لو <code>z &lt;= 0</code> وصفر غير كده، فالتحديث: <code>self.alpha[i] -= lr * d_out * self.w2[i] * (z if z &lt;= 0 else 0)</code>. والمشتقة بالنسبة لـ z هي 1 أو α.</details></li>
+    <li><b>٥٠ layer:</b> شغّل تجربة الـ vanishing بـ 50 layer بدل 10. ارسم الـ magnitude عند كل layer للـ sigmoid والـ tanh والـ ReLU والـ GELU. عند أنهي layer الإشارة بتوصل صفر عمليًا لكل واحدة؟
+      <details><summary>تلميح</summary>زوّد <code>tanh_act</code> للـ configs، وخلّي الدالة ترجع list بالـ magnitudes بدل ما تطبع بس. لو مفيش matplotlib، الـ bar النصي <code>"#" * int(m*20)</code> كفاية. قبلها جرب معمل ٠٢ بـ 50 layer عشان يبقى عندك توقع.</details></li>
+    <li><b>ELU:</b> اعمل <span class="ltr">elu(x) = x</span> لو x &gt; 0، و <span class="ltr">α(eˣ − 1)</span> لو x ≤ 0. قارن الـ dead neuron rate بتاعها بالـ ReLU على نفس الـ network.
+      <details><summary>تلميح</summary>المشتقة: 1 للموجب، و <span class="ltr">α·eˣ</span> للسالب (يعني <code>elu(x) + α</code>). في الـ detector، بدل <code>relu(z) &gt; 0</code> احسب متوسط المشتقة لكل neuron: مع الـ ELU عمرها ما تبقى صفر بالظبط، فمفيش neuron «ميت» بالمعنى ده.</details></li>
+    <li><b>Gradient health monitor:</b> أثناء التدريب، احسب في كل epoch متوسط حجم الـ gradient عند كل layer، واطبع warning لو أي layer نزلت تحت 0.001 أو طلعت فوق 100.
+      <details><summary>تلميح</summary>في <code>backward</code> جمّع <code>abs(d_h)</code> للـ hidden و <code>abs(d_out)</code> للـ output في عدّادات، واقسمهم على عدد العينات في آخر الـ epoch. <code>if g &lt; 1e-3: print(f"WARNING layer {i}: vanishing ({g:.2e})")</code> ونفس الفكرة لـ <code>&gt; 100</code>.</details></li>
+    <li><b>XOR:</b> غيّر سباق التدريب يستخدم داتا الـ XOR من Lesson 01 بدل الدايرة. أنهي activation بتتعلم أسرع؟ وليه النتيجة ممكن تختلف عن الدايرة؟
+      <details><summary>تلميح</summary>XOR فيها ٤ نقط بس: <span class="ltr">([0,0],0) ([0,1],1) ([1,0],1) ([1,1],0)</span>، فزوّد الـ epochs. فكّر في السبب: المدخلات كلها 0 أو 1 (موجبة)، والـ biases بتبدأ من صفر. ده بيأثر على أنهي neurons في الـ ReLU بتبدأ «شغالة»، وفيه نقطة <span class="ltr">[0,0]</span> بتدّي z = 0 بالظبط في البداية (ومشتقة ReLU عندها صفر). مع ٤ نقط بس، شوية neurons ميتة بيفرقوا جدًا.</details></li>
+    <li><b>إضافة مني · اقرا الـ activation في موديلات حقيقية:</b> في الـ Hugging Face، كل موديل معاه <code>config.json</code>. افتح config بتاع GPT-2 وبتاع موديل Llama ودوّر على <code>activation_function</code> أو <code>hidden_act</code>. بعدين اكتب feed-forward block صغير بالـ Python العادي بالشكل اللي Llama بتستخدمه (SwiGLU): <span class="ltr">down( silu(gate(x)) * up(x) )</span>، واحسب عدد الـ parameters بتاعه مقارنة بـ block عادي <span class="ltr">down(gelu(up(x)))</span> لنفس الـ hidden size.
+      <details><summary>تلميح</summary>GPT-2 هتلاقي فيه <code>"gelu_new"</code> (نوع من الـ GELU)، و Llama هتلاقي <code>"silu"</code>. الـ block العادي فيه مصفوفتين (<span class="ltr">d×h + h×d</span>)، والـ SwiGLU فيه تلاتة (gate و up و down = <span class="ltr">3·d·h</span>). عشان كده الموديلات اللي بتستخدم SwiGLU غالبًا بتصغّر h عشان العدد يفضل قريب. الـ <code>silu</code> هي نفسها الـ <code>swish</code> اللي كتبتها النهاردة.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d47-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ماقالوش صريح</h2></div>
+  <h3>الـ intuition في جملة</h3>
+  <p>الـ ReLU network هي في الحقيقة <b>دالة مكسّرة لحتت مستقيمة</b> (piecewise linear): كل neuron بيضيف «ثنية» في مكان ما. كل ما الـ neurons والـ layers تزيد، الثنيات تزيد، والدالة تقدر تقرّب أي منحنى. الـ GELU والـ Swish نفس الفكرة بس الثنيات ناعمة بدل حادة.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li>• <b>Softmax مرتين:</b> في PyTorch، <code>nn.CrossEntropyLoss</code> بتاخد <b>logits</b> وبتعمل softmax جواها. لو حطيت <code>nn.Softmax</code> في آخر الموديل، انت بتعمل softmax مرتين والتدريب بيبقى أبطأ وأسوأ. نفس الحكاية مع <code>BCEWithLogitsLoss</code> والـ sigmoid.</li>
+    <li>• <b>Activation على output الـ regression:</b> لو بتتوقع سعر، وحطيت ReLU أو sigmoid في الآخر، انت حبست الطلعة في مدى معين. الـ regression طلعتها linear.</li>
+    <li>• <b>Softmax من غير طرح الـ max:</b> <code>exp(1000)</code> بيدّي overflow. الطرح مش بيغيّر النتيجة رياضيًا (بيتلغي من البسط والمقام)، بس بيحميك من الـ inf والـ NaN. ده سبب السطر <code>max_x = max(xs)</code>.</li>
+    <li>• <b>الـ loss بينزل يبقى الـ network كويسة:</b> مش شرط. مع الـ sigmoid العميقة الـ loss ممكن ينزل بسبب آخر layers بس والأولى متجمدة. عشان كده تمرين ٤ (الـ health monitor) مهم.</li>
+    <li>• <b>تفاصيل الكود نفسه:</b> في <code>main.py</code> الـ <code>gelu</code> مكتوبة بتقريب الـ tanh، والـ <code>gelu_derivative</code> مكتوبة على الشكل الدقيق <span class="ltr">x·Φ(x)</span>. الفرق بينهم صغير جدًا، بس خد بالك إنهم مش نفس الدالة بالحرف (نسخة الـ Julia بتستخدم الشكل الدقيق في الاتنين عشان يبقوا متسقين). في PyTorch تقدر تختار: <code>F.gelu(x, approximate="tanh")</code>.</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents</h3>
+  <ul class="checklist">
+    <li>• <b>الـ FFN جوه كل transformer block:</b> كل block فيه attention وبعده feed-forward network، والـ activation قاعدة في النص بالظبط: GELU في BERT و GPT-2، و SiLU جوه SwiGLU في Llama.</li>
+    <li>• <b>Softmax في الـ attention:</b> الـ attention scores بتعدّي على softmax عشان تبقى أوزان مجموعها 1. ده نفس اللي لعبت بيه في المحطة ٠٥.</li>
+    <li>• <b>Softmax في آخر الـ LLM:</b> الموديل بيطلّع logit لكل token في الـ vocabulary، والـ softmax بتحولهم لاحتمالات. الـ <b>temperature</b> اللي بتحطها في الـ API هي القسمة على T اللي جربتها: T قليلة = إجابات ثابتة، T عالية = تنوع أكتر.</li>
+    <li>• <b>Sigmoid كـ gate:</b> في الـ LSTM gates، وفي أي حتة محتاجة «قد إيه أفتح الباب» بين 0 و 1، زي الـ gating في SwiGLU نفسه (الـ SiLU جواها sigmoid).</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d47-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d47-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d47-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d47-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أثبت ليه layers linear ورا بعض = layer واحدة (Ax + c)</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أعرف المدى والمشتقة ونقطة الضعف لكل activation: sigmoid و tanh و ReLU و Leaky و GELU و Swish</label></li>
+    <li><label><input type="checkbox" data-ck="3"> لعبت في معمل ٠٢ وشفت ليه 0.25 مضروبة في نفسها بتقتل الإشارة</label></li>
+    <li><label><input type="checkbox" data-ck="4"> شفت الـ dead neurons في معمل ٠٣ وفاهم ليه الـ GELU بتتجنبهم</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت كل الدوال ومشتقاتها والـ detector بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Nonlinearity بين الـ layers</td><td>أي neural network عميقة، من غير استثناء</td></tr>
+    <tr><td>GELU</td><td>الـ FFN في BERT و GPT ومعظم الـ transformers</td></tr>
+    <tr><td>SiLU / Swish</td><td>EfficientNet، والـ SwiGLU في Llama</td></tr>
+    <tr><td>ReLU</td><td>الـ CNNs والـ MLPs البسيطة</td></tr>
+    <tr><td>Sigmoid</td><td>output الـ binary classification، والـ gates في الـ LSTM</td></tr>
+    <tr><td>Softmax (+ temperature)</td><td>output الـ multi-class، الـ attention weights، اختيار الـ token في الـ LLMs</td></tr>
+    <tr><td>Vanishing / exploding gradients</td><td>تشخيص network مابتتعلمش، والسبب ورا الـ initialization والـ normalization</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Loss Functions. الـ activation بتحدد شكل الطلعة، والـ loss بتحدد إزاي نقيس قد إيه هي غلط، والاتنين لازم يركبوا على بعض (زي softmax مع cross-entropy). هنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F04-activation-functions" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/04-activation-functions</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+
+// roadmap
+const rm=$('d47-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===4)s.className='now';rm.appendChild(s)}
+
+// ---------- math ----------
+function erf(x){const s=x<0?-1:1,a=Math.abs(x),t=1/(1+0.3275911*a);
+  const y=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-a*a);return s*y}
+const sg=x=>1/(1+Math.exp(-Math.max(-500,Math.min(500,x))));
+const A={
+  sigmoid:{f:sg,d:x=>{const s=sg(x);return s*(1-s)},range:'(0, 1)',name:'Sigmoid'},
+  tanh:{f:Math.tanh,d:x=>{const t=Math.tanh(x);return 1-t*t},range:'(−1, 1)',name:'Tanh'},
+  relu:{f:x=>Math.max(0,x),d:x=>x>0?1:0,range:'[0, ∞)',name:'ReLU'},
+  leaky:{f:(x,a)=>x>0?x:a*x,d:(x,a)=>x>0?1:a,range:'(−∞, ∞)',name:'Leaky ReLU'},
+  gelu:{f:x=>0.5*x*(1+Math.tanh(Math.sqrt(2/Math.PI)*(x+0.044715*x*x*x))),d:x=>0.5*(1+erf(x/Math.SQRT2))+x*Math.exp(-0.5*x*x)/Math.sqrt(2*Math.PI),range:'≈ (−0.17, ∞)',name:'GELU'},
+  swish:{f:x=>x*sg(x),d:x=>{const s=sg(x);return s+x*s*(1-s)},range:'≈ (−0.28, ∞)',name:'Swish'}
+};
+function rng(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+// ---------- Lab 1: activation explorer ----------
+const ac=$('d47-actCanvas'),actx=AI.setupCanvas(ac),AW=+ac.dataset.w,AH=+ac.dataset.h,AS=48,aox=AW/2,aoy=250;
+const sel=$('d47-actSel'),xs=$('d47-x'),als=$('d47-alpha'),gh=$('d47-ghost');
+let dragX=false;
+function curve(ctx,fn,color,w,dash){ctx.strokeStyle=color;ctx.lineWidth=w;ctx.setLineDash(dash||[]);ctx.beginPath();
+  for(let px=0;px<=AW;px+=2){const x=(px-aox)/AS,y=fn(x);const py=aoy-y*AS;px?ctx.lineTo(px,py):ctx.moveTo(px,py)}ctx.stroke();ctx.setLineDash([])}
+function drawAct(){
+  const k=sel.value,a=+als.value,x=+xs.value,F=A[k];
+  actx.clearRect(0,0,AW,AH);AI.grid(actx,AW,AH,AS,aox,aoy);
+  if(gh.checked){actx.globalAlpha=.22;Object.keys(A).forEach(n=>{if(n!==k)curve(actx,t=>A[n].f(t,0.01),css('--muted'),1.5)});actx.globalAlpha=1}
+  curve(actx,t=>F.d(t,a),css('--vec-b'),2.5,[6,5]);
+  curve(actx,t=>F.f(t,a),css('--vec-a'),3.5);
+  const fx=F.f(x,a),dfx=F.d(x,a),px=aox+x*AS,py=aoy-fx*AS;
+  // tangent
+  actx.strokeStyle=css('--ink');actx.lineWidth=1.2;actx.setLineDash([3,3]);actx.beginPath();
+  actx.moveTo(px-60,py+60*dfx);actx.lineTo(px+60,py-60*dfx);actx.stroke();actx.setLineDash([]);
+  actx.fillStyle=css('--vec-a');actx.beginPath();actx.arc(px,py,7,0,7);actx.fill();
+  actx.fillStyle=css('--vec-b');actx.beginPath();actx.arc(px,aoy-dfx*AS,5,0,7);actx.fill();
+  actx.fillStyle=css('--ink');actx.beginPath();actx.arc(px,aoy,5,0,7);actx.fill();
+  actx.font='12px JetBrains Mono, monospace';actx.fillStyle=css('--vec-a');actx.fillText('f(x)',8,18);
+  actx.fillStyle=css('--vec-b');actx.fillText("f'(x)  (dashed)",8,34);
+  $('d47-xv').textContent=f(x,2);$('d47-av').textContent=f(a,2);
+  $('d47-fx').textContent=f(fx,4);$('d47-dfx').textContent=f(dfx,4);$('d47-range').textContent=F.range;
+  const v=$('d47-actVerdict');
+  if(Math.abs(dfx)<0.01){v.textContent='المشتقة تقريبًا صفر: الـ gradient مش هيعدّي من هنا';v.style.color=css('--bad')}
+  else if(Math.abs(dfx)<0.3){v.textContent='المشتقة صغيرة: الـ gradient هيعدّي بس هيصغر';v.style.color=css('--vec-b')}
+  else{v.textContent='المشتقة كويسة: الـ gradient بيعدّي تقريبًا زي ما هو';v.style.color=css('--ok')}
+}
+ac.addEventListener('pointerdown',e=>{dragX=true;ac.setPointerCapture(e.pointerId);moveX(e)});
+function moveX(e){if(!dragX)return;const [x]=AI.evPos(ac,e);xs.value=Math.max(-5,Math.min(5,Math.round((x-aox)/AS*20)/20));drawAct()}
+ac.addEventListener('pointermove',moveX);ac.addEventListener('pointerup',()=>dragX=false);ac.addEventListener('pointercancel',()=>dragX=false);
+[sel,xs,als,gh].forEach(el=>el.addEventListener('input',drawAct));sel.addEventListener('change',drawAct);
+drawAct();
+
+// ---------- Lab 2: vanishing gradient through depth ----------
+const vc=$('d47-vgCanvas'),vctx=AI.setupCanvas(vc),VW=+vc.dataset.w,VH=+vc.dataset.h;
+const VG=['sigmoid','tanh','relu','gelu','swish'],VCOL=()=>({sigmoid:css('--bad'),tanh:css('--vec-b'),relu:css('--ok'),gelu:css('--vec-a'),swish:css('--muted')});
+let vSeed=7;
+const YMIN=-12,L=40,R=VW-14,T=14,B=VH-30;
+function vgData(){
+  const N=+$('d47-n').value,mode=$('d47-mode').value,z=+$('d47-z').value,s=+$('d47-s').value;
+  const r=rng(vSeed),zs=[];for(let i=0;i<N;i++)zs.push(mode==='fixed'?z:gauss(r)*s);
+  const out={};VG.forEach(k=>{let p=1;const arr=[];for(let i=0;i<N;i++){p*=Math.abs(A[k].d(zs[i]));arr.push(p)}out[k]=arr});
+  return {N,mode,z,s,out};
+}
+function drawVG(){
+  const d=vgData(),C=VCOL();
+  $('d47-nv').textContent=d.N;$('d47-zv').textContent=f(d.z,1);$('d47-sv').textContent=f(d.s,1);
+  $('d47-zwrap').style.opacity=d.mode==='fixed'?1:.4;
+  vctx.clearRect(0,0,VW,VH);
+  const yp=v=>T+(0-v)/(0-YMIN)*(B-T),xp=i=>L+(d.N===1?0:i/(d.N-1))*(R-L);
+  vctx.strokeStyle=css('--grid');vctx.lineWidth=1;vctx.fillStyle=css('--muted');vctx.font='11px JetBrains Mono, monospace';
+  for(let v=0;v>=YMIN;v-=2){const y=yp(v);vctx.beginPath();vctx.moveTo(L,y);vctx.lineTo(R,y);vctx.stroke();vctx.fillText(String(v),6,y+4)}
+  vctx.strokeStyle=css('--bad');vctx.setLineDash([4,4]);vctx.beginPath();vctx.moveTo(L,yp(-6));vctx.lineTo(R,yp(-6));vctx.stroke();vctx.setLineDash([]);
+  vctx.fillStyle=css('--bad');vctx.fillText('1e-6',R-34,yp(-6)-4);
+  vctx.fillStyle=css('--muted');vctx.fillText('layer 1',L,VH-10);vctx.textAlign='right';vctx.fillText('layer '+d.N,R,VH-10);vctx.textAlign='left';
+  VG.forEach(k=>{vctx.strokeStyle=C[k];vctx.lineWidth=k==='sigmoid'||k==='relu'||k==='gelu'?2.6:1.6;vctx.beginPath();
+    d.out[k].forEach((p,i)=>{const lv=p>0?Math.max(YMIN,Math.log10(p)):YMIN;const x=xp(i),y=yp(lv);i?vctx.lineTo(x,y):vctx.moveTo(x,y)});vctx.stroke()});
+  const ul=$('d47-vgList');ul.innerHTML='';
+  VG.forEach(k=>{const p=d.out[k][d.N-1],lv=p>0?Math.log10(p):-Infinity;const li=document.createElement('li');
+    const w=lv===-Infinity?0:Math.max(0,Math.min(100,(lv-YMIN)/(-YMIN)*100));
+    const txt=p===0?'0 (path مقفول)':p<1e-3||p>1e3?p.toExponential(1):String(f(p,3));
+    li.innerHTML='<span>'+A[k].name+'</span><span class="bar"><i style="width:'+w+'%;background:'+C[k]+'"></i></span><span class="num">'+txt+'</span>';ul.appendChild(li)});
+}
+['d47-n','d47-z','d47-s'].forEach(id=>$(id).addEventListener('input',drawVG));$('d47-mode').addEventListener('change',drawVG);
+$('d47-reseed').addEventListener('click',()=>{vSeed=(vSeed*31+11)%100000;drawVG()});
+drawVG();
+
+// ---------- Lab 3: dead neurons ----------
+const dc=$('d47-deadCanvas'),dctx=AI.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+const NIN=5,NH=20,NS=500;let dSeed=0,net=null;
+function buildNet(){const r=rng(1000+dSeed);const W=[],B0=[],X=[];
+  for(let i=0;i<NH;i++){const w=[];for(let j=0;j<NIN;j++)w.push(gauss(r));W.push(w);B0.push(gauss(r))}
+  for(let s=0;s<NS;s++){const x=[];for(let j=0;j<NIN;j++)x.push(gauss(r));X.push(x)}
+  const Z=W.map(w=>X.map(x=>w.reduce((a,wi,j)=>a+wi*x[j],0)));net={B0,Z}}
+function drawDead(){
+  const mu=+$('d47-b').value,k=$('d47-dAct').value;$('d47-bv').textContent=f(mu,1);
+  const st=[];for(let i=0;i<NH;i++){let fires=0,gs=0;const b=net.B0[i]+mu;
+    for(let s=0;s<NS;s++){const z=net.Z[i][s]+b;if(z>0)fires++;gs+=Math.abs(A[k].d(z,0.01))}
+    st.push({fires,g:gs/NS,status:fires===0?'DEAD':fires<NS*0.05?'WEAK':'OK'})}
+  const dead=st.filter(s=>s.status==='DEAD'),weak=st.filter(s=>s.status==='WEAK').length;
+  $('d47-dDead').textContent=dead.length;$('d47-dWeak').textContent=weak;$('d47-dOk').textContent=NH-dead.length-weak;
+  $('d47-dGrad').textContent=dead.length?f(dead.reduce((a,s)=>a+s.g,0)/dead.length,4):'—';
+  dctx.clearRect(0,0,DW,DH);
+  const bw=(DW-20)/NH,top=22,bot=DH-36,hh=bot-top;
+  dctx.font='11px JetBrains Mono, monospace';dctx.fillStyle=css('--muted');dctx.fillText('fire rate per neuron ('+NS+' inputs)   ▪ = mean |f\'|',10,14);
+  st.forEach((s,i)=>{const x=10+i*bw;const c=s.status==='DEAD'?css('--bad'):s.status==='WEAK'?css('--vec-b'):css('--ok');
+    dctx.fillStyle=css('--soft');dctx.fillRect(x+2,top,bw-4,hh);
+    const h=hh*s.fires/NS;dctx.fillStyle=c;dctx.fillRect(x+2,bot-h,bw-4,h);
+    const gy=bot-hh*Math.min(1,s.g);dctx.fillStyle=css('--ink');dctx.fillRect(x+bw/2-4,gy-2,8,4);
+    dctx.fillStyle=css('--muted');dctx.textAlign='center';dctx.fillText(String(i),x+bw/2,bot+14);
+    if(s.status==='DEAD'){dctx.fillStyle=css('--bad');dctx.fillText('✕',x+bw/2,bot+28)}dctx.textAlign='left'});
+  const v=$('d47-dVerdict');
+  if(!dead.length){v.textContent='مفيش neurons ميتة دلوقتي';v.style.color=css('--ok')}
+  else if(k==='relu'){v.textContent=dead.length+' neuron ميت: الـ gradient اللي بيوصلهم صفر بالظبط، ومش هيتحدّثوا أبدًا';v.style.color=css('--bad')}
+  else{v.textContent=dead.length+' neuron مابيطلعش موجب، بس لسه بيوصلهم gradient صغير، فيقدروا يرجعوا';v.style.color=css('--vec-b')}
+}
+$('d47-b').addEventListener('input',drawDead);$('d47-dAct').addEventListener('change',drawDead);
+$('d47-dReseed').addEventListener('click',()=>{dSeed++;buildNet();drawDead()});
+buildNet();drawDead();
+
+// ---------- softmax ----------
+const LBL=['A','B','C','D'];
+function sm(){const T=+$('d47-t').value;$('d47-tv').textContent=f(T,2);
+  const z=[0,1,2,3].map(i=>{const v=+$('d47-l'+i).value;$('d47-l'+i+'v').textContent=f(v,1);return v/T});
+  const m=Math.max(...z),e=z.map(v=>Math.exp(v-m)),s=e.reduce((a,b)=>a+b,0),p=e.map(v=>v/s);
+  const ul=$('d47-smList');ul.innerHTML='';const mx=Math.max(...p);
+  p.forEach((v,i)=>{const li=document.createElement('li');li.innerHTML='<span>class '+LBL[i]+'</span><span class="bar"><i style="width:'+(v*100)+'%;'+(v===mx?'background:'+css('--vec-b'):'')+'"></i></span><span class="num">'+f(v,3)+'</span>';ul.appendChild(li)});
+  $('d47-smSum').textContent=p.reduce((a,b)=>a+b,0).toFixed(3);$('d47-smMax').textContent=LBL[p.indexOf(mx)]+' · '+f(mx,3);
+}
+['d47-l0','d47-l1','d47-l2','d47-l3','d47-t'].forEach(id=>$(id).addEventListener('input',sm));sm();
+
+// ---------- quiz ----------
+const ck6=document.querySelector('#d47-checklist input[data-ck="6"]');
+AI.quiz($('d47-quizBox'),[
+ ['ليه مينفعش تبني deep network مفيدة من linear layers بس (من غير activations)؟',['لأن الـ linear layers ورا بعض بتنهار لتحويل linear واحد، فالعمق مش بيفيد بحاجة','لأن الـ linear layers بطيئة جدًا','لأن الـ linear layers مش بتتعامل مع batches','لأن الـ linear layers ملهاش biases'],0,'y = W₂(W₁x + b₁) + b₂ بتتختصر لـ y = Ax + c. مهما رصّيت، النتيجة layer واحدة. الـ activation هي اللي بتكسر الاختصار ده.'],
+ ['مدى (output range) الـ ReLU إيه؟',['(−∞, ∞)','[0, ∞)','(0, 1)','(−1, 1)'],1,'ReLU(x) = max(0, x): صفر لكل السالب، والموجب بيعدّي زي ما هو، فالمدى [0, ∞).'],
+ ['يعني إيه مشكلة الـ «dead neuron» في الـ ReLU networks؟',['neurons الـ bias بتاعها صفر','neurons بتحسب ببطء','neurons الـ input بتاعها سالب دايمًا، فالطلعة صفر والـ gradient صفر للأبد','neurons بتطلّع NaN'],2,'لو الـ weighted input سالب دايمًا (initialization وحشة أو bias سالب كبير)، الطلعة 0 والمشتقة 0، وصفر gradient يعني صفر تحديث، فمش هيرجع أبدًا.'],
+ ['أنهي activation هي الـ default في الـ hidden layers بتاعة الـ transformers الحديثة زي GPT و BERT؟',['Sigmoid','Tanh','GELU','ReLU'],2,'الـ GELU بتدي gradient flow ناعم، بتتجنب الـ dead neurons، واتفوقت على الـ ReLU في موديلات اللغة.'],
+ ['ليه الـ softmax بتتحط في الـ output layer بس ومش في الـ hidden layers؟',['لأنها بتشتغل مع class-ين بس','لأنها بتعمل exploding gradients','لأنها بتحوّل الـ vector لتوزيع احتمالات مجموعه 1، وده محتاجينه في output الـ classification مش في التمثيلات الوسطانية','لأنها بطيئة على الـ hidden layers'],2,'الـ hidden layers محتاجة تحافظ على المعلومات وتحولها، مش تضغطها في احتمالات مجموعها 1.'],
+ ['(إضافة مني) gradient_scan طلّع إن الـ sigmoid عندها 9% بس near-zero. ليه برضه هي أسوأ اختيار للـ deep networks؟',['لأن الـ scan غلط','لأن مشتقتها عمرها ما تعدّي 0.25، فالضرب عبر layers كتير بيقتل الـ gradient بشكل أُسّي','لأنها مالهاش مشتقة عند الصفر','لأنها بتطلع قيم سالبة'],1,'0.25 في أحسن الأحوال، و 0.25¹⁰ ≈ 1e-6. المشكلة مش مناطق مسطحة، المشكلة الضرب المتكرر في رقم صغير.'],
+ ['(إضافة مني) موديل PyTorch بيستخدم nn.CrossEntropyLoss، وحد ضاف nn.Softmax كآخر layer. إيه المشكلة؟',['مفيش مشكلة، ده الصح','الـ softmax بتتعمل مرتين لأن الـ CrossEntropyLoss متوقعة logits وبتعمل softmax جواها، فالتدريب بيبقى أسوأ','الـ loss هيطلع سالب','الموديل هيبقى regression'],1,'سيب آخر layer تطلّع logits. الـ softmax هتحتاجها بس وقت الـ inference لو عايز احتمالات.']
+],5,()=>{if(ck6&&!ck6.checked){ck6.checked=true;ck6.dispatchEvent(new Event('change'))}});
+
+AI.checklist(47,$('d47-checklist'));
+
+AI.onTheme(()=>{if(!document.body.contains(ac))return false;drawAct();drawVG();drawDead();sm()});
+})();
+</script>

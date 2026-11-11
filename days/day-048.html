@@ -1,0 +1,740 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 05 · Loss Functions</span>
+  <h1>اليوم ٤٨: الـ Loss هو الحاجة الوحيدة اللي الموديل بيحاول يحسّنها فعلًا</h1>
+  <p class="lede">الموديل بيتوقع، والحقيقة بتقول حاجة تانية. «غلطان قد إيه؟» الرقم ده هو الـ <b>loss</b>. النهاردة هتبني <b>MSE</b> و<b>Binary/Categorical Cross-Entropy</b> و<b>Label Smoothing</b> و<b>Contrastive (InfoNCE)</b> من الصفر مع الـ gradients بتاعتهم، وتشوف بعينك ليه الـ MSE بيفشل في الـ classification، وإمتى تستخدم <b>Focal</b> و<b>Triplet</b>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia)</span>
+    <span>بعده: <b>Optimizers</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d48-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d48-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 47) كان عن الـ Activation Functions. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه من غير activation function، ١٠ layers زي layer واحدة؟</summary>لأن ضرب المصفوفات بيتجمع: <span class="ltr">W₂(W₁x + b₁) + b₂ = (W₂W₁)x + (W₂b₁ + b₂)</span>، يعني ده لسه تحويل خطي واحد. الـ nonlinearity هي اللي بتكسر السلسلة دي.</details>
+  <details><summary>٢. أقصى قيمة لمشتقة الـ sigmoid كام؟ وده بيعمل إيه في الشبكات العميقة؟</summary>0.25 عند x = 0. مع ١٠ layers الـ gradient بيتضرب في 0.25 لحد عشر مرات، يعني ممكن يوصل لحوالي <span class="ltr">0.25¹⁰ ≈ 0.00000095</span>. ده الـ vanishing gradient. افتكر الحتة دي كويس، لأن النهاردة هنشوف إزاي الـ cross-entropy بتعوّض فلطحة الـ sigmoid في الآخر.</details>
+  <details><summary>٣. يعني إيه dead ReLU neuron؟ وإيه اللي بيحل المشكلة؟</summary>neuron الدخل بتاعه سالب على طول، فالخرج صفر والـ gradient صفر، فمبيتعلمش تاني. الـ Leaky ReLU بيدي ميل صغير في الناحية السالبة، والـ GELU ناعم وبيسمح بقيم سالبة صغيرة، وده الـ default في الـ transformers.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>المشكلة: الموديل بيحسّن الـ loss مش الـ accuracy</div>
+    <div><b>15 min</b>MSE و Cross-Entropy + معمل ٠١</div>
+    <div><b>10 min</b>سباق MSE ضد BCE (معمل ٠٢)</div>
+    <div><b>10 min</b>Softmax و Label Smoothing</div>
+    <div><b>10 min</b>Contrastive و Focal و Triplet + معمل ٠٣</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمرين + كويز</div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section id="d48-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الموديل بيغش لو سبته</h2></div>
+  <p>الـ loss function هي <b>الحاجة الوحيدة</b> اللي الموديل بيحسّنها. مش الـ accuracy، ولا الـ F1، ولا أي رقم بتعرضه على مديرك. الـ optimizer بياخد الـ gradient بتاع الـ loss ويعدّل الأوزان عشان الرقم ده يصغر. ولو الـ loss مش بيعبّر عن اللي انت عايزه، الموديل هيلاقي <b>أرخص طريقة رياضية</b> يرضيه بيها، وغالبًا مش هي اللي انت كنت عايزها.</p>
+  <p>تخيل مدرس بيدّي درجات بطريقة غريبة: «هخصم منك مربع المسافة بين إجابتك والإجابة الصح». طالب ذكي في سؤال صح/غلط هيكتب «نص صح» في كل الأسئلة ويضمن خصم ثابت صغير. ده بالظبط اللي بيحصل:</p>
+  <div class="formula">Binary task, 50/50 split, MSE loss → predict 0.5 for everything → MSE = 0.25</div>
+  <p>0.25 هو أقل MSE ممكن من غير ما تتعلم أي حاجة. الموديل معندوش أي قدرة يفرّق بين الكلاسين، بس «حسّن» الـ loss. لو غيرت لـ cross-entropy، نفس الموديل هيتجبر يزق التوقعات ناحية 0 أو 1، لأن <span class="ltr">−log(0.5) = 0.693</span> loss وحش، و<span class="ltr">−log(0.99) = 0.01</span> بيكافئ التوقع الواثق الصح.</p>
+  <div class="note"><strong>وفي الـ self-supervised الموضوع أخطر:</strong> مفيش labels خالص. الـ contrastive loss هو اللي بيعرّف إشارة التعلم كلها: إيه اللي يعتبر شبه بعض، وإيه اللي مختلف، وبنزقهم بعيد عن بعض قد إيه. لو اتعمل غلط، الـ embeddings بتعمل <b>collapse</b>: كل مدخل بيروح لنفس المتجه بالظبط. الـ loss يبقى صفر نظريًا، والـ embeddings ملهاش أي لازمة.</div>
+</section>
+
+<!-- MSE + CE + LAB 1 -->
+<section id="d48-mse-ce">
+  <div class="station-head"><span class="tag">02</span><h2>MSE و Cross-Entropy: طريقتين للعقاب</h2></div>
+  <h3>Mean Squared Error (MSE)</h3>
+  <p>الـ default للـ <b>regression</b>. هات الفرق بين التوقع والحقيقة، ربّعه، واحسب المتوسط.</p>
+  <div class="formula">MSE = (1/n) Σ (y_pred − y_true)²        ∂MSE/∂y_pred = (2/n)(y_pred − y_true)</div>
+  <p><b>ليه التربيع؟</b> لأنه بيعاقب الأخطاء الكبيرة عقاب تربيعي: خطأ 2 بيتكلف ٤ أضعاف خطأ 1، وخطأ 10 بيتكلف ١٠٠ ضعف. وده بيخلي الـ MSE حساس للـ <b>outliers</b>، لأن توقع واحد غلط جامد ممكن يسيطر على الـ loss كله.</p>
+  <p>مثال: موديل أسعار شقق غلطان ١٠ آلاف دولار في أغلب الشقق، و٢٠٠ ألف في قصر واحد. الـ MSE هيحاول بكل قوته يصلح القصر ده، وممكن يبوّظ الـ ٩٩ شقة التانيين عشانه.</p>
+  <p>الـ gradient <b>خطي</b> في الخطأ: كل ما الخطأ يكبر، الـ gradient يكبر. ده ميزة في الـ regression (خطأ كبير محتاج تصحيح كبير)، وعيب في الـ classification (انت عايز تعاقب الإجابة الغلط الواثقة عقاب أشد بكتير، مش خطي).</p>
+
+  <h3>Binary Cross-Entropy (BCE)</h3>
+  <p>جاية من نظرية المعلومات (information theory): بتقيس قد إيه التوزيع اللي الموديل توقعه بعيد عن التوزيع الحقيقي.</p>
+  <div class="formula">BCE = −( y·log(p) + (1−y)·log(1−p) )        ∂BCE/∂p = −y/p + (1−y)/(1−p)</div>
+  <p>فكّر فيها كـ «درجة المفاجأة». لو الحقيقة 1 وانت قلت <span class="ltr">p = 0.99</span>، المفاجأة صغيرة: <span class="ltr">−log(0.99) = 0.01</span>. لو قلت <span class="ltr">p = 0.01</span>، المفاجأة ضخمة: <span class="ltr">−log(0.01) = 4.6</span>، يعني فرق ٤٦٠ مرة. الـ CE بتعاقب الغلط الواثق بقسوة، وبالكاد بتلمس الصح الواثق.</p>
+  <p>والـ gradient بيحكي نفس القصة: لما <span class="ltr">y = 1</span> و p قريبة من الصفر، الـ gradient <span class="ltr">−1/p</span> بيروح لسالب ما لا نهاية، فالموديل بياخد إشارة ضخمة إنه يصلح غلطته. ولما p قريبة من 1 الـ gradient بيبقى صغير جدًا، لأنه صح أصلًا ومفيش حاجة تتصلح.</p>
+
+  <h3>ليه الـ MSE بيفشل في الـ Classification؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>التوقع (الحقيقة = 1)</th><th>MSE</th><th>Cross-Entropy</th></tr>
+    <tr><td class="ltr">p = 0.5</td><td class="ltr">0.25</td><td class="ltr">0.693</td></tr>
+    <tr><td class="ltr">p = 0.9</td><td class="ltr">0.01</td><td class="ltr">0.105</td></tr>
+    <tr><td class="ltr">p = 0.1 (غلط وواثق)</td><td class="ltr">0.81</td><td class="ltr">2.303</td></tr>
+  </table></div>
+  <p>المشكلة الحقيقية في الـ gradient مش في الـ loss نفسه. الخرج بيعدّي على sigmoid، والـ sigmoid بيتفلطح جنب 0 و1 (افتكر الـ 0.25 بتاعة امبارح). مع الـ MSE، الـ gradient بالنسبة للـ logit z بيبقى <span class="ltr">2(p−y)·p(1−p)</span>، والـ <span class="ltr">p(1−p)</span> بتقتله لما الموديل يبقى غلطان وواثق. مع الـ CE، الـ <span class="ltr">−log</span> بتلغي الفلطحة دي بالظبط، والـ gradient بيبقى ببساطة <span class="ltr">p − y</span>: قوي بالظبط في المكان اللي محتاجه.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: شوف العقاب والـ gradient بعينك</h3>
+      <p>المحور الأفقي هو الاحتمال p اللي الموديل بيديه للكلاس 1. اسحب على الرسمة أو حرّك الـ slider. بدّل بين «Loss» و«Gradient بالنسبة للـ logit z» ولاحظ:</p>
+      <ol class="ex">
+        <li>في وضع الـ Loss: الـ CE بتطير لفوق لما الموديل يغلط وهو واثق، والـ MSE بيفضل تحت 1.</li>
+        <li>في وضع الـ Gradient: حط الحقيقة = 1 وقرّب p من الصفر. الـ gradient بتاع الـ CE بيوصل تقريبًا لـ 1، وبتاع الـ MSE <b>بيقع لصفر</b>. يعني الموديل الغلطان جدًا مش بيتعلم.</li>
+        <li>الـ Focal loss (برتقالي متقطع): كبّر γ وشوف الأمثلة السهلة (p قريبة من 1) بتتهمش.</li>
+      </ol>
+    </div>
+    <div class="instrument">
+      <canvas id="d48-curve" width="520" height="320" aria-label="منحنيات الـ loss والـ gradient"></canvas>
+      <div class="btns">
+        <button type="button" id="d48-modeLoss" class="primary">Loss</button>
+        <button type="button" id="d48-modeGrad">Gradient بالنسبة لـ z</button>
+        <button type="button" id="d48-yToggle">الحقيقة y = 1</button>
+      </div>
+      <label style="display:grid;gap:2px">التوقع p = <b class="mono" id="d48-pv">0.30</b><input type="range" id="d48-p" min="0.001" max="0.999" step="0.001" value="0.3"></label>
+      <label style="display:grid;gap:2px">Focal γ = <b class="mono" id="d48-gv">2</b><input type="range" id="d48-g" min="0" max="5" step="0.5" value="2"></label>
+      <div class="readout">
+        <div><small>MSE</small><b id="d48-rMse">-</b></div>
+        <div><small>CE</small><b id="d48-rCe">-</b></div>
+        <div><small>Focal</small><b id="d48-rFl">-</b></div>
+        <div><small>|∂MSE/∂z|</small><b id="d48-rgMse">-</b></div>
+        <div><small>|∂CE/∂z|</small><b id="d48-rgCe">-</b></div>
+        <div><small>CE ÷ MSE</small><b id="d48-rRatio">-</b></div>
+      </div>
+      <div class="verdict" id="d48-curveVerdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- LAB 2 -->
+<section id="d48-race">
+  <div class="station-head"><span class="tag">03</span><h2>سباق: نفس الشبكة، loss مختلف</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>دي نفس تجربة Step 6 في الدرس: داتا دايرة (النقط اللي <span class="ltr">x² + y² &lt; 1.5</span> كلاس 1)، وشبكة صغيرة فيها 8 hidden ReLU وخرج sigmoid، بتتدرب بـ SGD عينة عينة. الشبكتين بيبدأوا <b>بنفس الأوزان بالظبط</b>، والفرق الوحيد هو الـ loss.</p>
+      <p>اضغط «ابدأ» وتابع منحنى الـ accuracy وخريطة القرار لكل واحدة. جرّب learning rates مختلفة.</p>
+      <div class="note"><strong>ملحوظة:</strong> المعمل ده مكتوب بـ JavaScript وبـ random generator تاني غير بتاع Python، فالأرقام مش هتطابق ناتج <code>main.py</code> بالظبط. الفكرة هي اللي تهمنا: مين بيتعلم أسرع.</div>
+      <div class="btns">
+        <button type="button" id="d48-raceGo" class="primary">ابدأ</button>
+        <button type="button" id="d48-raceReset">من الأول</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">lr <select id="d48-raceLr"><option>0.05</option><option selected>0.1</option><option>0.3</option></select></label>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">seed <select id="d48-raceSeed"><option>0</option><option>1</option><option>2</option><option>3</option></select></label>
+      </div>
+    </div>
+    <div class="instrument">
+      <canvas id="d48-raceMap" width="520" height="270" aria-label="خريطة قرار الشبكتين"></canvas>
+      <canvas id="d48-raceCurve" width="520" height="200" aria-label="منحنى الـ accuracy مع الـ epochs"></canvas>
+      <div class="readout">
+        <div><small>Epoch</small><b id="d48-rEp">0</b></div>
+        <div><small>MSE · accuracy</small><b id="d48-rAm">-</b></div>
+        <div><small>BCE · accuracy</small><b id="d48-rAb">-</b></div>
+        <div><small>MSE · loss</small><b id="d48-rLm">-</b></div>
+        <div><small>BCE · loss</small><b id="d48-rLb">-</b></div>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">ملحوظة: الـ loss بتاع الاتنين مش بنفس الوحدة، فقارن الـ accuracy مش الـ loss.</p>
+    </div>
+  </div>
+</section>
+
+<!-- SOFTMAX / CCE / SMOOTHING -->
+<section id="d48-cce">
+  <div class="station-head"><span class="tag">04</span><h2>Categorical Cross-Entropy و Softmax و Label Smoothing</h2></div>
+  <p>لما يكون عندك كلاسات كتير، الـ targets بتبقى <b>one-hot</b> (واحد في مكان الكلاس الصح وأصفار في الباقي). الـ softmax بتحوّل الـ logits لاحتمالات مجموعها 1، وبعدين:</p>
+  <div class="formula">softmax(z)ᵢ = e^(zᵢ − max z) / Σⱼ e^(zⱼ − max z)        CCE = −Σᵢ yᵢ·log(pᵢ) = −log(p_true)</div>
+  <p>الكلاس الصح بس هو اللي بيساهم (لأن باقي الـ yᵢ أصفار). مع ١٠ كلاسات، التخمين العشوائي (0.1 للكلاس الصح) بيدّي <span class="ltr">−log(0.1) = 2.3</span>، و0.9 بتدّي <span class="ltr">0.105</span>. يعني الموديل بيتعلم يركّز الاحتمال على الإجابة الصح. وطرح <span class="ltr">max z</span> قبل الـ exp مبيغيّرش النتيجة، بس بيمنع الـ overflow.</p>
+  <p><b>السحر هنا:</b> الـ gradient بتاع softmax + cross-entropy بالنسبة للـ logits بيتبسط لـ:</p>
+  <div class="formula">∂CCE/∂zᵢ = pᵢ − yᵢ      (p − 1 للكلاس الصح، و p للباقي)</div>
+  <p>ده مش صدفة، وده السبب إن الـ softmax والـ cross-entropy دايمًا بيتحطوا مع بعض.</p>
+
+  <h3>Label Smoothing: متبقاش واثق ١٠٠٪</h3>
+  <p>الـ one-hot بيقول «ده كلاس 3 بنسبة ١٠٠٪ وصفر في المية أي حاجة تانية». ودي جملة قوية جدًا. عشان الـ softmax تطلّع 1.0 بالظبط، الموديل لازم يزق الـ logits لما لا نهاية. النتيجة: ثقة زيادة، generalization أسوأ، وهشاشة قدام الـ distribution shift. الـ label smoothing بيليّن الـ target:</p>
+  <div class="formula">smooth = (1 − α)·one_hot + α / num_classes</div>
+  <p>مع <span class="ltr">α = 0.1</span> و١٠ كلاسات، بدل <span class="ltr">[0, 0, 1, 0, …]</span> بيبقى <span class="ltr">[0.01, 0.01, 0.91, 0.01, …]</span>، فالموديل بيستهدف 0.91 بدل 1.0 والـ logits بتفضل في مدى معقول. الدرس بيقول إن GPT ومعظم الموديلات الحديثة بتستخدم label smoothing أو حاجة شبهه.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>جرّب: softmax + smoothing + gradient</h3>
+      <p>حرّك الـ logits الخمسة (البداية هي نفس أرقام Step 3 في الكود: <span class="ltr">[2, 1, 0.1, −1, 3]</span> والكلاس الصح 4). كبّر α وشوف الـ target بيتليّن، والـ gradient بيبقى <span class="ltr">p − target</span>. لاحظ: مع smoothing، لو زقيت الـ logit الصح لفوق جدًا الـ loss <b>بيرجع يزيد</b>. ده بالظبط اللي بيمنع الثقة الزيادة.</p>
+      <div class="mrow" id="d48-logits"></div>
+      <label style="display:grid;gap:2px">α = <b class="mono" id="d48-av">0.10</b><input type="range" id="d48-a" min="0" max="0.5" step="0.01" value="0.1"></label>
+      <label style="display:flex;gap:8px;align-items:center">الكلاس الصح: <select id="d48-tgt"><option>0</option><option>1</option><option>2</option><option>3</option><option selected>4</option></select></label>
+    </div>
+    <div class="instrument">
+      <ul class="rank-list" id="d48-smList"></ul>
+      <div class="readout">
+        <div><small>CCE (hard)</small><b id="d48-rHard">-</b></div>
+        <div><small>CCE (smooth)</small><b id="d48-rSmooth">-</b></div>
+        <div><small>الفرق</small><b id="d48-rDiff">-</b></div>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">كل صف فيه: الاحتمال (أزرق)، والـ target (برتقالي)، والرقم هو الـ gradient <span class="ltr">pᵢ − targetᵢ</span>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- CONTRASTIVE + FOCAL + TRIPLET -->
+<section id="d48-contrastive">
+  <div class="station-head"><span class="tag">05</span><h2>Contrastive Loss: قرّب الشبه وبعّد المختلف</h2></div>
+  <p>مفيش labels ولا كلاسات. بس أزواج مدخلات وسؤال واحد: دول شبه بعض ولا مختلفين؟</p>
+  <h3>SimCLR-style (NT-Xent / InfoNCE)</h3>
+  <p>خد صورة واعمل منها نسختين بـ augmentation (قص، لف، تغيير ألوان). دول الـ <b>positive pair</b> ولازم الـ embeddings بتاعتهم تبقى قريبة. كل صورة تانية في الـ batch بتعمل <b>negative pair</b> ولازم تبقى بعيدة.</p>
+  <div class="formula">L = −log [ exp(sim(zᵢ, zⱼ)/τ) / Σₖ exp(sim(zᵢ, zₖ)/τ) ]</div>
+  <p>الـ sim هنا هي الـ cosine similarity (فاكرها من Day 1؟)، و<span class="ltr">zᵢ, zⱼ</span> هما الـ positive pair، والمجموع بيلف على الكل، و<b>τ (temperature)</b> بتتحكم في حدة التوزيع. τ أصغر يعني negatives أصعب وفصل أشرس. الشكل ده softmax على الـ similarities: هو عايز الـ positive يبقى الأعلى وسط كل الاختيارات. يعني الـ contrastive learning متحوّل لـ classification.</p>
+  <p>أرقام حقيقية: batch بحجم 256 يعني 255 negative لكل positive pair، و<span class="ltr">τ = 0.07</span> (الـ default في SimCLR).</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: InfoNCE بإيدك</h3>
+      <p>كل النقط embeddings متطبّعة (normalized) على دايرة الوحدة، فالـ cosine similarity = cos الزاوية بينهم. اسحب أي نقطة: الـ <b style="color:var(--vec-a)">anchor</b>، والـ <b style="color:var(--ok)">positive</b>، والـ <b style="color:var(--vec-b)">negatives</b>.</p>
+      <ol class="ex">
+        <li>قرّب الـ positive من الـ anchor وبعّد الـ negatives: الـ loss بيقرب من الصفر.</li>
+        <li>صغّر τ: لو الفصل كويس الـ loss بيصغر أكتر، ولو negative أقرب من الـ positive الـ loss بيطير. الـ τ الصغيرة <b>بتكبّر أي فرق موجود</b>، كويس كان ولا وحش.</li>
+        <li>اضغط «Collapse»: كله في نقطة واحدة. الـ loss بيبقى <span class="ltr">log(5) ≈ 1.609</span> مهما كانت τ. الـ negatives هي اللي بتعاقب الـ collapse.</li>
+      </ol>
+    </div>
+    <div class="instrument">
+      <canvas id="d48-nce" width="520" height="360" aria-label="embeddings على دايرة الوحدة"></canvas>
+      <label style="display:grid;gap:2px">τ (temperature) = <b class="mono" id="d48-tv">0.10</b><input type="range" id="d48-t" min="0" max="100" step="1" value="35"></label>
+      <div class="readout">
+        <div><small>sim(anchor, positive)</small><b id="d48-rSp">-</b></div>
+        <div><small>p(positive)</small><b id="d48-rPp">-</b></div>
+        <div><small>InfoNCE loss</small><b id="d48-rNce">-</b></div>
+      </div>
+      <ul class="rank-list" id="d48-nceList"></ul>
+      <div class="btns">
+        <button type="button" id="d48-nceGood">فصل كويس</button>
+        <button type="button" id="d48-nceHard">hard negative</button>
+        <button type="button" id="d48-nceCollapse">Collapse</button>
+      </div>
+    </div>
+  </div>
+
+  <h3>Triplet Loss</h3>
+  <p>تلات مدخلات: <b>anchor</b> و<b>positive</b> (نفس الكلاس) و<b>negative</b> (كلاس تاني).</p>
+  <div class="formula">L = max(0, d(anchor, positive) − d(anchor, negative) + margin)</div>
+  <p>الـ margin (عادة من 0.2 لـ 1.0) بيفرض أقل مسافة بين بُعد الـ positive وبُعد الـ negative. لو الـ negative بعيد كفاية أصلًا، الـ loss صفر: مفيش gradient ولا update. ده بيخلي التدريب كفء، بس محتاج <b>triplet mining</b> بعناية، يعني تختار hard negatives قريبين من الـ anchor. زي ما تذاكر للامتحان: حل المسائل السهلة اللي انت حافظها مبيعلّمكش حاجة جديدة.</p>
+
+  <h3>Focal Loss: للداتا الـ imbalanced</h3>
+  <p>الـ cross-entropy العادية بتعامل كل الأمثلة الصح زي بعض. الـ focal loss بتقلل وزن الأمثلة السهلة:</p>
+  <div class="formula">FL = −α·(1 − p_t)^γ · log(p_t)</div>
+  <p><span class="ltr">p_t</span> هو احتمال الكلاس الصح، و γ بتتحكم في التركيز. مع <span class="ltr">γ = 0</span> دي CE عادية. ومع <span class="ltr">γ = 2</span> (الـ default):</p>
+  <ul class="checklist">
+    <li>مثال سهل (<span class="ltr">p_t = 0.9</span>): الوزن <span class="ltr">(0.1)² = 0.01</span>، يعني متهمّش تقريبًا.</li>
+    <li>مثال صعب (<span class="ltr">p_t = 0.1</span>): الوزن <span class="ltr">(0.9)² = 0.81</span>، يعني إشارة كاملة تقريبًا.</li>
+  </ul>
+  <p>Lin et al. قدّموها للـ object detection، لأن ٩٩٪ من المناطق المرشحة هناك background (negatives سهلة). من غيرها الموديل بيغرق في الـ background ومبيتعلمش يكتشف الأوبجكتس. ارجع للمعمل ٠١ وغيّر γ. (فاكر Day 39 عن الـ Imbalanced Data؟ دي أداة تانية في نفس الشنطة.)</p>
+</section>
+
+<!-- DECISION -->
+<section id="d48-decision">
+  <div class="station-head"><span class="tag">06</span><h2>تختار أنهي loss؟</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المهمة</th><th>الـ Loss</th><th>ملحوظة</th></tr>
+    <tr><td>Regression، وعايز تعاقب الـ outliers</td><td>MSE</td><td>سطح ناعم زي القطع المكافئ، minimum واحد، سهل في الـ optimization</td></tr>
+    <tr><td>Regression، وعايز تتحمل الـ outliers</td><td>MAE / Huber</td><td>الـ Huber بيبقى MSE للأخطاء الصغيرة و MAE للكبيرة</td></tr>
+    <tr><td>Binary classification</td><td>Binary CE</td><td>شديد عند الإجابة الغلط وفلات عند الصح، فالـ gradient قوي في المكان اللي محتاجه</td></tr>
+    <tr><td>Multi-class</td><td>Categorical CE</td><td>ولو فيه ثقة زيادة ضيف Label Smoothing</td></tr>
+    <tr><td>Imbalanced</td><td>Focal Loss</td><td>γ = 2 كبداية</td></tr>
+    <tr><td>Embeddings من أزواج</td><td>Contrastive</td><td>بيعتمد على شكل الـ batch، و τ بتتحكم في الحدة</td></tr>
+    <tr><td>Embeddings من triplets</td><td>Triplet</td><td>محتاج mining للـ hard negatives</td></tr>
+    <tr><td>Self-supervised بـ batch كبير</td><td>InfoNCE</td><td>الـ loss بتاع SimCLR و CLIP</td></tr>
+  </table></div>
+  <p><b>شكل سطح الـ loss:</b> الـ MSE سطح ناعم بقاع واحد. الـ Cross-Entropy شديدة الانحدار جنب الإجابات الغلط وفلات جنب الصح. والـ Contrastive فيها local minima كتير، وبتعتمد على مين معاك في الـ batch، والـ τ بتتحكم في حدتها.</p>
+</section>
+
+<!-- CODE -->
+<section id="d48-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من الـ root بتاع الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/03-deep-learning-core/05-loss-functions/code/main.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_losses.py</code> واكتب كل خطوة بإيدك، وارجع للأصل بس لو اتزنقت. ومفيش أي مكتبة غير <code>math</code> و<code>random</code>.</p>
+
+  <h3>خطوة ١: MSE والـ gradient بتاعه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+
+def mse(predictions, targets):
+    n = len(predictions)
+    total = 0.0
+    for p, t in zip(predictions, targets):
+        total += (p - t) ** 2            <span class="c"># ربّع الخطأ</span>
+    return total / n                     <span class="c"># متوسط</span>
+
+def mse_gradient(predictions, targets):
+    n = len(predictions)
+    return [2.0 * (p - t) / n for p, t in zip(predictions, targets)]   <span class="c"># خطي في الخطأ</span></pre></div>
+
+  <h3>خطوة ٢: Binary Cross-Entropy (مع الـ clipping)</h3>
+  <p>مشكلة <span class="ltr">log(0)</span> حقيقية: لو الموديل قال 0 بالظبط لمثال positive، يبقى <span class="ltr">log(0) = −∞</span>. الـ clipping بيمنع ده.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def binary_cross_entropy(predictions, targets, eps=1e-15):
+    n = len(predictions)
+    total = 0.0
+    for p, t in zip(predictions, targets):
+        p_clipped = max(eps, min(1 - eps, p))      <span class="c"># ابعد عن 0 و 1</span>
+        total += -(t * math.log(p_clipped) + (1 - t) * math.log(1 - p_clipped))
+    return total / n
+
+def bce_gradient(predictions, targets, eps=1e-15):
+    n = len(predictions)
+    grads = []
+    for p, t in zip(predictions, targets):
+        p_clipped = max(eps, min(1 - eps, p))
+        grads.append((-(t / p_clipped) + (1 - t) / (1 - p_clipped)) / n)
+    return grads</pre></div>
+  <div class="note"><strong>ملحوظة:</strong> النسخة اللي في docs بتاعة الدرس مش بتقسم الـ gradient على n، لكن <code>main.py</code> بيقسم. نسخة <code>main.py</code> هي اللي متسقة مع الـ loss (لأن الـ loss متوسط). اكتبها زيها.</div>
+
+  <h3>خطوة ٣: Softmax + Categorical CE</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def softmax(logits):
+    max_val = max(logits)                          <span class="c"># اطرح الأكبر: ثبات رقمي</span>
+    exps = [math.exp(x - max_val) for x in logits]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+def categorical_cross_entropy(logits, target_index, eps=1e-15):
+    probs = softmax(logits)
+    p = max(eps, probs[target_index])
+    return -math.log(p)                            <span class="c"># الكلاس الصح بس</span>
+
+def cce_gradient(logits, target_index):
+    probs = softmax(logits)
+    grads = list(probs)
+    grads[target_index] -= 1.0                     <span class="c"># p - y : أجمل اختصار في الـ DL</span>
+    return grads</pre></div>
+
+  <h3>خطوة ٤: Label Smoothing</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def label_smoothed_cce(logits, target_index, num_classes, alpha=0.1, eps=1e-15):
+    probs = softmax(logits)
+    loss = 0.0
+    for i in range(num_classes):
+        if i == target_index:
+            smooth_target = 1.0 - alpha + alpha / num_classes   <span class="c"># الصح: أقل من 1</span>
+        else:
+            smooth_target = alpha / num_classes                  <span class="c"># الباقي: أكتر من 0</span>
+        p = max(eps, probs[i])
+        loss += -smooth_target * math.log(p)
+    return loss</pre></div>
+
+  <h3>خطوة ٥: Contrastive Loss (InfoNCE مبسّط)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def cosine_similarity(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a &lt; 1e-10 or norm_b &lt; 1e-10:
+        return 0.0                                  <span class="c"># متجه صفر: متقسمش على صفر</span>
+    return dot / (norm_a * norm_b)
+
+def contrastive_loss(anchor, positive, negatives, temperature=0.07):
+    sim_pos = cosine_similarity(anchor, positive) / temperature
+    sim_negs = [cosine_similarity(anchor, neg) / temperature for neg in negatives]
+
+    max_sim = max(sim_pos, max(sim_negs)) if sim_negs else sim_pos   <span class="c"># نفس حيلة الـ softmax</span>
+    exp_pos = math.exp(sim_pos - max_sim)
+    exp_negs = [math.exp(s - max_sim) for s in sim_negs]
+    total_exp = exp_pos + sum(exp_negs)
+
+    return -math.log(max(1e-15, exp_pos / total_exp))   <span class="c"># -log(احتمال الـ positive)</span></pre></div>
+
+  <h3>خطوة ٦: MSE ضد Cross-Entropy على classification</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sigmoid(x):
+    x = max(-500, min(500, x))                     <span class="c"># امنع الـ overflow</span>
+    return 1.0 / (1.0 + math.exp(-x))
+
+def make_circle_data(n=200, seed=42):
+    random.seed(seed)
+    data = []
+    for _ in range(n):
+        x = random.uniform(-2, 2)
+        y = random.uniform(-2, 2)
+        label = 1.0 if x * x + y * y &lt; 1.5 else 0.0   <span class="c"># جوه الدايرة = 1</span>
+        data.append(([x, y], label))
+    return data
+
+
+class LossComparisonNetwork:
+    def __init__(self, loss_type="bce", hidden_size=8, lr=0.1):
+        random.seed(0)                               <span class="c"># نفس الأوزان للاتنين</span>
+        self.loss_type = loss_type
+        self.lr = lr
+        self.hidden_size = hidden_size
+        self.w1 = [[random.gauss(0, 0.5) for _ in range(2)] for _ in range(hidden_size)]
+        self.b1 = [0.0] * hidden_size
+        self.w2 = [random.gauss(0, 0.5) for _ in range(hidden_size)]
+        self.b2 = 0.0
+
+    def forward(self, x):
+        self.x = x
+        self.z1 = []
+        self.h = []
+        for i in range(self.hidden_size):
+            z = self.w1[i][0] * x[0] + self.w1[i][1] * x[1] + self.b1[i]
+            self.z1.append(z)
+            self.h.append(max(0.0, z))               <span class="c"># ReLU</span>
+        self.z2 = sum(self.w2[i] * self.h[i] for i in range(self.hidden_size)) + self.b2
+        self.out = sigmoid(self.z2)
+        return self.out
+
+    def backward(self, target):
+        if self.loss_type == "mse":
+            d_loss = 2.0 * (self.out - target)
+        else:
+            eps = 1e-15
+            p = max(eps, min(1 - eps, self.out))
+            d_loss = -(target / p) + (1 - target) / (1 - p)
+
+        d_sigmoid = self.out * (1 - self.out)        <span class="c"># هنا الفلطحة</span>
+        d_out = d_loss * d_sigmoid                   <span class="c"># مع BCE دي بتبقى (out - target)</span>
+
+        for i in range(self.hidden_size):
+            d_relu = 1.0 if self.z1[i] > 0 else 0.0
+            d_h = d_out * self.w2[i] * d_relu
+            self.w2[i] -= self.lr * d_out * self.h[i]
+            for j in range(2):
+                self.w1[i][j] -= self.lr * d_h * self.x[j]
+            self.b1[i] -= self.lr * d_h
+        self.b2 -= self.lr * d_out
+
+    def compute_loss(self, pred, target):
+        if self.loss_type == "mse":
+            return (pred - target) ** 2
+        eps = 1e-15
+        p = max(eps, min(1 - eps, pred))
+        return -(target * math.log(p) + (1 - target) * math.log(1 - p))
+
+    def train(self, data, epochs=200):
+        losses = []
+        for epoch in range(epochs):
+            total_loss = 0.0
+            correct = 0
+            for x, y in data:
+                pred = self.forward(x)
+                self.backward(y)                     <span class="c"># SGD: update بعد كل عينة</span>
+                total_loss += self.compute_loss(pred, y)
+                if (pred >= 0.5) == (y >= 0.5):
+                    correct += 1
+            avg_loss = total_loss / len(data)
+            accuracy = correct / len(data) * 100
+            losses.append((avg_loss, accuracy))
+            if epoch % 50 == 0 or epoch == epochs - 1:
+                print(f"    Epoch {epoch:3d}: loss={avg_loss:.4f}, accuracy={accuracy:.1f}%")
+        return losses
+
+
+data = make_circle_data()
+for loss_type in ["mse", "bce"]:
+    print(f"\n--- Training with {loss_type.upper()} ---")
+    net = LossComparisonNetwork(loss_type=loss_type, hidden_size=8, lr=0.1)
+    final_loss, final_acc = net.train(data, epochs=200)[-1]
+    print(f"  Final: loss={final_loss:.4f}, accuracy={final_acc:.1f}%")</pre></div>
+
+  <h3>الناتج المتوقع (أول ٤ خطوات)</h3>
+  <p>الأرقام دي حسبتها من نفس المعادلات على المدخلات اللي في <code>main.py</code>. الخطوة ٥ والـ ٦ معتمدين على <code>random</code> بتاع Python، فشغّلهم وشوف بنفسك.</p>
+  <details><summary>افتح الناتج</summary><pre class="term">STEP 1: MSE Loss
+  Predictions: [0.9, 0.1, 0.7, 0.4]
+  Targets:     [1.0, 0.0, 1.0, 0.0]
+  MSE Loss:    0.067500
+  MSE Grads:   ['-0.0500', '0.0500', '-0.1500', '0.2000']
+
+STEP 2: Binary Cross-Entropy
+  BCE Loss:    0.269555
+  BCE Grads:   ['-0.2778', '0.2778', '-0.3571', '0.4167']
+
+  CE loss at different confidence levels (true label = 1):
+    p=0.01: CE=4.6052, MSE=0.9801, ratio=4.7x
+    p=0.10: CE=2.3026, MSE=0.8100, ratio=2.8x
+    p=0.50: CE=0.6931, MSE=0.2500, ratio=2.8x
+    p=0.90: CE=0.1054, MSE=0.0100, ratio=10.5x
+    p=0.99: CE=0.0101, MSE=0.0001, ratio=100.5x
+
+STEP 3: Categorical Cross-Entropy + Softmax
+  Logits:  [2.0, 1.0, 0.1, -1.0, 3.0]
+  Softmax: ['0.2333', '0.0858', '0.0349', '0.0116', '0.6343']
+  Target class: 4
+  CCE Loss: 0.455241
+  Gradient: ['0.2333', '0.0858', '0.0349', '0.0116', '-0.3657']
+
+STEP 4: Label Smoothing
+  Hard target loss:    0.455241
+  Smooth target loss:  0.653241
+  Smoothing increases loss by 0.198000</pre></details>
+  <p><b>في الخطوة ٥:</b> الـ similarity بين الـ anchor والـ positive هتطلع قريبة جدًا من 1 (الـ positive هو الـ anchor ومعاه noise صغيرة). قارن الـ loss عند <span class="ltr">τ = 0.07</span> وعند <span class="ltr">τ = 0.5</span>، وفكّر: الفصل هنا كويس ولا وحش؟ وده يفسّر النتيجة إزاي؟ (المعمل ٠٣ هيساعدك.)</p>
+  <p><b>في الخطوة ٦:</b> الدرس متوقع إن الـ BCE توصل لـ accuracy أعلى أسرع من الـ MSE. تابع الـ accuracy في الـ epochs 0 و50 و100 و150 و199 للاتنين.</p>
+
+  <h3>نسخة Julia (اختياري)</h3>
+  <p>الملف <code>code/main.jl</code> فيه MSE و <b>MAE</b> و BCE و CCE + softmax و <b>Focal loss</b> كمان (بـ gradient تحليلي)، ونفس تجربة الدايرة. لو عندك Julia:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>julia phases/03-deep-learning-core/05-loss-functions/code/main.jl</pre></div>
+
+  <h3>Use It: نفس الكلام في PyTorch</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn.functional as F
+
+predictions = torch.tensor([0.9, 0.1, 0.7], requires_grad=True)
+targets = torch.tensor([1.0, 0.0, 1.0])
+mse_loss = F.mse_loss(predictions, targets)
+bce_loss = F.binary_cross_entropy(predictions, targets)       <span class="c"># بياخد احتمالات</span>
+
+logits = torch.randn(4, 10)                                   <span class="c"># 4 عينات، 10 كلاسات</span>
+labels = torch.tensor([3, 7, 1, 9])
+ce_loss = F.cross_entropy(logits, labels)                     <span class="c"># logits خام، مش softmax</span>
+ce_smooth = F.cross_entropy(logits, labels, label_smoothing=0.1)</pre></div>
+  <p>استخدم <code>F.cross_entropy</code> على الـ logits على طول، متعملش softmax بإيدك وبعدين log ثم <code>F.nll_loss</code>. هي بتجمع الـ log-softmax والـ negative log-likelihood في عملية واحدة ثابتة رقميًا، أما لو عملت الـ softmax لوحده وبعدين log هتخسر دقة في طرح الـ exponentials الكبيرة. وفي الـ contrastive learning أغلب الفرق بتكتب implementation بإيدها أو بتستخدم مكتبات زي <code>lightly</code> أو <code>pytorch-metric-learning</code>، والفكرة دايمًا واحدة: احسب الـ similarities بين كل الأزواج، اعمل softmax على الـ positives والـ negatives، واعمل backprop.</p>
+  <p><b>Ship It:</b> الدرس بيطلّع ملفين prompts في <code>outputs/</code>: <code>prompt-loss-function-selector.md</code> عشان تختار الـ loss الصح، و<code>prompt-loss-debugger.md</code> لما منحنى الـ loss يبان غلط. افتحهم واقرأهم.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d48-exercises">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ٢ على الأقل النهاردة (أنصحك بـ ١ و٢)، والباقي كمّله في الـ warm-up بكرة.</p>
+  <ol class="ex">
+    <li><b>Huber loss:</b> اعمل الـ Huber (اسمها كمان smooth L1)، اللي بتبقى MSE للأخطاء الصغيرة و MAE للكبيرة. درّب شبكة regression على <span class="ltr">y = sin(x)</span> مرة بـ MSE ومرة بـ Huber، وضيف noise عشوائي على ٥٪ من الـ targets (outliers). قارن الـ test error في الآخر.
+      <details><summary>تلميح</summary><span class="ltr">L = 0.5·e²</span> لو <span class="ltr">|e| ≤ δ</span>، وغير كده <span class="ltr">δ·(|e| − 0.5·δ)</span>. الـ gradient هو <span class="ltr">e</span> في المنطقة الصغيرة و<span class="ltr">δ·sign(e)</span> برّاها. يعني الـ outlier ميقدرش يزق بأكتر من δ. والـ test set خليه من غير noise.</details></li>
+    <li><b>Focal loss:</b> ضيفها على الـ training loop بتاع الـ binary classification. اعمل داتا imbalanced (٩٠٪ كلاس 0 و١٠٪ كلاس 1)، وقارن BCE العادية بالـ focal (<span class="ltr">γ = 2</span>) في الـ recall بتاع الأقلية بعد 200 epoch.
+      <details><summary>تلميح</summary><span class="ltr">p_t = p</span> لو <span class="ltr">y = 1</span> و<span class="ltr">1 − p</span> لو <span class="ltr">y = 0</span>. أسهل حاجة تحسب الـ gradient بالنسبة لـ p رقميًا (finite difference) الأول، وبعدين قارنه بالـ gradient التحليلي اللي في <code>main.jl</code>. الـ recall = TP / (TP + FN) للكلاس 1 (فاكر Day 31؟).</details></li>
+    <li><b>Triplet + semi-hard mining:</b> اعمل داتا embeddings 2D لـ ٥ كلاسات. لكل anchor، دوّر على أصعب negative لسه أبعد من الـ positive (ده الـ semi-hard). قارن سرعة التعلم بالاختيار العشوائي للـ triplets.
+      <details><summary>تلميح</summary>الـ semi-hard يعني <span class="ltr">d(a,p) &lt; d(a,n) &lt; d(a,p) + margin</span>: الـ loss لسه موجب بس الـ negative مش أقرب من الـ positive. لو مفيش، خد أي negative عشوائي. والـ random triplets غالبًا بتدي loss صفر كتير، يعني تدريب ضايع.</details></li>
+    <li><b>تابع الـ gradient norms:</b> شغّل مقارنة MSE ضد CE تاني، بس سجّل متوسط الـ gradient norm في كل layer في كل epoch وارسمه. اتأكد إن الـ CE بتدّي gradients أكبر في أول الـ epochs، لما الموديل يكون مش متأكد.
+      <details><summary>تلميح</summary>جوه <code>backward</code> اجمع <code>abs(d_out)</code> لطبقة الخرج و<code>abs(d_h)</code> للـ hidden على كل العينات، واقسم على عددها. الفرق كله في معامل <span class="ltr">p(1−p)</span> اللي بيتلغي مع الـ CE.</details></li>
+    <li><b>KL divergence:</b> اعمل <span class="ltr">KL(true ‖ predicted)</span> واتأكد إنها بتدّي نفس الـ gradients بتاعة الـ CE لما التوزيع الحقيقي يبقى one-hot. وبعدين جرّب soft targets (زي الـ knowledge distillation)، يعني «التوزيع الحقيقي» يبقى جاي من softmax بتاع موديل teacher.
+      <details><summary>الإجابة</summary><span class="ltr">KL(q‖p) = Σ qᵢ log qᵢ − Σ qᵢ log pᵢ = −H(q) + CE(q, p)</span>. الـ <span class="ltr">H(q)</span> مش معتمدة على الموديل، فالـ gradient بالنسبة للـ logits هو نفسه: <span class="ltr">p − q</span>. ومع one-hot تبقى <span class="ltr">H(q) = 0</span>، يعني KL = CE بالظبط.</details></li>
+    <li><b>إضافة مني · loss و perplexity لموديل لغة:</b> عندك جملة من ٦ tokens، ولكل مكان logits على vocabulary صغير من ٨ كلمات (اعملها random). احسب الـ CCE لكل token الجاي، وخد المتوسط، وبعدين <span class="ltr">perplexity = exp(mean loss)</span>. ضيف padding tokens في الآخر واتأكد إنك <b>بتشيلها</b> من المتوسط.
+      <details><summary>تلميح</summary>ده بالظبط الـ loss اللي GPT بيتدرب بيه: CCE على الـ next token. الـ baseline العشوائي <span class="ltr">ln(8) ≈ 2.079</span> وال perplexity بتاعه 8 (كأنه بيخمّن من 8 كلمات). في PyTorch بتعمل ده بـ <code>F.cross_entropy(logits.view(-1, V), targets.view(-1), ignore_index=-100)</code> وبتحط <code>-100</code> مكان الـ padding في الـ targets.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d48-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ماقالوش صريح</h2></div>
+  <h3>الحدس: الـ cross-entropy هي «المفاجأة»</h3>
+  <p><span class="ltr">−log(p)</span> هي كمية المفاجأة (بالـ nats لو بتستخدم log طبيعي) لما الحاجة اللي حصلت كان احتمالها p. تدريب classifier بالـ CE معناه: «اتعلم تتفاجئ بأقل قدر ممكن من الحقيقة».</p>
+  <h3>Sanity check لأول خطوة تدريب</h3>
+  <p>موديل لسه متدربش بيدّي احتمالات قريبة من بعض، فأول loss لازم يطلع قريب من <span class="ltr">ln(K)</span>: مع ١٠ كلاسات ده <span class="ltr">≈ 2.303</span>، ومع vocabulary زي بتاع GPT-2 (50257 token) <span class="ltr">≈ 10.8</span>. لو أول loss بعيد جدًا عن الرقم ده (أكبر بكتير مثلًا)، يبقى فيه غلطة في الـ init أو في الـ labels قبل ما تضيّع ساعات تدريب.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist">
+    <li><b>softmax مرتين:</b> تعمل softmax في آخر الموديل وبعدين تدّي النتيجة لـ <code>F.cross_entropy</code> اللي بتعمل softmax تاني جواها. التدريب بيبقى بطيء وغريب من غير أي error.</li>
+    <li><b>BCE على logits:</b> <code>F.binary_cross_entropy</code> عايزة احتمالات. لو معاك logits استخدم <code>F.binary_cross_entropy_with_logits</code>، لأنها أثبت رقميًا وبتعمل الـ sigmoid جواها.</li>
+    <li><b>mean ولا sum:</b> لو غيرت الـ reduction من mean لـ sum، الـ gradient بيتضرب في حجم الـ batch، كأنك كبّرت الـ learning rate من غير ما تاخد بالك.</li>
+    <li><b>الـ padding بيتحسب:</b> في موديلات اللغة لازم تعمل mask للـ padding، وإلا الموديل بيتعلم يتوقع الـ padding وبيقلل الـ loss على الفاضي.</li>
+    <li><b>الـ loss نزل والـ metric منزلش:</b> ارجع للمشكلة اللي في أول الدرس. الموديل بيحسّن اللي انت قلتله عليه، فاسأل نفسك: الـ loss ده فعلًا بيمثل اللي انا عايزه؟</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents</h3>
+  <ul class="checklist">
+    <li><b>Pretraining:</b> الـ loss الأساسي لأي LLM هو categorical cross-entropy على الـ next token، والـ perplexity هي <span class="ltr">exp</span> بتاعه.</li>
+    <li><b>Embedding models للـ RAG:</b> بتتدرب بـ contrastive loss: السؤال قريب من الـ passage الصح وبعيد عن الباقي، وغالبًا باقي الـ batch هو الـ negatives (in-batch negatives). ده اللي بيخلي الـ retriever بتاع Day 1 يشتغل في الواقع.</li>
+    <li><b>CLIP:</b> InfoNCE في الاتجاهين بين صور ونصوص.</li>
+    <li><b>Distillation:</b> موديل صغير بيتعلم من الـ soft targets بتاعة موديل كبير بـ KL (تمرين ٥).</li>
+    <li><b>Reward models في الـ RLHF:</b> بتتدرب بـ pairwise loss <span class="ltr">−log σ(r_chosen − r_rejected)</span>، وده BCE على الفرق بين score الإجابتين.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d48-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d48-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d48-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d48-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه الـ MSE بيخلي الـ classifier يقول 0.5 لكل حاجة، وليه الـ CE gradient = p − y</label></li>
+    <li><label><input type="checkbox" data-ck="2"> شفت في المعمل ٠١ الـ gradient بتاع الـ MSE بيموت عند الغلط الواثق، وفي ٠٢ مين بيتعلم أسرع</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ label smoothing والـ temperature في InfoNCE والـ focal γ</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الست خطوات بإيدي وشغّلت <code>main.py</code></label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>MSE / Huber</td><td>regression، value heads، الـ bounding boxes في الـ detection</td></tr>
+    <tr><td>Binary CE</td><td>multi-label classification، reward models (pairwise)، الـ discriminator في الـ GANs</td></tr>
+    <tr><td>Categorical CE + softmax</td><td>pretraining أي LLM (next-token)، أي classifier متعدد الكلاسات</td></tr>
+    <tr><td>Label smoothing</td><td>تدريب الـ transformers والـ image classifiers الكبيرة</td></tr>
+    <tr><td>InfoNCE / contrastive</td><td>SimCLR، CLIP، embedding models للـ RAG والـ semantic search</td></tr>
+    <tr><td>Triplet loss</td><td>face recognition، metric learning</td></tr>
+    <tr><td>Focal loss</td><td>object detection (RetinaNet)، الداتا الـ imbalanced</td></tr>
+    <tr><td>KL divergence</td><td>knowledge distillation، الـ KL penalty في الـ RLHF</td></tr>
+    <tr><td>Temperature</td><td>الـ contrastive loss، وكمان sampling من الـ LLMs</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Optimizers. عرفنا النهاردة «نحسّن إيه»، وبكرة هنشوف «إزاي ننزل على السطح ده»: SGD و Momentum و Adam. ونبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F05-loss-functions" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/05-loss-functions</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+
+// roadmap
+const rm=$('d48-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===5)s.className='now';rm.appendChild(s)}
+
+// ---------- Lab 1: loss & gradient curves ----------
+const cc=$('d48-curve'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+let mode='loss',yTrue=1,P=0.3,G=2;
+const L={l:40,r:12,t:14,b:30};
+const sig=z=>1/(1+Math.exp(-z)),logit=p=>Math.log(p/(1-p));
+const clip=p=>Math.max(1e-7,Math.min(1-1e-7,p));
+const lossMse=p=>(p-yTrue)**2;
+const lossCe=p=>{const pt=yTrue?clip(p):clip(1-p);return -Math.log(pt)};
+const lossFl=p=>{const pt=yTrue?clip(p):clip(1-p);return -Math.pow(1-pt,G)*Math.log(pt)};
+const gradZ=fn=>p=>{const z=logit(clip(p)),h=1e-4;return Math.abs((fn(sig(z+h))-fn(sig(z-h)))/(2*h))};
+function drawCurve(){
+  const W=CW-L.l-L.r,H=CH-L.t-L.b,ymax=mode==='loss'?5:1.05;
+  const X=p=>L.l+p*W,Y=v=>L.t+H-Math.min(v,ymax)/ymax*H;
+  cx.clearRect(0,0,CW,CH);
+  cx.strokeStyle=css('--grid');cx.lineWidth=1;
+  for(let i=0;i<=10;i++){cx.beginPath();cx.moveTo(X(i/10),L.t);cx.lineTo(X(i/10),L.t+H);cx.stroke()}
+  for(let i=0;i<=5;i++){cx.beginPath();cx.moveTo(L.l,L.t+H*i/5);cx.lineTo(L.l+W,L.t+H*i/5);cx.stroke()}
+  cx.strokeStyle=css('--muted');cx.beginPath();cx.moveTo(L.l,L.t);cx.lineTo(L.l,L.t+H);cx.lineTo(L.l+W,L.t+H);cx.stroke();
+  cx.fillStyle=css('--muted');cx.font='11px JetBrains Mono, monospace';cx.textAlign='center';
+  for(let i=0;i<=10;i+=2)cx.fillText((i/10).toFixed(1),X(i/10),CH-12);
+  cx.fillText('p (prob of class 1)',L.l+W/2,CH-1);
+  cx.textAlign='right';for(let i=0;i<=5;i++)cx.fillText(f(ymax*i/5,1),L.l-4,L.t+H-H*i/5+4);cx.textAlign='left';
+  const fns=mode==='loss'?[lossMse,lossCe,lossFl]:[gradZ(lossMse),gradZ(lossCe),gradZ(lossFl)];
+  const cols=[css('--muted'),css('--vec-a'),css('--vec-b')],dash=[[],[],[6,4]];
+  fns.forEach((fn,k)=>{cx.strokeStyle=cols[k];cx.lineWidth=k===1?3:2.2;cx.setLineDash(dash[k]);cx.beginPath();
+    for(let i=0;i<=300;i++){const p=0.002+i/300*0.996,x=X(p),y=Y(fn(p));i?cx.lineTo(x,y):cx.moveTo(x,y)}cx.stroke()});
+  cx.setLineDash([]);
+  // marker
+  cx.strokeStyle=css('--ink');cx.lineWidth=1;cx.setLineDash([3,3]);cx.beginPath();cx.moveTo(X(P),L.t);cx.lineTo(X(P),L.t+H);cx.stroke();cx.setLineDash([]);
+  fns.forEach((fn,k)=>{cx.fillStyle=cols[k];cx.beginPath();cx.arc(X(P),Y(fn(P)),5,0,7);cx.fill()});
+  // legend
+  cx.font='12px JetBrains Mono, monospace';
+  [['MSE',0],['CE',1],['Focal γ='+G,2]].forEach(([t,k],i)=>{cx.fillStyle=cols[k];cx.fillRect(L.l+W-118,L.t+6+i*16,12,4);cx.fillStyle=css('--ink');cx.fillText(t,L.l+W-100,L.t+11+i*16)});
+  cx.fillStyle=css('--ink');cx.fillText(mode==='loss'?'loss  (y='+yTrue+')':'|∂loss/∂z|  (y='+yTrue+')',L.l+8,L.t+12);
+  // readouts
+  const m=lossMse(P),c=lossCe(P),fl=lossFl(P),gm=gradZ(lossMse)(P),gc=gradZ(lossCe)(P);
+  $('d48-pv').textContent=P.toFixed(3);$('d48-gv').textContent=G;
+  $('d48-rMse').textContent=f(m,4);$('d48-rCe').textContent=f(c,4);$('d48-rFl').textContent=f(fl,4);
+  $('d48-rgMse').textContent=f(gm,4);$('d48-rgCe').textContent=f(gc,4);$('d48-rRatio').textContent=f(c/Math.max(1e-4,m),1)+'x';
+  const pt=yTrue?P:1-P,v=$('d48-curveVerdict');
+  if(pt<0.2){v.textContent='غلطان وواثق: الـ CE بتزعق ('+f(gc,2)+') والـ MSE بيوشوش ('+f(gm,3)+')';v.style.color=css('--bad')}
+  else if(pt>0.85){v.textContent='صح وواثق: الاتنين هاديين، والـ Focal تقريبًا مهمّلاه';v.style.color=css('--ok')}
+  else{v.textContent='منطقة الشك: الاتنين بيدّوا إشارة';v.style.color=css('--muted')}
+}
+$('d48-p').addEventListener('input',e=>{P=+e.target.value;drawCurve()});
+$('d48-g').addEventListener('input',e=>{G=+e.target.value;drawCurve()});
+$('d48-modeLoss').addEventListener('click',()=>{mode='loss';$('d48-modeLoss').classList.add('primary');$('d48-modeGrad').classList.remove('primary');drawCurve()});
+$('d48-modeGrad').addEventListener('click',()=>{mode='grad';$('d48-modeGrad').classList.add('primary');$('d48-modeLoss').classList.remove('primary');drawCurve()});
+$('d48-yToggle').addEventListener('click',()=>{yTrue=1-yTrue;$('d48-yToggle').textContent='الحقيقة y = '+yTrue;drawCurve()});
+let cdrag=false;
+const setP=e=>{const [x]=AI.evPos(cc,e);P=Math.max(0.001,Math.min(0.999,(x-L.l)/(CW-L.l-L.r)));$('d48-p').value=P;drawCurve()};
+cc.addEventListener('pointerdown',e=>{cdrag=true;cc.setPointerCapture(e.pointerId);setP(e)});
+cc.addEventListener('pointermove',e=>{if(cdrag)setP(e)});
+cc.addEventListener('pointerup',()=>cdrag=false);
+drawCurve();
+
+// ---------- Lab 2: MSE vs BCE race ----------
+function rng(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296}}
+function gauss(r){let u=0;while(!u)u=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*r())}
+const dr=rng(42),DATA=[];
+for(let i=0;i<200;i++){const x=dr()*4-2,y=dr()*4-2;DATA.push([[x,y],x*x+y*y<1.5?1:0])}
+function makeNet(type,seed,lr){const r=rng(1000+seed),H=8;
+  return{type,lr,H,w1:Array.from({length:H},()=>[gauss(r)*0.5,gauss(r)*0.5]),b1:new Array(H).fill(0),w2:Array.from({length:H},()=>gauss(r)*0.5),b2:0,hist:[]}}
+function fwd(n,x){const z1=[],h=[];for(let i=0;i<n.H;i++){const z=n.w1[i][0]*x[0]+n.w1[i][1]*x[1]+n.b1[i];z1.push(z);h.push(Math.max(0,z))}
+  let z2=n.b2;for(let i=0;i<n.H;i++)z2+=n.w2[i]*h[i];return{z1,h,out:1/(1+Math.exp(-Math.max(-500,Math.min(500,z2))))}}
+function epoch(n){let tot=0,cor=0;
+  for(const [x,y] of DATA){const s=fwd(n,x),o=s.out,p=Math.max(1e-15,Math.min(1-1e-15,o));
+    const dl=n.type==='mse'?2*(o-y):-(y/p)+(1-y)/(1-p),dout=dl*o*(1-o);
+    for(let i=0;i<n.H;i++){const dh=dout*n.w2[i]*(s.z1[i]>0?1:0);n.w2[i]-=n.lr*dout*s.h[i];n.w1[i][0]-=n.lr*dh*x[0];n.w1[i][1]-=n.lr*dh*x[1];n.b1[i]-=n.lr*dh}
+    n.b2-=n.lr*dout;
+    tot+=n.type==='mse'?(o-y)**2:-(y*Math.log(p)+(1-y)*Math.log(1-p));if((o>=0.5)===(y>=0.5))cor++}
+  n.hist.push([tot/DATA.length,cor/DATA.length*100])}
+const mc=$('d48-raceMap'),mx=AI.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+const rc=$('d48-raceCurve'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+let nets,running=false,raf=0;const EPOCHS=200;
+function resetRace(){running=false;cancelAnimationFrame(raf);$('d48-raceGo').textContent='ابدأ';
+  const lr=+$('d48-raceLr').value,sd=+$('d48-raceSeed').value;nets=[makeNet('mse',sd,lr),makeNet('bce',sd,lr)];drawRace()}
+function hexA(c,a){const m=c.match(/^#([0-9a-f]{6})$/i);if(!m)return c;const n=parseInt(m[1],16);return`rgba(${n>>16&255},${n>>8&255},${n&255},${a})`}
+function drawMap(n,ox,label){const S=250,oy=10,G=25,cs=S/G;
+  const a=css('--vec-a'),b=css('--vec-b');
+  for(let i=0;i<G;i++)for(let j=0;j<G;j++){const x=-2+(i+0.5)*4/G,y=2-(j+0.5)*4/G,o=fwd(n,[x,y]).out;
+    mx.fillStyle=o>=0.5?hexA(a,0.15+0.5*(o-0.5)):hexA(b,0.15+0.5*(0.5-o));mx.fillRect(ox+i*cs,oy+j*cs,cs+0.5,cs+0.5)}
+  mx.strokeStyle=css('--ink');mx.lineWidth=1.5;mx.setLineDash([4,4]);mx.beginPath();mx.arc(ox+S/2,oy+S/2,Math.sqrt(1.5)/4*S,0,7);mx.stroke();mx.setLineDash([]);
+  for(const [[x,y],l] of DATA){mx.fillStyle=l?a:b;mx.beginPath();mx.arc(ox+(x+2)/4*S,oy+(2-y)/4*S,2.6,0,7);mx.fill()}
+  mx.strokeStyle=css('--line');mx.strokeRect(ox,oy,S,S);
+  mx.fillStyle=css('--ink');mx.font='bold 13px JetBrains Mono, monospace';mx.fillText(label,ox+6,oy+18)}
+function drawRace(){mx.clearRect(0,0,MW,MH);drawMap(nets[0],5,'MSE');drawMap(nets[1],265,'BCE');
+  rx.clearRect(0,0,RW,RH);const l=36,r=10,t=10,b=24,W=RW-l-r,H=RH-t-b,X=e=>l+e/EPOCHS*W,Y=a=>t+H-(a-40)/60*H;
+  rx.strokeStyle=css('--grid');rx.lineWidth=1;rx.fillStyle=css('--muted');rx.font='11px JetBrains Mono, monospace';
+  for(let a=40;a<=100;a+=20){rx.beginPath();rx.moveTo(l,Y(a));rx.lineTo(l+W,Y(a));rx.stroke();rx.textAlign='right';rx.fillText(a+'%',l-4,Y(a)+4)}
+  rx.textAlign='center';for(let e=0;e<=EPOCHS;e+=50)rx.fillText(e,X(e),RH-8);rx.textAlign='left';
+  [[nets[0],css('--muted'),'MSE'],[nets[1],css('--vec-a'),'BCE']].forEach(([n,c,lb],k)=>{rx.strokeStyle=c;rx.lineWidth=2.5;rx.beginPath();
+    n.hist.forEach((h,i)=>{const x=X(i+1),y=Y(Math.max(40,h[1]));i?rx.lineTo(x,y):rx.moveTo(x,y)});rx.stroke();
+    rx.fillStyle=c;rx.fillRect(l+8,t+6+k*15,12,4);rx.fillStyle=css('--ink');rx.fillText(lb+' accuracy',l+26,t+11+k*15)});
+  const ep=nets[1].hist.length,hm=nets[0].hist[ep-1],hb=nets[1].hist[ep-1];
+  $('d48-rEp').textContent=ep;$('d48-rAm').textContent=hm?f(hm[1],1)+'%':'-';$('d48-rAb').textContent=hb?f(hb[1],1)+'%':'-';
+  $('d48-rLm').textContent=hm?f(hm[0],4):'-';$('d48-rLb').textContent=hb?f(hb[0],4):'-'}
+function loop(){if(!document.body.contains(mc)){running=false;return}
+  if(!running)return;for(let k=0;k<2&&nets[1].hist.length<EPOCHS;k++){epoch(nets[0]);epoch(nets[1])}
+  drawRace();if(nets[1].hist.length>=EPOCHS){running=false;$('d48-raceGo').textContent='خلص · ابدأ تاني';return}
+  raf=requestAnimationFrame(loop)}
+$('d48-raceGo').addEventListener('click',()=>{if(nets[1].hist.length>=EPOCHS)resetRace();running=!running;$('d48-raceGo').textContent=running?'وقّف':'كمّل';if(running)raf=requestAnimationFrame(loop)});
+$('d48-raceReset').addEventListener('click',resetRace);
+$('d48-raceLr').addEventListener('change',resetRace);$('d48-raceSeed').addEventListener('change',resetRace);
+resetRace();
+
+// ---------- softmax + label smoothing ----------
+const LG=[2,1,0.1,-1,3],lw=$('d48-logits');
+LG.forEach((v,i)=>{const lb=document.createElement('label');lb.innerHTML='z'+i+' = <span id="d48-zv'+i+'">'+v+'</span><input type="range" id="d48-z'+i+'" min="-4" max="8" step="0.1" value="'+v+'">';lw.appendChild(lb)});
+function smx(z){const m=Math.max(...z),e=z.map(x=>Math.exp(x-m)),s=e.reduce((a,b)=>a+b,0);return e.map(x=>x/s)}
+function drawSm(){const a=+$('d48-a').value,t=+$('d48-tgt').value,K=LG.length,p=smx(LG);
+  $('d48-av').textContent=a.toFixed(2);
+  const tg=p.map((_,i)=>i===t?1-a+a/K:a/K);
+  const hard=-Math.log(Math.max(1e-15,p[t])),soft=-tg.reduce((s,q,i)=>s+q*Math.log(Math.max(1e-15,p[i])),0);
+  $('d48-rHard').textContent=f(hard,4);$('d48-rSmooth').textContent=f(soft,4);$('d48-rDiff').textContent=f(soft-hard,4);
+  const ul=$('d48-smList');ul.innerHTML='';
+  p.forEach((q,i)=>{const li=document.createElement('li');
+    li.innerHTML='<span class="mono">class '+i+(i===t?' ✓':'')+'</span><span style="display:grid;gap:3px"><span class="bar"><i style="width:'+(q*100)+'%"></i></span><span class="bar"><i style="width:'+(tg[i]*100)+'%;background:var(--vec-b)"></i></span></span><span class="num">'+f(q-tg[i],4)+'</span>';
+    ul.appendChild(li)})}
+LG.forEach((_,i)=>$('d48-z'+i).addEventListener('input',e=>{LG[i]=+e.target.value;$('d48-zv'+i).textContent=LG[i];drawSm()}));
+$('d48-a').addEventListener('input',drawSm);$('d48-tgt').addEventListener('change',drawSm);
+drawSm();
+
+// ---------- Lab 3: InfoNCE on the unit circle ----------
+const nc=$('d48-nce'),nx=AI.setupCanvas(nc),NW=+nc.dataset.w,NH=+nc.dataset.h,ncx=NW/2,ncy=NH/2,R=140;
+const presets={good:[0,0.25,2.2,3.0,3.9,4.8],hard:[0,0.9,0.45,3.0,3.9,4.8],collapse:[1,1,1,1,1,1]};
+let ang=presets.good.slice(),ndrag=-1;
+const tau=()=>{const v=+$('d48-t').value;return 0.02*Math.pow(50,v/100)};
+const NAMES=['anchor','positive','neg 1','neg 2','neg 3','neg 4'];
+function nceStats(){const T=tau(),s=ang.slice(1).map(a=>Math.cos(a-ang[0])),lg=s.map(x=>x/T),m=Math.max(...lg),e=lg.map(x=>Math.exp(x-m)),S=e.reduce((a,b)=>a+b,0);
+  return{T,s,p:e.map(x=>x/S),loss:-Math.log(Math.max(1e-15,e[0]/S))}}
+function drawNce(){const st=nceStats();nx.clearRect(0,0,NW,NH);
+  nx.strokeStyle=css('--grid');nx.lineWidth=1;nx.beginPath();nx.moveTo(0,ncy);nx.lineTo(NW,ncy);nx.moveTo(ncx,0);nx.lineTo(ncx,NH);nx.stroke();
+  nx.strokeStyle=css('--muted');nx.lineWidth=1.5;nx.beginPath();nx.arc(ncx,ncy,R,0,7);nx.stroke();
+  const cols=[css('--vec-a'),css('--ok'),css('--vec-b'),css('--vec-b'),css('--vec-b'),css('--vec-b')];
+  for(let i=ang.length-1;i>=0;i--){const x=ncx+R*Math.cos(ang[i]),y=ncy-R*Math.sin(ang[i]);
+    AI.arrow(nx,ncx,ncy,x,y,cols[i],i<2?3.2:2);nx.fillStyle=cols[i];nx.beginPath();nx.arc(x,y,i<2?9:7,0,7);nx.fill();
+    nx.fillStyle=css('--ink');nx.font='12px JetBrains Mono, monospace';nx.textAlign='center';
+    const lx=ncx+(R+26)*Math.cos(ang[i]),ly=ncy-(R+26)*Math.sin(ang[i])+4-(i%2)*0;nx.fillText(NAMES[i],lx,ly)}
+  nx.textAlign='left';
+  $('d48-tv').textContent=st.T.toFixed(3);$('d48-rSp').textContent=f(st.s[0],3);$('d48-rPp').textContent=f(st.p[0],4);$('d48-rNce').textContent=f(st.loss,4);
+  const ul=$('d48-nceList');ul.innerHTML='';
+  st.p.forEach((q,i)=>{const li=document.createElement('li');li.innerHTML='<span class="mono">'+NAMES[i+1]+'</span><span class="bar"><i style="width:'+(q*100)+'%;'+(i?'background:var(--vec-b)':'background:var(--ok)')+'"></i></span><span class="num">'+f(q,3)+'</span>';ul.appendChild(li)})}
+nc.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(nc,e);let best=-1,bd=30;
+  ang.forEach((a,i)=>{const d=Math.hypot(x-(ncx+R*Math.cos(a)),y-(ncy-R*Math.sin(a)));if(d<bd){bd=d;best=i}});
+  if(best<0)return;ndrag=best;nc.setPointerCapture(e.pointerId)});
+nc.addEventListener('pointermove',e=>{if(ndrag<0)return;const [x,y]=AI.evPos(nc,e);ang[ndrag]=Math.atan2(ncy-y,x-ncx);drawNce()});
+nc.addEventListener('pointerup',()=>ndrag=-1);
+$('d48-t').addEventListener('input',drawNce);
+$('d48-nceGood').addEventListener('click',()=>{ang=presets.good.slice();drawNce()});
+$('d48-nceHard').addEventListener('click',()=>{ang=presets.hard.slice();drawNce()});
+$('d48-nceCollapse').addEventListener('click',()=>{ang=presets.collapse.slice();drawNce()});
+drawNce();
+
+// ---------- quiz ----------
+AI.quiz($('d48-quizBox'),[
+ ['الـ loss function بتمثل إيه في تدريب الـ neural network؟',['جدول الـ learning rate','مقياس قابل للاشتقاق لقد إيه توقعات الموديل غلط، والـ optimizer بيصغّره','عدد التوقعات الغلط','حجم الـ training data'],1,'الـ loss بيحوّل التوقعات والـ targets لرقم واحد الـ optimizer بيصغّره بالـ gradient descent، ولازم يكون قابل للاشتقاق عشان نقدر نحسب الـ gradients.'],
+ ['ليه الـ cross-entropy أحسن من الـ MSE في الـ classification؟',['الـ CE بتعاقب التوقع الغلط الواثق بقسوة عن طريق −log(p)، والـ MSE بيدّي gradients ضعيفة جنب 0 و 1','الـ CE مش محتاجة labels','الـ MSE بيشتغل في الـ regression بس','الـ CE أسرع في الحساب'],0,'لما الموديل يقول p قريبة من صفر للكلاس الصح، −log(p) بيدّي loss ضخم و gradient قوي. الـ MSE بيدّي gradient ضعيف في نفس الموقف لأن الـ sigmoid فلات جنب 0 و 1.'],
+ ['إيه اللي بيحصل لو استخدمت MSE في binary classification؟',['الـ gradients بتنفجر','التدريب بيبوّظ على طول','الموديل بيتدرب عادي','الموديل يقدر يصغّر الـ loss لو قال 0.5 لكل حاجة، فيوصل لـ MSE = 0.25 من غير ما يتعلم'],3,'في داتا binary متوازنة، 0.5 لكل مدخل بيدّي MSE = 0.25، وده أقل رقم ممكن من غير أي قدرة على التفريق. الموديل بيرضّي الـ loss من غير ما يتعلم أي pattern مفيد.'],
+ ['الـ label smoothing بيعمل إيه وليه مفيد؟',['بيليّن جدول الـ learning rate','بيبدّل الـ targets الـ 0/1 بقيم ناعمة زي 0.1/0.9، فبيمنع الثقة الزيادة ويحسّن الـ generalization','بيشيل الـ labels الغلط من الداتا','بيعمل moving average للـ loss'],1,'مع α = 0.1 و٤ كلاسات، الـ target بيتحول من [0,0,1,0] لـ [0.025,0.025,0.925,0.025]. ده بيمنع الموديل إنه يزق الـ logits لما لا نهاية عشان يوصل لـ target صلب.'],
+ ['في الـ contrastive loss (InfoNCE)، الـ temperature دورها إيه؟',['بتتحكم في حدة توزيع الـ similarities: temperature أقل يعني فصل أشد بين الـ positives والـ negatives','بتحدد عدد الـ negatives','بتتحكم في الـ learning rate','بتحدد حجم الـ embedding'],0,'الـ temperature بتقسم الـ similarity scores قبل الـ softmax. القيمة الصغيرة (زي 0.07) بتعمل توزيع حاد لازم الموديل فيه يفصل الـ positives عن الـ negatives بوضوح. والقيمة الأكبر أكثر تسامحًا.'],
+ ['(سؤال مني) في الـ focal loss بـ γ = 2، مثال سهل p_t = 0.9 وزنه كام بالنسبة للـ CE العادية؟',['0.9','0.81','0.1','0.01'],3,'(1 − 0.9)² = 0.01، يعني تقريبًا متهمّش. والمثال الصعب p_t = 0.1 وزنه (0.9)² = 0.81. كده الموديل بيركّز على الأمثلة الصعبة.'],
+ ['(سؤال مني) موديل جديد لسه متدربش، عنده ١٠ كلاسات. أول loss بالـ cross-entropy المفروض يطلع حوالي كام؟',['0','0.1','≈ 2.3 = ln(10)','≈ 10'],2,'الاحتمالات في الأول قريبة من 1/10 لكل كلاس، فالـ loss ≈ −log(0.1) = ln(10) ≈ 2.303. لو طلع بعيد جدًا عن كده، راجع الـ init أو الـ labels قبل ما تكمّل.']
+],5,()=>{const c=document.querySelector('#d48-checklist input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+AI.checklist(48,$('d48-checklist'));
+
+// redraw on theme change
+AI.onTheme(()=>{if(!document.body.contains(cc))return false;drawCurve();drawRace();drawNce()});
+})();
+</script>

@@ -1,0 +1,758 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 64 · Chunking Strategies, Compared</span>
+  <h1>اليوم ٤٩٢: المقص اللي بيحدد الـ RAG هيلاقي إيه</h1>
+  <p class="lede">النهاردة هتبني <b>خمس طرق للتقطيع (chunking)</b> بإيدك: fixed-window، sentence، recursive split، semantic clustering، وstructural markdown. وهتقيس كل واحدة بـ <b>recall@k</b> على corpus صغير فيه أماكن الإجابات متعلّمة بالحرف، وتشوف بعينك ليه الفايز في النثر غير الفايز في الـ docs التقنية.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (من غير أي مكتبة retrieval)</span>
+    <span>قبله: <b>Multimodal Evaluation</b></span>
+    <span>بعده: <b>Hybrid Retrieval (BM25 + Dense)</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — 86 lessons · Track F (RAG) starts here</span>
+    <div class="roadmap" id="d492-roadmap" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d492-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح قِسنا موديل multimodal بتلات طرق. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>عندك similarity matrix شكلها <span class="ltr">(N, N)</span> بين صور وcaptions. إزاي بتحسب Recall@K منها؟
+      <details><summary>الإجابة</summary>لكل صف بترتّب الأعمدة تنازليًا حسب الـ similarity، وتشوف هل العمود الصح (اللي على القطر) جه في أول K. الـ Recall@K = نسبة الصفوف اللي حصل فيها كده. والاتجاه التاني (caption→image) بنفس الطريقة على الـ transpose. النهاردة هنستخدم نفس الفكرة بالظبط: «هل الحاجة الصح جت في أول k؟».</details></li>
+    <li>الـ VQA exact match بيدي كام نقطة لكل سؤال؟
+      <details><summary>الإجابة</summary>bit واحد: الإجابة المتوقعة = المرجعية؟ يبقى 1، غير كده 0. وبعدين متوسط على كل الأسئلة.</details></li>
+    <li>في BLEU-4، الـ brevity penalty موجود عشان إيه؟
+      <details><summary>الإجابة</summary>عشان الموديل ميغشش بإنه يكتب caption قصير جدًا كله كلمات مضمونة فيطلع precision عالي. لو الـ caption المولّد أقصر من المرجع، بنضرب في <span class="ltr">exp(1 − r/g)</span> اللي أقل من 1.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>المشكلة + الخمس استراتيجيات + معمل ١</div>
+    <div><b>15 min</b>recall@k + معمل ٢ ومعمل ٣</div>
+    <div><b>30 min</b>اكتب الكود بإيدك وشغّله</div>
+    <div><b>20 min</b>التمارين + الكويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d492-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: التقطيع هو السقف</h2></div>
+  <p>أي RAG pipeline بيبدأ بإنه يقطّع المستندات لحتت. الحتة لازم تكون <b>صغيرة كفاية</b> إن الـ embedding model يستوعبها، و<b>كبيرة كفاية</b> إنها تشيل فكرة كاملة لوحدها.</p>
+  <p>والنقطة المهمة في الدرس: مكان القطع <b>مش hyperparameter عادي</b> تظبطه بعدين. ده <b>الحد الأقصى</b> للي الـ retriever يقدر يرجّعه أصلًا. لو السؤال «الـ abort threshold شكله إيه؟» والـ splitter قطع الرقم عن الكلام اللي حواليه، الـ embedding بتاع الحتة هيروح cluster تاني، ودرجة BM25 هتقع، والـ reranker هيشوف كلام ملوش معنى، والـ LLM هيجاوب غلط. ومفيش أي مرحلة بعد كده تقدر تصلّح ده.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيّل إنك بتقطّع كتاب طبخ لكروت عشان تحطها في علبة. لو قطعت الوصفة من نص المكونات، الكارت اللي فيه «٢ كوباية دقيق» مش هيبقى فيه اسم الأكلة. ومهما كان اللي بيدوّر في العلبة شاطر، مش هيعرف إن الكارت ده بتاع الكيكة.</div>
+  <p>الدرس بيذكر إن ورقة <b>LongRAG</b> (2024) قاست فرق <b>35%</b> مطلق في الـ retrieval recall من اختيار التقطيع لوحده، وإن شغل 2025 على الـ contextual chunk headers قلّل الفجوة دي بس ما قفلهاش.</p>
+  <div class="formula">Document → [5 chunkers] → Chunks → Embedding Index → Recall@k vs Gold Spans</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d492-five">
+  <div class="station-head"><span class="tag">02</span><h2>الخمس مقصات</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الاستراتيجية</th><th>بتقطع فين</th><th>قوتها</th><th>عيبها</th></tr>
+    <tr><td><b>Fixed-window</b></td><td>كل N حرف، ومعاها overlap اختياري</td><td>سريعة وdeterministic</td><td>وحشة جدًا عند الحدود. استخدمها كـ control مش default</td></tr>
+    <tr><td><b>Sentence</b></td><td>عند نهاية الجمل، وتجمّع جمل لحد budget</td><td>مبتقطعش في نص كلمة</td><td>لسه بتقطع في نص الفقرة والـ section</td></tr>
+    <tr><td><b>Recursive split</b></td><td>أقوى فاصل الأول (<code>\n\n</code>) وبعدين <code>\n</code> وبعدين <code>". "</code> وبعدين المسافة</td><td>بتتكيّف حسب كل منطقة في المستند</td><td>مبتفهمش المعنى، بتفهم الشكل بس</td></tr>
+    <tr><td><b>Semantic</b></td><td>لما المعنى يتغير (الـ similarity للـ centroid تقع)</td><td>بتمسك تغيير الموضوع حتى جوه فقرة</td><td>أبطأ ومعتمدة على الـ embedding model</td></tr>
+    <tr><td><b>Structural markdown</b></td><td>عند الـ headings</td><td>أصغر وأنضف chunk لكل موضوع</td><td>بتشتغل بس لو المستند منظّم</td></tr>
+  </table></div>
+  <h3>Fixed-window والـ overlap</h3>
+  <p>الطريقة الغشيمة: اقطع كل N حرف. الـ <b>overlap</b> معناه إن كل chunk بتبدأ قبل نهاية اللي قبلها بـ <span class="ltr">overlap</span> حرف، فالجملة اللي اتقطعت عند الحرف N تظهر كاملة في الـ chunk اللي بادئة من <span class="ltr">N − overlap</span>. الخطوة بين بدايات الـ chunks = <span class="ltr">size − overlap</span>.</p>
+  <h3>Recursive split: زي ما بتفك عقدة</h3>
+  <p>بتحاول تقسم بأقوى فاصل (سطر فاضي = فقرة). لو حتة لسه أكبر من الـ target، تنزل عليها بالفاصل اللي بعده (سطر جديد)، وبعدين الجمل، وبعدين المسافات. وبعد التقسيم بتلزق الحتت الصغيرة اللي جنب بعض طالما مجموعها في حدود الـ target. القوة إن كل منطقة في المستند بتتقسم على قد بنيتها.</p>
+  <h3>Semantic clustering</h3>
+  <p>اعمل embedding لكل جملة. امشي جملة جملة واحتفظ بـ <b>centroid</b> (متوسط المتجهات) للـ chunk الحالية. لو الـ cosine similarity بين الـ centroid والجملة الجاية وقعت تحت الـ threshold، يبقى الموضوع اتغير: اقطع هنا. فالحدود هنا بتعكس <b>المعنى</b> مش عدد الحروف.</p>
+  <h3>Structural markdown</h3>
+  <p>لو المستند فيه بنية واضحة (markdown، reStructuredText، RFC بأرقام sections)، اقطع عند الـ headings. كل chunk = الـ heading + كل اللي تحته لحد الـ heading الجاي اللي في نفس المستوى أو أعلى (في كود الدرس: لحد أي heading جاي). والـ heading نفسه جزء من الـ chunk، وده بيدي الـ embedding سياق ببلاش.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: شوف المقص وهو بيقطع</h3>
+      <p>اختار مستند واستراتيجية وغيّر الـ parameter. المستطيلات الزرقا هي الـ chunks على طول المستند، والمستطيلات البرتقاني هي أماكن الإجابات الذهبية (gold spans) للتلات أسئلة. اختار سؤال وشوف الـ chunk اللي الـ retriever جابها رقم ١ (متلوّنة غامق): لو لمست البرتقاني يبقى hit.</p>
+      <div class="note ai"><strong>جرّب:</strong> fixed على markdown بـ size صغير، وبعدين structural على نفس المستند. وبص على الـ readout: عدد الـ chunks ومتوسط وأقل وأكبر طول. ده «توزيع أطوال الـ chunks» اللي الدرس عايزك تتعلم تقراه.</div>
+    </div>
+    <div class="instrument">
+      <div class="btns">
+        <select id="d492-doc" aria-label="المستند"><option value="0">prose</option><option value="1">markdown</option><option value="2">mixed</option></select>
+        <select id="d492-strat" aria-label="الاستراتيجية"><option value="fixed">fixed</option><option value="sentence">sentence</option><option value="recursive" selected>recursive</option><option value="semantic">semantic</option><option value="structural">structural</option></select>
+        <select id="d492-qsel" aria-label="السؤال"><option value="0">Q1</option><option value="1">Q2</option><option value="2">Q3</option></select>
+      </div>
+      <canvas id="d492-cutCv" width="560" height="190" aria-label="رسم أماكن القطع والإجابات"></canvas>
+      <div class="mrow">
+        <label><span id="d492-pname">target</span> = <span id="d492-pval">500</span><input type="range" id="d492-param" min="60" max="900" step="10" value="500"></label>
+        <label>overlap (fixed) = <span id="d492-oval">80</span><input type="range" id="d492-ov" min="0" max="300" step="10" value="80"></label>
+      </div>
+      <div class="readout">
+        <div><small>chunks</small><b id="d492-rn">0</b></div>
+        <div><small>avg len</small><b id="d492-ravg">0</b></div>
+        <div><small>min / max</small><b id="d492-rmm">0</b></div>
+        <div><small>top-1 hit?</small><b id="d492-rhit">-</b></div>
+      </div>
+      <p class="mono" id="d492-qtext" style="font-size:14px;direction:ltr;text-align:left"></p>
+      <p class="mono" id="d492-top1" style="font-size:13px;direction:ltr;text-align:left;color:var(--muted);white-space:pre-wrap"></p>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d492-recall">
+  <div class="station-head"><span class="tag">03</span><h2>إزاي recall@k بيقيس مكان القطع</h2></div>
+  <p>كل سؤال في الـ fixture معاه <b>offsets بالحرف</b> لمكان الإجابة جوه المستند (gold span). بعد التقطيع والـ retrieval بنسأل سؤال واحد بسيط: <b>هل أي chunk من أول k اتلمّس مع الـ gold span؟</b> لو آه، recall@k للسؤال ده = 1، لو لأ = 0. وبعدين متوسط على كل الأسئلة. شغّل نفس التقييم على كل استراتيجية، والفرق بينهم يقولك أنهي سياسة قطع بتعيش على الـ corpus بتاعك.</p>
+  <div class="formula">overlaps(chunk, gold) = NOT (chunk.end ≤ gold.start OR chunk.start ≥ gold.end)</div>
+  <div class="formula">recall@k = (# queries where any of top-k overlaps gold) / (# queries)</div>
+  <div class="note"><strong>تشبيه:</strong> زي ما بتدوّر على مفاتيحك في ٥ أدراج. recall@5 بيسأل: هل المفاتيح في أي درج من الخمسة اللي فتحتهم؟ مش مهم في أنهي درج بالظبط. وطبيعي إن recall@1 ≤ recall@3 ≤ recall@5، لأن كل ما تفتح أدراج أكتر فرصتك تزيد (والـ tests بتاعة الدرس بتتأكد من ده).</div>
+  <p>الـ retriever هنا <span class="ltr">DenseIndex</span> بسيط: بيعمل <span class="ltr">mock_embed</span> (embedding مبني على hash للكلمات، deterministic ومن غير نت) لكل chunk، ويرتّب بالـ cosine مع الـ query.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: جدول الـ recall الحي</h3>
+      <p>ده نفس منطق <code>eval_recall</code> مكتوب بـ JavaScript على نفس الـ fixture ونفس الـ mock embedding. غيّر الـ parameters وشوف الأعمدة بتتحرك. اختار مستند واحد بدل «all» وشوف إن <b>الفايز بيتغير حسب نوع المستند</b>.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الأرقام هنا على ٣ أسئلة لكل مستند بس، فأي سؤال بيحرّك الرقم 0.33. في الشغل الحقيقي محتاج مئات الأسئلة عشان الفرق يبقى له معنى.</div>
+    </div>
+    <div class="instrument">
+      <div class="btns">
+        <select id="d492-rdoc" aria-label="المستند"><option value="all">all docs</option><option value="0">prose</option><option value="1">markdown</option><option value="2">mixed</option></select>
+      </div>
+      <canvas id="d492-recCv" width="560" height="240" aria-label="رسم recall لكل استراتيجية"></canvas>
+      <div class="mrow">
+        <label>fixed size = <span id="d492-vfs">400</span><input type="range" id="d492-fs" min="100" max="800" step="20" value="400"></label>
+        <label>fixed overlap = <span id="d492-vfo">80</span><input type="range" id="d492-fo" min="0" max="300" step="10" value="80"></label>
+        <label>sentence / recursive target = <span id="d492-vtg">500</span><input type="range" id="d492-tg" min="100" max="900" step="20" value="500"></label>
+        <label>semantic threshold = <span id="d492-vth">0.55</span><input type="range" id="d492-th" min="0" max="1" step="0.05" value="0.55"></label>
+      </div>
+      <div class="tablewrap"><table id="d492-recTbl" style="direction:ltr"></table></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d492-drift">
+  <div class="station-head"><span class="tag">04</span><h2>الـ semantic chunker من جوه: centroid drift</h2></div>
+  <p>الـ semantic chunker بيمشي جملة جملة. أول جملة بتبقى الـ centroid. كل جملة جاية بيحسب الـ cosine بينها وبين الـ centroid. لو أقل من الـ threshold <b>أو</b> لو الـ chunk هتعدّي <span class="ltr">max_chars</span> (900 افتراضيًا)، بيقطع ويبدأ chunk جديدة. غير كده بيضيف الجملة ويحدّث الـ centroid كمتوسط ويعمله normalize.</p>
+  <div class="formula">cut if cos(centroid, next) &lt; threshold  OR  chars + len(next) &gt; max_chars</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: اسحب الـ threshold</h3>
+      <p>كل نقطة = جملة، وارتفاعها = الـ cosine بينها وبين الـ centroid ساعة ما وصلها. الخط الأفقي هو الـ threshold: <b>اسحبه بالماوس أو بصباعك</b>. الخطوط الرأسية = أماكن القطع. threshold عالي = قطع كتير (chunks صغيرة)، واطي = chunks كبيرة لحد ما الـ max_chars يوقفها.</p>
+      <div class="note"><strong>ده بالظبط الـ "semantic drift" failure:</strong> لو المستند كله على نفس الموضوع، الـ similarity مش هتقع، والـ chunk هتكبر لحد الـ cap. chunk كبيرة فيها إجابات كتير = embedding «مايع» مش بيشاور على حاجة بعينها. عشان كده لازم hard cap.</div>
+    </div>
+    <div class="instrument">
+      <div class="btns">
+        <select id="d492-sdoc" aria-label="المستند"><option value="0">prose</option><option value="1">markdown</option><option value="2">mixed</option></select>
+      </div>
+      <canvas id="d492-semCv" width="560" height="230" aria-label="رسم similarity كل جملة مع الـ threshold"></canvas>
+      <div class="mrow">
+        <label>threshold = <span id="d492-vst">0.55</span><input type="range" id="d492-st" min="0" max="1" step="0.01" value="0.55"></label>
+        <label>max_chars = <span id="d492-vmc">900</span><input type="range" id="d492-mc" min="150" max="2000" step="50" value="900"></label>
+      </div>
+      <div class="readout">
+        <div><small>sentences</small><b id="d492-sn">0</b></div>
+        <div><small>chunks</small><b id="d492-sc">0</b></div>
+        <div><small>cuts by drift</small><b id="d492-sd">0</b></div>
+        <div><small>cuts by cap</small><b id="d492-sm">0</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d492-fail">
+  <div class="station-head"><span class="tag">05</span><h2>الأعطال اللي الجدول مش هيخبيها</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>العطل</th><th>بيحصل إمتى</th><th>العلاج</th></tr>
+    <tr><td><b>Orphan sentences</b> (جمل يتيمة)</td><td>الـ sentence packer بيطلّع chunks ناقصها الجملة اللي بتقول الموضوع، فالـ embedding يشاور على cluster غلط</td><td>recursive أو structural، أو ضيف سياق للـ chunk</td></tr>
+    <tr><td><b>Mid-symbol cuts</b></td><td>fixed-window جوه كود أو YAML بيقسم identifier نصين، والنصين بيعملوا embedding لـ noise</td><td>متستخدمش fixed على كود. استخدم AST-aware (Phase 19 lesson 02)</td></tr>
+    <tr><td><b>Header-only chunks</b></td><td>structural بيطلّع chunk فيها <code>## Title</code> وبس</td><td>فلترها، أو الزق فيها أول فقرة من الـ chunk اللي بعدها</td></tr>
+    <tr><td><b>Semantic drift</b></td><td>semantic بيقطع قليل لو كله نفس الموضوع، فتطلع chunk ٥٠٠٠ حرف فيها إجابات كتير</td><td>hard character cap مع الـ semantic</td></tr>
+    <tr><td><b>Stale embeddings</b></td><td>غيّرت الـ embedding model؟ يبقى الـ chunks نفسها اتغيرت في الـ semantic</td><td>ثبّت موديل التقطيع لوحده، أو ابني الـ index من الأول مع بعض</td></tr>
+  </table></div>
+  <h3>تختار default من غير ما تشغّل benchmark</h3>
+  <p>تلات خصائص بتحدد: <b>نوع المستند</b>، <b>متوسط طول الفقرة</b>، و<b>هل الفورمات فيه بنية صريحة</b>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الخاصية</th><th>القيمة</th><th>الـ default</th></tr>
+    <tr><td>نوع المستند</td><td>نثر من غير بنية</td><td>Recursive split، target 800</td></tr>
+    <tr><td>نوع المستند</td><td>Markdown / RFC / API docs</td><td>Structural markdown</td></tr>
+    <tr><td>نوع المستند</td><td>كود</td><td>AST-aware (برا الدرس، شوف Phase 19 lesson 02)</td></tr>
+    <tr><td>طول الفقرة</td><td>طويلة وموضوع واحد</td><td>Sentence، target 500</td></tr>
+    <tr><td>طول الفقرة</td><td>قصيرة ومواضيع مختلطة</td><td>Semantic، threshold 0.6</td></tr>
+  </table></div>
+  <div class="note ai"><strong>القاعدة الذهبية:</strong> لو مش متأكد، اختار <b>recursive split</b>. هو أقوى baseline لوحده.</div>
+  <h3>في الـ production (Use It / Ship It)</h3>
+  <ol class="ex">
+    <li>شغّل الـ eval قبل ما تشحن أي pipeline جديدة. متثقش في الـ default بتاع المكتبة.</li>
+    <li>أعد الـ eval كل ما تغيّر الـ embedding model أو خلطة الـ corpus. الفايز بيعتمد على الـ corpus.</li>
+    <li>خزّن اسم الاستراتيجية في الـ metadata بتاعة كل chunk، عشان لو حصل regression تعرف تنسبه لمين. (الـ <code>Chunk</code> في الكود فيه field اسمه <code>strategy</code> لنفس السبب.)</li>
+    <li>الـ end-to-end RAG في lesson 69 بيستخدم الـ chunker اللي هتختاره هنا كأول مرحلة، والـ eval harness في lesson 68 بيقرا recall@k بنفس الشكل اللي <code>eval_recall</code> بيرجّعه.</li>
+  </ol>
+</section>
+
+<!-- STATION 6: CODE -->
+<section id="d492-code">
+  <div class="station-head"><span class="tag">06</span><h2>اكتب الكود بإيدك</h2></div>
+  <p>افتح ملف جديد واكتب الخطوات دي واحدة واحدة. <b>اكتبها بنفسك، متعملش copy-paste</b> غير للـ fixture الطويل. الكومنتات العربي دي ليك، مش لازم تكتبها.</p>
+
+  <h3>خطوة ١: الـ Chunk</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from __future__ import annotations
+import math
+import re
+from dataclasses import dataclass, field
+from typing import Callable
+
+@dataclass
+class Chunk:
+    doc_id: str
+    strategy: str   <span class="c"># اسم الاستراتيجية في الـ metadata</span>
+    start: int      <span class="c"># offsets في المستند الأصلي</span>
+    end: int
+    text: str
+
+    def overlaps(self, gold_start: int, gold_end: int) -&gt; bool:
+        <span class="c"># مفيش تداخل بس لو الـ chunk خلصت قبل الإجابة أو بدأت بعدها</span>
+        return not (self.end &lt;= gold_start or self.start &gt;= gold_end)</pre></div>
+
+  <h3>خطوة ٢: fixed window</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def fixed_window(doc_id, text, size=400, overlap=80):
+    if size &lt;= 0:
+        raise ValueError("size must be positive")
+    if overlap &lt; 0 or overlap &gt;= size:
+        raise ValueError("overlap must be non-negative and smaller than size")
+    out = []
+    step = size - overlap          <span class="c"># المسافة بين بدايات الـ chunks</span>
+    i, n = 0, len(text)
+    while i &lt; n:
+        end = min(i + size, n)
+        out.append(Chunk(doc_id, "fixed", i, end, text[i:end]))
+        if end == n:
+            break
+        i += step
+    return out</pre></div>
+
+  <h3>خطوة ٣: sentence packer</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># حد الجملة: مسافة بعد . أو ! أو ? وبعدها حرف كابيتال أو رقم</span>
+_SENTENCE_BOUNDARY = re.compile(r"(?&lt;=[.!?])\s+(?=[A-Z0-9])")
+
+def split_sentences(text):
+    out, cursor = [], 0
+    for m in _SENTENCE_BOUNDARY.finditer(text):
+        end = m.start()
+        if end &gt; cursor:
+            out.append((cursor, end, text[cursor:end]))
+        cursor = m.end()
+    if cursor &lt; len(text):
+        out.append((cursor, len(text), text[cursor:]))
+    return out
+
+def sentence_chunks(doc_id, text, target=500):
+    out, cur_start, cur_end, cur_buf, cur_len = [], None, 0, [], 0
+    for s_start, s_end, s_text in split_sentences(text):
+        if cur_start is None:
+            cur_start = s_start
+        sep = " " if cur_buf else ""
+        added = len(sep) + len(s_text)
+        <span class="c"># لو الجملة هتعدّي الـ budget: اقفل الـ chunk الحالية وابدأ جديدة</span>
+        if cur_len + added &gt; target and cur_buf:
+            out.append(Chunk(doc_id, "sentence", cur_start, cur_end, " ".join(cur_buf)))
+            cur_start, cur_buf, cur_len, cur_end = s_start, [s_text], len(s_text), s_end
+            continue
+        cur_buf.append(s_text)
+        cur_len += added
+        cur_end = s_end
+    if cur_buf and cur_start is not None:
+        out.append(Chunk(doc_id, "sentence", cur_start, cur_end, " ".join(cur_buf)))
+    return out</pre></div>
+
+  <h3>خطوة ٤: recursive split</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>DEFAULT_SEPARATORS = ("\n\n", "\n", ". ", " ")   <span class="c"># من الأقوى للأضعف</span>
+
+def _recursive_split(text, base_offset, separators, target):
+    if len(text) &lt;= target or not separators:
+        if not text:
+            return []
+        return [(base_offset, base_offset + len(text), text)]
+    sep, rest = separators[0], separators[1:]
+    if sep not in text:                      <span class="c"># الفاصل ده مش موجود؟ جرّب اللي بعده</span>
+        return _recursive_split(text, base_offset, rest, target)
+    pieces, cursor = [], 0
+    parts = text.split(sep)
+    for idx, part in enumerate(parts):
+        start = cursor
+        cursor += len(part)
+        if idx &lt; len(parts) - 1:
+            cursor += len(sep)
+        if not part:
+            continue
+        if len(part) &lt;= target:
+            pieces.append((base_offset + start, base_offset + start + len(part), part))
+        else:                                <span class="c"># لسه كبيرة: انزل مستوى</span>
+            pieces.extend(_recursive_split(part, base_offset + start, rest, target))
+    <span class="c"># الزق الحتت الصغيرة اللي جنب بعض لحد الـ target</span>
+    packed = []
+    for p_start, p_end, p_text in pieces:
+        if packed and (p_end - packed[-1][0]) &lt;= target:
+            prev_start, _, prev_text = packed[-1]
+            packed[-1] = (prev_start, p_end, prev_text + sep + p_text)
+        else:
+            packed.append((p_start, p_end, p_text))
+    return packed
+
+def recursive_split(doc_id, text, target=500, separators=DEFAULT_SEPARATORS):
+    spans = _recursive_split(text, 0, separators, target)
+    return [Chunk(doc_id, "recursive", s, e, t) for s, e, t in spans if t.strip()]</pre></div>
+
+  <h3>خطوة ٥: الـ mock embedding والـ cosine</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># embedding وهمي: كل كلمة بتتحول hash وبتزوّد خانتين في المتجه</span>
+def _token_hashes(text, dim):
+    vec = [0.0] * dim
+    for tok in re.findall(r"[a-z0-9]+", text.lower()):
+        h = 0
+        for ch in tok:
+            h = (h * 1315423911) ^ ord(ch)
+            h &amp;= 0xFFFFFFFF
+        vec[h % dim] += 1.0
+        vec[(h &gt;&gt; 7) % dim] += 0.5
+    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+    return [v / norm for v in vec]                  <span class="c"># طوله 1</span>
+
+def mock_embed(text, dim=96):
+    return _token_hashes(text, dim)
+
+def cosine(a, b):
+    return sum(x * y for x, y in zip(a, b))        <span class="c"># dot = cosine لأنهم normalized</span></pre></div>
+
+  <h3>خطوة ٦: semantic chunks</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def semantic_chunks(doc_id, text, similarity_threshold=0.55, max_chars=900):
+    sents = split_sentences(text)
+    if not sents:
+        return []
+    chunks, cur_sents, cur_vec, cur_n = [], [], None, 0
+
+    def flush():
+        if not cur_sents:
+            return
+        start, end = cur_sents[0][0], cur_sents[-1][1]
+        body = " ".join(s[2] for s in cur_sents)
+        chunks.append(Chunk(doc_id, "semantic", start, end, body))
+
+    for s_start, s_end, s_text in sents:
+        v = mock_embed(s_text)
+        cur_chars = sum(s[1] - s[0] for s in cur_sents)
+        if cur_vec is None:                         <span class="c"># أول جملة = الـ centroid</span>
+            cur_vec = v
+            cur_sents.append((s_start, s_end, s_text))
+            cur_n = 1
+            continue
+        sim = cosine(cur_vec, v)
+        <span class="c"># اقطع لو الموضوع اتغير أو الـ chunk هتعدّي الـ cap</span>
+        if sim &lt; similarity_threshold or cur_chars + (s_end - s_start) &gt; max_chars:
+            flush()
+            cur_sents, cur_vec, cur_n = [(s_start, s_end, s_text)], v, 1
+        else:
+            cur_sents.append((s_start, s_end, s_text))
+            cur_n += 1
+            cur_vec = [(cur_vec[i] * cur_n + v[i]) / (cur_n + 1) for i in range(len(cur_vec))]
+            norm = math.sqrt(sum(x * x for x in cur_vec)) or 1.0
+            cur_vec = [x / norm for x in cur_vec]
+    flush()
+    return chunks</pre></div>
+
+  <h3>خطوة ٧: structural markdown</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>_HEADER = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+
+def structural_markdown(doc_id, text):
+    matches = list(_HEADER.finditer(text))
+    if not matches:                       <span class="c"># مفيش headings: المستند كله chunk واحدة</span>
+        return [Chunk(doc_id, "structural", 0, len(text), text)]
+    out = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 &lt; len(matches) else len(text)
+        body = text[start:end].strip()    <span class="c"># الـ heading جزء من الـ chunk</span>
+        if body:
+            out.append(Chunk(doc_id, "structural", start, end, body))
+    return out</pre></div>
+
+  <h3>خطوة ٨: الـ index والـ eval</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class DenseIndex:
+    vectors: list = field(default_factory=list)
+
+    def add(self, chunk):
+        self.vectors.append((chunk, mock_embed(chunk.text)))
+
+    def search(self, query, k):
+        qv = mock_embed(query)
+        scored = [(c, cosine(qv, v)) for c, v in self.vectors]
+        scored.sort(key=lambda x: -x[1])
+        return [c for c, _ in scored[:k]]
+
+def eval_recall(chunker, fixture, ks=(1, 3, 5)):
+    totals = {k: 0 for k in ks}
+    hits = {k: 0 for k in ks}
+    for doc in fixture:
+        idx = DenseIndex()
+        for c in chunker(doc["doc_id"], doc["text"]):
+            idx.add(c)
+        for query, (g_start, g_end) in doc["queries"]:
+            for k in ks:
+                totals[k] += 1
+                top = idx.search(query, k)
+                if any(c.overlaps(g_start, g_end) for c in top):   <span class="c"># hit</span>
+                    hits[k] += 1
+    return {k: hits[k] / totals[k] if totals[k] else 0.0 for k in ks}</pre></div>
+
+  <h3>خطوة ٩: الـ fixture والـ main</h3>
+  <p>الـ fixture فيه ٣ مستندات (<code>PROSE_DOC</code> و<code>MARKDOWN_DOC</code> و<code>MIXED_DOC</code>) وكل واحد ٣ أسئلة مع نص الإجابة. ده الجزء الوحيد اللي ممكن تنسخه من الريبو لأنه نص طويل. المهم الدالة دي اللي بتحوّل نص الإجابة لـ offsets:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _locate(doc, span_text):
+    start = doc.index(span_text)        <span class="c"># مكان الإجابة بالحرف</span>
+    return start, start + len(span_text)
+
+STRATEGIES = {
+    "fixed":      lambda d, t: fixed_window(d, t, size=400, overlap=80),
+    "sentence":   lambda d, t: sentence_chunks(d, t, target=500),
+    "recursive":  lambda d, t: recursive_split(d, t, target=500),
+    "semantic":   lambda d, t: semantic_chunks(d, t, similarity_threshold=0.55, max_chars=900),
+    "structural": lambda d, t: structural_markdown(d, t),
+}
+
+def main():
+    fixture = build_fixture()
+    ks = (1, 3, 5)
+    print(f"{'strategy':&lt;12} | " + " | ".join(f"recall@{k}" for k in ks))
+    print("-" * 44)
+    for name, fn in STRATEGIES.items():
+        recall = eval_recall(fn, fixture, ks)
+        print(f"{name:&lt;12} | " + " | ".join(f"  {recall[k]:.2f}  " for k in ks))
+    print()
+    print("chunk counts per strategy (across all fixture docs):")
+    for name, fn in STRATEGIES.items():
+        n = sum(len(fn(d["doc_id"], d["text"])) for d in fixture)
+        print(f"  {name:&lt;12} {n} chunks")
+
+if __name__ == "__main__":
+    main()</pre></div>
+
+  <h3>شغّله من الـ root بتاع الريبو</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre class="term">cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/64-chunking-strategies-advanced/code/main.py
+
+<span class="c"># والـ tests:</span>
+python3 phases/19-capstone-projects/64-chunking-strategies-advanced/code/tests/test_chunkers.py</pre></div>
+  <p><b>الخرج المتوقع:</b> جدول فيه صف لكل استراتيجية (fixed، sentence، recursive، semantic، structural) وأعمدة <span class="ltr">recall@1 | recall@3 | recall@5</span> بأرقام بين 0 و1، وبعده عدد الـ chunks لكل استراتيجية على التلات مستندات. قارن أرقامك بمعمل ٢ وهو على «all docs» بالإعدادات الافتراضية، لأنه نفس الخوارزمية. والـ tests المفروض تعدّي كلها (<code>OK</code>).</p>
+  <div class="note"><strong>اللي الدرس متوقعه:</strong> sentence بيخسر على الـ fixture المنظّم، structural بيكسب على الـ markdown، recursive بيصمد على الـ mixed لأنه بيتكيف، وsemantic بيكسب على النثر اللي مفيهوش بنية مفيدة. وخلي بالك: مع fixture صغير وmock embedding، أرقامك ممكن متطابقش الكلام ده بالحرف. ده بالظبط ليه لازم تقيس على الـ corpus بتاعك.</div>
+</section>
+
+<!-- STATION 7: EXERCISES -->
+<section id="d492-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>استراتيجية سادسة: token-window</b> باستخدام <code>tiktoken</code> بدل عدد الحروف. قارنها بالـ fixed-window على نفس الـ fixture.
+      <details><summary>تلميح</summary>اعمل encode للنص كله لـ tokens، قطّع كل N token بـ overlap، وبعدين decode كل حتة. أصعب جزء هو الـ offsets بالحرف: احسبها بإنك تعمل decode للـ tokens اللي قبل البداية وتاخد طولها (أو امشي على الـ tokens وجمّع أطوال الـ decode). من غير offsets صح، الـ overlaps مع الـ gold span هتبقى غلط. الفرق المتوقع: الـ token window أقرب لحدود الكلمات من الحروف، بس لسه مبيعرفش الجمل.</details></li>
+    <li><b>حط ٣٠% code blocks</b> جوه الـ prose fixture وأعد الجدول. اشرح ليه كل الاستراتيجيات ما عدا structural بتخسر recall.
+      <details><summary>تلميح</summary>الكود مفيهوش نقط ومسافات قبل حروف كابيتال، فالـ sentence splitter مش هيلاقي حدود. الـ fixed هيقطع identifiers نصين (mid-symbol cuts). الـ recursive هيقع للفاصل الضعيف. والـ semantic: الـ mock embedding بيشوف tokens الكود غريبة عن النثر فممكن يقطع في أماكن غريبة. الـ structural لو حطيت الكود تحت headings بيفضل محافظ على كل section كاملة.</details></li>
+    <li><b>بدّل الـ mock embedding</b> بالـ embedding الحقيقي بتاع الـ provider بتاعك. قِس فرق recall في الـ semantic. هل الفرق بين الاستراتيجيات وسع ولا ضاق؟
+      <details><summary>تلميح</summary>خلي في الكود دالة <code>embed</code> واحدة بتتمرر كـ parameter لـ <code>semantic_chunks</code> و<code>DenseIndex</code>. وافتكر عطل الـ stale embeddings: لو غيرت موديل التقطيع، الـ chunks نفسها اتغيرت، فلازم تعيد بناء الـ index كله. سجّل النتيجتين جنب بعض واكتب الفرق.</details></li>
+    <li><b>ضيف field اسمه <code>summary</code></b> لكل chunk: جملة واحدة بتوصف الـ centroid. أعد الـ eval والـ summary ملزوق في جسم الـ chunk. قِس الزيادة في الـ recall.
+      <details><summary>تلميح</summary>من غير LLM، ممكن تبدأ بأقرب جملة للـ centroid جوه الـ chunk وتعتبرها الـ summary. الزقها في أول النص قبل الـ embedding بس، وخلي الـ offsets زي ما هي عشان الـ overlap مع الـ gold يفضل صح. دي فكرة قريبة من الـ contextual chunk headers اللي الدرس ذكرها.</details></li>
+    <li><b>(تمرين إضافي مني) اختار chunker لـ docs حقيقية:</b> خد ٣–٥ ملفات <code>README.md</code> أو docs من مشروع بتشتغل عليه، واكتب ١٠ أسئلة بإيدك وجنب كل سؤال الجملة اللي فيها الإجابة بالظبط (استخدم <code>_locate</code>). شغّل الخمس استراتيجيات واختار الفايز، وخزّن اسمه في الـ metadata. وبعدين قبل ما تشغّل، توقّع الفايز من جدول «تختار default من غير benchmark»، وشوف توقعك صح ولا لأ.
+      <details><summary>تلميح</summary>الـ READMEs غالبًا markdown، فالتوقع المنطقي structural أو recursive. لو structural طلع chunks فيها heading بس، طبّق علاج header-only chunks. اكتب في ملف صغير: التوقع، النتيجة، والسبب. ده نفس اللي هتعمله في lesson 68 بشكل أكبر.</details></li>
+  </ol>
+</section>
+
+<!-- STATION 8: MY ADDITION -->
+<section id="d492-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: حاجات الدرس مقالهاش صريح</h2></div>
+  <p><b>(ده جزء أنا ضايفه، مش من الدرس الأصلي.)</b></p>
+  <h3>الإحساس الأساسي</h3>
+  <p>الـ embedding بتاع chunk هو «متوسط» معنى اللي فيها. chunk صغيرة جدًا = معنى ناقص (يتيمة). chunk كبيرة جدًا = معنى مايع (كل حاجة شوية). الـ chunking الكويس بيدوّر على الحجم اللي كل chunk فيه بتجاوب سؤال واحد بوضوح.</p>
+  <h3>أخطاء شائعة</h3>
+  <ol class="ex">
+    <li><b>الـ offsets هي الحقيقة، مش <code>text</code>.</b> لو بصيت في الكود: <code>sentence_chunks</code> و<code>semantic_chunks</code> بيلزقوا الجمل بـ <code>" "</code>، فلو كان بين الجملتين <code>\n\n</code> في الأصل، <code>chunk.text</code> مش هيساوي <code>text[start:end]</code> بالحرف. ونفس الحكاية في الـ recursive لما بيلزق حتت جت من مستوى أعمق بالفاصل الأقوى. الـ eval بيستخدم الـ offsets فمفيش مشكلة هنا، بس لو هتعرض «المصدر» للمستخدم أو تعمل highlight، خد من الأصل بالـ offsets.</li>
+    <li><b>تقيس على ٣ أسئلة وتقرر.</b> زي ما شفت في معمل ٢، كل سؤال = 0.33. محتاج مجموعة أسئلة كبيرة ومتنوعة.</li>
+    <li><b>تنسى الـ metadata.</b> من غير <code>doc_id</code> و<code>strategy</code> و offsets، مش هتعرف تعمل citation ولا تتبع regression.</li>
+    <li><b>overlap كبير جدًا.</b> بيكرر نفس الكلام في chunks كتير، فالـ top-k يتملي نسخ شبه بعض وتضيّع مساحة الـ context.</li>
+  </ol>
+  <h3>بيظهر فين في الـ LLMs والـ Agents</h3>
+  <p>أي agent عنده «memory» أو أداة search على docs (زي RAG على الكود في Capstone 02 أو الـ RAG chatbot في Capstone 08) بيعدي بالمرحلة دي. وفكرة <b>Contextual Retrieval</b> اللي في الـ Further Reading بتاعة الدرس هي إنك تلزق قبل كل chunk سطر سياق قصير عن مكانها في المستند قبل الـ embedding، وده قريب من تمرين ٤ ومن ميزة إن الـ structural بيحط الـ heading جوه الـ chunk.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d492-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>الكويز</h2></div>
+  <p>٨ أسئلة: ٦ من الدرس و٢ مني. محتاج ٦ صح.</p>
+  <div class="quiz" id="d492-quizBox"></div>
+</section>
+
+<section>
+  <div class="station-head"><span class="tag">10</span><h2>المصطلحات</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المصطلح</th><th>الناس بتقول</th><th>معناه بالظبط</th></tr>
+    <tr><td>Recall@k</td><td>«جبنا الـ chunk الصح؟»</td><td>نسبة الأسئلة اللي فيها أي chunk من أول k بتتلمس مع الـ gold answer span</td></tr>
+    <tr><td>Chunk overlap</td><td>«Sliding window»</td><td>تعيد آخر N حرف من الـ chunk اللي فاتت في أول اللي بعدها</td></tr>
+    <tr><td>Structural splitter</td><td>«Header-aware chunks»</td><td>تقطع عند H1/H2/H3، والـ heading جزء من الـ chunk</td></tr>
+    <tr><td>Semantic chunker</td><td>«Topic-aware chunks»</td><td>embedding للجمل، تجميع حسب الـ centroid، وقطع عند الـ drift</td></tr>
+    <tr><td>Centroid drift</td><td>«Topic shift»</td><td>الـ cosine بين المتوسط الجاري والجملة الجاية يقع تحت الـ threshold</td></tr>
+  </table></div>
+</section>
+
+<section>
+  <div class="station-head"><span class="tag">11</span><h2>اتأكد إنك خلصت</h2></div>
+  <ul class="checklist" id="d492-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه الـ chunking سقف مش hyperparameter</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أعرف الخمس استراتيجيات وأمتى كل واحدة تكسب</label></li>
+    <li><label><input type="checkbox" data-ck="3"> لعبت في المعامل التلاتة وشفت الفايز بيتغير حسب المستند</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الخمس chunkers والـ eval بإيدي وشغّلت الـ main والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="5"> أقدر أسمّي الخمس أعطال وعلاج كل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+</section>
+
+<section>
+  <div class="station-head"><span class="tag">12</span><h2>الكلام ده بيظهر فين</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المكان</th><th>إزاي</th></tr>
+    <tr><td>أي RAG pipeline</td><td>أول مرحلة قبل الـ embedding والـ index</td></tr>
+    <tr><td>Phase 19 lesson 65 (بكرة)</td><td>الـ hybrid retrieval (BM25 + dense) بيرتّب الـ chunks اللي طلعت هنا</td></tr>
+    <tr><td>Phase 19 lesson 68</td><td>الـ eval harness بيقرا recall@k بنفس شكل <code>eval_recall</code></td></tr>
+    <tr><td>Phase 19 lesson 69</td><td>الـ end-to-end RAG بيستخدم الـ chunker اللي اخترته</td></tr>
+    <tr><td>Agents بـ memory أو doc search</td><td>الـ tool بتاعة البحث بترجّع chunks، فجودتها = جودة التقطيع</td></tr>
+    <tr><td>RAG على الكود (Capstone 02)</td><td>هنا الـ fixed بيفشل، ومحتاج AST-aware chunking</td></tr>
+  </table></div>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F64-chunking-strategies-advanced" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/64-chunking-strategies-advanced</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=492,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d492-roadmap').closest('.day');
+
+// roadmap
+const rm=$('d492-roadmap');
+for(let i=1;i<=86;i++){const s=document.createElement('span');s.textContent=i;if(i===64)s.className='now';rm.appendChild(s)}
+
+// ---------- fixture (same text as code/main.py) ----------
+const PROSE="The retry budget is the safety valve. It exists so that a downstream outage "+
+"does not turn into a cascading failure. The budget is consumed every time a "+
+"client retries after a non-fatal error. When the budget hits zero, the client "+
+"stops retrying for a configured cooldown window.\n\n"+
+"Aborts work differently. An abort signals to the server that the operation "+
+"should be cancelled and its partial state cleaned up. A multipart upload abort "+
+"instructs the storage layer to drop the partial parts and release the reserved "+
+"key. The abort threshold is configured per bucket at three failed parts.\n\n"+
+"Authorization sits one layer above. Every retry and every abort flows through "+
+"the central permission check before the storage call goes out. The check "+
+"evaluates a policy whose inputs are the principal, the resource, and the action. "+
+"The same check runs for human users and for service accounts.";
+const MD="# Storage Service Configuration\n\n"+
+"This document describes the storage service knobs.\n\n"+
+"## Retry Budget\n\n"+
+"Each client carries a retry budget. The default is 64 retries per minute. When the "+
+"budget reaches zero the client stops retrying.\n\n"+
+"## Abort Threshold\n\n"+
+"A multipart upload is aborted after three consecutive failed parts. The threshold is "+
+"per bucket and is configured in budgets.yaml.\n\n"+
+"## Authorization\n\n"+
+"All operations are authorized through the central permission check before any storage "+
+"call is issued.";
+const MIXED="# Operations Runbook\n\n"+
+"Incident response begins with paging the on-call. The on-call confirms the "+
+"alert is real and acknowledges in the incident tool within five minutes.\n\n"+
+"## Triage\n\n"+
+"The runbook directs the responder to the dashboard. The first widget shows "+
+"p99 latency across the public endpoints. The second widget shows the error "+
+"rate broken down by service.\n\n"+
+"## Mitigation\n\n"+
+"If the error rate exceeds five percent the responder rolls back the most recent "+
+"deploy. The rollback command is one line and is documented in the deploy guide. "+
+"If rollback fails the responder pages the platform team.\n\n"+
+"## Postmortem\n\n"+
+"Every incident with customer impact requires a postmortem within five business "+
+"days. The postmortem lists timeline, root cause, contributing factors, and "+
+"corrective actions with owners and dates.";
+function loc(d,s){const i=d.indexOf(s);return[i,i+s.length]}
+const DOCS=[
+ {id:'prose',t:PROSE,q:[["what is the abort threshold per bucket","abort threshold is configured per bucket at three failed parts"],["when does the retry budget reset","stops retrying for a configured cooldown window"],["how is authorization performed for service accounts","The same check runs for human users and for service accounts"]]},
+ {id:'markdown',t:MD,q:[["default retry budget value","The default is 64 retries per minute"],["how many failed parts before abort","aborted after three consecutive failed parts"],["where is the abort threshold configured","configured in budgets.yaml"]]},
+ {id:'mixed',t:MIXED,q:[["when does the on-call acknowledge","acknowledges in the incident tool within five minutes"],["what error rate triggers rollback","If the error rate exceeds five percent"],["when is a postmortem due","within five business days"]]}
+];
+DOCS.forEach(d=>{d.q=d.q.map(([q,s])=>({q,g:loc(d.t,s)}))});
+
+// ---------- chunkers (ports of main.py) ----------
+function emb(t){const dim=96,v=new Array(dim).fill(0);const toks=t.toLowerCase().match(/[a-z0-9]+/g)||[];
+  for(const tok of toks){let h=0;for(const ch of tok){h=(Math.imul(h,1315423911)^ch.charCodeAt(0))>>>0}v[h%dim]+=1;v[(h>>>7)%dim]+=0.5}
+  let s=0;for(const x of v)s+=x*x;const n=Math.sqrt(s)||1;return v.map(x=>x/n)}
+function cos(a,b){let s=0;for(let i=0;i<a.length;i++)s+=a[i]*b[i];return s}
+function splitS(t){const re=/(?<=[.!?])\s+(?=[A-Z0-9])/g,o=[];let c=0,m;
+  while((m=re.exec(t))!==null){const e=m.index;if(e>c)o.push([c,e,t.slice(c,e)]);c=m.index+m[0].length}
+  if(c<t.length)o.push([c,t.length,t.slice(c)]);return o}
+function fixed(t,size,ov){if(ov>=size)ov=size-10;const o=[],step=size-ov,n=t.length;let i=0;
+  while(i<n){const e=Math.min(i+size,n);o.push({s:i,e,t:t.slice(i,e)});if(e===n)break;i+=step}return o}
+function sentence(t,target){const o=[];let cs=null,ce=0,buf=[],len=0;
+  for(const [a,b,x] of splitS(t)){if(cs===null)cs=a;const add=(buf.length?1:0)+x.length;
+    if(len+add>target&&buf.length){o.push({s:cs,e:ce,t:buf.join(' ')});cs=a;buf=[x];len=x.length;ce=b;continue}
+    buf.push(x);len+=add;ce=b}
+  if(buf.length&&cs!==null)o.push({s:cs,e:ce,t:buf.join(' ')});return o}
+const SEPS=['\n\n','\n','. ',' '];
+function rsplit(t,base,seps,target){
+  if(t.length<=target||!seps.length){return t?[[base,base+t.length,t]]:[]}
+  const sep=seps[0],rest=seps.slice(1);if(!t.includes(sep))return rsplit(t,base,rest,target);
+  const pieces=[],parts=t.split(sep);let cur=0;
+  parts.forEach((p,idx)=>{const st=cur;cur+=p.length;if(idx<parts.length-1)cur+=sep.length;if(!p)return;
+    if(p.length<=target)pieces.push([base+st,base+st+p.length,p]);else pieces.push(...rsplit(p,base+st,rest,target))});
+  const packed=[];for(const [ps,pe,pt] of pieces){const L=packed[packed.length-1];
+    if(L&&(pe-L[0])<=target)packed[packed.length-1]=[L[0],pe,L[2]+sep+pt];else packed.push([ps,pe,pt])}
+  return packed}
+function recursive(t,target){return rsplit(t,0,SEPS,target).filter(x=>x[2].trim()).map(([s,e,x])=>({s,e,t:x}))}
+function semantic(t,th,maxc,trace){const ss=splitS(t);if(!ss.length)return[];const out=[];let cur=[],cv=null,cn=0;
+  const flush=()=>{if(!cur.length)return;out.push({s:cur[0][0],e:cur[cur.length-1][1],t:cur.map(x=>x[2]).join(' ')})};
+  for(const s of ss){const v=emb(s[2]);const cc=cur.reduce((a,x)=>a+x[1]-x[0],0);
+    if(cv===null){cv=v;cur.push(s);cn=1;if(trace)trace.push({sim:null,cut:'start'});continue}
+    const sim=cos(cv,v),drift=sim<th,cap=cc+(s[1]-s[0])>maxc;
+    if(trace)trace.push({sim,cut:drift?'drift':(cap?'cap':null)});
+    if(drift||cap){flush();cur=[s];cv=v;cn=1}
+    else{cur.push(s);cn+=1;cv=cv.map((x,i)=>(x*cn+v[i])/(cn+1));let q=0;for(const x of cv)q+=x*x;const n=Math.sqrt(q)||1;cv=cv.map(x=>x/n)}}
+  flush();return out}
+function structural(t){const ms=[...t.matchAll(/^(#{1,6})\s+(.+)$/gm)];if(!ms.length)return[{s:0,e:t.length,t}];const o=[];
+  ms.forEach((m,i)=>{const s=m.index,e=i+1<ms.length?ms[i+1].index:t.length;const b=t.slice(s,e).trim();if(b)o.push({s,e,t:b})});return o}
+function search(chunks,q,k){const qv=emb(q);const sc=chunks.map(c=>({c,v:cos(qv,c.v||(c.v=emb(c.t)))}));sc.sort((a,b)=>b.v-a.v);return sc.slice(0,k).map(x=>x.c)}
+const hit=(c,g)=>!(c.e<=g[0]||c.s>=g[1]);
+function run(name,t,P){switch(name){
+  case 'fixed':return fixed(t,P.size,P.ov);
+  case 'sentence':return sentence(t,P.target);
+  case 'recursive':return recursive(t,P.target);
+  case 'semantic':return semantic(t,P.th,P.maxc);
+  default:return structural(t)}}
+
+// ---------- Lab 1: cuts ----------
+const cc=$('d492-cutCv'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+const pIn=$('d492-param'),oIn=$('d492-ov');
+function paramCfg(){const s=$('d492-strat').value;
+  if(s==='fixed')return{name:'size',min:60,max:800,step:10};
+  if(s==='semantic')return{name:'threshold',min:0,max:1,step:0.01};
+  if(s==='structural')return null;
+  return{name:'target',min:60,max:900,step:10}}
+function syncParam(){const c=paramCfg();
+  if(!c){pIn.disabled=true;$('d492-pname').textContent='(no param)';$('d492-pval').textContent='-';return}
+  pIn.disabled=false;const changed=$('d492-pname').textContent!==c.name;
+  pIn.min=c.min;pIn.max=c.max;pIn.step=c.step;
+  if(changed){pIn.value=c.name==='size'?400:(c.name==='threshold'?0.55:500)}
+  $('d492-pname').textContent=c.name;$('d492-pval').textContent=pIn.value}
+function cuts(){
+  const d=DOCS[+$('d492-doc').value],s=$('d492-strat').value,qi=+$('d492-qsel').value,pv=+pIn.value;
+  $('d492-oval').textContent=oIn.value;oIn.disabled=s!=='fixed';
+  const P={size:pv,ov:+oIn.value,target:pv,th:pv,maxc:900};
+  const ch=run(s,d.t,P);const L=d.t.length,X=v=>14+v/L*(CW-28);
+  cx.clearRect(0,0,CW,CH);
+  cx.fillStyle=css('--muted');cx.font='12px JetBrains Mono, monospace';cx.textAlign='left';
+  cx.fillText(d.id+' · '+L+' chars · '+s,14,16);
+  // doc bar
+  cx.fillStyle=css('--soft');cx.fillRect(14,28,CW-28,10);
+  // paragraph breaks
+  cx.strokeStyle=css('--muted');cx.lineWidth=1;let pi=d.t.indexOf('\n\n');
+  while(pi>=0){cx.beginPath();cx.moveTo(X(pi),26);cx.lineTo(X(pi),40);cx.stroke();pi=d.t.indexOf('\n\n',pi+1)}
+  // gold spans
+  d.q.forEach((q,i)=>{cx.fillStyle=css('--vec-b');cx.globalAlpha=i===qi?0.9:0.35;cx.fillRect(X(q.g[0]),48,Math.max(3,X(q.g[1])-X(q.g[0])),CH-60);cx.globalAlpha=1;
+    cx.fillStyle=css('--vec-b');cx.fillText('Q'+(i+1),X(q.g[0]),CH-2)});
+  // chunks
+  const top=search(ch,d.q[qi].q,1)[0];
+  ch.forEach((c,i)=>{const y=58+(i%3)*30;cx.fillStyle=css('--vec-a');cx.globalAlpha=c===top?0.85:0.22;
+    cx.fillRect(X(c.s),y,Math.max(2,X(c.e)-X(c.s)-1),22);cx.globalAlpha=1;cx.strokeStyle=css('--vec-a');cx.lineWidth=1;cx.strokeRect(X(c.s),y,Math.max(2,X(c.e)-X(c.s)-1),22);
+    cx.fillStyle=c===top?css('--paper'):css('--ink');cx.fillText('#'+(i+1),X(c.s)+3,y+15)});
+  const lens=ch.map(c=>c.e-c.s);
+  $('d492-rn').textContent=ch.length;
+  $('d492-ravg').textContent=lens.length?Math.round(lens.reduce((a,b)=>a+b,0)/lens.length):0;
+  $('d492-rmm').textContent=lens.length?Math.min(...lens)+' / '+Math.max(...lens):'-';
+  const h=top&&hit(top,d.q[qi].g);const hb=$('d492-rhit');hb.textContent=h?'HIT':'MISS';hb.style.color=h?css('--ok'):css('--bad');
+  $('d492-qtext').textContent='Q'+(qi+1)+': "'+d.q[qi].q+'"';
+  $('d492-top1').textContent=top?'top-1 chunk #'+(ch.indexOf(top)+1)+' ['+top.s+', '+top.e+']:\n'+(top.t.length>220?top.t.slice(0,220)+' …':top.t):'';
+}
+['d492-doc','d492-qsel'].forEach(id=>$(id).addEventListener('change',cuts));
+$('d492-strat').addEventListener('change',()=>{syncParam();cuts()});
+pIn.addEventListener('input',()=>{$('d492-pval').textContent=pIn.value;cuts()});
+oIn.addEventListener('input',cuts);
+syncParam();cuts();
+
+// ---------- Lab 2: recall ----------
+const rc=$('d492-recCv'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+const NAMES=['fixed','sentence','recursive','semantic','structural'],KS=[1,3,5];
+function recall(){
+  const fs=+$('d492-fs').value;let fo=+$('d492-fo').value;if(fo>=fs){fo=fs-20;$('d492-fo').value=fo}
+  const tg=+$('d492-tg').value,th=+$('d492-th').value;
+  $('d492-vfs').textContent=fs;$('d492-vfo').textContent=fo;$('d492-vtg').textContent=tg;$('d492-vth').textContent=f(th,2);
+  const P={size:fs,ov:fo,target:tg,th,maxc:900},sel=$('d492-rdoc').value;
+  const docs=sel==='all'?DOCS:[DOCS[+sel]];
+  const R=NAMES.map(nm=>{const hits={1:0,3:0,5:0};let tot=0,nch=0;
+    docs.forEach(d=>{const ch=run(nm,d.t,P);nch+=ch.length;d.q.forEach(q=>{tot++;KS.forEach(k=>{if(search(ch,q.q,k).some(c=>hit(c,q.g)))hits[k]++})})});
+    return{nm,r:KS.map(k=>hits[k]/tot),n:nch}});
+  rx.clearRect(0,0,RW,RH);const x0=40,y0=RH-30,hh=RH-56,gw=(RW-x0-10)/NAMES.length,bw=gw/4.2;
+  rx.strokeStyle=css('--line');rx.fillStyle=css('--muted');rx.font='11px JetBrains Mono, monospace';rx.textAlign='right';
+  [0,0.5,1].forEach(v=>{const y=y0-v*hh;rx.beginPath();rx.moveTo(x0,y);rx.lineTo(RW-10,y);rx.stroke();rx.fillText(v.toFixed(1),x0-6,y+4)});
+  const cols=[css('--muted'),css('--vec-a'),css('--vec-b')];
+  R.forEach((o,i)=>{const gx=x0+i*gw+bw*0.4;o.r.forEach((v,j)=>{rx.fillStyle=cols[j];rx.fillRect(gx+j*bw,y0-v*hh,bw-3,v*hh)});
+    rx.fillStyle=css('--ink');rx.textAlign='center';rx.fillText(o.nm,x0+i*gw+gw/2,y0+16)});
+  rx.textAlign='left';['@1','@3','@5'].forEach((t,j)=>{rx.fillStyle=cols[j];rx.fillRect(x0+j*60,8,10,10);rx.fillStyle=css('--ink');rx.fillText('recall'+t,x0+j*60+14,17)});
+  $('d492-recTbl').innerHTML='<tr><th>strategy</th><th>recall@1</th><th>recall@3</th><th>recall@5</th><th>chunks</th></tr>'+
+    R.map(o=>'<tr><td>'+o.nm+'</td>'+o.r.map(v=>'<td>'+v.toFixed(2)+'</td>').join('')+'<td>'+o.n+'</td></tr>').join('');
+}
+['d492-fs','d492-fo','d492-tg','d492-th'].forEach(id=>$(id).addEventListener('input',recall));
+$('d492-rdoc').addEventListener('change',recall);
+recall();
+
+// ---------- Lab 3: semantic drift ----------
+const scv=$('d492-semCv'),sx=AI.setupCanvas(scv),SW=+scv.dataset.w,SH=+scv.dataset.h;
+const sTop=20,sBot=SH-28,Y=v=>sBot-v*(sBot-sTop);
+function sem(){
+  const d=DOCS[+$('d492-sdoc').value],th=+$('d492-st').value,mc=+$('d492-mc').value;
+  $('d492-vst').textContent=f(th,2);$('d492-vmc').textContent=mc;
+  const tr=[],ch=semantic(d.t,th,mc,tr),n=tr.length,Xs=i=>36+(n>1?i/(n-1):0.5)*(SW-60);
+  sx.clearRect(0,0,SW,SH);sx.font='11px JetBrains Mono, monospace';
+  sx.strokeStyle=css('--line');sx.fillStyle=css('--muted');sx.textAlign='right';
+  [0,0.5,1].forEach(v=>{sx.beginPath();sx.moveTo(30,Y(v));sx.lineTo(SW-10,Y(v));sx.stroke();sx.fillText(v.toFixed(1),26,Y(v)+4)});
+  let nd=0,nm=0;
+  tr.forEach((p,i)=>{if(p.cut==='drift'||p.cut==='cap'){if(p.cut==='drift')nd++;else nm++;
+      sx.strokeStyle=p.cut==='drift'?css('--vec-b'):css('--bad');sx.setLineDash(p.cut==='cap'?[4,4]:[]);sx.lineWidth=2;
+      const xx=(Xs(i)+Xs(i-1))/2;sx.beginPath();sx.moveTo(xx,sTop);sx.lineTo(xx,sBot);sx.stroke();sx.setLineDash([])}});
+  sx.strokeStyle=css('--muted');sx.lineWidth=1;sx.beginPath();let first=true;
+  tr.forEach((p,i)=>{if(p.sim===null)return;if(first){sx.moveTo(Xs(i),Y(p.sim));first=false}else sx.lineTo(Xs(i),Y(p.sim))});sx.stroke();
+  tr.forEach((p,i)=>{sx.fillStyle=p.sim===null?css('--ok'):(p.cut?css('--vec-b'):css('--vec-a'));const yy=p.sim===null?Y(1):Y(p.sim);
+    sx.beginPath();sx.arc(Xs(i),yy,5,0,Math.PI*2);sx.fill();sx.fillStyle=css('--muted');sx.textAlign='center';sx.fillText('s'+(i+1),Xs(i),SH-10)});
+  sx.strokeStyle=css('--vec-b');sx.lineWidth=2;sx.beginPath();sx.moveTo(30,Y(th));sx.lineTo(SW-10,Y(th));sx.stroke();
+  sx.fillStyle=css('--vec-b');sx.textAlign='left';sx.fillText('threshold '+f(th,2)+'  (drag)',34,Y(th)-6);
+  $('d492-sn').textContent=n;$('d492-sc').textContent=ch.length;$('d492-sd').textContent=nd;$('d492-sm').textContent=nm;
+}
+let drag=false;
+function setTh(e){const [,py]=AI.evPos(scv,e);const v=Math.max(0,Math.min(1,(sBot-py)/(sBot-sTop)));$('d492-st').value=v.toFixed(2);sem()}
+scv.addEventListener('pointerdown',e=>{drag=true;scv.setPointerCapture(e.pointerId);setTh(e)});
+scv.addEventListener('pointermove',e=>{if(drag)setTh(e)});
+scv.addEventListener('pointerup',()=>{drag=false});
+scv.addEventListener('pointercancel',()=>{drag=false});
+['d492-st','d492-mc'].forEach(id=>$(id).addEventListener('input',sem));
+$('d492-sdoc').addEventListener('change',sem);
+sem();
+
+// ---------- quiz ----------
+AI.quiz($('d492-quizBox'),[
+ ['ليه اختيار التقطيع حد أقصى لجودة الـ retrieval ومش مجرد hyperparameter؟',['لأن الـ LLM عمره ما بيقرا chunks','لأن BM25 ملوش دور في الـ RAG الحديث','لأن مفيش embedding ولا reranker ولا LLM بعد كده يقدر يرجّع إجابة اتقطعت لحتت ملهاش معنى','لأن الـ embedding model ثابت من وقت التدريب'],2,'لو الـ chunk اللي فيها الإجابة مش مترابطة، الـ embedding بيروح cluster غلط ومفيش مرحلة بعد كده تصلّح ده.'],
+ ['أنهي استراتيجية أقوى default لوحدها لما متعرفش حاجة عن الـ corpus؟',['Sentence packer','Fixed-window','Recursive split','Structural markdown'],2,'الـ recursive بيتكيف مع كل منطقة: يجرب أقوى فاصل الأول ويقع للي بعده، فبيصمد قدام البنية المتلخبطة.'],
+ ['الـ recall@k بيقيس إيه في الدرس ده؟',['هل أول k chunks فيهم نص السؤال بالحرف','الـ cosine similarity بين السؤال وأول k chunks','عدد المستندات المختلفة في أول k','هل أي chunk من أول k بتتلمس مع الـ gold answer span'],3,'كل سؤال معاه gold offsets. recall@k = 1 لو أي chunk في أول k بتتلمس مع الـ span، وإلا 0، ومتوسط على الأسئلة.'],
+ ['ليه الـ fixed-window بيفشل جامد على corpus فيه كود أو YAML؟',['بيقسم الـ identifiers والـ key-value pairs نصين، فالـ chunks بتعمل embedding لـ noise','بيضيّع حروف الـ Unicode','مينفعش يشتغل parallel','بيطلّع chunks أكبر من الـ context window بتاع الـ embedding model'],0,'القطع بالحرف جوه symbol بيبوّظ المعنى اللي الـ embedding المفروض يمسكه.'],
+ ['إيه شرط الإيقاف بالـ centroid drift في الـ semantic chunking؟',['الـ cosine بين متجه المتوسط الجاري والجملة الجاية يقع تحت threshold','عدد الحروف يعدّي الـ max','عدد الجمل يعدّي رقم ثابت','الـ chunker يخلّص ميزانية الـ embedding'],0,'الـ semantic بيقطع لما الـ centroid الجاري ميبقاش شبه الجملة الجاية بالقدر اللي في الـ threshold.'],
+ ['إيه عطل الـ stale embeddings اللي الـ semantic بيجيبه والأربعة التانيين لأ؟',['chunks أصغر من الـ context بتاع الـ embedding','حدود الـ chunks بتتغير كل ما تغيّر موديل التقطيع، فمحتاج rebuild متنسّق','الـ chunks مبقتش تتعمل لها index بـ BM25','الـ chunks بتضيّع الـ start والـ end offsets'],1,'الـ semantic معتمد على embedding model؛ لو غيرته الحدود بتتغير، فلازم تثبّت موديل التقطيع لوحده أو تبني كل حاجة مع بعض.'],
+ ['(سؤال مني) في fixed_window بـ size=400 وoverlap=80، الـ chunk التانية بتبدأ عند أنهي حرف؟',['80','320','400','480'],1,'الخطوة = size − overlap = 320. فالـ chunk التانية من 320 لـ 720، وأول 80 حرف فيها هم آخر 80 من الأولى.'],
+ ['(سؤال مني) بتعمل RAG على API docs مكتوبة markdown نضيف بـ headings، ولقيت chunks فيها «## Endpoints» وبس. تعمل إيه؟',['تحوّل لـ fixed-window','تفلتر الـ chunks اللي فيها heading بس، أو تلزق فيها أول فقرة من اللي بعدها','تكبّر الـ threshold بتاع الـ semantic','تشيل الـ headings من المستند خالص'],1,'ده عطل header-only chunks، والعلاج في الدرس: فلترها أو الزق فيها أول فقرة من الـ chunk الجاية. الـ structural لسه الاختيار الصح للـ markdown.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(cc))return false;cuts();recall();sem()});
+})();
+</script>

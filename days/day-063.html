@@ -1,0 +1,468 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 07 · Semantic Segmentation — U-Net</span>
+  <h1>اليوم ٦٣: الـ Segmentation = تصنيف لكل بكسل</h1>
+  <p class="lede">امبارح اتعلمت تحط مربع حوالين الشيء. النهاردة محتاج <b>الشكل بالظبط</b>: أنهي بكسل طريق وأنهي بكسل رصيف. هتبني <b>U-Net</b> كاملة بإيدك (encoder + bottleneck + decoder + skip connections) وتكتب الـ <b>Dice loss</b> والـ <b>IoU</b> وتدرّبها على داتا مصنوعة، وتفهم ليه mIoU لوحدها بتخدعك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (PyTorch)</span>
+    <span>قبله: <b>Object Detection (YOLO)</b></span>
+    <span>بعده: <b>Instance Segmentation (Mask R-CNN)</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 lessons</span>
+    <div class="roadmap" id="d63-roadmap" aria-label="دروس الفيز الرابعة"></div>
+  </div>
+</header>
+
+<section id="d63-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ YOLO؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>الـ output بتاع خانة واحدة في YOLO فيه كام رقم لكل anchor، وإيه هما؟
+      <details><summary>الإجابة</summary><span class="ltr">5 + C</span>: أربعة للمربع (tx, ty, tw, th)، واحد objectness، وC احتمالات classes.</details></li>
+    <li>إزاي الـ IoU بيتحسب؟ وإيه استخدامه في الـ NMS؟
+      <details><summary>الإجابة</summary>مساحة التقاطع ÷ مساحة الاتحاد. الـ NMS بيستخدمه بين تنبؤين: بيحتفظ بالأعلى score وبيمسح أي تنبؤ IoU بينه وبين الفايز أعلى من threshold (عادةً 0.45).</details></li>
+    <li>mAP@0.5 عالي بس mAP@0.5:0.95 ضعيف. معناه إيه؟
+      <details><summary>الإجابة</summary>الموديل بيلاقي الأشياء بس مربعاته مش ضيقة على الشيء. العلاج: box loss زي CIoU، أو features بدقة أعلى.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة والربع</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>المفاهيم: أنواع الـ segmentation، شكل U-Net، الـ losses، المقاييس</div>
+    <div><b>20 min</b>المعامل التفاعلية</div>
+    <div><b>25 min</b>اكتب الـ U-Net وشغّل التدريب</div>
+    <div><b>5 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 -->
+<section id="d63-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: ملايين التنبؤات للصورة الواحدة</h2></div>
+  <p>الـ Classification بيطلّع label واحد للصورة. الـ Detection بيطلّع شوية مربعات. الـ <b>Segmentation</b> بيطلّع <b>label لكل بكسل</b>. لصورة <span class="ltr">H × W</span> الناتج بحجم <span class="ltr">H × W</span> (semantic) أو <span class="ltr">H × W × N_instances</span> (instance). ملايين التنبؤات مش واحد.</p>
+  <p>ده اللي بيشغّل أي منتج dense-prediction: الأشعة (قناع الورم)، العربيات ذاتية القيادة (طريق، حارة، عقبة)، الأقمار الصناعية (مباني، حدود محاصيل)، تحليل المستندات، والروبوتات (مناطق ينفع تمسكها). مفيش واحدة منهم تتحل بمربع حوالين الشيء؛ كلهم عايزين <b>الشكل الدقيق</b>.</p>
+  <p>والتحدي المعماري سهل في الجملة وصعب في الحل: الشبكة لازم تشوف <b>السياق العام</b> (دي أي نوع مشهد؟) و<b>التفاصيل المحلية</b> (البكسل ده طريق ولا رصيف؟) <b>في نفس الوقت</b>. الـ CNN العادية بتضغط المكان عشان تاخد سياق، وده بيرمي التفاصيل. U-Net هي التصميم اللي جاب الاتنين.</p>
+</section>
+
+<!-- 02 -->
+<section id="d63-types">
+  <div class="station-head"><span class="tag">02</span><h2>تلات أنواع: semantic وinstance وpanoptic</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>بيقول إيه</th><th>ملحوظة</th></tr>
+    <tr><td class="ltr">Semantic</td><td>«البكسل ده طريق، وده عربية»</td><td>عربيتين لازقين في بعض بيتحولوا لبقعة واحدة</td></tr>
+    <tr><td class="ltr">Instance</td><td>«البكسل ده عربية رقم ٣، وده رقم ٥»</td><td>بيتجاهل الـ background (sky, road, grass = «stuff»)، وبيهتم بالـ «things»</td></tr>
+    <tr><td class="ltr">Panoptic</td><td>كل بكسل ليه class، وكل instance ليه id مميز</td><td>بيجمع الاتنين: stuff وthings</td></tr>
+  </table></div>
+  <p>الدرس ده في الـ <b>semantic</b>. الدرس اللي جاي (Mask R-CNN) في الـ instance.</p>
+  <div class="note"><strong>تشبيه:</strong> لو معاك كتاب تلوين: الـ semantic إنك تلوّن كل العربيات بنفس اللون الأحمر. الـ instance إنك تلوّن كل عربية بلون مختلف. والـ panoptic إنك تلوّن الصفحة كلها (السما والطريق كمان) وكل عربية بلونها.</div>
+</section>
+
+<!-- 03 -->
+<section id="d63-unet">
+  <div class="station-head"><span class="tag">03</span><h2>شكل الـ U-Net ولعبة الـ skip connections</h2></div>
+  <p>الـ encoder بيقسم الدقة المكانية على اتنين <b>٤ مرات</b> وبيضاعف الـ channels. والـ decoder بيعمل العكس: بيضاعف الدقة ٤ مرات وبيقسم الـ channels. والـ <b>skip connections</b> بتوصّل (concatenate) الـ features المقابلة من الـ encoder بالـ decoder عند كل resolution. وآخر حاجة <span class="ltr">1×1 conv</span> بتحول <span class="ltr">64 → num_classes</span> بدقة الصورة الكاملة.</p>
+  <div class="formula">Encoder: 64@H×W → 128@H/2 → 256@H/4 → 512@H/8 → Bottleneck 1024@H/16 → Decoder: 512@H/8 → 256@H/4 → 128@H/2 → 64@H×W → 1×1 conv</div>
+  <p><b>ليه الـ skips ضرورية؟</b> لأن الـ decoder لما بييجي يطلّع تنبؤات بدقة البكسل، هو ما شافش غير خرايط صغيرة. من غير الـ skips مش هيعرف يحدد الحواف بدقة لأن المعلومة دي اتضغطت وراحت في الـ encoder. الـ skips بتديله خرايط الـ encoder عالية الدقة اللي اتحسبت وهو نازل.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيل إنك بتطلع خريطة مدينة من صورة قمر صناعي. الـ encoder بيزوّم بره عشان يفهم «ده حي سكني». الـ decoder بيزوّم جوه تاني. من غير الـ skips هو بيتذكر بس «حي سكني» ومش فاكر مكان الشارع بالظبط. الـ skip هي إنك تسيب جنبك الصورة الأصلية عالية الدقة تبص عليها وانت بترسم.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: امشي مع الـ data جوه U-Net</h3>
+      <p>اضغط «اللي بعدها» وراقب: النزول (encoder)، القاع (bottleneck)، الطلوع (decoder)، ولحظة الـ skip.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ skip مش بتجمع (add) بل بتعمل <span class="ltr">concatenate</span> على بُعد الـ channels. عشان كده الـ Up block في الكود قناته الداخلة = <span class="ltr">base*16 + base*8</span> (مرفوعة + الـ skip).</div>
+    </div>
+    <div id="d63-lab1"></div>
+  </div>
+
+  <h3>معمل ٢: ليه الإدخال لازم يقبل القسمة على ١٦؟</h3>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ encoder بيقسم على ٢ أربع مرات. لو حجم الصورة مش بيقبل القسمة على ١٦، الأحجام اللي في الـ decoder مش هتطابق الـ skips بالظبط. غيّر الحجم وشوف.</p>
+      <div class="note ai"><strong>لاحظ:</strong> جرّب <span class="ltr">256</span> (تمام) و<span class="ltr">250</span> (فيه أحجام فردية بتتقرّب لتحت في الـ MaxPool). الكود في الدرس بيحل ده بـ <code>F.interpolate</code> قبل الـ concat. ولاحظ إن عدد الـ channels بيكبر لحد ٥١٢×٢ في المنتصف.</div>
+    </div>
+    <div id="d63-lab2"></div>
+  </div>
+</section>
+
+<!-- 04 -->
+<section id="d63-up">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Upsampling: transposed conv ولا bilinear؟</h2></div>
+  <p>الـ decoder لازم يكبّر المكان. فيه خيارين:</p>
+  <ul class="ex" style="list-style:disc">
+    <li><b>Transposed convolution</b> (<code>nn.ConvTranspose2d</code>): upsample قابل للتعلم. كان الافتراضي التاريخي. ممكن يطلّع <b>checkerboard artifacts</b> لو الـ stride والـ kernel مش بيقسموا بعض مظبوط.</li>
+    <li><b>Bilinear upsample + 3×3 conv</b>: تكبير ناعم وبعده conv. artifacts أقل، parameters أقل، وهو الافتراضي الحديث.</li>
+  </ul>
+  <p>الاتنين موجودين في الواقع. لأول U-Net ليك، الـ bilinear أأمن.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: ليه الـ checkerboard؟</h3>
+      <p>كل بكسل دخل بيكتب نسخة من الـ kernel في الخرج، والنسخ بتتراكب. العمود بيوريك <b>كام بكسل دخل ساهم في كل بكسل خرج</b> (مثال ١٠ بكسل دخل، بُعد واحد).</p>
+      <div class="note ai"><strong>لاحظ:</strong> جرّب <span class="ltr">k=3, s=2</span>: الأعمدة بتتبدل ١ و٢ و١ و٢ (نمط منقّط). جرّب <span class="ltr">k=4, s=2</span>: الجزء الأوسط موحّد على ٢. التراكب غير المتساوي = نمط الشطرنج في الصورة.</div>
+    </div>
+    <div id="d63-lab3"></div>
+  </div>
+</section>
+
+<!-- 05 -->
+<section id="d63-loss">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Losses: Cross-Entropy وDice</h2></div>
+  <h3>Cross-entropy على شبكة بكسلات</h3>
+  <p>لـ <span class="ltr">C</span> classes الخرج <span class="ltr">(N, C, H, W)</span> والـ target <span class="ltr">(N, H, W)</span> أرقام صحيحة للـ class. نفس الـ CE بتاع الـ classification بس بيتطبق عند كل مكان:</p>
+  <div class="formula">Loss = mean over (n,h,w) of [ −log( softmax(logits[n,:,h,w])[ target[n,h,w] ] ) ]</div>
+  <p>والـ <code>F.cross_entropy</code> في PyTorch بيتعامل مع الشكل ده طبيعي، من غير reshape.</p>
+
+  <h3>ليه محتاج Dice</h3>
+  <p>الـ CE بيعامل كل البكسلات سواسية. ده غلط لما class واحد مسيطر (أشعة: ٩٩٪ background و١٪ ورم). الشبكة تقدر تجيب ٩٩٪ accuracy وهي بتتنبأ «background» في كل مكان، وتبقى عديمة الفايدة. الـ <b>Dice loss</b> بتحسّن التداخل بين القناع المتنبأ والحقيقي مباشرة:</p>
+  <div class="formula">Dice(p, y) = 2·Σ(p·y) / (Σp + Σy + ε)      Dice_loss = 1 − Dice</div>
+  <p>حيث <span class="ltr">p</span> خريطة الاحتمالات للـ class و<span class="ltr">y</span> القناع الحقيقي الثنائي. الـ loss صفر بس لما التداخل مثالي. ولأنها نسبة، عدم توازن الـ classes ما بيأثرش عليها.</p>
+  <div class="formula">L = L_cross_entropy + λ · L_dice      (λ ≈ 1)</div>
+  <p>في الممارسة بتستخدم <b>الاتنين مع بعض</b>: الـ CE بيدي gradients مستقرة في أول التدريب، والـ Dice بيركز آخر التدريب على مطابقة شكل القناع. التركيبة دي هي الافتراضي في الأشعة وصعب تتغلب على أي داتا غير متوازنة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: ليه الـ accuracy بتخدعك</h3>
+      <p>قناع ورم بيشغل نسبة صغيرة من الصورة. اللي بتتحكم فيه: حجم الورم (<span class="ltr">fg %</span>)، نسبة اللي الموديل لقاه (<span class="ltr">recall</span>)، والـ false positives كنسبة من حجم الورم.</p>
+      <p>اضبط <span class="ltr">recall = 0</span> (الموديل بيقول «مفيش ورم» دايمًا) وشوف الـ pixel accuracy.</p>
+      <div class="note ai"><strong>لاحظ:</strong> بـ fg=1% وrecall=0 الـ accuracy ٩٩٪ والـ Dice والـ IoU صفر. دي بالظبط الحالة اللي بتكسر الـ CE العادية، وده سبب إننا بنقيس بـ IoU/Dice.</div>
+    </div>
+    <div id="d63-lab4"></div>
+  </div>
+</section>
+
+<!-- 06 -->
+<section id="d63-metrics">
+  <div class="station-head"><span class="tag">06</span><h2>مقاييس التقييم</h2></div>
+  <ul class="ex" style="list-style:disc">
+    <li><b>Pixel accuracy</b>: نسبة البكسلات الصح. رخيصة، وبتنكسر على الداتا غير المتوازنة زي ما شفنا.</li>
+    <li><b>IoU per class</b>: التقاطع على الاتحاد لقناع كل class. متوسطها على كل الـ classes = <b>mIoU</b>.</li>
+    <li><b>Dice (F1 على البكسلات)</b>: شبه الـ IoU وبينهم علاقة <span class="ltr">Dice = 2·IoU / (1 + IoU)</span>. الأشعة بتفضّل Dice والسواقة بتفضّل IoU؛ هما مرتبطين بنفس الاتجاه (monotonic).</li>
+    <li><b>Boundary F1</b>: بيقيس قرب الحدود المتنبأة من الحقيقية وبيعاقب أي إزاحة صغيرة. مهم للمهام الدقيقة زي فحص أشباه الموصلات.</li>
+  </ul>
+  <div class="note"><strong>قاعدة:</strong> بلّغ بالـ IoU لكل class وليس mIoU لوحده. المتوسط بيخبّي class عند ١٥٪ لما التسعة التانيين عند ٨٥٪.</div>
+  <h3>مقايضة الـ resolution</h3>
+  <p>الـ encoder بيقسم الدقة ٤ مرات فالـ skips بتتظبط بالظبط بس لما الإدخال بيقبل القسمة على ١٦ (غير كده تحتاج padding أو الـ resize في الـ Up block). صور الأشعة غالبًا ٥١٢ أو ١٠٢٤، وصور السواقة ٢٠٤٨×١٠٢٤. والذاكرة بتكبر مع <span class="ltr">H × W × C_max</span>، وعند ١٠٢٤×١٠٢٤ وbottleneck بـ ١٠٢٤ channel الـ forward pass لوحده بياخد gigabytes من الـ VRAM.</p>
+  <p>حلّين شائعين: <b>(١)</b> قسّم الصورة لـ tiles (مثلًا ٢٥٦×٢٥٦ بتراكب بسيط) وركّب الناتج. <b>(٢)</b> استبدل الـ bottleneck بـ dilated convolutions بتفضل محتفظة بدقة أعلى وتوسّع الـ receptive field (عيلة DeepLab). لأول موديل: إدخال ٢٥٦×٢٥٦ وbase=64 بيتدرب مريح على ٨ GB VRAM.</p>
+</section>
+
+<!-- 07 code -->
+<section id="d63-code">
+  <div class="station-head"><span class="tag">07</span><h2>الكود: ابنِ U-Net وادرّبها</h2></div>
+  <p>الأول شغّل الكود الأصلي واتفرج على الناتج، وبعدين افتح <code>my_unet.py</code> واكتب الخطوات دي بنفسك. متعملش Copy غير لو اتزنقت.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/07-semantic-segmentation-unet/code/main.py</pre></div>
+  <p>الناتج المتوقع: سطر <code>params: ...</code> وبعدين ٨ epochs، كل واحد بيطبع <code>train_loss</code> وقايمة IoU لكل class من التلاتة (background, دايرة, مربع). المفروض الـ loss ينزل والـ IoU للشكلين يطلع مع الوقت. (الأرقام بالظبط بتختلف على جهازك.)</p>
+
+  <h3>خطوة ١: الـ block الأساسي DoubleConv</h3>
+  <p>اتنين conv ٣×٣ مع batch norm وReLU. الأولى بتغير عدد الـ channels والتانية بتحافظ عليه.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class DoubleConv(nn.Module):
+    def __init__(self, in_c, out_c):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_c, out_c, kernel_size=3, padding=1, bias=False),  # padding=1 يحافظ على الحجم
+            nn.BatchNorm2d(out_c),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_c, out_c, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_c),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.net(x)</pre></div>
+  <p>الـ block ده بيتكرر في كل حتة. <code>bias=False</code> لأن الـ beta بتاع الـ BN بيعمل شغل الـ bias.</p>
+
+  <h3>خطوة ٢: Down وUp</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Down(nn.Module):
+    def __init__(self, in_c, out_c):
+        super().__init__()
+        self.net = nn.Sequential(nn.MaxPool2d(2), DoubleConv(in_c, out_c))  # قسّم الدقة ثم conv
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class Up(nn.Module):
+    def __init__(self, in_c, out_c):
+        super().__init__()
+        self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        self.conv = DoubleConv(in_c, out_c)   # in_c = قنوات المرفوع + قنوات الـ skip
+
+    def forward(self, x, skip):
+        x = self.up(x)
+        # لو الأحجام مش متطابقة (إدخال مش بيقبل القسمة على 16) نعدّل قبل الـ concat
+        if x.shape[-2:] != skip.shape[-2:]:
+            x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
+        x = torch.cat([skip, x], dim=1)        # concat على بُعد الـ channels
+        return self.conv(x)</pre></div>
+  <p>لاحظ إننا بنقارن <code>shape[-2:]</code> (المكان بس) مش الـ shape كله. لو قارنت الشكل كامل هتتفعّل مع أي اختلاف في عدد الـ channels، وده المفروض يبقى error عالي الصوت مش interpolate صامت.</p>
+
+  <h3>خطوة ٣: الـ U-Net كاملة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class UNet(nn.Module):
+    def __init__(self, in_channels=3, num_classes=2, base=64):
+        super().__init__()
+        self.inc = DoubleConv(in_channels, base)
+        self.d1 = Down(base, base * 2)
+        self.d2 = Down(base * 2, base * 4)
+        self.d3 = Down(base * 4, base * 8)
+        self.d4 = Down(base * 8, base * 16)                # bottleneck
+        self.u1 = Up(base * 16 + base * 8, base * 8)
+        self.u2 = Up(base * 8 + base * 4, base * 4)
+        self.u3 = Up(base * 4 + base * 2, base * 2)
+        self.u4 = Up(base * 2 + base, base)
+        self.outc = nn.Conv2d(base, num_classes, kernel_size=1)
+
+    def forward(self, x):
+        x1 = self.inc(x)       # encoder
+        x2 = self.d1(x1)
+        x3 = self.d2(x2)
+        x4 = self.d3(x3)
+        x5 = self.d4(x4)       # bottleneck
+        x = self.u1(x5, x4)    # decoder + skips
+        x = self.u2(x, x3)
+        x = self.u3(x, x2)
+        x = self.u4(x, x1)
+        return self.outc(x)    # logits بدقة الصورة
+
+net = UNet(in_channels=3, num_classes=2, base=32)
+x = torch.randn(1, 3, 256, 256)
+print(f"output: {net(x).shape}")
+print(f"params: {sum(p.numel() for p in net.parameters()):,}")</pre></div>
+  <p>الناتج المتوقع: شكل <code>(1, 2, 256, 256)</code> يعني نفس حجم الإدخال بس بـ <code>num_classes</code> channels. الدرس بيذكر حوالي <b>7.7M</b> parameter عند <code>base=32</code>. اطبع الرقم عندك وقارن.</p>
+
+  <h3>خطوة ٤: الـ losses</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def dice_loss(logits, targets, num_classes, eps=1e-6):
+    probs = F.softmax(logits, dim=1)
+    targets_one_hot = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
+    dims = (0, 2, 3)                                  # نجمع على batch والمكان، نسيب الـ class
+    intersection = (probs * targets_one_hot).sum(dim=dims)
+    denom = probs.sum(dim=dims) + targets_one_hot.sum(dim=dims)
+    dice = (2 * intersection + eps) / (denom + eps)   # eps يمنع القسمة على صفر
+    return 1 - dice.mean()                            # macro Dice
+
+
+def combined_loss(logits, targets, num_classes, lam=1.0):
+    ce = F.cross_entropy(logits, targets)
+    dc = dice_loss(logits, targets, num_classes)
+    return ce + lam * dc, {"ce": ce.item(), "dice": dc.item()}</pre></div>
+  <p>الـ Dice بتتحسب لكل class وبعدين بتتعمل متوسط (macro Dice). الـ <code>eps</code> مهم للـ classes اللي مش موجودة في الـ batch.</p>
+
+  <h3>خطوة ٥: مقياس الـ IoU</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@torch.no_grad()
+def iou_per_class(logits, targets, num_classes):
+    preds = logits.argmax(dim=1)                      # (N, H, W) class لكل بكسل
+    ious = torch.zeros(num_classes)
+    for c in range(num_classes):
+        pred_c = (preds == c)
+        true_c = (targets == c)
+        inter = (pred_c &amp; true_c).sum().float()
+        union = (pred_c | true_c).sum().float()
+        ious[c] = (inter / union) if union &gt; 0 else torch.tensor(float("nan"))
+    return ious</pre></div>
+  <p>بيرجّع vector طوله C. الـ <code>nan</code> معناه إن الـ class مش موجود في الـ batch، <b>متحسبوش في المتوسط</b> لما تحسب mIoU.</p>
+
+  <h3>خطوة ٦: داتا synthetic للتأكد من كل حاجة</h3>
+  <p>بنولّد أشكال على خلفيات ملونة عشان الشبكة تتعلم <b>الشكل</b> مش لون البكسل. التلات classes: خلفية (0)، دوايِر (1)، مربعات (2).</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+from torch.utils.data import Dataset, DataLoader
+
+def synthetic_segmentation(num_samples=200, size=64, seed=0):
+    rng = np.random.default_rng(seed)
+    images = np.zeros((num_samples, size, size, 3), dtype=np.float32)
+    masks = np.zeros((num_samples, size, size), dtype=np.int64)
+    for i in range(num_samples):
+        bg = rng.uniform(0, 1, (3,))
+        images[i] = bg                                  # خلفية بلون عشوائي
+        num_shapes = rng.integers(1, 4)
+        for _ in range(num_shapes):
+            cls = int(rng.integers(1, 3))               # 1=دايرة 2=مربع
+            color = rng.uniform(0, 1, (3,))
+            cx, cy = rng.integers(10, size - 10, size=2)
+            r = int(rng.integers(4, 12))
+            yy, xx = np.meshgrid(np.arange(size), np.arange(size), indexing="ij")
+            if cls == 1:
+                mask = (xx - cx) ** 2 + (yy - cy) ** 2 &lt; r ** 2
+            else:
+                mask = (np.abs(xx - cx) &lt; r) &amp; (np.abs(yy - cy) &lt; r)
+            images[i][mask] = color
+            masks[i][mask] = cls
+        images[i] += rng.normal(0, 0.02, images[i].shape)   # شوية noise
+        images[i] = np.clip(images[i], 0, 1)
+    return images, masks
+
+
+class SegDataset(Dataset):
+    def __init__(self, images, masks):
+        self.images, self.masks = images, masks
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, i):
+        img = torch.from_numpy(self.images[i]).permute(2, 0, 1).float()   # HWC -&gt; CHW
+        mask = torch.from_numpy(self.masks[i]).long()
+        return img, mask</pre></div>
+
+  <h3>خطوة ٧: حلقة التدريب</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def train_one_epoch(model, loader, optimizer, device, num_classes):
+    model.train()
+    loss_sum, total = 0.0, 0
+    iou_sum = torch.zeros(num_classes)
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        logits = model(x)
+        loss, _ = combined_loss(logits, y, num_classes)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        loss_sum += loss.item() * x.size(0)
+        total += x.size(0)
+        iou_sum += iou_per_class(logits, y, num_classes).nan_to_num(0)
+    return loss_sum / total, iou_sum / len(loader)</pre></div>
+  <p>شغّله ١٠ لـ ٣٠ epoch على الداتا الـ synthetic وشوف الـ mIoU بيعدي ٠٫٩ للشكلين. ملحوظة الدرس: <code>nan_to_num(0)</code> بيعتبر الـ class الغايب في الـ batch صفر. لحساب دقيق لكل class استخدم mask للحضور و<code>torch.nanmean</code> على الـ batches وقت الـ evaluation.</p>
+
+  <h3>الاستخدام الحقيقي (Use It)</h3>
+  <p>للإنتاج استخدم <code>segmentation_models_pytorch</code> (smp). بتغلّف كل المعماريات القياسية مع أي backbone من torchvision أو timm. تلات سطور:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import segmentation_models_pytorch as smp
+
+model = smp.Unet(
+    encoder_name="resnet34",
+    encoder_weights="imagenet",   # pretrained: Transfer Learning من الدرس قبل ٣ أيام
+    in_channels=3,
+    classes=3,
+)</pre></div>
+  <p>وحاجات تعرفها: <b>DeepLabV3+</b> (dilated convs، الـ bottleneck بيحتفظ بالدقة، حدود أسرع في الأقمار الصناعية والسواقة)، و<b>SegFormer</b> (encoder هرمي من Transformer بدل الـ conv، SOTA في benchmarks كتير)، و<b>Mask2Former / OneFormer</b> (بتوحّد semantic وinstance وpanoptic في معمارية واحدة). كلهم بدائل جاهزة في <code>smp</code> أو <code>transformers</code> بنفس الـ data loader.</p>
+  <div class="note"><strong>اللي الدرس بيطلّعه (Ship It):</strong> ملفين في <code>outputs/</code>: prompt بيختار بين semantic وinstance وpanoptic ويسمّي المعمارية لمهمة معينة، وskill بيطلّع توزيع الـ classes وإحصائيات الأقنعة المتنبأ بيها والـ classes اللي الموديل مش بيتنبأ بيها كفاية أو حدودها مغبّشة.</div>
+</section>
+
+<!-- 08 exercises -->
+<section id="d63-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> اكتب <code>bce_dice_loss</code> لمهمة binary segmentation (foreground ضد background). اتأكد على داتا synthetic من class اتنين إن الـ loss المجمّعة بتتقارب أسرع من BCE لوحدها لما الـ foreground ٥٪ من البكسلات.
+      <details><summary>تلميح</summary>استخدم <code>F.binary_cross_entropy_with_logits(logits, targets.float())</code> والـ Dice على <code>torch.sigmoid(logits)</code>. ولّد داتا فيها دايرة صغيرة بس بحيث نسبتها حوالي ٥٪، وارسم منحنى الـ loss لكل نسخة على نفس الـ epochs.</details></li>
+    <li><b>(متوسط)</b> بدّل الـ up-block (<code>nn.Upsample + conv</code>) بـ <code>nn.ConvTranspose2d</code>. درّب الاتنين على نفس الداتا وقارن الـ mIoU. لاحظ فين بتظهر الـ checkerboard artifacts في نسخة الـ transposed.
+      <details><summary>تلميح</summary>الـ <code>ConvTranspose2d(in_c, in_c // 2, kernel_size=2, stride=2)</code> بيكبّر ×2. لاحظ إنه بيغير عدد الـ channels فعدّل <code>in_c</code> بتاع الـ DoubleConv. ولو عايز تشوف الـ artifacts جرّب kernel_size=3 مع stride=2 في تجربة منفصلة وبص على صورة الخرج أو على الخرايط اللي بتطلع من الـ decoder.</details></li>
+    <li><b>(صعب)</b> خد داتا segmentation حقيقية (Oxford-IIIT Pets أو Cityscapes mini أو subset طبي) ودرّب الـ U-Net لحد ما توصل لحد ٢ نقطة IoU من <code>smp.Unet</code> المرجعي. بلّغ بالـ IoU لكل class وحدد أنهي classes استفادت أكتر من إضافة الـ Dice.
+      <details><summary>تلميح</summary>ابدأ بـ <code>smp.Unet</code> واحصل على رقم مرجعي الأول. بعدها درّب نسختك بنفس الـ augmentations ونفس الـ input size. والـ classes الصغيرة والنادرة هي اللي بتستفيد من الـ Dice في العادة؛ قارن IoU لكل class بين CE لوحده وCE+Dice.</details></li>
+    <li><b>(تمرين مني)</b> في الـ <code>UNet</code> بتاعك: لو غيّرت <code>base</code> من ٣٢ لـ ١٦، إيه اللي هيحصل لعدد الـ parameters تقريبًا؟ وجرّبها فعلًا.
+      <details><summary>الإجابة</summary>الـ conv parameters بتتناسب مع <span class="ltr">in_c × out_c</span> فبتتناسب تقريبًا مع <span class="ltr">base²</span>. تقسيم base على ٢ = تقسيم الـ parameters على ~٤ (حوالي 7.7M ← قريب من 1.9M). اطبع <code>sum(p.numel() for p in net.parameters())</code> للاتنين وقارن النسبة. هي مش بالظبط ٤ بسبب الـ BN والـ 1×1 conv الأخيرة والـ bias، بس قريبة.</details></li>
+  </ol>
+</section>
+
+<!-- 09 own -->
+<section id="d63-own">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مبيقولوش صراحة</h2></div>
+  <div class="note ai"><strong>حدس:</strong> الـ U-Net بتعمل حاجتين متناقضتين وبتخليهم يتصالحوا: بتضغط (عشان تفهم «إيه ده؟») وبتفرد تاني (عشان تقول «فين بالظبط؟»). والـ skip هي الجسر اللي بينقل «فين» من الأول للآخر من غير ما يضيع.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul class="ex" style="list-style:disc">
+    <li><b>نوع الـ target:</b> <code>F.cross_entropy</code> عايز الـ targets <code>long</code> بشكل <span class="ltr">(N, H, W)</span> مش one-hot ولا float. ده سبب أشهر error في أول تجربة.</li>
+    <li><b>Resize الأقنعة بـ bilinear:</b> لو غيّرت حجم الصورة والقناع، القناع لازم <code>nearest</code> مش bilinear، وإلا هيطلعلك class أرقامها وسط (١٫٥ مثلًا) ملهاش معنى.</li>
+    <li><b>الـ augmentation لازم يتطبق على الصورة والقناع مع بعض:</b> نفس الـ flip ونفس الـ crop، وإلا القناع هيبقى مزاح عن الصورة.</li>
+    <li><b>تحليل الأرقام:</b> mIoU عالي ممكن يخبّي class حرج أداؤه ضعيف. اتفرج على الأقنعة فعلًا مش الأرقام بس.</li>
+    <li><b>الـ BatchNorm مع batch صغير:</b> الصور الكبيرة بتخليك تستخدم batch صغير (١ أو ٢)، والـ BN statistics بتبقى مشوشة. فكر في GroupNorm في الحالة دي (ملاحظة عامة مش من الدرس).</li>
+  </ul>
+  <div class="note"><strong>تصحيح لطيف لسؤال الـ checkerboard في الكويز:</strong> في الكويز الأصلي المثال بـ <span class="ltr">kernel_size=2, stride=2</span> مع إن ٢ بيقبل القسمة على ٢. في المعمل ٣ هتلاقي إن الحالة دي <b>مفيهاش تراكب أصلًا</b> (كل خرج بياخد من بكسل دخل واحد بس). فالفكرة العامة صح: الـ artifacts بتيجي لما حجم الـ kernel مش مضاعف للـ stride (زي ٣ و٢) فالتراكب يبقى غير متساوي. الحل المقترح بتاعهم: kernel = stride × n (زي ٤ و٢) أو bilinear + conv.</div>
+  <h3>بيظهر فين في الـ LLMs والـ agents؟</h3>
+  <p>الـ U-Net مش بس للصور الطبية. كتير من موديلات الـ <b>diffusion</b> (اللي بتولّد الصور، وهنوصلها في الـ Generative AI) بتستخدم U-Net كشبكة بتشيل الـ noise خطوة خطوة، وبنفس فكرة الـ skip. وموديلات segmentation الحديثة (Mask2Former, SegFormer) بتستخدم Transformers، يعني نفس المشكلة بحل تاني. وفي الـ agents اللي بتشتغل على شاشات (computer use) فهم «أنهي منطقة في الصورة هي الزرار» ده dense prediction في الأصل.</p>
+</section>
+
+<!-- 10 quiz -->
+<section id="d63-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d63-quizBox"></div>
+</section>
+
+<!-- 11 wrap -->
+<section id="d63-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d63-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أفرّق بين semantic وinstance وpanoptic بمثال</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه الـ skip connections ضرورية وليه concat مش add</label></li>
+    <li><label><input type="checkbox" data-ck="3"> لعبت في معمل الـ accuracy وشفت ٩٩٪ accuracy مع Dice = صفر</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم سبب الـ checkerboard وبعرف الحل</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت U-Net والـ combined loss بإيدي وشغّلت التدريب</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرين واحد على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Encoder-decoder + skips</td><td>الأشعة، الأقمار الصناعية، وdenoiser في موديلات الـ diffusion</td></tr>
+    <tr><td>Dice + CE</td><td>أي مهمة فيها class نادر (أورام، عيوب مصانع)</td></tr>
+    <tr><td>mIoU / IoU لكل class</td><td>تقارير الـ benchmarks وقرار «جاهز للإنتاج؟»</td></tr>
+    <tr><td>Bilinear vs transposed</td><td>أي decoder أو generator بيكبّر الصور</td></tr>
+    <tr><td>Tiling</td><td>صور عالية الدقة (أشعة ١٠٢٤+، خرائط)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Mask R-CNN: إزاي تفصل عربيتين من نفس الـ class بقناع لكل واحدة، وإيه هو الـ RoIAlign.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F07-semantic-segmentation-unet" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/07-semantic-segmentation-unet</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=63,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d63-roadmap').closest('.day');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===7)s.className='now';$('d63-roadmap').appendChild(s)}
+
+// ---- lab1: flow through U-Net ----
+L.flow($('d63-lab1'),{height:380,label:'مسار البيانات في U-Net',
+ nodes:[{id:'in',label:'Input',x:.05,y:0},{id:'e1',label:'E1 · 64',x:.05,y:.2},{id:'e2',label:'E2 · 128',x:.05,y:.4},{id:'e3',label:'E3 · 256',x:.05,y:.6},{id:'e4',label:'E4 · 512',x:.05,y:.8},
+  {id:'b',label:'Bottleneck · 1024',x:.5,y:1},
+  {id:'d4',label:'D4 · 512',x:.95,y:.8},{id:'d3',label:'D3 · 256',x:.95,y:.6},{id:'d2',label:'D2 · 128',x:.95,y:.4},{id:'d1',label:'D1 · 64',x:.95,y:.2},{id:'out',label:'Mask (1×1)',x:.95,y:0}],
+ edges:[['in','e1'],['e1','e2','pool'],['e2','e3','pool'],['e3','e4','pool'],['e4','b','pool'],['b','d4','up'],['d4','d3','up'],['d3','d2','up'],['d2','d1','up'],['d1','out'],
+  ['e1','d1','skip'],['e2','d2','skip'],['e3','d3','skip'],['e4','d4','skip']],
+ steps:[
+  {active:['in'],text:'الصورة بتدخل بدقتها الكاملة H×W.'},
+  {active:['e1','e2','e3','e4'],edges:[['in','e1'],['e1','e2'],['e2','e3'],['e3','e4']],text:'<b>الـ encoder:</b> كل مرحلة بتقسم الدقة على ٢ (MaxPool) وبتضاعف الـ channels. بنكسب سياق ونخسر تفاصيل.'},
+  {active:['b'],edges:[['e4','b']],text:'<b>الـ bottleneck:</b> أصغر دقة (H/16) وأغنى سياق (١٠٢٤ channel). «فاهم المشهد» بس مش عارف الحدود بدقة.'},
+  {active:['d4','d3','d2','d1'],edges:[['b','d4'],['d4','d3'],['d3','d2'],['d2','d1']],text:'<b>الـ decoder:</b> كل مرحلة بتكبّر الدقة ×٢ (bilinear). لو ده كل اللي عندنا، الحدود هتطلع مغبّشة.'},
+  {active:['e1','e2','e3','e4','d1','d2','d3','d4'],edges:[['e1','d1'],['e2','d2'],['e3','d3'],['e4','d4']],text:'<b>الـ skips:</b> خرايط الـ encoder عالية الدقة بتتلزّق (concat) في الـ decoder عند نفس المستوى. دلوقتي الـ decoder عنده «إيه» (من تحت) و«فين بالظبط» (من الـ encoder).'},
+  {active:['d1','out'],edges:[['d1','out']],text:'<b>الخرج:</b> <span class="ltr">1×1 conv</span> بتحول ٦٤ channel لـ num_classes عند كل بكسل. بعدها argmax = القناع.'}]});
+
+// ---- lab2: resolution table ----
+L.bars($('d63-lab2'),{labels:['E1','E2','E3','E4','Bott','D4','D3','D2','D1'],height:260,label:'channels عند كل مستوى',
+ params:[{k:'size',label:'input size',min:64,max:512,step:2,v:256},{k:'base',label:'base',min:16,max:64,step:16,v:32}],
+ values:p=>[1,2,4,8,16,8,4,2,1].map(m=>m*p.base),
+ readout:p=>{const s=[p.size];for(let i=0;i<4;i++)s.push(Math.floor(s[i]/2));let bad=0;for(let i=3;i>=0;i--){if(s[i+1]*2!==s[i])bad++}
+   return [['Bottleneck H×W',s[4]+'×'+s[4]],['E1 / E2 / E3 / E4',s.slice(0,4).join(' / ')],['skips محتاجة interpolate',bad+' من 4'],['input % 16',p.size%16]]},
+ note:p=>p.size%16===0?'الأحجام بتطابق الـ skips بالظبط':'فيه أحجام فردية: الـ Up block هيعمل F.interpolate قبل الـ concat'});
+
+// ---- lab3: transposed conv coverage ----
+L.bars($('d63-lab3'),{height:260,label:'تغطية الـ transposed conv',
+ params:[{k:'k',label:'kernel k',min:1,max:6,step:1,v:3},{k:'s',label:'stride s',min:1,max:4,step:1,v:2}],
+ labels:p=>{const n=10,len=(n-1)*p.s+p.k;return Array.from({length:len},(_,i)=>i+1)},
+ values:p=>{const n=10,len=(n-1)*p.s+p.k,c=[];for(let o=0;o<len;o++){let t=0;for(let i=0;i<n;i++){const d=o-i*p.s;if(d>=0&&d<p.k)t++}c.push(t)}return c},
+ colors:['a'],
+ readout:p=>{const n=10,len=(n-1)*p.s+p.k,c=[];for(let o=0;o<len;o++){let t=0;for(let i=0;i<n;i++){const d=o-i*p.s;if(d>=0&&d<p.k)t++}c.push(t)}
+   const mid=c.slice(p.k,len-p.k);const mn=Math.min(...mid),mx=Math.max(...mid);return [['k % s',p.k%p.s],['تغطية الوسط min/max',mn+' / '+mx],['طول الخرج',len]]},
+ note:p=>(p.k%p.s===0)?'k مضاعف لـ s: التغطية في الوسط منتظمة (مفيش checkerboard من التراكب)':'k مش مضاعف لـ s: التغطية بتتبدل، وده نمط الـ checkerboard'});
+
+// ---- lab4: accuracy vs dice ----
+L.bars($('d63-lab4'),{labels:['Pixel acc','IoU','Dice'],max:1,height:260,label:'المقاييس',colors:['a'],
+ params:[{k:'fg',label:'fg %',min:0.5,max:50,step:0.5,v:1},{k:'r',label:'recall',min:0,max:1,step:0.05,v:0},{k:'fp',label:'FP / حجم الورم',min:0,max:2,step:0.1,v:0}],
+ values:p=>{const f=p.fg/100,tp=p.r*f,fn=(1-p.r)*f,fpx=Math.min(p.fp*f,1-f),tn=1-f-fpx;const acc=tp+tn,iou=(tp+fn+fpx)>0?tp/(tp+fn+fpx):0,dice=(2*tp+fn+fpx)>0?2*tp/(2*tp+fn+fpx):0;return [acc,iou,dice]},
+ readout:p=>{const f=p.fg/100,tp=p.r*f,fn=(1-p.r)*f,fpx=Math.min(p.fp*f,1-f);return [['TP (من الصورة)',tp],['FN',fn],['FP',fpx]]},
+ note:p=>p.r===0?'الموديل مش لاقي أي ورم لكن الـ accuracy عالية: فخ':'قارن الـ accuracy بالـ Dice لما تحرّك recall'});
+
+// ---- quiz ----
+AI.quiz($('d63-quizBox'),[
+ ['ليه الـ U-Net محتاجة skip connections بين الـ encoder والـ decoder؟',['لأن الـ transposed conv بتطلبها','عشان تطابق اصطلاحات PyTorch','الـ encoder بيضغط التفاصيل المكانية عشان ياخد سياق، والـ decoder مش هيعرف يبني حدود حادة من غير خرايط الـ encoder عالية الدقة، والـ skips بتديهاله','عشان تسرّع التدريب'],2,'من غير skips الـ decoder بيطلّع تنبؤات H×W من bottleneck بدقة منخفضة جدًا ومش هيحدد حواف واضحة. الـ skips بتلزّق features الـ encoder عالية الدقة (قليلة المعنى) بـ features الـ decoder (غنية المعنى).'],
+ ['مهمة segmentation فيها ٩٩٪ background و١٪ ورم. دربت بـ cross-entropy عادية وجبت ٩٩٪ pixel accuracy. إيه اللي حصل؟',['الـ loss مكتوبة غلط','الموديل اتقارب كويس','الموديل اتعلم يتنبأ background في كل بكسل؛ الـ accuracy بتسيطر عليها الـ class الأغلبية وبتتجاهل اللي يهمك فعلًا','الـ optimizer فشل'],2,'الـ pixel accuracy على داتا غير متوازنة مقياس عديم الفايدة. الشبكة بتاخد الـ ٩٩٪ السهلة بإنها دايمًا تقول background وبتطلّع أقنعة ورم فاضية. العلاج: CE + Dice (مبني على التداخل ومش متأثر بالحجم) وبلّغ بـ IoU/Dice.'],
+ ['أنهي نوع بيفصل العربيات الفردية من نفس الـ class عن بعض؟',['الاتنين نفس الناتج','Semantic segmentation','Instance segmentation','لا واحد منهم، ده بيحتاج detection بس'],2,'الـ semantic بيدي كل بكسل class بس بيدمج الـ instances الملامسة من نفس الـ class في بقعة واحدة. الـ instance بيحتفظ بـ id لكل واحد، فكل عربية أو شخص أو تفاحة ليها قناع مستقل. والـ panoptic بيجمع الاتنين.'],
+ ['استبدلت الـ bilinear upsample + conv ٣×٣ بـ ConvTranspose2d بـ kernel_size=2 وstride=2 وظهر checkerboard في الخرج. ليه؟',['الـ transposed conv معطوبة في PyTorch','الـ learning rate واطي','لما kernel_size مش مقسوم بالتساوي على stride، بكسلات الخرج بتاخد مساهمات غير متساوية من بكسلات الدخل فبيطلع نمط دوري زي الشطرنج','لازم batch norm قبلها'],2,'الـ checkerboard بيجي من التراكب غير المتساوي لمجال الـ transposed conv على مواضع الخرج. استخدام kernel = stride × n (زي kernel 4 وstride 2) أو استبدالها بـ bilinear + conv بيشيل المشكلة. (ملحوظة مني: المعمل ٣ بيوضح إن k=2,s=2 نفسه مفيهوش تراكب؛ الفكرة العامة عن عدم التساوي هي المهمة.)'],
+ ['بلّغت mIoU = 0.78 على ١٠ classes. ليه لازم تنشر IoU لكل class كمان؟',['mIoU بيخبّي فشل class معين؛ ٠٫٧٨ ممكن تكون ٨ classes عند ٠٫٩ واتنين عند ٠٫٣ وده سيناريو نشر مختلف تمامًا','PyTorch بيطلبها','بس للأشعة','الـ IoU لكل class دايمًا أعلى من mIoU'],0,'المتوسط بيضغط توزيع الدرجات، وده بالظبط اللي القارئ محتاج يشوفه عشان يقرر الموديل جاهز ولا لأ. اتنين classes ضعاف في موديل قوي ممكن يخلّوا النظام عديم الفايدة للمهمة.'],
+ ['(سؤال مني) الـ Dice لقناعين: الـ IoU بينهم ٠٫٥. كام الـ Dice؟',['0.5','0.67','0.75','0.25'],1,'Dice = 2·IoU / (1 + IoU) = 1 / 1.5 = 0.667. الـ Dice دايمًا أعلى من أو = الـ IoU للقناع نفسه، بس بيتحركوا في نفس الاتجاه.'],
+ ['(سؤال مني) هتغيّر حجم صور وأقنعة قبل التدريب. إيه الـ interpolation المناسب للقناع؟',['bilinear','bicubic','nearest','أي واحد'],2,'القناع أرقام class صحيحة. الـ bilinear هيطلّع قيم وسط (زي 1.5) ملهاش معنى كـ class. الـ nearest بيحافظ على الأرقام الأصلية.']
+],5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

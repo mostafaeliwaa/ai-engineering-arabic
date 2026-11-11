@@ -1,0 +1,580 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 72 · Code Exec Metric</span>
+  <h1>اليوم ٥٠٠: الكود الصح هو اللي بيعدّي الـ tests</h1>
+  <p class="lede">امبارح قِسنا النص بـ BLEU وF1 وexact-match. بس لو الموديل كتب <b>كود</b>، المقارنة بالحروف ملهاش لازمة: دالتين شكلهم مختلف ممكن يعملوا نفس الحاجة. النهاردة هنبني الـ metric اللي بتشغّل الكود فعلًا: نطلّع الكود من الرد، نشغّله في <b>subprocess</b> معزول بـ timeout وحد للـ output وقايمة imports ممنوعة، ونحسب نسبة الـ assertions اللي عدّت، وفي الآخر <b>pass@k</b>.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (stdlib + numpy)</b></span>
+    <span>النوع: <b>Build</b></span>
+    <span>قبله: <b>Classical Metrics</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects (Days 431–515)</span>
+    <div class="roadmap" id="d500-roadmap" aria-label="أيام الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d500-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر امبارح</h2></div>
+  <ol class="ex">
+    <li>الـ tokenizer اللي كل الـ metrics في درس ٧١ استخدمته كان إيه؟ وليه الدرس سمّاه «عقد» مش «زرار تظبطه»؟
+      <details><summary>الإجابة</summary><code>re.findall(r"\w+", text.lower())</code>: حروف صغيرة وكلمات بس. لو غيّرت الـ tokenizer انت عمليًا بتشغّل benchmark تاني، فالأرقام مش هتتقارن.</details></li>
+    <li>في الـ BLEU، يعني إيه «modified precision»؟
+      <details><summary>الإجابة</summary>عدد كل n-gram في الإجابة بيتقص (clip) لأقصى عدد ظهر بيه في الـ reference، عشان الموديل ميكسبش نقط بإنه يكرر نفس الكلمة.</details></li>
+    <li>الـ ROUGE-L مبني على إيه؟
+      <details><summary>الإجابة</summary>على الـ Longest Common Subsequence بين الإجابة والـ reference (dynamic programming)، وبعدين بيجمع الـ precision والـ recall بـ F-beta.</details></li>
+  </ol>
+  <p>النهاردة نفس فكرة الـ dispatcher على <code>metric_name</code> من درس ٧٠ و٧١، بس الـ metric الجديدة اسمها <code>code_exec</code>.</p>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>ليه subprocess مش exec</div>
+    <div><b>20 min</b>المعامل: الـ sandbox والـ extract وpass@k</div>
+    <div><b>35 min</b>اكتب main.py بإيدك</div>
+    <div><b>15 min</b>التمارين</div>
+    <div><b>10 min</b>الكويز والـ checklist</div>
+  </div>
+</section>
+
+<section id="d500-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه subprocess معزول؟</h2></div>
+  <p>أسهل حاجة تعملها إنك تاخد الكود اللي الموديل كتبه وتعمله <code>exec</code> جوه نفس البرنامج. ودي كارثة لسببين:</p>
+  <ul class="checklist">
+    <li>• <b>الاستقرار:</b> لو الموديل كتب <code>while True: pass</code>، الـ eval كله هيقف للأبد.</li>
+    <li>• <b>الأمان:</b> لو كتب <code>import shutil; shutil.rmtree('/')</code>، هيمسح فعلًا.</li>
+  </ul>
+  <p>الحل: لكل candidate نفتح <b>Python interpreter جديد</b>، نديله الكود، يكتب نتايج الـ assertions على الـ stdout، ولو طوّل نقتله. البرنامج الأساسي (الـ host) يكمّل شغله عادي.</p>
+  <div class="note"><strong>تشبيه:</strong> زي ما تدوق أكل طباخ جديد في مطبخ تجريبي منفصل. لو ولّع النار، المطعم الأساسي ما يتأثرش، وانت معاك ساعة: لو ما خلّصش في الوقت بتطفي البوتاجاز وتكتب «فشل».</div>
+  <p>الـ benchmarks الحقيقية زي <b>HumanEval</b> و<b>MBPP</b> و<b>BigCodeBench</b> و<b>LiveCodeBench</b> كلها بتستخدم subprocess sandbox، وفيه اللي بيحط Docker فوقه. الدرس ده بيقف عند الـ subprocess لأنه portable وstdlib وبيمسك أهم أنواع الفشل في eval تعليمي. في الـ production بيزودوا seccomp وعزل للشبكة وfilesystem للقراءة بس.</p>
+</section>
+
+<section id="d500-shape">
+  <div class="station-head"><span class="tag">02</span><h2>شكل مهمة code_exec</h2></div>
+  <p>المهمة فيها <code>targets</code> عبارة عن list من assertion strings زي <code>"add(1, 2) == 3"</code>. الـ runner بيعمل الآتي:</p>
+  <ol class="ex">
+    <li><code>extract_code</code>: يطلّع أول code block محاط بـ ``` من رد الموديل (نفس قاعدة الـ post-process من درس ٧٠).</li>
+    <li>يبني <b>runner script</b> حوالين الكود والـ assertions.</li>
+    <li>يشغّله في subprocess بـ timeout وdenylist وحد للـ output.</li>
+    <li>يقرا JSON من الـ stdout فيه نتيجة كل assertion.</li>
+    <li><b>score = passed / total</b>، رقم بين 0 و1.</li>
+  </ol>
+  <div class="formula">3 assertions, 2 passed → score = 2/3 = 0.667 , exit = assertion_fail</div>
+  <p>المهم: الـ runner بيرجّع <b>نفس الشكل</b> مهما حصل. لو الـ subprocess وقع، الـ crash بيتحول لـ error code موحد، مش traceback يطلع في وش الـ harness.</p>
+</section>
+
+<section id="d500-lab1">
+  <div class="station-head"><span class="tag">03</span><h2>معمل: شغّل candidate جوه الـ sandbox</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>اختار candidate من اللي تحت، وظبط الـ timeout، ودوس «شغّل». هتشوف ساعة الـ wall-clock بتتملي، وعداد الـ output بيطلع، وفي الآخر الـ exit code والـ score.</p>
+      <p>المهمة: <code>add(a, b)</code> ومعاها ٣ assertions:<br><span class="ltr mono" style="font-size:14px">add(1,2)==3 · add(-5,5)==0 · add(100,1)==101</span></p>
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">الـ candidate: <select id="d500-cand"></select></label>
+      <label style="display:grid;gap:2px">timeout_s المطلوب = <b class="mono" id="d500-tov">3.0</b> → بعد الـ clamp: <b class="mono" id="d500-toc">3.0</b><input type="range" id="d500-to" min="0" max="40" step="0.1" value="3"></label>
+      <div class="note ai"><strong>لاحظ:</strong> <code>run_candidate</code> بيعمل clamp للـ timeout بين <b>0.1</b> و<b>30</b> ثانية. جرّب تحطه 0 أو 40.</div>
+    </div>
+    <div class="instrument">
+      <pre class="term" id="d500-src" style="min-height:120px"></pre>
+      <canvas id="d500-sb" width="520" height="190" aria-label="ساعة الوقت وعداد الخرج"></canvas>
+      <div class="btns"><button type="button" class="primary" id="d500-run">شغّل</button></div>
+      <div class="readout">
+        <div><small>exit_code</small><b id="d500-ex">—</b></div>
+        <div><small>passed / total</small><b id="d500-pt">—</b></div>
+        <div><small>score</small><b id="d500-sc">—</b></div>
+      </div>
+      <div class="verdict" id="d500-det"></div>
+    </div>
+  </div>
+</section>
+
+<section id="d500-deny">
+  <div class="station-head"><span class="tag">04</span><h2>الـ denylist والـ timeout والـ output cap</h2></div>
+  <h3>الـ Denylist (قايمة الممنوعات)</h3>
+  <p>قبل ما الكود يشتغل، الـ runner بيستبدل دالة <code>__import__</code> بنسخة بتشيك: لو اسم الموديول أو أوله في القايمة، بترمي <code>ImportError("denied module: ...")</code>. وكمان بيبدّل <code>os.system</code> بدالة بترمي <code>OSError</code>.</p>
+  <div class="formula">subprocess · socket · shutil · requests · urllib (.request .error .parse) · ctypes · http.client · asyncio.subprocess · os.system</div>
+  <div class="note"><strong>مهم جدًا:</strong> الدرس صريح إن ده <b>مش</b> حماية مضمونة. أي كود عدائي مصمم كويس يقدر يهرب من أي sandbox جوه Python. الـ denylist «backstop» يمسك الكود الكسلان. اللي شايل الحمل فعلًا هما <b>الـ timeout</b> و<b>الـ output cap</b>.</div>
+  <h3>الـ Wall-clock timeout</h3>
+  <p>كل subprocess له ٣ ثواني افتراضي. لو خلصوا، الـ runner بيقتل الـ process ويسجل <code>timeout</code> وscore صفر ويكمل للي بعده. ممكن تطلب وقت أطول للـ tests التقيلة، بس بيتعمله clamp بين 0.1 و30 ثانية عشان الـ suite كلها تفضل محدودة. في درس ٧٥ الـ runner بيظبطه مرة واحدة عن طريق <code>code_exec_timeout_s</code>.</p>
+  <h3>الـ Output cap</h3>
+  <p>كود بيطبع في loop لا نهائي ممكن يملا ذاكرة الـ host. فالـ runner بيقرا الـ stdout على دفعات (8192 byte) ولو المجموع عدّى <b>256 KB</b> بيقتل الـ child فورًا ويسجل <code>exit_code = error</code> مع <code>detail = "output overflow"</code>. مفيش exit code جديد للحالة دي.</p>
+</section>
+
+<section id="d500-codes">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Exit codes الخمسة</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>exit_code</th><th>إمتى</th><th>مثال</th></tr>
+    <tr><td class="ltr">pass</td><td>كل الـ assertions عدّت</td><td>دالة add صح</td></tr>
+    <tr><td class="ltr">assertion_fail</td><td>الكود اشتغل بس assertion واحد على الأقل فشل (حتى لو الدالة رمت exception جوه الـ assertion)</td><td>add بترجع a+b+1</td></tr>
+    <tr><td class="ltr">syntax_error</td><td><code>compile()</code> رمى SyntaxError</td><td>نسي النقطتين بعد def</td></tr>
+    <tr><td class="ltr">timeout</td><td>الـ wall clock خلص</td><td>time.sleep(10) أو while True</td></tr>
+    <tr><td class="ltr">error</td><td>أي crash تاني: denylist، exec error، output overflow، non-json، مفيش assertions</td><td>import subprocess</td></tr>
+  </table></div>
+  <p>الـ score دايمًا كسر. الـ exit code ده <b>metadata</b>: الدروس الجاية تقرر تعتبر الـ timeout صفر ولا «داتا ناقصة».</p>
+</section>
+
+<section id="d500-lab2">
+  <div class="station-head"><span class="tag">06</span><h2>معمل: extract_code بعينك</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ regex هو <code>```(?:[a-zA-Z0-9_]*)\n(.*?)```</code> مع DOTALL. القواعد:</p>
+      <ol class="ex">
+        <li>لقى block مقفول؟ يرجّع اللي جواه (أول واحد بس).</li>
+        <li>مفيش block بس فيه ``` في النص؟ يعني block مفتوح ومش مقفول → <code>None</code> → score صفر.</li>
+        <li>مفيش ``` خالص؟ يعتبر النص كله كود.</li>
+      </ol>
+      <p>اكتب أي رد في الصندوق وشوف النتيجة لايف، أو جرّب الأمثلة.</p>
+      <div class="btns">
+        <button type="button" data-ex="0">python block</button>
+        <button type="button" data-ex="1">block من غير لغة</button>
+        <button type="button" data-ex="2">كود خام</button>
+        <button type="button" data-ex="3">block مش مقفول</button>
+        <button type="button" data-ex="4">blockين</button>
+      </div>
+    </div>
+    <div class="instrument">
+      <textarea id="d500-gen" rows="7" dir="ltr" style="font-family:var(--f-mono);font-size:13px;width:100%;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px" aria-label="رد الموديل"></textarea>
+      <div class="verdict" id="d500-xv"></div>
+      <pre class="term" id="d500-xo" style="min-height:60px"></pre>
+    </div>
+  </div>
+</section>
+
+<section id="d500-passk">
+  <div class="station-head"><span class="tag">07</span><h2>Pass@k: لو سحبت k محاولات، إيه احتمال واحدة منهم تنجح؟</h2></div>
+  <p>لما الموديل يولّد <b>n</b> حل لنفس المسألة ويكون <b>c</b> منهم صح، الـ unbiased estimator اللي HumanEval بيستخدمه:</p>
+  <div class="formula">pass@k(n, c, k) = 1 − C(n−c, k) / C(n, k)</div>
+  <p>المعنى: <span class="ltr">C(n−c,k)/C(n,k)</span> هو احتمال إنك لو اخترت k من الـ n عشوائي، كلهم يطلعوا غلط. واحد ناقص ده = احتمال واحد على الأقل صح.</p>
+  <div class="note"><strong>تشبيه:</strong> كيس فيه ١٠ كور، ٢ منهم دهب. لو سحبت ٥ مرة واحدة، إيه احتمال تطلع بدهباية؟ ده بالظبط pass@5 مع n=10 وc=2: <span class="ltr">1 − C(8,5)/C(10,5) = 1 − 56/252 ≈ 0.778</span>.</div>
+  <p><b>الحالة الطرفية:</b> لو <span class="ltr">n − c &lt; k</span> يعني الغلط أقل من حجم السحبة، يبقى مستحيل تسحب k كلهم غلط، فالنتيجة <b>1</b>. الكود بيتعامل معاها صريح. ولو <span class="ltr">k &gt; n</span> بيرجّع 1 لو c &gt; 0 وإلا 0. وبيحسب الضرب في الـ log space عشان الأرقام ما تنفجرش.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: حرّك n وc وk</h3>
+      <p>الأعمدة هي pass@k لكل k من 1 لـ n. العمود المظلل هو k اللي اخترته. الخط البرتقالي هو التقدير الساذج <span class="ltr">1−(1−c/n)^k</span> (سحب مع إرجاع) للمقارنة.</p>
+      <p>لاحظ: <b>pass@1 = c/n</b> دايمًا، وpass@n = 1 لو c &gt; 0.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d500-pk" width="520" height="260" aria-label="رسم pass at k"></canvas>
+      <div class="mrow">
+        <label>n = <span id="d500-nv">10</span><input type="range" id="d500-n" min="1" max="30" value="10"></label>
+        <label>c = <span id="d500-cv">2</span><input type="range" id="d500-c" min="0" max="10" value="2"></label>
+        <label>k = <span id="d500-kv">5</span><input type="range" id="d500-k" min="1" max="10" value="5"></label>
+      </div>
+      <div class="readout">
+        <div><small>pass@k (unbiased)</small><b id="d500-pu">—</b></div>
+        <div><small>naive</small><b id="d500-pn">—</b></div>
+        <div><small>pass@1 = c/n</small><b id="d500-p1">—</b></div>
+      </div>
+    </div>
+  </div>
+  <p>لعدة مهام، <code>pass_at_k_estimator</code> بيحسب pass@k لكل مهمة ويطلع المتوسط (<code>np.mean</code>). ده اللي هيستخدمه الـ leaderboard في درس ٧٤.</p>
+</section>
+
+<section id="d500-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: اكتب main.py</h2></div>
+  <p>من جذر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/72-code-exec-metric/code/main.py
+python3 -m unittest discover -s phases/19-capstone-projects/72-code-exec-metric/code/tests</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_code_exec.py</code> واكتبه خطوة خطوة بنفسك. بص على الأصل لما تتزنق بس.</p>
+
+  <h3>خطوة ١: الثوابت والـ exit codes والنتيجة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import json, math, os, re, select, subprocess, sys, time
+from dataclasses import dataclass, field
+import numpy as np
+
+CODE_BLOCK_RE = re.compile(r"```(?:[a-zA-Z0-9_]*)\n(.*?)```", re.DOTALL)
+DEFAULT_TIMEOUT_S = 3.0
+MAX_TIMEOUT_S = 30.0
+OUTPUT_CAP_BYTES = 256 * 1024          <span class="c"># حد الخرج 256 KB</span>
+
+EXIT_PASS, EXIT_ASSERTION_FAIL = "pass", "assertion_fail"
+EXIT_SYNTAX_ERROR, EXIT_TIMEOUT, EXIT_ERROR = "syntax_error", "timeout", "error"
+EXIT_CODES = (EXIT_PASS, EXIT_ASSERTION_FAIL, EXIT_SYNTAX_ERROR, EXIT_TIMEOUT, EXIT_ERROR)
+
+@dataclass
+class ExecResult:                       <span class="c"># نفس الشكل مهما حصل</span>
+    score: float
+    exit_code: str
+    passed: int
+    total: int
+    detail: str = ""
+    per_assertion: list = field(default_factory=list)</pre></div>
+
+  <h3>خطوة ٢: extract_code</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def extract_code(text):
+    m = CODE_BLOCK_RE.search(text)
+    if m:
+        return m.group(1)               <span class="c"># أول block مقفول</span>
+    if "```" in text:
+        return None                     <span class="c"># block مفتوح ومش مقفول</span>
+    return text                         <span class="c"># مفيش backticks: النص كله كود</span></pre></div>
+
+  <h3>خطوة ٣: الـ runner template (القطعة الأهم)</h3>
+  <p>ده سكريبت كامل كـ string بيتبعت لـ Python جديد بـ <code>-c</code>. ركّز فيه لحد ما تقدر تتوقع الـ JSON اللي هيرجع.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>RUNNER_TEMPLATE = r"""
+import json, sys
+import builtins as _builtins
+
+_DENIED_MODULES = {
+    'subprocess', 'socket', 'shutil', 'requests', 'urllib',
+    'urllib.request', 'urllib.error', 'urllib.parse', 'ctypes',
+    'http.client', 'asyncio.subprocess',
+}
+_real_import = _builtins.__import__
+def _guarded_import(name, *args, **kwargs):
+    base = name.split('.')[0]
+    if name in _DENIED_MODULES or base in _DENIED_MODULES:
+        raise ImportError("denied module: %s" % name)
+    return _real_import(name, *args, **kwargs)
+_builtins.__import__ = _guarded_import
+
+import os as _os
+def _denied_system(_cmd):
+    raise OSError("os.system denied")
+_os.system = _denied_system
+
+CODE = __PLACEHOLDER_CODE__
+ASSERTIONS = __PLACEHOLDER_ASSERTIONS__
+
+ns = {}
+status = {"exit_code": "pass", "results": [], "detail": ""}
+try:
+    compiled = compile(CODE, "&lt;candidate&gt;", "exec")
+except SyntaxError as exc:
+    status["exit_code"] = "syntax_error"
+    status["detail"] = "SyntaxError: %s" % exc
+    sys.stdout.write(json.dumps(status)); sys.exit(0)
+except Exception as exc:
+    status["exit_code"] = "error"
+    status["detail"] = "compile error: %r" % exc
+    sys.stdout.write(json.dumps(status)); sys.exit(0)
+
+try:
+    exec(compiled, ns)
+except Exception as exc:
+    status["exit_code"] = "error"
+    status["detail"] = "exec error: %s" % exc
+    sys.stdout.write(json.dumps(status)); sys.exit(0)
+
+passed = 0
+for assertion in ASSERTIONS:
+    try:
+        ok = bool(eval(assertion, ns))
+    except Exception as exc:
+        ok = False
+        status["detail"] = "assertion error: %s" % exc
+    status["results"].append(ok)
+    if ok:
+        passed += 1
+
+if passed &lt; len(ASSERTIONS):
+    status["exit_code"] = "assertion_fail"
+elif len(ASSERTIONS) &gt; 0:
+    status["exit_code"] = "pass"
+sys.stdout.write(json.dumps(status))
+""".strip()
+
+def _build_runner(code, assertions):    <span class="c"># repr بيحوّل الكود لـ string literal آمن</span>
+    s = RUNNER_TEMPLATE.replace("__PLACEHOLDER_CODE__", repr(code))
+    return s.replace("__PLACEHOLDER_ASSERTIONS__", repr(list(assertions)))</pre></div>
+  <p class="note">نسخة الريبو فيها شرط أطول شوية في آخر الـ template بيوصل لنفس النتيجة. أنا بسّطته هنا: لو فيه assertion فشل → <code>assertion_fail</code>.</p>
+
+  <h3>خطوة ٤: run_candidate (spawn + timeout + output cap)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def run_candidate(code, assertions, timeout_s=DEFAULT_TIMEOUT_S):
+    if not assertions:
+        return ExecResult(0.0, EXIT_ERROR, 0, 0, detail="no assertions provided")
+    timeout_s = min(max(0.1, float(timeout_s)), MAX_TIMEOUT_S)   <span class="c"># clamp</span>
+    script = _build_runner(code, assertions)
+    try:
+        proc = subprocess.Popen([sys.executable, "-I", "-c", script],   <span class="c"># -I: isolated mode</span>
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except Exception as exc:
+        return ExecResult(0.0, EXIT_ERROR, 0, len(assertions), detail=f"spawn error: {exc!r}")
+
+    with proc:
+        deadline = time.monotonic() + timeout_s
+        chunks, nbytes, overflow, timed_out = [], 0, False, False
+        fd = proc.stdout
+        os.set_blocking(fd.fileno(), False)
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining &lt;= 0:
+                    timed_out = True; break                     <span class="c"># الوقت خلص</span>
+                try:
+                    r, _, _ = select.select([fd], [], [], min(remaining, 0.1))
+                except (OSError, ValueError):
+                    break
+                if r:
+                    chunk = fd.read(8192)
+                    if chunk is None: continue
+                    if chunk == b"": break                      <span class="c"># EOF</span>
+                    nbytes += len(chunk)
+                    if nbytes &gt; OUTPUT_CAP_BYTES:
+                        overflow = True; break                  <span class="c"># طبع كتير</span>
+                    chunks.append(chunk)
+                elif proc.poll() is not None:                   <span class="c"># خلص: اقرا الباقي</span>
+                    tail = fd.read()
+                    if tail:
+                        nbytes += len(tail)
+                        if nbytes &gt; OUTPUT_CAP_BYTES: overflow = True
+                        else: chunks.append(tail)
+                    break
+        finally:
+            if proc.poll() is None:
+                proc.kill()                                     <span class="c"># اقتله لو لسه عايش</span>
+                try: proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired: pass
+            try: stderr_bytes = proc.stderr.read() if proc.stderr else b""
+            except Exception: stderr_bytes = b""
+
+    n = len(assertions)
+    if timed_out:
+        return ExecResult(0.0, EXIT_TIMEOUT, 0, n, detail=f"timeout after {timeout_s:.2f}s")
+    if overflow:
+        return ExecResult(0.0, EXIT_ERROR, 0, n, detail="output overflow")
+    stdout = b"".join(chunks).decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        err = stderr_bytes.decode("utf-8", errors="replace")
+        return ExecResult(0.0, EXIT_ERROR, 0, n, detail=f"subprocess exit {proc.returncode}: {err[:200]}")
+    try:
+        status = json.loads(stdout) if stdout else {}
+    except json.JSONDecodeError:
+        return ExecResult(0.0, EXIT_ERROR, 0, n, detail="non-json output")
+
+    exit_code = status.get("exit_code", EXIT_ERROR)
+    results = list(status.get("results", []))
+    passed = sum(1 for r in results if r)
+    score = passed / n
+    if exit_code not in EXIT_CODES: exit_code = EXIT_ERROR        <span class="c"># تطبيع</span>
+    if exit_code == EXIT_PASS and passed &lt; n: exit_code = EXIT_ASSERTION_FAIL
+    if exit_code == EXIT_ASSERTION_FAIL and passed == n: exit_code = EXIT_PASS
+    return ExecResult(score, exit_code, passed, n, status.get("detail", ""), results)</pre></div>
+
+  <h3>خطوة ٥: score_code_exec وpass@k</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def score_code_exec(prediction, assertions, timeout_s=DEFAULT_TIMEOUT_S):
+    code = extract_code(prediction)
+    if code is None:
+        return 0.0                              <span class="c"># block مش مقفول = صفر</span>
+    return run_candidate(code, assertions, timeout_s=timeout_s).score
+
+def pass_at_k(n, c, k):
+    if n &lt; 0 or c &lt; 0 or k &lt;= 0:
+        raise ValueError("n, c >= 0 and k > 0")
+    if c &gt; n:
+        raise ValueError("c cannot exceed n")
+    if k &gt; n:
+        return float(c &gt; 0)
+    if n - c &lt; k:
+        return 1.0                              <span class="c"># مستحيل تسحب k كلهم غلط</span>
+    log_prob = 0.0                              <span class="c"># C(n-c,k)/C(n,k) كحاصل ضرب في الـ log</span>
+    for i in range(k):
+        log_prob += math.log(n - c - i) - math.log(n - i)
+    return float(1.0 - math.exp(log_prob))
+
+def pass_at_k_estimator(samples, ks):           <span class="c"># samples: list لكل مهمة فيها True/False</span>
+    out = {}
+    for k in ks:
+        per_task = [pass_at_k(len(s), sum(1 for x in s if x), k) for s in samples]
+        out[k] = float(np.mean(per_task)) if per_task else 0.0
+    return out</pre></div>
+
+  <h3>خطوة ٦: الـ demo</h3>
+  <p>الـ demo بيشغّل ٥ أمثلة (passes_all، one_assertion_fails، syntax_error، timeout بـ 0.6 ثانية، denylist_subprocess) ويطبع OK لو الـ exit والـ score زي المتوقع، وبعدين pass@k على ٣ مهام كل واحدة ١٠ samples (٢ صح، ١ صح، صفر). انسخ <code>_demo_examples</code> و<code>demo</code> من الملف الأصلي أو اكتبهم من الوصف ده.</p>
+  <details><summary>الناتج المتوقع (شكله)</summary><pre class="term">  [OK] passes_all               exit=pass           score=1.00 detail=
+  [OK] one_assertion_fails      exit=assertion_fail score=0.00 detail=
+  [OK] syntax_error             exit=syntax_error   score=0.00 detail=SyntaxError: ...
+  [OK] timeout                  exit=timeout        score=0.00 detail=timeout after 0.60s
+  [OK] denylist_subprocess      exit=error          score=0.00 detail=exec error: denied module: subprocess
+  pass@1=0.100  pass@5=0.426  pass@10=0.667</pre>
+  <p>أرقام pass@k محسوبة باليد من الصيغة: pass@1 = متوسط (0.2، 0.1، 0) = 0.1. pass@5 = متوسط (1−56/252، 1−126/252، 0) ≈ 0.426. pass@10 = متوسط (1، 1، 0) ≈ 0.667. نصوص الـ detail ممكن تختلف شوية حسب نسخة Python.</p></details>
+  <p class="note">ملاحظة: في مثال <code>one_assertion_fails</code> الدالة بترجع a+b+1 فالاتنين assertions بيفشلوا، عشان كده الـ score صفر مع إن الـ exit هو <code>assertion_fail</code>.</p>
+</section>
+
+<section id="d500-ex">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <p>الدرس مفيهوش قايمة تمارين منفصلة، فدي تمارين مبنية على الـ tests وقسم «Going further»:</p>
+  <ol class="ex">
+    <li><b>اتوقع قبل ما تشغّل:</b> لكل test في <code>test_exec.py</code> اكتب الـ exit_code والـ score على ورقة، وبعدين شغّل الـ tests وقارن.
+      <details><summary>تلميح</summary>أصعب واحد: <code>test_runtime_error_during_assertion</code>. الدالة بترمي RuntimeError، بس ده بيحصل جوه <code>eval(assertion)</code> مش جوه <code>exec</code>، فبيتمسك ويتحسب assertion فاشل → <code>assertion_fail</code> وscore صفر، مش <code>error</code>.</details></li>
+    <li><b>Output overflow:</b> اكتب candidate بيطبع لحد ما يعدّي 256 KB واتأكد إن النتيجة <code>error</code> مع <code>"output overflow"</code>.
+      <details><summary>إجابة</summary><code>run_candidate("while True:\n    print('x'*1000)\n", ["True"])</code>. خلّي بالك إن الـ runner نفسه بيكتب JSON على نفس الـ stdout، فالطباعة الكتير بتعدّي الحد قبل الـ timeout.</details></li>
+    <li><b>pass@k يدوي:</b> احسب <span class="ltr">pass_at_k(10, 1, 5)</span> و<span class="ltr">pass_at_k(5, 3, 4)</span>.
+      <details><summary>إجابة</summary>الأول: <span class="ltr">1 − C(9,5)/C(10,5) = 1 − 126/252 = 0.5</span>. التاني: <span class="ltr">n−c = 2 &lt; k = 4</span> → 1.0. جرّبهم في المعمل ٠٧.</details></li>
+    <li><b>Going further ١:</b> حط الـ runner في Docker image عشان مشاكل SIGKILL على Windows تختفي.
+      <details><summary>تلميح</summary>بدل <code>[sys.executable, "-I", "-c", script]</code> شغّل <code>docker run --rm -i --network none python:3.12 python -I -</code> وابعت السكريبت على الـ stdin. <code>--network none</code> بيقفل الشبكة بدل ما تعتمد على الـ denylist.</details></li>
+    <li><b>Going further ٢:</b> بدّل الـ assertion strings بملف unit tests حقيقي.
+      <details><summary>تلميح</summary>اكتب الكود في ملف مؤقت جوه <code>tempfile.TemporaryDirectory()</code> ومعاه <code>test_candidate.py</code>، وشغّل <code>python -m unittest</code> كـ subprocess، وعِد الـ tests اللي عدّت. الدرس بيقول صراحة إن الـ assertion strings «toy tests».</details></li>
+    <li><b>إضافة مني · تمرين شغل حقيقي:</b> عندك موديل بيولّد ٢٠ حل لكل مسألة على ١٠٠ مسألة. اكتب سكريبت يقرا JSONL (سطر لكل generation: <code>task_id</code>، <code>text</code>)، ويشغّل <code>score_code_exec</code>، ويعتبر الـ sample ناجح لو score == 1.0، ويطلع pass@1 وpass@10 وجدول بعدد كل exit_code.
+      <details><summary>تلميح</summary>اجمع لكل task_id list من booleans، وابعتها لـ <code>pass_at_k_estimator(samples, [1, 10])</code>. لعدّ الـ exit codes استخدم <code>run_candidate</code> مباشرة و<code>collections.Counter</code>. لو نسبة <code>timeout</code> عالية، دي إشارة إن الـ timeout قصير أو الموديل بيكتب loops، والفرق ده بيبان من الـ detail.</details></li>
+  </ol>
+</section>
+
+<section id="d500-mine">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: الحدس والأخطاء الشائعة وفين بيظهر ده</h2></div>
+  <ul class="checklist">
+    <li>• <b>pass@1 مش هو pass@k مقسوم:</b> pass@k بيكبر بسرعة مع k. موديل pass@1 بتاعه 10% ممكن pass@10 بتاعه أعلى بكتير. لما تقارن موديلين اتأكد إن الـ k واحد.</li>
+    <li>• <b>متستخدمش الصيغة الساذجة:</b> <span class="ltr">1−(1−c/n)^k</span> بتفترض سحب مع إرجاع. الصيغة اللي في الدرس unbiased لأنها سحب من غير إرجاع من نفس الـ n samples. شوف الفرق في المعمل ٠٧.</li>
+    <li>• <b>متحسبش C(n,k) مباشرة:</b> مع n كبير الأرقام بتنفجر. عشان كده الكود بيجمع logs.</li>
+    <li>• <b>الـ denylist مش أمان:</b> <code>__import__</code> ممكن يتلف عليه (مثلًا عن طريق <code>importlib</code> أو أوبجكتات موجودة). متشغّلش كود من الإنترنت بالـ runner ده من غير container.</li>
+    <li>• <b>الـ timeout بيقيس وقت الـ host:</b> على جهاز مشغول ممكن حل صح ياخد timeout. سجّل الـ exit code عشان تفرّق بين «غلط» و«بطيء».</li>
+    <li>• <b>في الـ Agents:</b> نفس الـ pattern (subprocess + timeout + output cap) هو اللي بيحمي أي agent عنده code interpreter tool، وهو أساس benchmarks زي SWE-bench اللي بتشغّل tests حقيقية.</li>
+    <li>• <b>في الـ RL للكود:</b> نسبة الـ assertions اللي عدّت بتستخدم كـ reward قابل للتحقق (verifiable reward) لما بيدربوا موديلات كود.</li>
+  </ul>
+</section>
+
+<section id="d500-quiz">
+  <div class="station-head"><span class="tag">11</span><h2>الكويز</h2></div>
+  <div class="quiz" id="d500-quizbox"></div>
+</section>
+
+<section id="d500-check">
+  <div class="station-head"><span class="tag">12</span><h2>الـ Checklist</h2></div>
+  <ul class="checklist" id="d500-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه subprocess مش exec</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أعرف الـ ٥ exit codes وإمتى كل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم إن الـ timeout والـ output cap هما الحماية الأساسية والـ denylist backstop</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت run_candidate بإيدي والـ tests عدّت</label></li>
+    <li><label><input type="checkbox" data-ck="5"> أقدر أحسب pass@k يدوي وأفهم الحالة الطرفية</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>فين ده بيظهر</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الفكرة</th><th>فين</th></tr>
+    <tr><td>Subprocess sandbox</td><td>HumanEval وMBPP وBigCodeBench وLiveCodeBench</td></tr>
+    <tr><td>pass@k unbiased</td><td>تقارير موديلات الكود والـ leaderboards (درس ٧٤)</td></tr>
+    <tr><td>Exit codes كـ metadata</td><td>الـ eval runner في درس ٧٥ (<code>code_exec_timeout_s</code>)</td></tr>
+    <tr><td>Timeout + output cap</td><td>أدوات الـ code interpreter عند الـ agents</td></tr>
+    <tr><td>Assertions → score</td><td>verifiable rewards في تدريب موديلات الكود</td></tr>
+  </table></div>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F72-code-exec-metric" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/72-code-exec-metric</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=500,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d500-roadmap').closest('.day');
+
+// roadmap: phase 19 = days 431..515
+const rm=$('d500-roadmap');
+for(let d=431;d<=515;d++){const s=document.createElement('span');s.textContent=d;s.style.width='38px';if(d===N){s.className='now';s.setAttribute('aria-current','step')}rm.appendChild(s)}
+setTimeout(()=>{const now=rm.querySelector('.now');if(now)rm.scrollLeft=now.offsetLeft-rm.clientWidth/2},50);
+
+// ---------- Lab 1: sandbox ----------
+const C=[
+ {name:'دالة صح',src:'def add(a, b):\n    return a + b',res:[1,1,1],ex:'pass',t:0.15,out:0.1,det:''},
+ {name:'off-by-one (a+b+1)',src:'def add(a, b):\n    return a + b + 1',res:[0,0,0],ex:'assertion_fail',t:0.15,out:0.1,det:''},
+ {name:'بتعدّي جزء (if a > 50)',src:'def add(a, b):\n    if a > 50:\n        return a + b\n    return 0',res:[0,1,1],ex:'assertion_fail',t:0.15,out:0.1,det:''},
+ {name:'Syntax error',src:'def add(a, b)\n    return a + b',res:[],ex:'syntax_error',t:0.1,out:0.1,det:'SyntaxError: expected \':\''},
+ {name:'time.sleep(10)',src:'import time\ndef add(a, b):\n    time.sleep(10)\n    return a + b',res:[],ex:'timeout',t:10,out:0,det:'timeout'},
+ {name:'import subprocess',src:"import subprocess\nsubprocess.run(['ls'])\ndef add(a, b):\n    return a + b",res:[],ex:'error',t:0.1,out:0.1,det:'exec error: denied module: subprocess'},
+ {name:'بيطبع للأبد',src:"while True:\n    print('x' * 1000)",res:[],ex:'error',t:1e9,out:1e9,det:'output overflow'},
+ {name:'بترمي exception',src:"def add(a, b):\n    raise RuntimeError('boom')",res:[0,0,0],ex:'assertion_fail',t:0.12,out:0.1,det:'assertion error: boom'}
+];
+const sel=$('d500-cand');C.forEach((c,i)=>{const o=document.createElement('option');o.value=i;o.textContent=c.name;sel.appendChild(o)});
+const sb=$('d500-sb'),sx=AI.setupCanvas(sb),SW=+sb.dataset.w,SH=+sb.dataset.h;
+let anim=null,state={tf:0,of:0,to:3};
+const clamp=v=>Math.min(Math.max(0.1,v),30);
+function showSrc(){$('d500-src').textContent=C[+sel.value].src}
+function tov(){const v=+$('d500-to').value;$('d500-tov').textContent=v.toFixed(1);$('d500-toc').textContent=clamp(v).toFixed(1);state.to=clamp(v);drawSB()}
+function drawSB(){
+  sx.clearRect(0,0,SW,SH);sx.font='13px JetBrains Mono, monospace';sx.textAlign='left';
+  const bars=[['wall clock',state.tf,'0s',state.to.toFixed(1)+'s'],['stdout bytes',state.of,'0','256 KB']];
+  bars.forEach((b,i)=>{const y=30+i*80;sx.fillStyle=css('--ink');sx.fillText(b[0],10,y-8);
+    sx.fillStyle=css('--soft');sx.fillRect(10,y,SW-20,26);
+    sx.fillStyle=b[1]>=1?css('--bad'):(i?css('--vec-b'):css('--vec-a'));sx.fillRect(10,y,(SW-20)*Math.min(1,b[1]),26);
+    sx.strokeStyle=css('--bad');sx.lineWidth=2;sx.beginPath();sx.moveTo(SW-10,y-4);sx.lineTo(SW-10,y+30);sx.stroke();
+    sx.fillStyle=css('--muted');sx.fillText(b[2],10,y+44);sx.textAlign='right';sx.fillText('limit '+b[3],SW-10,y+44);sx.textAlign='left'});
+}
+function reset(){['d500-ex','d500-pt','d500-sc'].forEach(i=>$(i).textContent='—');$('d500-det').textContent='';state.tf=0;state.of=0;drawSB()}
+function run(){
+  if(anim)cancelAnimationFrame(anim);reset();
+  const c=C[+sel.value],to=state.to;
+  // simulated: time fraction target and output fraction target
+  const tEnd=Math.min(1,c.t/to),oEnd=Math.min(1,c.out===1e9?1:c.out/256*0.02);
+  const overflow=c.det==='output overflow';
+  const timeout=c.t>=to&&!overflow;
+  const dur=1400,st=performance.now();
+  // overflow: output reaches cap at ~30% of the timeout bar
+  const step=now=>{const p=Math.min(1,(now-st)/dur);
+    if(overflow){state.of=p;state.tf=p*0.3}
+    else if(timeout){state.tf=p;state.of=0}
+    else{state.tf=tEnd*p;state.of=oEnd*p}
+    drawSB();
+    if(p<1){anim=requestAnimationFrame(step);return}
+    anim=null;finish(c,timeout,overflow,to)};
+  anim=requestAnimationFrame(step);
+}
+function finish(c,timeout,overflow,to){
+  let ex=c.ex,passed=c.res.reduce((a,b)=>a+b,0),det=c.det;
+  if(timeout){ex='timeout';passed=0;det='timeout after '+to.toFixed(2)+'s'}
+  else if(c.ex==='timeout'){ex='pass';passed=3;det='خلص قبل الـ timeout (الـ timeout كبير كفاية)'}
+  if(overflow){ex='error';passed=0}
+  $('d500-ex').textContent=ex;$('d500-pt').textContent=passed+' / 3';$('d500-sc').textContent=f(passed/3,3);
+  const v=$('d500-det');v.textContent=(det?'detail: '+det:'detail: ""');v.style.color=ex==='pass'?css('--ok'):css('--bad');
+}
+sel.addEventListener('change',()=>{showSrc();reset()});$('d500-to').addEventListener('input',tov);$('d500-run').addEventListener('click',run);
+showSrc();tov();
+
+// ---------- Lab 2: extract ----------
+const BT='`'.repeat(3);
+const EX=[
+ 'Here is the solution:\n'+BT+'python\ndef add(a, b):\n    return a + b\n'+BT+'\nHope it helps!',
+ 'Here:\n'+BT+'\ndef f():\n    return 1\n'+BT,
+ 'def f(): pass',
+ BT+'python\ndef f',
+ 'First try:\n'+BT+'python\ndef add(a,b): return a-b\n'+BT+'\nFixed:\n'+BT+'python\ndef add(a,b): return a+b\n'+BT
+];
+const RE=/```(?:[a-zA-Z0-9_]*)\n([\s\S]*?)```/;
+const ta=$('d500-gen');
+function extract(){const t=ta.value,m=RE.exec(t),v=$('d500-xv'),o=$('d500-xo');
+  if(m){v.textContent='لقى block مقفول → رجّع اللي جواه';v.style.color=css('--ok');o.textContent=m[1]}
+  else if(t.includes(BT)){v.textContent='فيه ``` بس مفيش block مقفول → None → score = 0';v.style.color=css('--bad');o.textContent='None'}
+  else{v.textContent='مفيش backticks → النص كله بيتعامل ككود';v.style.color=css('--vec-b');o.textContent=t}}
+root.querySelectorAll('[data-ex]').forEach(b=>b.addEventListener('click',()=>{ta.value=EX[+b.dataset.ex];extract()}));
+ta.addEventListener('input',extract);ta.value=EX[0];extract();
+
+// ---------- Lab 3: pass@k ----------
+function passAtK(n,c,k){if(k>n)return c>0?1:0;if(n-c<k)return 1;let lp=0;for(let i=0;i<k;i++)lp+=Math.log(n-c-i)-Math.log(n-i);return 1-Math.exp(lp)}
+const pk=$('d500-pk'),px=AI.setupCanvas(pk),PW=+pk.dataset.w,PH=+pk.dataset.h;
+function pkUpd(){
+  const nI=$('d500-n'),cI=$('d500-c'),kI=$('d500-k');const n=+nI.value;cI.max=n;kI.max=n;
+  const c=Math.min(+cI.value,n),k=Math.min(+kI.value,n);
+  $('d500-nv').textContent=n;$('d500-cv').textContent=c;$('d500-kv').textContent=k;
+  const u=passAtK(n,c,k),nv=1-Math.pow(1-c/n,k);
+  $('d500-pu').textContent=f(u,3);$('d500-pn').textContent=f(nv,3);$('d500-p1').textContent=f(c/n,3);
+  px.clearRect(0,0,PW,PH);const L=36,B=PH-26,T=12,w=(PW-L-10)/n;
+  px.strokeStyle=css('--line');px.lineWidth=1;px.fillStyle=css('--muted');px.font='11px JetBrains Mono, monospace';px.textAlign='right';
+  [0,.5,1].forEach(v=>{const y=B-(B-T)*v;px.beginPath();px.moveTo(L,y);px.lineTo(PW-10,y);px.stroke();px.fillText(v.toFixed(1),L-4,y+4)});
+  for(let kk=1;kk<=n;kk++){const v=passAtK(n,c,kk),x=L+(kk-1)*w,h=(B-T)*v;
+    px.fillStyle=css('--vec-a');px.globalAlpha=kk===k?1:.35;px.fillRect(x+1,B-h,Math.max(1,w-2),h);px.globalAlpha=1;
+    if(n<=15||kk===1||kk===n||kk===k){px.fillStyle=css('--muted');px.textAlign='center';px.fillText(kk,x+w/2,B+14)}}
+  px.strokeStyle=css('--vec-b');px.lineWidth=2;px.beginPath();
+  for(let kk=1;kk<=n;kk++){const v=1-Math.pow(1-c/n,kk),x=L+(kk-.5)*w,y=B-(B-T)*v;kk===1?px.moveTo(x,y):px.lineTo(x,y)}px.stroke();
+  px.fillStyle=css('--ink');px.textAlign='left';px.fillText('k →',PW-40,PH-2);
+}
+['d500-n','d500-c','d500-k'].forEach(id=>$(id).addEventListener('input',pkUpd));pkUpd();
+
+// ---------- quiz ----------
+AI.quiz($('d500-quizbox'),[
+ ['ليه الـ runner بيفتح Python subprocess جديد لكل candidate بدل exec جوه نفس البرنامج؟',['عشان مايوسخش الـ builtins','لأن exec بقت deprecated','لأنه أسرع من exec','عشان يعزل الـ timeouts والخرج الزيادة والـ imports الخطيرة عن الـ host'],3,'لو الكود عمل loop لا نهائي أو أكل ذاكرة، اللي بيقع هو الـ subprocess بس، والـ eval الأساسي بيكمل.'],
+ ['مهمة فيها ٣ assertions، اتنين عدّوا وواحد فشل. الـ score كام؟',['0.667','1.0','0.0','0.5'],0,'passed ÷ total = 2/3 = 0.667، والـ exit code هو assertion_fail.'],
+ ['الـ runner بيرجّع أنهي exit code لما الكود مايتعملوش parse؟',['syntax_error','error','timeout','assertion_fail'],0,'compile() بترمي SyntaxError جوه الـ runner، فالسكريبت الداخلي بيكتب exit_code=syntax_error.'],
+ ['ليه الـ wall-clock timeout هو الحماية الأساسية مش الـ denylist؟',['لأن مينفعش تمنع imports في Python','لأن subprocess.run مابيدعمش denylists','لأن معظم الفشل loops لا نهائية، وأي حد مصمم يقدر يلف على أي denylist جوه Python','لأن الوقت بيتشيك وقت الـ compile'],2,'الـ denylist بيمسك الكود الكسلان، والـ timeout بيمسك الـ loops. الـ denylist احتياطي، والـ timeout هو الأرضية.'],
+ ['pass_at_k(n, c, k) بترجّع إيه لما n − c < k؟',['1، لأن أي سحبة لازم يكون فيها حل صح واحد على الأقل','c / n','صفر، لأن السحبة مش متعرفة','بترمي ValueError'],0,'لو الحلول الغلط أقل من حجم السحبة، أي k هتسحبهم لازم فيهم واحد صح، فالاحتمال 1.'],
+ ['الـ runner بيتعامل إزاي مع output overflow، وليه الحد 256 KB؟',['stderr بس، والحجم ده default بتاع الـ pipe','قيمة الـ score كنسبة مئوية','الـ stdout بيتقرا على دفعات، وأول ما المجموع يعدّي 256 KB الـ child بيتقتل والنتيجة exit_code=error مع detail "output overflow"','حجم سورس الكود عشان يفضل صغير'],2,'الحد بيحمي الـ host. الكود اللي بيغرق الـ stdout بيتقتل في النص، والنتيجة بتتسجل error مع "output overflow" من غير exit code جديد.'],
+ ['candidate فيه دالة بترمي RuntimeError لما assertion بينده عليها. الـ exit code إيه؟',['error','assertion_fail','syntax_error','timeout'],1,'الـ exception بيحصل جوه eval(assertion) وبيتمسك هناك ويتحسب assertion فاشل، زي test_runtime_error_during_assertion.'],
+ ['n=10 وc=2. pass@1 كام؟',['0.2','0.5','0.778','1.0'],0,'pass@1 دايمًا = c/n = 2/10. لكن pass@5 لنفس الأرقام ≈ 0.778، عشان كده لازم تقارن الموديلات بنفس k.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(sb))return false;drawSB();pkUpd();extract()});
+})();
+</script>

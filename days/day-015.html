@@ -1,0 +1,750 @@
+<div class="day" id="d15-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 15 · Statistics for Machine Learning</span>
+  <h1>اليوم ١٥: الموديل بتاعك اتحسن فعلًا… ولا كان حظ؟</h1>
+  <p class="lede">موديل A جاب <b>0.87</b> وموديل B جاب <b>0.89</b>. نزّلت B، وبعد ٣ أسابيع الأرقام في الـ production بقت أوحش. الفرق كان <b>noise</b> مش تحسين. النهاردة هتتعلم الأدوات اللي بتفرّق بين الإشارة والدوشة: الإحصاء الوصفي، الـ correlation، الـ hypothesis tests، الـ bootstrap، والـ effect size.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (math + random بس)</b></span>
+    <span>قبله: <b>Norms and Distances</b></span>
+    <span>بعده: <b>Sampling Methods</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d15-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d15-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 14) اتكلمنا عن الـ norms والمسافات. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. إيه الفرق بين L1 و L2 norm للمتجه [3, -4]؟</summary><p>L1 = |3| + |-4| = 7 (مجموع القيم المطلقة، «مسافة التاكسي»). L2 = √(9+16) = 5 (الخط المستقيم، فيثاغورس).</p></details>
+  <details><summary>٢. ليه في الـ embeddings بنستخدم cosine similarity بدل المسافة الإقليدية غالبًا؟</summary><p>عشان الـ cosine بيبص على <b>الاتجاه</b> بس ومش فارق معاه طول المتجه، فجملتين بنفس المعنى بس طولهم مختلف يفضلوا قريبين.</p></details>
+  <details><summary>٣. الـ L2 regularization بتعمل إيه في الأوزان؟</summary><p>بتضيف عقوبة على مربع طول متجه الأوزان، فبتخلي الأوزان صغيرة وموزعة. النهاردة هتشوف إن الـ <b>variance</b> نفسها متوسط مربع مسافة كل نقطة عن المتوسط، يعني فكرة L2 تاني.</p></details>
+</section>
+
+<section>
+  <h2>خطة الجلسة (ساعتين)</h2>
+  <div class="plan">
+    <div><b>15 min</b>الإحصاء الوصفي + معمل ٠١ (المتوسط والوسيط والـ outliers)</div>
+    <div><b>15 min</b>الـ correlation والـ covariance + معمل ٠٢</div>
+    <div><b>25 min</b>الـ hypothesis testing: p-value، CI، t-test، chi-squared</div>
+    <div><b>20 min</b>A/B والـ bootstrap والـ multiple comparisons + معمل ٠٣</div>
+    <div><b>30 min</b>اكتب الكود بنفسك وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d15-desc">
+  <div class="station-head"><span class="tag">01</span><h2>الإحصاء الوصفي: لخّص الداتا في كام رقم</h2></div>
+  <p>قبل ما تعمل أي موديل لازم تعرف شكل الداتا. الإحصاء الوصفي بيضغط آلاف الأرقام في كام رقم بيوصفوا «الشكل».</p>
+  <h3>فين النص؟ (Central tendency)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المقياس</th><th>إزاي</th><th>ملاحظة</th></tr>
+    <tr><td>Mean (المتوسط)</td><td class="ltr">μ = (1/n)·Σxᵢ</td><td>نقطة الاتزان. بيتأثر جامد بالقيم الشاذة.</td></tr>
+    <tr><td>Median (الوسيط)</td><td>القيمة اللي في النص بعد الترتيب</td><td>مش بيتأثر بالـ outliers. في <span class="ltr">[1,2,3,4,1000]</span> المتوسط 202 والوسيط 3.</td></tr>
+    <tr><td>Mode (المنوال)</td><td>أكتر قيمة متكررة</td><td>مفيد للداتا الـ categorical، ونادرًا ما بيفيد في الأرقام المتصلة.</td></tr>
+  </table></div>
+  <p>تخيل عمارة فيها ٩ موظفين ومليونير واحد. «متوسط الدخل» هيقولك الكل أغنيا، لكن «الوسيط» هيقولك الحقيقة عن الشخص العادي. لما المتوسط والوسيط يبعدوا عن بعض يبقى التوزيع <b>skewed</b> (مايل): الدخل فيه mean ≫ median (ميل يمين بسبب الأغنيا جدًا). والـ loss أثناء التدريب ساعات بيبقى mean ≪ median (ميل شمال بسبب الأمثلة السهلة).</p>
+
+  <h3>قد إيه الداتا مفرودة؟ (Spread)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المقياس</th><th>إزاي</th><th>ملاحظة</th></tr>
+    <tr><td>Variance</td><td class="ltr">σ² = (1/n)·Σ(xᵢ − μ)²</td><td>متوسط مربع البعد عن المتوسط.</td></tr>
+    <tr><td>Standard deviation</td><td class="ltr">σ = √σ²</td><td>نفس وحدة الداتا، فأسهل في الفهم.</td></tr>
+    <tr><td>Range</td><td class="ltr">max − min</td><td>حساس جدًا للـ outliers، تقريبًا مش مفيد لوحده.</td></tr>
+    <tr><td>IQR</td><td class="ltr">Q3 − Q1</td><td>مدى الـ ٥٠٪ اللي في النص. مش بيتأثر بالشواذ، وبيستخدم في الـ box plot واكتشاف الـ outliers.</td></tr>
+  </table></div>
+
+  <h3>الـ Percentiles</h3>
+  <p>رتّب الداتا وقسمها ١٠٠ حتة. الـ 25th percentile (Q1) معناه إن ٢٥٪ من القيم تحته. الـ 50th هو الوسيط، والـ 75th هو Q3. في مراقبة الـ latency:</p>
+  <div class="formula">P50 = التجربة العادية · P95 = وحش بس مش الأسوأ · P99 = الذيل (غالبًا ١٠ أضعاف الوسيط)</div>
+  <p>في الـ ML بيهمك الـ percentiles في latency الـ inference، وتوزيع الـ confidence بتاع التوقعات، وتوزيع الأخطاء. موديل متوسط خطأه قليل بس الـ P99 بتاعه كارثي ممكن يبقى مالوش لازمة في تطبيقات حساسة للأمان.</p>
+
+  <h3>العينة مقابل المجتمع: Bessel's correction</h3>
+  <p>لما تحسب الـ variance من <b>عينة</b> اقسم على <span class="ltr">(n − 1)</span> مش <span class="ltr">n</span>. ليه؟ لأن متوسط العينة محسوب من نفس النقط، فالنقط دايمًا «أقرب» له من المتوسط الحقيقي، والقسمة على n بتقلل الـ variance بشكل منتظم. القسمة على n−1 بتطلّع تقدير <b>unbiased</b>.</p>
+  <div class="formula">σ² = (1/N)·Σ(xᵢ − μ)²   ·   s² = (1/(n−1))·Σ(xᵢ − x̄)²</div>
+  <p>لو n بالآلاف الفرق ولا حاجة. لو n عشرات، الفرق مهم.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: اسحب النقط وشوف مين بيتأثر</h3>
+      <p>دي ١٥ نقطة على خط أرقام (نفس الداتا اللي في كود الدرس). فوقيهم box plot: الصندوق من Q1 لـ Q3 والخط اللي جوه هو الوسيط.</p>
+      <div class="note"><strong>جرب:</strong> اسحب أي نقطة لأقصى اليمين. المتوسط (الخط البرتقالي) بيجري وراها، والوسيط (الأزرق) تقريبًا ثابت. وبعدين دوس «ضيف outlier» وقارن الـ range بالـ IQR.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d15-descCanvas" width="520" height="230" aria-label="خط أرقام بنقط ممكن تسحبها"></canvas>
+      <div class="readout">
+        <div><small>Mean</small><b id="d15-rMean">45</b></div>
+        <div><small>Median</small><b id="d15-rMed">43</b></div>
+        <div><small id="d15-sdLbl">Std (n−1)</small><b id="d15-rSd">22.68</b></div>
+        <div><small>IQR</small><b id="d15-rIqr">33</b></div>
+        <div><small>Range</small><b id="d15-rRange">77</b></div>
+        <div><small>Mean − Median</small><b id="d15-rSkew">2</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" id="d15-addOut">ضيف outlier</button>
+        <button type="button" id="d15-resetDesc">رجّع الداتا الأصلية</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d15-bessel" checked> قسمة على n−1</label>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d15-corr">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Correlation والـ Covariance: المتغيرات بتتحرك مع بعض؟</h2></div>
+  <h3>Pearson: علاقة خطية</h3>
+  <div class="formula">r = Σ(xᵢ − x̄)(yᵢ − ȳ) / (n · s_x · s_y)      r ∈ [−1, 1]</div>
+  <p><span class="ltr">r = +1</span> خط مستقيم طالع، <span class="ltr">r = −1</span> خط مستقيم نازل، <span class="ltr">r = 0</span> مفيش علاقة <b>خطية</b> (ممكن تكون فيه علاقة مش خطية!). Pearson بيفترض إن العلاقة خطية والمتغيرين قريبين من الـ normal، وحساس للـ outliers: نقطة واحدة متطرفة ممكن تشد r من 0.1 لـ 0.9.</p>
+  <h3>Spearman: علاقة رتيبة (monotonic)</h3>
+  <p>بدّل كل قيمة بترتيبها (1، 2، 3…) واحسب Pearson على الترتيب. كده بيمسك أي علاقة «كل ما x يزيد y يزيد» حتى لو مش خط. لو <span class="ltr">y = x³</span> هتلاقي Pearson أقل من 1 بس Spearman = 1.</p>
+  <div class="tablewrap"><table>
+    <tr><th>استخدم</th><th>لما</th></tr>
+    <tr><td>Pearson</td><td>المتغيرين متصلين وقريبين من الـ normal، ويهمك الخط بالذات، ومفيش outliers متطرفة.</td></tr>
+    <tr><td>Spearman</td><td>داتا ترتيبية (rankings، ratings)، أو مش normal، أو العلاقة رتيبة مش خطية، أو فيه outliers.</td></tr>
+  </table></div>
+  <div class="note"><strong>القاعدة الذهبية:</strong> الـ correlation مش معناها causation. مبيعات الآيس كريم وحالات الغرق مرتبطين لأن الاتنين بيزيدوا في الصيف. ودقة الموديل مرتبطة بعدد الـ parameters، بس زيادة الـ parameters مش بتحسن الدقة أوتوماتيك (افتكر الـ overfitting).</div>
+
+  <h3>الـ Covariance Matrix</h3>
+  <div class="formula">Cov(X, Y) = (1/n) · Σ(xᵢ − x̄)(yᵢ − ȳ)</div>
+  <p>موجبة = بيزيدوا مع بعض، سالبة = واحد يزيد والتاني يقل، صفر = مفيش حركة خطية مشتركة. لو عندك d features، الـ covariance matrix هي d×d، والخانة <span class="ltr">C[i][j] = Cov(featureᵢ, featureⱼ)</span>:</p>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• القطر = الـ variances بتاعة كل feature.</li>
+    <li>• متماثلة: <span class="ltr">C[i][j] = C[j][i]</span>.</li>
+    <li>• Positive semi-definite: كل الـ eigenvalues ≥ 0.</li>
+  </ul>
+  <p><b>علاقتها بالـ PCA (Day 10):</b> الـ PCA بتعمل eigendecomposition للـ covariance matrix. الـ eigenvectors هي الـ principal components والـ eigenvalues هي قد إيه variance كل واحد بيمسك. هي المصفوفة الصح لأنها بتشيل كل العلاقات الخطية بين كل زوج features. <b>وعلاقتها بالـ correlation:</b> الـ correlation matrix هي الـ covariance بتاعة المتغيرات بعد ما تقسم كل واحد على الـ std بتاعه، فكل القيم بتبقى بين −1 و1.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: Pearson ضد Spearman</h3>
+      <p>اختار شكل علاقة، وبعدين اسحب أي نقطة. حاول تعمل outlier واحد وشوف مين فيهم بيتهز أكتر.</p>
+      <div class="note ai"><strong>لاحظ:</strong> في «تكعيبي» Spearman = 1 بالظبط وPearson أقل. في «outlier» نقطة واحدة بس بتغير Pearson جامد.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d15-corrCanvas" width="520" height="360" aria-label="scatter plot بنقط ممكن تسحبها"></canvas>
+      <div class="readout">
+        <div><small>Pearson r</small><b id="d15-rP">0</b></div>
+        <div><small>Spearman ρ</small><b id="d15-rS">0</b></div>
+        <div><small>Cov(x, y) (n−1)</small><b id="d15-rC">0</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" data-d15c="lin">خطي</button>
+        <button type="button" data-d15c="cube">تكعيبي y=x³</button>
+        <button type="button" data-d15c="rand">عشوائي</button>
+        <button type="button" data-d15c="out">عشوائي + outlier</button>
+        <button type="button" data-d15c="neg">نازل</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d15-hyp">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Hypothesis Testing: قرار تحت عدم اليقين</h2></div>
+  <p>فكّر فيها زي المحكمة: المتهم بريء لحد ما يثبت العكس. «البراءة» هي الـ <b>null hypothesis (H0)</b>: مفيش تأثير، مفيش فرق. الـ <b>alternative (H1)</b> هو اللي عايز تثبته.</p>
+  <div class="formula">H0: A و B نفس الدقة      H1: B أدق من A</div>
+  <h3>الـ p-value (أهم تعريف النهاردة)</h3>
+  <div class="formula">p-value = P(داتا متطرفة بالشكل ده أو أكتر | H0 صح)</div>
+  <p>هو احتمال إنك تشوف داتا متطرفة كده <b>لو</b> H0 كانت صح. <b>مش</b> احتمال إن H0 صح. ده أشهر غلط في الإحصاء كله.</p>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• لو <span class="ltr">p &lt; α</span> (عادةً 0.05): ارفض H0، النتيجة «statistically significant».</li>
+    <li>• لو <span class="ltr">p ≥ α</span>: معندكش دليل كفاية. ده <b>مش</b> معناه إن H0 صح (المحكمة بتقول «غير مذنب» مش «بريء»).</li>
+  </ul>
+  <h3>الـ Confidence Interval</h3>
+  <div class="formula">x̄ ± z · (s / √n)      z = 1.96 لـ 95%</div>
+  <p>المعنى الصح: لو كررت التجربة مرات كتير، ٩٥٪ من الفترات اللي هتحسبها هتحتوي المتوسط الحقيقي. <b>مش</b> معناها إن فيه احتمال ٩٥٪ إن المتوسط الحقيقي جوه الفترة دي بالذات. الفترة العريضة = عدم يقين كبير. الضيقة = تقدير دقيق (precise)، بس مش بالضرورة صح (accurate) لو الداتا نفسها فيها bias.</p>
+
+  <h3>الـ t-test: مقارنة متوسطات</h3>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>السؤال</th><th>المعادلة</th></tr>
+    <tr><td>One-sample</td><td>متوسط المجتمع مختلف عن قيمة μ₀؟</td><td class="ltr">t = (x̄ − μ₀) / (s/√n),  df = n − 1</td></tr>
+    <tr><td>Two-sample (Welch)</td><td>متوسطين مجموعتين مستقلتين مختلفين؟</td><td class="ltr">t = (x̄₁ − x̄₂) / √(s₁²/n₁ + s₂²/n₂)</td></tr>
+    <tr><td>Paired</td><td>قياسات جاية أزواج (نفس الـ folds)</td><td>dᵢ = xᵢ − yᵢ وبعدين one-sample على dᵢ ضد 0</td></tr>
+  </table></div>
+  <p>الـ Welch مش بيفترض إن الـ variances متساوية، فاستخدمه دايمًا إلا لو عندك سبب. وفي الـ ML الـ paired t-test منتشر: تشغل الموديلين على نفس الـ 10 cross-validation folds وتقارن fold بـ fold.</p>
+  <p><b>بالتشبيه:</b> الـ t هو «الفرق اللي شفته» مقسوم على «قد إيه الدوشة ممكن تعمل فرق زيه». t كبيرة = الفرق أكبر بكتير من الدوشة.</p>
+
+  <h3>الـ Chi-squared: هل التكرارات زي المتوقع؟</h3>
+  <div class="formula">χ² = Σ (observed − expected)² / expected</div>
+  <p>مثال الدرس: موديل لغة طلّع 120 positive و80 negative والمتوقع 100 و100:</p>
+  <div class="formula">χ² = (120−100)²/100 + (80−100)²/100 = 4 + 4 = 8</div>
+  <p>بدرجة حرية واحدة، χ² = 8 بتدي <span class="ltr">p &lt; 0.005</span>، يعني الفرق significant.</p>
+</section>
+
+<!-- STATION 4 -->
+<section id="d15-ab">
+  <div class="station-head"><span class="tag">04</span><h2>A/B للموديلات، الـ Bootstrap، وفخ المقارنات الكتير</h2></div>
+  <h3>الـ A/B في الـ ML مختلف عن الويب</h3>
+  <ol class="ex">
+    <li><b>نفس الـ test set:</b> الموديلين لازم يتقيموا على نفس الداتا بالظبط، وإلا المقارنة ملهاش معنى.</li>
+    <li><b>مقاييس كتير:</b> الـ accuracy لوحدها مش كفاية: precision، recall، F1، latency، fairness.</li>
+    <li><b>الـ variance:</b> استخدم cross-validation أو bootstrap عشان تقدّر تذبذب كل metric، مش رقم واحد.</li>
+    <li><b>الـ leakage:</b> لو الـ test set اتستخدم في اختيار الموديل، المقارنة متحيزة. سيب final test set محدش يلمسه.</li>
+  </ol>
+  <p><b>الخطوات:</b> حدد الـ metric وα = 0.05 ← شغل الاتنين على نفس الـ k folds ← اجمع الأزواج ← احسب <span class="ltr">dᵢ = bᵢ − aᵢ</span> ← paired t-test ← CI للفرق ← Cohen's d عشان تحكم على الأهمية العملية.</p>
+
+  <h3>Significant إحصائيًا ≠ مهم عمليًا</h3>
+  <p>A = 0.9234 و B = 0.9237 على مليون عينة وp = 0.001. إحصائيًا؟ أيوه. عمليًا؟ تحسين 0.03% مش مستاهل تكلفة إنك تنزّل موديل جديد. مع داتا كفاية، أي فرق تافه بيبقى significant.</p>
+  <div class="formula">Cohen's d = (mean₁ − mean₂) / pooled_std      0.2 صغير · 0.5 متوسط · 0.8 كبير</div>
+  <p>اكتب الاتنين دايمًا: الـ p-value بيقولك الفرق حقيقي، والـ effect size بيقولك يفرق ولا لأ.</p>
+
+  <h3>مشكلة المقارنات المتعددة</h3>
+  <div class="formula">P(خطأ واحد على الأقل) = 1 − (1 − α)^m      m = 20 → 1 − 0.95²⁰ ≈ 0.64</div>
+  <p>لو جربت ٢٠ حاجة وولا حاجة فيهم حقيقية، فيه ٦٤٪ إن واحدة على الأقل تطلع «significant» بالصدفة. زي إنك ترمي ٢٠ زهر وتستغرب إن واحد جه ٦. الحل البسيط <b>Bonferroni</b>: اقسم α على عدد الاختبارات، <span class="ltr">0.05/20 = 0.0025</span>. محافظ بس بسيط، وبيشتغل لما الاختبارات مستقلة. بيهمك لما تقارن على metrics كتير، أو تجرب hyperparameters كتير، أو datasets كتير.</p>
+
+  <h3>الـ Bootstrap: اعمل عينات جديدة من العينة نفسها</h3>
+  <p>معاك n نقطة. اسحب n نقطة <b>مع الإرجاع</b> (نقط هتتكرر ونقط مش هتظهر)، احسب الإحصائية، كرر B مرة (عادةً 1000 لـ 10000). توزيع النتايج دي بيقرب من الـ sampling distribution. الـ 95% CI = الـ percentile 2.5 والـ 97.5. زي إنك معاك كيس فيه كور الداتا بتاعتك، وكل مرة تسحب كورة وترجعها.</p>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• دقة الـ test set رقم واحد؛ الـ bootstrap بيديك CI ليه.</li>
+    <li>• مش لازم تفترض إن الـ metric normal (خصوصًا AUC، F1، precision@k).</li>
+    <li>• بيشتغل مع <b>أي</b> إحصائية: median، نسبة متوسطين، فرق AUC بين موديلين، من غير معادلة مقفولة.</li>
+    <li>• للمقارنة: اعمل resample لـ indices الـ test set، احسب metric_A و metric_B، خزّن الفرق. لو الـ CI بتاع الفرق مش فيه 0 يبقى الفرق significant. ده أمتن من الـ paired t-test لأنه مش بيفترض توزيع.</li>
+  </ul>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: محاكي A/B</h3>
+      <p>كل مجموعة جاية من normal بمتوسط 50 و std = 10، والمجموعة B بنزود عليها «التأثير الحقيقي». المعمل بيعمل Welch t-test وbootstrap (1000 مرة) لفرق المتوسطات، ويرسم الـ histogram بتاع الـ bootstrap والـ 95% CI.</p>
+      <div class="note"><strong>تجارب:</strong> (١) خلي التأثير 0 ودوس «٢٠ اختبار»: عدّ كام واحد طلع significant بالغلط، وقارن بعد Bonferroni. (٢) تأثير 3 وn = 50، دوس «احسب الـ power»، وبعدين n = 200. (٣) تأثير 0.1 وn كبيرة: p ممكن يبقى صغير بس d تافه.</div>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>n لكل مجموعة <span id="d15-nV">50</span><input type="range" id="d15-n" min="10" max="2000" step="10" value="50"></label>
+        <label>التأثير الحقيقي <span id="d15-eV">3</span><input type="range" id="d15-eff" min="0" max="8" step="0.1" value="3"></label>
+      </div>
+      <canvas id="d15-abCanvas" width="520" height="220" aria-label="histogram للـ bootstrap"></canvas>
+      <div class="readout">
+        <div><small>الفرق المشاهد</small><b id="d15-aDiff">–</b></div>
+        <div><small>t (Welch)</small><b id="d15-aT">–</b></div>
+        <div><small>p-value</small><b id="d15-aP">–</b></div>
+        <div><small>Cohen's d</small><b id="d15-aD">–</b></div>
+        <div><small>Bootstrap 95% CI</small><b id="d15-aCI">–</b></div>
+      </div>
+      <div class="verdict" id="d15-aVerdict"></div>
+      <div class="btns">
+        <button type="button" class="primary" id="d15-run">شغّل تجربة</button>
+        <button type="button" id="d15-multi">٢٠ اختبار</button>
+        <button type="button" id="d15-power">احسب الـ power (200 محاكاة)</button>
+      </div>
+      <p id="d15-aExtra" style="font-size:15px"></p>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d15-clt">
+  <div class="station-head"><span class="tag">05</span><h2>Parametric ولا Non-parametric؟ والـ CLT</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>Parametric (بيفترض توزيع)</th><th>البديل Non-parametric</th></tr>
+    <tr><td>t-test مستقل</td><td>Mann-Whitney U</td></tr>
+    <tr><td>Paired t-test</td><td>Wilcoxon signed-rank</td></tr>
+    <tr><td>Pearson r</td><td>Spearman ρ</td></tr>
+    <tr><td>ANOVA (normal + variances متساوية)</td><td>Kruskal-Wallis</td></tr>
+  </table></div>
+  <p><b>Non-parametric</b> لما: n صغيرة (أقل من 30) والداتا واضح إنها مش normal، أو داتا ترتيبية، أو outliers تقيلة مش قادر تشيلها، أو توزيع مايل. <b>Parametric</b> لما: n كبيرة (الـ CLT بيخلي الإحصائية تقريبًا normal)، والداتا تقريبًا متماثلة، وعايز power أعلى. في تجارب الـ ML غالبًا n صغيرة (5 أو 10 folds)، فالـ Wilcoxon signed-rank غالبًا أنسب من الـ t-test.</p>
+  <h3>الـ Central Limit Theorem</h3>
+  <div class="formula">X̄ ~ Normal(μ, σ²/n)   لما n تكبر</div>
+  <p>توزيع <b>متوسط العينات</b> بيقرب من الـ normal مهما كان شكل التوزيع الأصلي. غالبًا n ≥ 30 كفاية، والتوزيعات المايلة جدًا ممكن تحتاج n ≥ 100. ليه مهم في الـ ML؟</p>
+  <ol class="ex">
+    <li>هو اللي بيبرر الـ CI والـ t-tests على metrics متجمعة.</li>
+    <li>بيشرح ليه متوسط الـ CV folds ثابت حتى لو كل fold بيتهز.</li>
+    <li>الـ mini-batch gradient descent شغال لأن متوسط الـ gradient على batch بيقرب من الـ gradient الحقيقي.</li>
+    <li>الـ ensembles: متوسط توقعات موديلات كتير أثبت من موديل واحد.</li>
+  </ol>
+  <div class="note"><strong>اللي الـ CLT مش بيعمله:</strong> مش بيخلي الداتا نفسها normal، بس <b>المتوسط</b>. مش بيشتغل مع توزيعات variance بتاعتها لانهائية (Cauchy). ومش بيطبق على داتا مش مستقلة (time series من غير تصحيح).</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل صغير: شوف الـ CLT بعينك</h3>
+      <p>التوزيع الأصلي هنا exponential (مايل جدًا). كل مرة بناخد عينة حجمها n ونحسب متوسطها، ونرسم histogram لـ 2000 متوسط. حرّك n من 1 لـ 100 وشوف الشكل بيتحول لجرس.</p>
+      <p>جرب كمان «Cauchy»: مهما كبرت n الشكل مش بيستقر. ده المثال اللي الـ CLT بيفشل فيه.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">حجم العينة n = <b class="mono" id="d15-cltNv">1</b><input type="range" id="d15-cltN" min="1" max="100" step="1" value="1"></label>
+      <div class="btns">
+        <button type="button" data-d15d="exp">Exponential</button>
+        <button type="button" data-d15d="uni">Uniform</button>
+        <button type="button" data-d15d="cau">Cauchy</button>
+      </div>
+      <canvas id="d15-cltCanvas" width="520" height="200" aria-label="histogram لمتوسطات العينات"></canvas>
+      <div class="readout">
+        <div><small>متوسط المتوسطات</small><b id="d15-cM">–</b></div>
+        <div><small>std المتوسطات</small><b id="d15-cS">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6 -->
+<section id="d15-mistakes">
+  <div class="station-head"><span class="tag">06</span><h2>١٠ أغلاط إحصائية منتشرة في أوراق الـ ML</h2></div>
+  <ol class="ex">
+    <li><b>تختبر على الـ training set:</b> overfitting مضمون. سيب داتا الموديل عمره ما شافها.</li>
+    <li><b>من غير confidence intervals:</b> رقم دقة لوحده من غير عدم يقين = نتيجة مش قابلة للتكرار ولا التحقق.</li>
+    <li><b>تتجاهل المقارنات المتعددة:</b> تجرب 50 config وتعرض الأحسن من غير تصحيح.</li>
+    <li><b>تخلط الأهمية الإحصائية بالعملية:</b> p = 0.001 على تحسين 0.01% مش معناه حاجة.</li>
+    <li><b>Accuracy على داتا imbalanced:</b> 99% دقة وداتا 99% منها negative = الموديل ما اتعلمش حاجة. استخدم precision، recall، F1، AUC.</li>
+    <li><b>تنقي الـ metrics:</b> تعرض بس اللي كسبت فيه.</li>
+    <li><b>Leakage بين train وtest:</b> تعمل normalize قبل الـ split، أو تستخدم المستقبل تتنبأ بالماضي.</li>
+    <li><b>Test set صغير من غير variance:</b> 100 عينة وتحسين 2% = دوشة.</li>
+    <li><b>تفترض استقلال مش موجود:</b> صور طبية من نفس المريض، جمل من نفس المستند. الملاحظات جوه المجموعة مرتبطة.</li>
+    <li><b>P-hacking:</b> تجرب اختبارات وsubsets وشروط استبعاد لحد ما يطلع <span class="ltr">p &lt; 0.05</span>.</li>
+  </ol>
+  <div class="tablewrap"><table>
+    <tr><th>المصطلح</th><th>بالبلدي</th></tr>
+    <tr><td>Type I error</td><td>false positive: رفضت H0 وهي صح</td></tr>
+    <tr><td>Type II error</td><td>false negative: ما رفضتش H0 وهي غلط</td></tr>
+    <tr><td>Statistical power</td><td>احتمال إنك تمسك تأثير حقيقي = 1 − معدل Type II</td></tr>
+  </table></div>
+</section>
+
+<!-- CODE -->
+<section id="d15-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من فولدر الريبو شغّل كود الدرس الأصلي (كله <code>math</code> و<code>random</code> بس، من غير numpy ولا scipy):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/01-math-foundations/15-statistics-for-ml/code/statistics.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_stats.py</code> واكتب الخطوات دي بإيدك، وبص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الإحصاء الوصفي</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+random.seed(42)
+
+def mean(data):
+    return sum(data) / len(data)
+
+def median(data):
+    s = sorted(data); n = len(s); mid = n // 2
+    if n % 2 == 0:                          <span class="c"># عدد زوجي: متوسط الاتنين اللي في النص</span>
+        return (s[mid - 1] + s[mid]) / 2
+    return s[mid]
+
+def mode(data):
+    counts = {}
+    for x in data:
+        counts[x] = counts.get(x, 0) + 1
+    max_count = max(counts.values())
+    modes = sorted(k for k, v in counts.items() if v == max_count)
+    return modes[0]                         <span class="c"># لو فيه تعادل: أصغر واحدة</span>
+
+def variance(data, sample=True):
+    n = len(data); m = mean(data)
+    total = sum((x - m) ** 2 for x in data)
+    if sample and n &gt; 1:
+        return total / (n - 1)              <span class="c"># Bessel's correction</span>
+    return total / n
+
+def std_dev(data, sample=True):
+    return math.sqrt(variance(data, sample))
+
+def percentile(data, p):                    <span class="c"># interpolation خطي بين أقرب قيمتين</span>
+    s = sorted(data); n = len(s)
+    k = (p / 100) * (n - 1)
+    f, c = math.floor(k), math.ceil(k)
+    if f == c:
+        return s[int(k)]
+    return s[f] * (c - k) + s[c] * (k - f)
+
+def iqr(data):
+    return percentile(data, 75) - percentile(data, 25)
+
+data = [23, 45, 12, 67, 34, 89, 21, 56, 43, 78, 31, 64, 19, 52, 41]
+print(f"Mean {mean(data):.2f}  Median {median(data):.2f}  Mode {mode(data)}")
+print(f"Std {std_dev(data):.2f}  Var {variance(data):.2f}  IQR {iqr(data):.2f}")
+skewed = [1, 2, 3, 4, 5, 6, 7, 8, 9, 1000]
+print(f"Mean {mean(skewed):.2f}  Median {median(skewed):.2f}")</pre></div>
+  <details><summary>الناتج المتوقع (أرقام مظبوطة، الداتا ثابتة)</summary><pre class="term">Mean 45.00  Median 43.00  Mode 12
+Std 22.68  Var 514.43  IQR 33.00
+Mean 104.50  Median 5.50</pre><p>الـ Mode طلع 12 لأن كل القيم مكررة مرة واحدة، فالكود بيرجع أصغرها. الـ P25 = 27.00 والـ P75 = 60.00.</p></details>
+
+  <h3>خطوة ٢: Pearson و Spearman والـ covariance matrix</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def pearson_correlation(x, y):
+    n = len(x); mx, my = mean(x), mean(y)
+    sx, sy = std_dev(x, sample=False), std_dev(y, sample=False)
+    if sx == 0 or sy == 0:
+        return 0.0
+    cov = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y)) / n
+    return cov / (sx * sy)
+
+def rank_data(data):                        <span class="c"># الترتيب، والقيم المتساوية تاخد متوسط ترتيبها</span>
+    indexed = sorted(enumerate(data), key=lambda p: p[1])
+    ranks = [0.0] * len(data); i = 0
+    while i &lt; len(indexed):
+        j = i
+        while j &lt; len(indexed) - 1 and indexed[j + 1][1] == indexed[i][1]:
+            j += 1
+        avg_rank = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            ranks[indexed[k][0]] = avg_rank
+        i = j + 1
+    return ranks
+
+def spearman_correlation(x, y):
+    return pearson_correlation(rank_data(x), rank_data(y))
+
+def covariance_matrix(data):                <span class="c"># data = قايمة features، كل واحدة قايمة قيم</span>
+    d, n = len(data), len(data[0])
+    means = [mean(data[i]) for i in range(d)]
+    M = [[0.0] * d for _ in range(d)]
+    for i in range(d):
+        for j in range(i, d):               <span class="c"># نحسب النص بس، المصفوفة متماثلة</span>
+            c = sum((data[i][k] - means[i]) * (data[j][k] - means[j]) for k in range(n)) / (n - 1)
+            M[i][j] = M[j][i] = c
+    return M
+
+x = list(range(1, 11))
+y_lin = [2.1, 3.9, 6.2, 7.8, 10.1, 12.3, 13.8, 16.1, 18.0, 20.2]
+y_sq = [xi ** 2 for xi in x]
+print(f"{pearson_correlation(x, y_lin):.4f}")
+print(f"{pearson_correlation(x, y_sq):.4f} {spearman_correlation(x, y_sq):.4f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">0.9996
+0.9746 1.0000</pre><p>العلاقة التربيعية رتيبة، فـ Spearman = 1 بالظبط وPearson أقل منه. في السكريبت الأصلي الجزء العشوائي والـ covariance matrix بيعتمدوا على الـ random: هتلاقي Cov(f1,f2) موجبة وكبيرة (لأن f2 = f1 + دوشة)، والخانات اللي فيها f3 قريبة من الصفر. قارن ده باللي يطلعلك.</p></details>
+
+  <h3>خطوة ٣: الـ t-tests والـ chi-squared</h3>
+  <p>الـ p-value محتاج الـ CDF بتاع توزيع t. الريبو بيحسبه بالـ regularized incomplete beta function (continued fraction)، ولتوزيع χ² بيستخدم الـ incomplete gamma. اكتب الجزء ده من الملف الأصلي (<code>t_cdf_approx</code>، <code>_regularized_beta</code>، <code>_beta_continued_fraction</code>، <code>chi_squared_p_value</code>، <code>_gamma_series</code>، <code>_gamma_continued_fraction</code>) وركز إنك تفهم الجزء ده:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def t_statistic_one_sample(data, mu_0):
+    return (mean(data) - mu_0) / (std_dev(data) / math.sqrt(len(data)))
+
+def t_statistic_two_sample(d1, d2):         <span class="c"># Welch: مش بيفترض variances متساوية</span>
+    se = math.sqrt(variance(d1) / len(d1) + variance(d2) / len(d2))
+    return 0.0 if se == 0 else (mean(d1) - mean(d2)) / se
+
+def welch_df(d1, d2):                       <span class="c"># درجات الحرية بتاعة Welch</span>
+    n1, n2 = len(d1), len(d2)
+    v1, v2 = variance(d1), variance(d2)
+    num = (v1 / n1 + v2 / n2) ** 2
+    den = (v1 / n1) ** 2 / (n1 - 1) + (v2 / n2) ** 2 / (n2 - 1)
+    return n1 + n2 - 2 if den == 0 else num / den
+
+def p_value_two_sided(t, df):               <span class="c"># الطرفين: 2 × المساحة بعد |t|</span>
+    return 2.0 * (1.0 - t_cdf_approx(abs(t), df))
+
+def one_sample_ttest(data, mu_0=0):
+    t = t_statistic_one_sample(data, mu_0); df = len(data) - 1
+    return {"t_statistic": t, "df": df, "p_value": p_value_two_sided(t, df)}
+
+def paired_ttest(d1, d2):                   <span class="c"># الفروق + one-sample ضد صفر</span>
+    return one_sample_ttest([a - b for a, b in zip(d1, d2)], mu_0=0)
+
+def chi_squared_test(observed, expected):
+    chi2 = sum((o - e) ** 2 / e for o, e in zip(observed, expected) if e &gt; 0)
+    df = len(observed) - 1
+    return {"chi2": chi2, "df": df, "p_value": chi_squared_p_value(chi2, df)}
+
+cv_a = [0.82, 0.85, 0.81, 0.84, 0.83, 0.86, 0.80, 0.84, 0.82, 0.85]
+cv_b = [0.84, 0.87, 0.83, 0.86, 0.85, 0.88, 0.83, 0.86, 0.85, 0.87]
+r = paired_ttest(cv_a, cv_b)
+print(f"t={r['t_statistic']:.4f} p={r['p_value']:.4f}")
+r = chi_squared_test([120, 80, 95, 105], [100, 100, 100, 100])
+print(f"chi2={r['chi2']:.4f} df={r['df']} p={r['p_value']:.4f}")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">t=-16.5000 p=0.0000
+chi2=8.5000 df=3 p=0.0367</pre><p>الـ t سالبة لأن الكود بيطرح <span class="ltr">a − b</span> وB أحسن في كل fold. متوسط الفرق <span class="ltr">b − a</span> = 0.0220. الـ p صغير جدًا (أقل من 0.0001) فبيتطبع 0.0000. الـ χ² = 4 + 4 + 0.25 + 0.25 = 8.5. لو آخر رقم عشري عندك اختلف شوية، راجع دالة الـ p-value.</p></details>
+
+  <h3>خطوة ٤: الـ bootstrap والـ effect size والـ Bonferroni</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bootstrap_statistic(data, stat_func, n_bootstrap=5000, ci=95):
+    n = len(data); stats = []
+    for _ in range(n_bootstrap):
+        sample = [data[random.randint(0, n - 1)] for _ in range(n)]   <span class="c"># مع الإرجاع</span>
+        stats.append(stat_func(sample))
+    stats.sort()
+    lo = (100 - ci) / 2
+    return {"estimate": stat_func(data),
+            "ci_lower": percentile(stats, lo),
+            "ci_upper": percentile(stats, 100 - lo),
+            "std_error": std_dev(stats)}
+
+def bootstrap_compare(d1, d2, stat_func, n_bootstrap=5000, ci=95):
+    diffs = []
+    for _ in range(n_bootstrap):
+        s1 = [d1[random.randint(0, len(d1) - 1)] for _ in d1]
+        s2 = [d2[random.randint(0, len(d2) - 1)] for _ in d2]
+        diffs.append(stat_func(s2) - stat_func(s1))
+    diffs.sort(); lo = (100 - ci) / 2
+    L, U = percentile(diffs, lo), percentile(diffs, 100 - lo)
+    return {"observed_diff": stat_func(d2) - stat_func(d1),
+            "ci_lower": L, "ci_upper": U,
+            "significant": L &gt; 0 or U &lt; 0}           <span class="c"># الـ CI مش فيه صفر</span>
+
+def cohens_d(d1, d2):
+    n1, n2 = len(d1), len(d2)
+    pooled = math.sqrt(((n1 - 1) * variance(d1) + (n2 - 1) * variance(d2)) / (n1 + n2 - 2))
+    return 0.0 if pooled == 0 else (mean(d1) - mean(d2)) / pooled
+
+def interpret_cohens_d(d):
+    d = abs(d)
+    if d &lt; 0.2: return "negligible"
+    if d &lt; 0.5: return "small"
+    if d &lt; 0.8: return "medium"
+    return "large"
+
+def bonferroni_correction(p_values, alpha=0.05):
+    adj = alpha / len(p_values)
+    return [{"original_p": p, "adjusted_alpha": adj, "significant": p &lt; adj} for p in p_values]</pre></div>
+
+  <h3>خطوة ٥: محاكي A/B والـ power</h3>
+  <p>الريبو بيولّد داتا normal بالـ Box-Muller (<code>generate_normal</code>)، ويبني <code>ab_test_simulator</code> و<code>run_multiple_ab_tests</code> و<code>statistical_vs_practical_significance</code> وآخر جزء power simulation (200 تجربة). اكتبهم وشغّل الملف كله.</p>
+  <details><summary>إيه اللي تتوقع تشوفه في الأجزاء العشوائية؟</summary>
+    <p>الأرقام دي بتعتمد على الـ random، فمش هكتبلك أرقام. ده الشكل اللي المفروض يطلع، قارنه باللي عندك:</p>
+    <ul class="checklist" style="padding-inline-start:4px">
+      <li>• Bootstrap mean لداتا متوسطها الحقيقي 100: الـ CI حوالين 100، والـ CI بتاع الـ median غالبًا أعرض شوية.</li>
+      <li>• Bootstrap model comparison (0.85 ضد 0.88): الفرق حوالي 0.03 والـ CI غالبًا مش فيه صفر.</li>
+      <li>• A/B Test 1 (تأثير 0): الـ p-value غالبًا كبير وd «negligible». Test 2 (تأثير 5): p صغير جدًا وd حوالي 0.5.</li>
+      <li>• 20 اختبار من غير تأثير: عدد قليل significant من غير تصحيح (المتوقع حوالي 1)، وبعد Bonferroni غالبًا صفر. الـ adjusted alpha = 0.0025.</li>
+      <li>• Practical vs statistical: n = 30 غالبًا مش significant، وn = 100000 ممكن يطلع significant رغم إن d صغير جدًا.</li>
+      <li>• Power: n = 200 بيدي power أعلى بكتير من n = 50 لنفس التأثير 3.</li>
+    </ul>
+  </details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d15-exercises">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>تمارين الدرس الأصلي ما اتكتبتش كقايمة منفصلة، فدي تمارين مبنية على أجزاء الدرس نفسه. اعمل ٣ على الأقل.</p>
+  <ol class="ex">
+    <li><b>Bessel بإيدك:</b> احسب variance الداتا <span class="ltr">[2, 4, 4, 4, 5, 5, 7, 9]</span> مرة على n ومرة على n−1.
+      <details><summary>الإجابة</summary>المتوسط 5، مجموع المربعات 32. على n = 32/8 = 4 (std = 2). على n−1 = 32/7 ≈ 4.571.</details></li>
+    <li><b>χ² بإيدك:</b> احسب χ² لمثال الدرس (120/80 ضد 100/100) وبعدين ضيف فئتين (95، 105) زي الكود. الـ df اتغير إزاي؟
+      <details><summary>الإجابة</summary>الأول 8 بـ df = 1. بعد الإضافة 8.5 بـ df = 3، والـ p بقى 0.0367 (لسه significant عند 0.05 بس أضعف بكتير لأن الـ df زاد).</details></li>
+    <li><b>Spearman مع تعادل:</b> شغّل <code>rank_data([10, 20, 20, 30])</code>. هيطلع إيه؟
+      <details><summary>الإجابة</summary><span class="ltr">[1.0, 2.5, 2.5, 4.0]</span>: القيمتين المتساويتين أخدوا متوسط الترتيبين 2 و3.</details></li>
+    <li><b>الـ multiple comparisons:</b> احسب <span class="ltr">1 − 0.95^m</span> لـ m = 5 و20 و100. كام اختبار محتاج عشان الاحتمال يعدي 50%؟
+      <details><summary>تلميح</summary>m = 20 بيدي ≈ 0.64. حل <span class="ltr">0.95^m &lt; 0.5</span> باللوغاريتم: <span class="ltr">m &gt; ln 0.5 / ln 0.95 ≈ 13.5</span>، يعني 14 اختبار.</details></li>
+    <li><b>Bootstrap للـ median:</b> استخدم <code>bootstrap_statistic(data, median)</code> على الـ skewed data <span class="ltr">[1..9, 1000]</span>، وقارن الـ CI بتاع الـ mean والـ median. مين أعرض؟ ليه؟
+      <details><summary>تلميح</summary>الـ mean هيتنطط جامد حسب الـ 1000 ظهرت كام مرة في العينة، فالـ CI بتاعه هيبقى عريض جدًا. الـ median ثابت تقريبًا.</details></li>
+    <li><b>Power curve:</b> عدّل الـ power simulation ترسم (أو تطبع) الـ power لـ n = 10، 25، 50، 100، 200 لتأثير 3 وstd 10. أقل n يوصل power 0.8 قد إيه تقريبًا؟
+      <details><summary>تلميح</summary>جرب الأول في المعمل ٠٤ بزرار «احسب الـ power». d هنا = 0.3، والقاعدة المعروفة إن التأثيرات الصغيرة محتاجة عينات بالمئات.</details></li>
+    <li><b>إضافة مني · قارن موديلين بجد:</b> عندك predictions موديلين (0 و1) على نفس 500 مثال والـ labels. اكتب <code>bootstrap_accuracy_diff(y, pred_a, pred_b, B=2000)</code> تعمل resample لنفس الـ <b>indices</b> للموديلين في كل مرة، وترجع الفرق وCI. ليه لازم نفس الـ indices؟
+      <details><summary>تلميح + إجابة</summary>في كل iteration: <code>idx = [random.randrange(n) for _ in range(n)]</code>، واحسب الدقة للاتنين على <code>idx</code> ده بالذات. نفس الـ indices = مقارنة paired: الأمثلة الصعبة بتيجي للاتنين مع بعض، فالدوشة اللي جاية من صعوبة العينة بتتلغي، والـ CI بيبقى أضيق وأصدق. (لاحظ إن <code>bootstrap_compare</code> في الريبو بيعمل resample لكل مجموعة لوحدها، ودي مناسبة لمجموعتين مستقلتين.)</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d15-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالوش صريح</h2></div>
+  <h3>الحدس: الـ standard error بيقل بـ √n بس</h3>
+  <p>من الـ CLT، الـ std بتاع المتوسط = <span class="ltr">σ/√n</span>. يعني عشان تقسم عدم اليقين على ٢ محتاج <b>٤ أضعاف</b> الداتا. ده بيشرح ليه الـ benchmarks الصغيرة متذبذبة. مثلًا لو الدقة حوالي 0.5 على 100 سؤال، الـ std بتاع الدقة ≈ <span class="ltr">√(0.5·0.5/100) = 0.05</span>، يعني ±5 نقط مئوية بسهولة من الصدفة.</p>
+  <h3>أغلاط شائعة هتقابلها</h3>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• تقارن موديلين بـ seed واحد. اختلاف الـ seed لوحده ممكن يعمل فرق أكبر من التحسين اللي بتدور عليه. شغّل كذا seed واعمل paired test.</li>
+    <li>• «مفيش فرق significant» يبقى «الموديلين زي بعض». غلط: ممكن الـ power بتاعك ضعيف وبس.</li>
+    <li>• تبص على الـ test set كل شوية وتعدّل. كل بصة = مقارنة إضافية، وكأنك بتعمل p-hacking من غير ما تقصد.</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist" style="padding-inline-start:4px">
+    <li>• <b>تقييم الـ LLMs:</b> لما تقارن prompt جديد أو موديل على eval set من 200 سؤال، استخدم paired bootstrap على نفس الأسئلة قبل ما تقول «اتحسن».</li>
+    <li>• <b>الـ Agents:</b> نجاح agent في task عشوائي بطبيعته (sampling). شغّل كل task كذا مرة واحسب CI لمعدل النجاح.</li>
+    <li>• <b>الـ latency في الـ production:</b> راقب P50 وP95 وP99 مش المتوسط.</li>
+    <li>• <b>LLM-as-judge:</b> اتفاق الـ judge مع البشر بيتقاس بالـ correlation (وSpearman مناسب لما التقييم ranking أو درجات).</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d15-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d15-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d15-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d15-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح الفرق بين mean وmedian وامتى أستخدم IQR</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فاهم ليه بنقسم على n−1 في العينة</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> شفت في المعمل إزاي outlier واحد بيبوظ Pearson ومش بيأثر على Spearman</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> أقدر أقول تعريف الـ p-value صح (ومش «احتمال إن H0 صح»)</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> جربت الـ 20 اختبار وشفت الـ false positives والـ Bonferroni</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> كتبت الكود بإيدي وشغّلت statistics.py</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c8" id="d15-ckQuiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Percentiles (P50/P95/P99)</td><td>مراقبة latency الـ inference، توزيع الأخطاء</td></tr>
+    <tr><td>Covariance matrix</td><td>الـ PCA، الـ whitening، فهم العلاقة بين الـ features</td></tr>
+    <tr><td>Pearson / Spearman</td><td>اختيار الـ features، اتفاق LLM-as-judge مع البشر</td></tr>
+    <tr><td>Paired t-test / Wilcoxon</td><td>مقارنة موديلين على نفس الـ CV folds</td></tr>
+    <tr><td>Bootstrap CI</td><td>CI لأي metric: AUC، F1، دقة eval set</td></tr>
+    <tr><td>Bonferroni</td><td>hyperparameter sweeps، مقارنة على metrics أو datasets كتير</td></tr>
+    <tr><td>Cohen's d</td><td>هل التحسين يستاهل نزوله production؟</td></tr>
+    <tr><td>CLT</td><td>ليه الـ mini-batch SGD والـ ensembles شغالين</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Sampling Methods. إزاي نسحب عينات من توزيعات صعبة، وده أساس الـ sampling في الـ LLMs نفسها. هنبدأ بمراجعة ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F15-statistics-for-ml" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/15-statistics-for-ml</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, f=A.fmt, $=id=>document.getElementById(id);
+const root=$('d15-root');
+
+// roadmap
+const rm=$('d15-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===15)s.className='now';rm.appendChild(s)}
+
+// ---------- shared math ----------
+const mean=a=>a.reduce((s,x)=>s+x,0)/a.length;
+const median=a=>{const s=[...a].sort((x,y)=>x-y),n=s.length,m=n>>1;return n%2?s[m]:(s[m-1]+s[m])/2};
+const variance=(a,sample=true)=>{const m=mean(a),t=a.reduce((s,x)=>s+(x-m)*(x-m),0);return sample&&a.length>1?t/(a.length-1):t/a.length};
+const pct=(a,p)=>{const s=[...a].sort((x,y)=>x-y),n=s.length,k=p/100*(n-1),fl=Math.floor(k),c=Math.ceil(k);return fl===c?s[fl]:s[fl]*(c-k)+s[c]*(k-fl)};
+const pearson=(x,y)=>{const mx=mean(x),my=mean(y);let sxy=0,sxx=0,syy=0;for(let i=0;i<x.length;i++){const a=x[i]-mx,b=y[i]-my;sxy+=a*b;sxx+=a*a;syy+=b*b}return sxx&&syy?sxy/Math.sqrt(sxx*syy):0};
+const ranks=a=>{const idx=a.map((v,i)=>[v,i]).sort((p,q)=>p[0]-q[0]),r=new Array(a.length);let i=0;while(i<idx.length){let j=i;while(j<idx.length-1&&idx[j+1][0]===idx[i][0])j++;const av=(i+j)/2+1;for(let k=i;k<=j;k++)r[idx[k][1]]=av;i=j+1}return r};
+const randn=()=>{let u=0;while(u===0)u=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*Math.random())};
+// t-distribution CDF via regularized incomplete beta (Lentz continued fraction)
+function lgamma(z){const g=7,c=[0.99999999999980993,676.5203681218851,-1259.1392167224028,771.32342877765313,-176.61502916214059,12.507343278686905,-0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7];if(z<0.5)return Math.log(Math.PI/Math.abs(Math.sin(Math.PI*z)))-lgamma(1-z);z-=1;let x=c[0];for(let i=1;i<g+2;i++)x+=c[i]/(z+i);const t=z+g+0.5;return 0.5*Math.log(2*Math.PI)+(z+0.5)*Math.log(t)-t+Math.log(x)}
+function betacf(x,a,b){const tiny=1e-300;let qab=a+b,qap=a+1,qam=a-1,c=1,d=1-qab*x/qap;if(Math.abs(d)<tiny)d=tiny;d=1/d;let h=d;for(let m=1;m<=300;m++){const m2=2*m;let num=m*(b-m)*x/((qam+m2)*(a+m2));d=1+num*d;if(Math.abs(d)<tiny)d=tiny;c=1+num/c;if(Math.abs(c)<tiny)c=tiny;d=1/d;h*=d*c;num=-(a+m)*(qab+m)*x/((a+m2)*(qap+m2));d=1+num*d;if(Math.abs(d)<tiny)d=tiny;c=1+num/c;if(Math.abs(c)<tiny)c=tiny;d=1/d;const del=d*c;h*=del;if(Math.abs(del-1)<1e-14)break}return h}
+function ibeta(x,a,b){if(x<=0)return 0;if(x>=1)return 1;const fr=Math.exp(a*Math.log(x)+b*Math.log(1-x)-(lgamma(a)+lgamma(b)-lgamma(a+b)));return x<(a+1)/(a+b+2)?fr*betacf(x,a,b)/a:1-fr*betacf(1-x,b,a)/b}
+const pTwo=(t,df)=>ibeta(df/(df+t*t),df/2,0.5); // two-sided p
+function welch(a,b){const v1=variance(a),v2=variance(b),n1=a.length,n2=b.length,se=Math.sqrt(v1/n1+v2/n2);const t=se?(mean(b)-mean(a))/se:0;const num=(v1/n1+v2/n2)**2,den=(v1/n1)**2/(n1-1)+(v2/n2)**2/(n2-1);const df=den?num/den:n1+n2-2;return{t,df,p:pTwo(t,df)}}
+const cohen=(a,b)=>{const n1=a.length,n2=b.length,p=Math.sqrt(((n1-1)*variance(a)+(n2-1)*variance(b))/(n1+n2-2));return p?(mean(b)-mean(a))/p:0};
+const interp=d=>{d=Math.abs(d);return d<0.2?'negligible':d<0.5?'small':d<0.8?'medium':'large'};
+
+// ---------- Lab 1: descriptive ----------
+const ORIG=[23,45,12,67,34,89,21,56,43,78,31,64,19,52,41];
+let D=ORIG.slice(),dragI=-1;
+const dc=$('d15-descCanvas'),dx=A.setupCanvas(dc),DW=+dc.dataset.w,DH=+dc.dataset.h;
+const X0=30,X1=DW-20,VMAX=200,toX=v=>X0+(v/VMAX)*(X1-X0),fromX=x=>Math.max(0,Math.min(VMAX,(x-X0)/(X1-X0)*VMAX));
+const ys=i=>150-(i%3)*16;
+function drawDesc(){
+  dx.clearRect(0,0,DW,DH);
+  const m=mean(D),md=median(D),q1=pct(D,25),q3=pct(D,75),bes=$('d15-bessel').checked,sd=Math.sqrt(variance(D,bes));
+  // axis
+  dx.strokeStyle=css('--muted');dx.lineWidth=1.2;dx.beginPath();dx.moveTo(X0,180);dx.lineTo(X1,180);dx.stroke();
+  dx.fillStyle=css('--muted');dx.font='11px JetBrains Mono, monospace';dx.textAlign='center';
+  for(let v=0;v<=VMAX;v+=25){const x=toX(v);dx.beginPath();dx.moveTo(x,180);dx.lineTo(x,185);dx.stroke();dx.fillText(v,x,198)}
+  // std band
+  dx.fillStyle=css('--vec-b');dx.globalAlpha=.12;dx.fillRect(toX(Math.max(0,m-sd)),110,toX(Math.min(VMAX,m+sd))-toX(Math.max(0,m-sd)),65);dx.globalAlpha=1;
+  // box plot
+  const by=40;dx.strokeStyle=css('--ink');dx.lineWidth=1.5;
+  dx.beginPath();dx.moveTo(toX(Math.min(...D)),by+15);dx.lineTo(toX(q1),by+15);dx.moveTo(toX(q3),by+15);dx.lineTo(toX(Math.max(...D)),by+15);dx.stroke();
+  dx.fillStyle=css('--panel');dx.fillRect(toX(q1),by,toX(q3)-toX(q1),30);dx.strokeRect(toX(q1),by,toX(q3)-toX(q1),30);
+  dx.font='11px JetBrains Mono, monospace';dx.fillStyle=css('--muted');dx.fillText('Q1',toX(q1),by-4);dx.fillText('Q3',toX(q3),by-4);
+  // median & mean lines
+  const line=(v,c,lbl,y)=>{dx.strokeStyle=c;dx.lineWidth=2.5;dx.beginPath();dx.moveTo(toX(v),by-2);dx.lineTo(toX(v),175);dx.stroke();dx.fillStyle=c;dx.font='bold 12px JetBrains Mono, monospace';dx.fillText(lbl,toX(v),y)};
+  line(md,css('--vec-a'),'median',by+95);line(m,css('--vec-b'),'mean',by+80);
+  // points
+  D.forEach((v,i)=>{dx.fillStyle=css('--ink');dx.beginPath();dx.arc(toX(v),ys(i),6,0,7);dx.fill()});
+  dx.textAlign='left';
+  $('d15-rMean').textContent=f(m);$('d15-rMed').textContent=f(md);$('d15-rSd').textContent=f(sd);
+  $('d15-sdLbl').textContent=bes?'Std (n−1)':'Std (n)';
+  $('d15-rIqr').textContent=f(q3-q1);$('d15-rRange').textContent=f(Math.max(...D)-Math.min(...D));$('d15-rSkew').textContent=f(m-md);
+}
+dc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(dc,e);let best=-1,bd=20;D.forEach((v,i)=>{const d=Math.hypot(x-toX(v),y-ys(i));if(d<bd){bd=d;best=i}});if(best>=0){dragI=best;dc.setPointerCapture(e.pointerId)}});
+dc.addEventListener('pointermove',e=>{if(dragI<0)return;const [x]=A.evPos(dc,e);D[dragI]=Math.round(fromX(x));drawDesc()});
+dc.addEventListener('pointerup',()=>dragI=-1);
+$('d15-addOut').addEventListener('click',()=>{if(D.length<24)D.push(190+Math.round(Math.random()*10));drawDesc()});
+$('d15-resetDesc').addEventListener('click',()=>{D=ORIG.slice();drawDesc()});
+$('d15-bessel').addEventListener('change',drawDesc);
+drawDesc();
+
+// ---------- Lab 2: correlation ----------
+const cc=$('d15-corrCanvas'),cx=A.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h,PAD=34;
+let P=[],dragP=-1;
+const cX=v=>PAD+v*(CW-2*PAD),cY=v=>CH-PAD-v*(CH-2*PAD),iX=x=>Math.max(0,Math.min(1,(x-PAD)/(CW-2*PAD))),iY=y=>Math.max(0,Math.min(1,(CH-PAD-y)/(CH-2*PAD)));
+function preset(k){P=[];const n=14;for(let i=0;i<n;i++){const t=i/(n-1);let y;
+  if(k==='lin')y=0.1+0.8*t+randn()*0.04;else if(k==='cube')y=Math.pow(t,3);else if(k==='neg')y=0.9-0.8*t+randn()*0.05;else y=Math.random()*0.6+0.1;
+  P.push([0.05+0.8*t,Math.max(0,Math.min(1,y))])}
+  if(k==='out')P.push([0.98,0.98]);drawCorr()}
+function drawCorr(){
+  cx.clearRect(0,0,CW,CH);A.grid(cx,CW,CH,(CW-2*PAD)/10,PAD,CH-PAD);
+  const x=P.map(p=>p[0]),y=P.map(p=>p[1]),r=pearson(x,y),s=pearson(ranks(x),ranks(y));
+  const mx=mean(x),my=mean(y);let cov=0;for(let i=0;i<x.length;i++)cov+=(x[i]-mx)*(y[i]-my);cov/=(x.length-1);
+  // regression line
+  const vx=variance(x),b=vx?cov/vx:0,a0=my-b*mx;
+  cx.strokeStyle=css('--vec-b');cx.lineWidth=2;cx.setLineDash([6,5]);cx.beginPath();cx.moveTo(cX(0),cY(a0));cx.lineTo(cX(1),cY(a0+b));cx.stroke();cx.setLineDash([]);
+  P.forEach(p=>{cx.fillStyle=css('--vec-a');cx.beginPath();cx.arc(cX(p[0]),cY(p[1]),7,0,7);cx.fill()});
+  $('d15-rP').textContent=f(r,3);$('d15-rS').textContent=f(s,3);$('d15-rC').textContent=f(cov,4);
+}
+cc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(cc,e);let best=-1,bd=22;P.forEach((p,i)=>{const d=Math.hypot(x-cX(p[0]),y-cY(p[1]));if(d<bd){bd=d;best=i}});if(best>=0){dragP=best;cc.setPointerCapture(e.pointerId)}});
+cc.addEventListener('pointermove',e=>{if(dragP<0)return;const [x,y]=A.evPos(cc,e);P[dragP]=[iX(x),iY(y)];drawCorr()});
+cc.addEventListener('pointerup',()=>dragP=-1);
+root.querySelectorAll('[data-d15c]').forEach(b=>b.addEventListener('click',()=>preset(b.dataset.d15c)));
+preset('cube');
+
+// ---------- Lab 3: A/B simulator ----------
+const ac=$('d15-abCanvas'),ax=A.setupCanvas(ac),AW=+ac.dataset.w,AH=+ac.dataset.h;
+let lastBoot=null;
+const nI=$('d15-n'),eI=$('d15-eff');
+const gen=(n,mu)=>{const a=new Array(n);for(let i=0;i<n;i++)a[i]=mu+10*randn();return a};
+function drawBoot(){
+  ax.clearRect(0,0,AW,AH);if(!lastBoot)return;
+  const {diffs,lo,hi,obs}=lastBoot,mn=Math.min(diffs[0],0,lo)-0.2,mx=Math.max(diffs[diffs.length-1],0,hi)+0.2,B=40,cnt=new Array(B).fill(0);
+  diffs.forEach(d=>{cnt[Math.min(B-1,Math.floor((d-mn)/(mx-mn)*B))]++});
+  const top=Math.max(...cnt),L=20,R=AW-14,bot=AH-30,X=v=>L+(v-mn)/(mx-mn)*(R-L),bw=(R-L)/B;
+  cnt.forEach((c,i)=>{const mid=mn+(i+0.5)/B*(mx-mn);ax.fillStyle=(mid>=lo&&mid<=hi)?css('--vec-a'):css('--muted');ax.globalAlpha=(mid>=lo&&mid<=hi)?.8:.35;ax.fillRect(L+i*bw+1,bot-c/top*(bot-14),bw-2,c/top*(bot-14))});ax.globalAlpha=1;
+  ax.strokeStyle=css('--muted');ax.beginPath();ax.moveTo(L,bot);ax.lineTo(R,bot);ax.stroke();
+  const vline=(v,c,t,dy)=>{ax.strokeStyle=c;ax.lineWidth=2;ax.beginPath();ax.moveTo(X(v),8);ax.lineTo(X(v),bot);ax.stroke();ax.fillStyle=c;ax.font='11px JetBrains Mono, monospace';ax.textAlign='center';ax.fillText(t,X(v),bot+14+dy)};
+  vline(0,css('--bad'),'0',0);vline(obs,css('--vec-b'),'obs '+f(obs),12);ax.textAlign='left';
+}
+function runOnce(){
+  const n=+nI.value,e=+eI.value,a=gen(n,50),b=gen(n,50+e),w=welch(a,b),d=cohen(a,b);
+  const Bn=1000,diffs=new Array(Bn);
+  for(let k=0;k<Bn;k++){let s1=0,s2=0;for(let i=0;i<n;i++){s1+=a[(Math.random()*n)|0];s2+=b[(Math.random()*n)|0]}diffs[k]=s2/n-s1/n}
+  diffs.sort((x,y)=>x-y);const lo=pct(diffs,2.5),hi=pct(diffs,97.5),obs=mean(b)-mean(a);
+  lastBoot={diffs,lo,hi,obs};drawBoot();
+  $('d15-aDiff').textContent=f(obs);$('d15-aT').textContent=f(w.t);$('d15-aP').textContent=w.p<1e-4?'< 0.0001':f(w.p,4);
+  $('d15-aD').textContent=f(d,3)+' ('+interp(d)+')';$('d15-aCI').textContent='['+f(lo)+', '+f(hi)+']';
+  const sig=w.p<0.05,v=$('d15-aVerdict');
+  v.textContent=(sig?'Significant عند 0.05':'مش significant')+' · '+(lo>0||hi<0?'الـ CI مش فيه صفر':'الـ CI فيه صفر')+(e===0&&sig?' ← ده false positive (Type I)':'')+(e>0&&!sig?' ← فاتك تأثير حقيقي (Type II)':'');
+  v.style.color=sig?css('--ok'):css('--muted');
+  $('d15-aExtra').textContent='';
+}
+$('d15-run').addEventListener('click',runOnce);
+$('d15-multi').addEventListener('click',()=>{const n=+nI.value,e=+eI.value;let raw=0,bon=0;const ps=[];
+  for(let k=0;k<20;k++){const w=welch(gen(n,50),gen(n,50+e));ps.push(w.p);if(w.p<0.05)raw++;if(w.p<0.05/20)bon++}
+  $('d15-aExtra').textContent='20 اختبار بتأثير '+e+': significant من غير تصحيح = '+raw+'/20 · بعد Bonferroni (α = 0.0025) = '+bon+'/20'+(e===0?' · المتوقع من غير تصحيح حوالي 1 بالصدفة':'');});
+$('d15-power').addEventListener('click',()=>{const n=+nI.value,e=+eI.value;let hit=0;for(let k=0;k<200;k++){if(welch(gen(n,50),gen(n,50+e)).p<0.05)hit++}
+  $('d15-aExtra').textContent='Power (n = '+n+'، تأثير = '+e+'، std = 10) ≈ '+f(hit/200)+' · ('+hit+'/200 محاكاة مسكت التأثير)'+(e===0?' · مع تأثير صفر ده بالظبط معدل الـ false positives':'');});
+const syncAB=()=>{$('d15-nV').textContent=nI.value;$('d15-eV').textContent=eI.value};
+[nI,eI].forEach(i=>i.addEventListener('input',syncAB));
+nI.addEventListener('change',runOnce);eI.addEventListener('change',runOnce);
+syncAB();runOnce();
+
+// ---------- Lab 4: CLT ----------
+const tc=$('d15-cltCanvas'),tx=A.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+let dist='exp';
+const draw1={exp:()=>-Math.log(1-Math.random()),uni:()=>Math.random()*2,cau:()=>Math.tan(Math.PI*(Math.random()-0.5))};
+function drawCLT(){
+  const n=+$('d15-cltN').value,M=2000,ms=new Array(M);
+  for(let k=0;k<M;k++){let s=0;for(let i=0;i<n;i++)s+=draw1[dist]();ms[k]=s/n}
+  $('d15-cltNv').textContent=n;
+  const lo=dist==='cau'?-6:0,hi=dist==='cau'?6:(dist==='exp'?4:2),B=50,cnt=new Array(B).fill(0);
+  ms.forEach(v=>{if(v>=lo&&v<hi)cnt[Math.floor((v-lo)/(hi-lo)*B)]++});
+  const top=Math.max(1,...cnt),bot=TH-22,bw=(TW-20)/B;
+  tx.clearRect(0,0,TW,TH);tx.fillStyle=css('--vec-a');
+  cnt.forEach((c,i)=>tx.fillRect(10+i*bw+1,bot-c/top*(bot-10),bw-2,c/top*(bot-10)));
+  tx.strokeStyle=css('--muted');tx.beginPath();tx.moveTo(10,bot);tx.lineTo(TW-10,bot);tx.stroke();
+  tx.fillStyle=css('--muted');tx.font='11px JetBrains Mono, monospace';tx.textAlign='center';
+  [lo,(lo+hi)/2,hi].forEach((v,i)=>tx.fillText(v,10+i*(TW-20)/2,TH-6));tx.textAlign='left';
+  $('d15-cM').textContent=f(mean(ms),3);$('d15-cS').textContent=dist==='cau'?'مش بيستقر':f(Math.sqrt(variance(ms)),3);
+}
+$('d15-cltN').addEventListener('input',drawCLT);
+root.querySelectorAll('[data-d15d]').forEach(b=>b.addEventListener('click',()=>{dist=b.dataset.d15d;drawCLT()}));
+drawCLT();
+
+// ---------- quiz ----------
+A.quiz($('d15-quizBox'),[
+ ['p-value = 0.03 في hypothesis test معناها إيه؟',['فيه احتمال 3% إنك تشوف داتا متطرفة كده لو الـ null hypothesis كانت صح','الموديل اتحسن 3%','فيه احتمال 3% إن الـ null hypothesis صح','97% من الداتا بتدعم الـ alternative'],0,'الـ p-value هو احتمال داتا متطرفة بالشكل ده أو أكتر بفرض إن H0 صح. مش احتمال إن H0 صح، ودي أشهر غلطة في الإحصاء.'],
+ ['ليه بنقسم على (n−1) بدل n في الـ sample variance؟',['عشان تتحول لـ standard deviation','بتطبق بس لما n فردي','عشان الحساب أسرع','عشان متوسط العينة مش هو المتوسط الحقيقي (Bessel\'s correction)'],3,'القسمة على n−1 بتعوّض الـ bias اللي جاي من استخدام متوسط العينة. من غيرها الـ variance بتطلع أقل من الحقيقة بشكل منتظم.'],
+ ['جربت 20 config مختلفة عند α = 0.05. احتمال false positive واحد على الأقل تقريبًا قد إيه؟',['5%','25%','95%','64%'],3,'1 − 0.95²⁰ ≈ 0.64. دي مشكلة المقارنات المتعددة، والـ Bonferroni بيختبر كل واحد عند 0.05/20 = 0.0025.'],
+ ['A = 0.9234 و B = 0.9237 على مليون عينة وp = 0.001. تستنتج إيه؟',['A أحسن عشان اتختبر الأول','B أحسن significantly ولازم ينزل فورًا','الفرق significant إحصائيًا بس تحسين 0.03% ممكن ما يبقاش مهم عمليًا','الاختبار باطل عشان العينة كبيرة'],2,'مع مليون عينة أي فرق تافه بيبقى significant. الـ p بيأكد إن الفرق حقيقي، بس الـ effect size الصغير ممكن ما يستاهلش تكلفة النزول. اكتب الاتنين دايمًا.'],
+ ['إيه ميزة الـ bootstrap على الـ paired t-test في مقارنة موديلين؟',['بيشتغل مع الـ neural networks بس','دايمًا بيطلّع p-values أصغر','مش محتاج افتراضات عن التوزيع وبيشتغل مع أي metric (AUC، F1، median)','محتاج عينات أقل عشان يوصل للـ significance'],2,'الـ bootstrap بيقدّر الـ sampling distribution لأي إحصائية بالسحب مع الإرجاع، من غير ما يفترض normality ومن غير معادلة مقفولة.'],
+ ['(سؤال إضافي) في المعمل ٠٢ خليت y = x³. ليه Spearman = 1 وPearson أقل؟',['Spearman بيتجاهل نص النقط','العلاقة رتيبة (كل ما x يزيد y يزيد) بس مش خط مستقيم','Pearson بيشتغل على الترتيب','عشان فيه outlier'],1,'Spearman بيحسب Pearson على الترتيب، والترتيب في علاقة رتيبة بيبقى متطابق. Pearson بيقيس الخطية بس.'],
+ ['(سؤال إضافي) عايز تقسم عرض الـ CI بتاع دقة eval set على ٢. محتاج داتا قد إيه؟',['ضعف الداتا','٤ أضعاف الداتا','نفس الداتا بس seed تاني','نص الداتا'],1,'الـ standard error = σ/√n، فعشان يقل للنص لازم √n تتضاعف، يعني n تبقى ٤ أضعاف.']
+],5,()=>{const c=$('d15-ckQuiz');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+A.checklist(15,root);
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(dc))return false;drawDesc();drawCorr();drawBoot();drawCLT()});
+})();
+</script>

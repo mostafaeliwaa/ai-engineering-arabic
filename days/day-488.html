@@ -1,0 +1,540 @@
+<div class="day" id="d488-root">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 60 · Projection Layer for Modality Alignment</span>
+  <h1>اليوم ٤٨٨: الكوبري اللي بيخلّي الصورة تتكلم لغة الكلام</h1>
+  <p class="lede">الـ vision encoder بيطلّع tokens للصورة، والـ text decoder بياكل tokens للكلام، والاتنين عايشين في فضاءات مختلفة. النهاردة هتبني <b>projection</b> صغيرة (MLP من طبقتين) تنقل الصورة لفضاء الكلام، وتدربها لوحدها بـ <b>cosine alignment loss</b> والباقي كله متجمد. ده أصغر جزء في أي vision-language model، وأهم جزء.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (PyTorch)</b></span>
+    <span>النوع: <b>Build</b></span>
+    <span>قبله: <b>Vision Transformer Encoder</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — capstone lessons</span>
+    <div class="roadmap" id="d488-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d488-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت الـ ViT encoder: ١٢ block من pre-LN transformer، و١٢ head، والـ CLS token بيلم ملخص الصورة كلها. جاوب في دماغك الأول وبعدين افتح.</p>
+  <details><summary>١. الـ encoder بيطلّع كام token لصورة 224×224 بـ patch 16؟ وكل واحد طوله كام؟</summary>196 patch + 1 CLS = <b>197 token</b>، كل واحد متجه طوله <b>768</b> (في ViT-Base). النهاردة هنحتاج نختصر الـ 197 دول لمتجه واحد.</details>
+  <details><summary>٢. ليه pre-LN بدل post-LN؟</summary>لأن LayerNorm قبل كل sub-layer بيخلّي التدريب مستقر من غير حيل الـ learning-rate warm-up، والـ gradient بيعدّي كويس في العمق 12+.</details>
+  <details><summary>٣. الـ FFN جوه كل block شكله إيه؟</summary><span class="ltr">hidden → 4·hidden → hidden</span> وفي النص GELU. لاحظ: الـ projection النهاردة نفس الشكل تقريبًا (linear, GELU, linear) بس بتغيّر الأبعاد.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>المشكلة: فضاءين مش بيفهموا بعض</div>
+    <div><b>15 min</b>Pooling + ليه طبقتين + الـ cosine loss</div>
+    <div><b>20 min</b>المعامل التفاعلية الثلاثة</div>
+    <div><b>30 min</b>اكتب الكود وشغّله والـ tests</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1: problem -->
+<section id="d488-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: اتنين بيتكلموا لغتين</h2></div>
+  <p>تخيل مترجم بيتكلم ياباني (الـ vision encoder) وكاتب بيكتب عربي (الـ text decoder). الياباني فاهم الصورة كويس جدًا، بس بيوصفها بكلمات العربي مش فاهمها خالص. محتاج <b>قاموس صغير</b> في النص. القاموس ده هو الـ projection.</p>
+  <p>بالأرقام: الـ encoder (درس ٥٨ و٥٩) بيطلّع tokens طولها <code>vision_hidden = 768</code>. الـ decoder اللي عايز تركّبه فوقه الـ embedding بتاعه طوله <code>text_hidden = 512</code> (أي رقم تاني كان ممكن برضه). المشكلة مش بس في الطول: الـ image tokens عايشة في <b>basis</b> الـ encoder اتعلمه وهو بيتدرب على صور بس، وملوش أي علاقة بمتجهات الكلمات بتاعة الـ decoder.</p>
+  <div class="formula">image tokens (B × 197 × 768)  →  ?  →  text-shaped (B × 512)</div>
+  <p>الحل: <b>MLP من طبقتين</b> (linear، GELU، linear). صغيرة كفاية (حوالي <span class="ltr">768·1024 + 1024·512 ≈ 1.3M</span> parameter) إنها تتدرب في دقايق على GPU واحدة، وهي <b>الحاجة الوحيدة اللي بتتعلم</b> في مرحلة الـ alignment. الـ encoder متجمد، وجدول الـ text embeddings متجمد. الـ projection بس هي اللي بتتحرك. ده نفس اللي LLaVA عمله في 2023، وBLIP-2 عمله بشكل تاني اسمه Q-Former، وكل VLM مفتوح من وقتها خد الفكرة بشكل أو بآخر.</p>
+  <div class="formula">image → frozen ViT → tokens → CLS pool → 2-layer MLP → image_emb (512)
+caption ids → frozen text table → mean pool → text_emb (512)
+                    loss = 1 − cos(image_emb, text_emb)</div>
+</section>
+
+<!-- STATION 2: pooling -->
+<section id="d488-pool">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Pooling قبل الـ Projection: ١٩٧ متجه → متجه واحد</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ encoder بيطلّع 197 token. ناحية الكلام عندنا embedding واحد للـ caption كله. عشان نقارن، لازم يبقى عندنا <b>متجه واحد للصورة</b> لكل sample.</p>
+      <p><b>CLS pooling</b>: أبسط حاجة. خد أول token (الـ CLS) واعمله projection. ده الملخص اللي الـ encoder عامله أصلًا ببلاش، من غير ولا parameter زيادة.</p>
+      <p><b>Mean pooling</b>: خد متوسط الـ tokens كلها. ده اللي SigLIP بيستخدمه. الاتنين بيختصروا 197 متجه لواحد.</p>
+      <p>وناحية الكلام؟ الكود بيعمل <b>mean pooling</b> للـ caption: متوسط embeddings الكلمات، مع تجاهل الـ padding (الـ id رقم 0 محجوز للـ padding).</p>
+      <div class="note"><strong>جرب بإيدك:</strong> بدّل بين CLS وMean، ودوس «لخبط الصورة» عشان تشوف إن الاتنين بيطلّعوا متجه واحد بس بطريقتين مختلفتين. المربعات الملونة هنا رمز للـ tokens مش أرقام حقيقية من موديل.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d488-poolCanvas" width="520" height="330" aria-label="شبكة tokens بتتجمع في متجه واحد"></canvas>
+      <div class="btns">
+        <button type="button" id="d488-poolCls" class="primary">CLS pooling</button>
+        <button type="button" id="d488-poolMean">Mean pooling</button>
+        <button type="button" id="d488-poolShuffle">لخبط الصورة</button>
+      </div>
+      <div class="readout">
+        <div><small>tokens داخلة</small><b>197 × 768</b></div>
+        <div><small>طالع</small><b>1 × 768</b></div>
+        <div><small>الطريقة</small><b id="d488-poolMode">CLS</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3: two layers -->
+<section id="d488-mlp">
+  <div class="station-head"><span class="tag">03</span><h2>ليه طبقتين مش طبقة واحدة؟</h2></div>
+  <p>الـ linear projection لوحدها (مصفوفة) تقدر <b>تلف وتمط</b> الفضاء، بس مش تقدر <b>تثنيه</b>. لو الفضاءين بينهم اختلاف في «الانحناء» (curvature mismatch)، المصفوفة مش هتصلّحه. لما تحط GELU بين طبقتين linear، الـ projection بقى عندها «ثنية» non-linear واحدة، وده عمليًا (empirically) كفاية عشان تعمل align لـ features شبه CLIP مع embeddings الـ language model.</p>
+  <p>في projections أعمق: LLaVA-NeXT استخدم GLU، وQwen-VL استخدم stack من attention layers. دول توسعات. الـ MLP بطبقتين هو الـ baseline الأساسي.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Layer</th><th>Shape</th><th>Parameters</th></tr>
+    <tr><td class="ltr">fc1</td><td class="ltr">(vision_hidden, projection_hidden)</td><td class="ltr">768·1024 + 1024</td></tr>
+    <tr><td class="ltr">activation</td><td class="ltr">GELU</td><td class="ltr">0</td></tr>
+    <tr><td class="ltr">fc2</td><td class="ltr">(projection_hidden, text_hidden)</td><td class="ltr">1024·512 + 512</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:10px;min-width:0">
+      <h3>حاسبة الـ parameters</h3>
+      <p>غيّر الأبعاد وشوف حجم الكوبري مقارنة بالـ encoder (86M تقريبًا لـ ViT-Base زي ما الدرس بيقول).</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">vision_hidden = <b class="mono" id="d488-pInV">768</b><input type="range" id="d488-pIn" min="0" max="3" step="1" value="1"></label>
+      <label style="display:grid;gap:2px">projection_hidden = <b class="mono" id="d488-pHidV">1024</b><input type="range" id="d488-pHid" min="0" max="4" step="1" value="2"></label>
+      <label style="display:grid;gap:2px">text_hidden = <b class="mono" id="d488-pOutV">512</b><input type="range" id="d488-pOut" min="0" max="4" step="1" value="1"></label>
+      <div class="readout">
+        <div><small>fc1</small><b id="d488-pFc1">787,456</b></div>
+        <div><small>fc2</small><b id="d488-pFc2">524,800</b></div>
+        <div><small>الإجمالي</small><b id="d488-pTot">1,312,256</b></div>
+        <div><small>نسبة من 86M</small><b id="d488-pPct">1.5%</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: cosine loss lab -->
+<section id="d488-cos">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Cosine Alignment Loss: الاتجاه مش الطول</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>«align» <b>مش معناها</b> إن <code>image_emb == text_emb</code>. معناها إن الاتنين <b>بيشاوروا لنفس الاتجاه</b> في الفضاء المشترك.</p>
+      <div class="formula">loss = 1 − cos_sim(image, text)</div>
+      <p>القيمة من <b>0</b> (متطابقين في الاتجاه) لحد <b>2</b> (عكس بعض بالظبط). التدريب بيزق الرقم ده ناحية الصفر لكل pair.</p>
+      <p>في الكود بنعمل <code>F.normalize</code> للاتنين الأول (نخلي طولهم ١)، وبعدين dot product، وبعدين <code>1 - cos</code> ومتوسط على الـ batch.</p>
+      <div class="note"><strong>جرب بإيدك:</strong> اسحب السهمين. طوّل السهم الأزرق وقصّره من غير ما تغيّر اتجاهه: الـ loss مش بيتغير. ده معنى scale-invariant.</div>
+      <p>الدرس ده بيستخدم النسخة per-pair عشان تشوف الديناميكا بوضوح. درس ٦٢ هيعممها لـ contrastive batch (InfoNCE) حيث كل صورة لازم تبقى أقرب للـ caption بتاعها من أي caption تاني في الـ batch.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d488-cosCanvas" width="520" height="400" aria-label="اسحب متجه الصورة ومتجه الكلام"></canvas>
+      <div class="readout">
+        <div><small>image_emb</small><b id="d488-cI">[3, 1]</b></div>
+        <div><small>text_emb</small><b id="d488-cT">[1, 3]</b></div>
+        <div><small>cos</small><b id="d488-cCos">0.6</b></div>
+        <div><small>loss = 1 − cos</small><b id="d488-cLoss">0.4</b></div>
+      </div>
+      <div class="verdict" id="d488-cVerdict"></div>
+      <div class="btns">
+        <button type="button" data-d488c="same">متطابقين (loss 0)</button>
+        <button type="button" data-d488c="perp">متعامدين (loss 1)</button>
+        <button type="button" data-d488c="opp">عكس بعض (loss 2)</button>
+        <button type="button" data-d488c="long">نفس الاتجاه بطول مختلف</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5: training lab -->
+<section id="d488-train">
+  <div class="station-head"><span class="tag">05</span><h2>معمل: درّب الكوبري بنفسك (Linear ضد MLP)</h2></div>
+  <p>ده نموذج صغير في بُعدين بس عشان تشوف بعينك. عندنا ٨ «صور» (أسهم رمادي) و٨ «captions» (أسهم برتقالي). الـ captions اتعملت من الصور بقاعدة <b>غير خطية</b>: اتجاه الـ caption = ضعف زاوية الصورة. الـ encoder والـ text table متجمدين (الأسهم دي مش بتتحرك)، والـ projector بس هو اللي بيتدرب بـ gradient descent على <code>1 − cos</code>.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الأسهم الزرقا هي <code>projector(image)</code>. كل ما تقرب من البرتقالي اللي بنفس الرقم، الـ loss بيقل.</p>
+      <p>جرب <b>Linear</b> الأول: مصفوفة 2×2 تقدر تلف وتمط بس، فمش هتقدر تضاعف الزوايا، والـ loss هيقف عالي. وبعدين جرب <b>MLP</b> (2→16→2 مع GELU) وشوف الفرق.</p>
+      <div class="note ai"><strong>انتبه:</strong> ده toy مش الكود الحقيقي. في الدرس نفسه البيانات synthetic عشوائية، والـ loss بينزل من حوالي 1.07 لحوالي 0.80 في 200 خطوة. الدرس بيقول إن فرق الـ non-linearity بيبان أكتر على صور طبيعية وأقل على synthetic.</div>
+      <label style="display:grid;gap:2px">learning rate = <b class="mono" id="d488-lrV">0.05</b><input type="range" id="d488-lr" min="1" max="20" step="1" value="5"></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d488-trCanvas" width="520" height="340" aria-label="أسهم الصور والكلام والـ projector"></canvas>
+      <canvas id="d488-lossCanvas" width="520" height="120" aria-label="منحنى الـ loss"></canvas>
+      <div class="readout">
+        <div><small>step</small><b id="d488-tStep">0</b></div>
+        <div><small>mean loss</small><b id="d488-tLoss">–</b></div>
+        <div><small>mean cos</small><b id="d488-tCos">–</b></div>
+        <div><small>params</small><b id="d488-tParams">6</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" id="d488-mLin" class="primary">Linear (2×2)</button>
+        <button type="button" id="d488-mMlp">MLP (GELU)</button>
+        <button type="button" id="d488-tGo">▶ درّب</button>
+        <button type="button" id="d488-tReset">ابدأ من الأول</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6: frozen -->
+<section id="d488-frozen">
+  <div class="station-head"><span class="tag">06</span><h2>السر كله: التجميد (Frozen Encoder)</h2></div>
+  <p>الـ vision encoder فيه حوالي 86M parameter. جدول الكلام فيه كام مليون كمان. إنك تدربهم كلهم من mock corpus صغير؟ مستحيل. لما تجمّدهم الاتنين، الـ 1.3M بتوع الـ projection هما بس اللي بيتغيروا، وكام مية خطوة على pairs صناعية كفاية تنزّل الـ loss.</p>
+  <p>تشبيه: عندك محرك عربية ممتاز (الـ encoder) وعجل ممتاز (الـ decoder). مش هتعيد تصنيعهم. هتصنع <b>ناقل الحركة</b> اللي بيربطهم بس. ده بالظبط شكل كل VLM مبني على adapter: الأجزاء التقيلة متجمدة، والكوبري الخفيف بس هو اللي بيتدرب.</p>
+  <p>في الكود التجميد معناه <code>requires_grad_(False)</code> لكل parameter، والـ forward للـ encoder والـ text جوه <code>torch.no_grad()</code>، والـ optimizer بياخد <code>projector.parameters()</code> بس.</p>
+  <div class="tablewrap"><table>
+    <tr><th>المصطلح</th><th>معناه ببساطة</th></tr>
+    <tr><td>Modality alignment</td><td>إنك تخلي embeddings الصورة والكلام ينفع يتقارنوا في فضاء واحد مشترك</td></tr>
+    <tr><td>Projection head</td><td>الموديول الصغير اللي بينقل من فضاء لفضاء، غالبًا MLP بطبقتين</td></tr>
+    <tr><td>Cosine similarity</td><td>الـ dot product مقسوم على حاصل ضرب الأطوال (L2 norms)</td></tr>
+    <tr><td>Frozen encoder</td><td>موديل كل parameters بتاعته <code>requires_grad=False</code></td></tr>
+    <tr><td>Mock corpus</td><td>pairs صناعية عشان التدريب ما يعتمدش على تحميل داتاسيت</td></tr>
+  </table></div>
+  <h3>بيظهر فين في الحقيقة (من الدرس)</h3>
+  <ul class="checklist">
+    <li>• <b>LLaVA 1.5</b>: MLP بطبقتين وGELU من hidden بتاع CLIP-ViT-L لـ embedding dim بتاع LLaMA. الـ encoder والـ LLM متجمدين، الـ projection بس بتتدرب (وبعدين في المرحلة التانية بيفكوا تجميد الـ LLM).</li>
+    <li>• <b>BLIP-2</b>: الـ Q-Former بياخد 32 query token متعلمين ويعمل cross-attention على image tokens، وبعدين projection لـ embedding dim بتاع الـ LLM. الـ head الأخير ده هو نظير الـ MLP بتاعتنا.</li>
+    <li>• <b>MiniGPT-4</b>: linear projection واحدة من مخرج Q-Former لـ embedding dim بتاع Vicuna.</li>
+    <li>• <b>Qwen-VL</b>: adapter بـ cross-attention وكذا layer، بس آخر حتة برضه projection لـ embedding dim بتاع الـ LM.</li>
+  </ul>
+  <p>الشكل بيختلف بس الدور واحد: اعمل pool للـ image tokens، اعمل project لـ text embedding dim، ودرّبها لوحدها.</p>
+</section>
+
+<!-- CODE -->
+<section id="d488-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>الكود بيستورد الـ ViT من درس ٥٩ (<code>59-vit-transformer/code/main.py</code>)، فلازم يكون موجود جنبه في الريبو. محتاج <code>torch</code> و<code>numpy</code>. شغّل من جذر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/60-projection-layer-modality-align/code/main.py</pre></div>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_projector.py</code> واكتب كل خطوة بنفسك، وبص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الإعدادات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass(frozen=True)
+class AlignConfig:
+    vision_hidden: int = 768       <span class="c"># طول token الصورة</span>
+    projection_hidden: int = 1024  <span class="c"># العرض في النص</span>
+    text_hidden: int = 512         <span class="c"># طول embedding الكلام</span>
+    vocab_size: int = 4096
+    max_caption_len: int = 16
+    pairs: int = 32                <span class="c"># 32 pair صناعي</span>
+    steps: int = 200
+    lr: float = 3e-4
+    seed: int = 0</pre></div>
+
+  <h3>خطوة ٢: الـ MLPProjector (الكوبري)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MLPProjector(nn.Module):
+    def __init__(self, in_dim, hidden_dim, out_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(in_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, out_dim)
+
+    def forward(self, x):
+        return self.fc2(F.gelu(self.fc1(x)))   <span class="c"># linear → GELU → linear</span></pre></div>
+
+  <h3>خطوة ٣: جدول الكلام المتجمد + mean pooling بيتجاهل الـ padding</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MockTextEmbedding(nn.Module):
+    def __init__(self, vocab_size, dim, seed):
+        super().__init__()
+        gen = torch.Generator().manual_seed(seed)          <span class="c"># نفس الأرقام كل مرة</span>
+        weight = torch.randn(vocab_size, dim, generator=gen) * (1.0 / dim ** 0.5)
+        self.table = nn.Embedding(vocab_size, dim, _weight=weight)
+        for p in self.table.parameters():
+            p.requires_grad_(False)                         <span class="c"># متجمد</span>
+
+    def forward(self, ids):
+        if ids.dim() != 2:
+            raise ValueError(f"expected (B, L) ids, got {tuple(ids.shape)}")
+        embed = self.table(ids)
+        mask = (ids != 0).float().unsqueeze(-1)             <span class="c"># 0 = padding</span>
+        denom = mask.sum(dim=1).clamp(min=1.0)
+        return (embed * mask).sum(dim=1) / denom            <span class="c"># متوسط الكلمات الحقيقية بس</span></pre></div>
+
+  <h3>خطوة ٤: pair صناعي (صورة + caption)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_pair(seed, vocab_size, max_len):
+    img = synthesize_image(seed=seed)                       <span class="c"># صورة 224x224x3 من درس 58</span>
+    rng = np.random.default_rng(seed + 10_000)
+    length = int(rng.integers(4, max_len + 1))              <span class="c"># طول بين 4 و max_len</span>
+    ids = np.zeros((max_len,), dtype=np.int64)
+    ids[:length] = rng.integers(1, vocab_size, size=length) <span class="c"># ids من 1 (الـ 0 للـ padding)</span>
+    return img, torch.from_numpy(ids).unsqueeze(0)</pre></div>
+
+  <h3>خطوة ٥: الـ loss</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def cosine_alignment_loss(image_emb, text_emb):
+    if image_emb.shape != text_emb.shape:
+        raise ValueError("shape mismatch")
+    img_n = F.normalize(image_emb, dim=-1)                  <span class="c"># طول = 1</span>
+    txt_n = F.normalize(text_emb, dim=-1)
+    cos = (img_n * txt_n).sum(dim=-1)
+    return (1.0 - cos).mean()                               <span class="c"># 0 أحسن حاجة، 2 أوحش حاجة</span></pre></div>
+
+  <h3>خطوة ٦: التدريب (الـ projector بس)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def freeze(module):
+    for p in module.parameters():
+        p.requires_grad_(False)
+
+torch.manual_seed(cfg.seed)
+encoder_cfg = ViTConfig(image_size=224, patch_size=16, hidden=cfg.vision_hidden,
+                        depth=4, heads=8, mlp_ratio=2.0)    <span class="c"># encoder أصغر عشان السرعة</span>
+encoder = VisionEncoder(encoder_cfg).eval(); freeze(encoder)
+text = MockTextEmbedding(cfg.vocab_size, cfg.text_hidden, seed=cfg.seed + 1); freeze(text)
+projector = MLPProjector(cfg.vision_hidden, cfg.projection_hidden, cfg.text_hidden)
+
+pairs = [make_pair(cfg.seed + 1000 + i, cfg.vocab_size, cfg.max_caption_len)
+         for i in range(cfg.pairs)]
+opt = torch.optim.Adam(projector.parameters(), lr=cfg.lr)  <span class="c"># الـ projector بس</span>
+
+for step in range(cfg.steps):
+    img, ids = pairs[step % cfg.pairs]                      <span class="c"># لف على الـ 32 pair</span>
+    with torch.no_grad():
+        _, cls = encoder(img)                               <span class="c"># CLS pooling</span>
+        text_emb = text(ids)
+    loss = cosine_alignment_loss(projector(cls), text_emb)
+    opt.zero_grad(set_to_none=True)
+    loss.backward()
+    opt.step()
+    if step % 25 == 0 or step == cfg.steps - 1:
+        print(f"  step {step:4d}  loss {loss.item():.4f}")</pre></div>
+  <details><summary>الناتج المتوقع (تقريبًا)</summary>
+  <p>الدرس بيقول إن الـ loss بيبدأ حوالي <b>1.07</b> وينزل لحوالي <b>0.80</b> في 200 خطوة، وبيطبع الـ cosine النهائي. عدد parameters الـ projector لازم يطلع:</p>
+  <pre class="term">projector params  : 1,312,256
+  ok: projector learned an alignment direction</pre></details>
+
+  <h3>خطوة ٧: الـ tests</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd phases/19-capstone-projects/60-projection-layer-modality-align
+python3 -m unittest code/test_main.py</pre></div>
+  <p>الـ tests بتتأكد من: شكل مخرج الـ projector = <code>out_dim</code>، جدول الكلام مفيهوش ولا parameter بـ <code>requires_grad</code>، الـ loss = 0 على متجهات متطابقة و= 2 على عكس بعض، الـ gradient بيوصل للـ projector، الـ pooling بيتجاهل الـ padding، والتدريب بينزّل الـ loss.</p>
+  <div class="note"><strong>ملحوظة:</strong> ملف الـ test بيعمل <code>from main import ...</code>، فلو اشتكى إنه مش لاقي <code>main</code>، جرّب تشغّله من جوه فولدر <code>code</code>: <code>cd code &amp;&amp; python3 -m unittest test_main.py</code>.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d488-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Mean بدل CLS:</b> بدّل الـ CLS pooling بـ mean pooling على الـ 196 patch token وقارن الـ loss النهائي بعد 200 خطوة.
+      <details><summary>تلميح</summary>الـ encoder بيرجّع <code>(tokens, cls)</code>. خد <code>tokens[:, 1:].mean(dim=1)</code> (شيل الـ CLS اللي في الأول). الدرس بيقول mean غالبًا بيتدرب أسرع على synthetic، والـ CLS أكفأ في عدد العينات على صور طبيعية.</details></li>
+    <li><b>Temperature:</b> ضيف scalar متعلم <code>tau</code> واستخدم <code>cos / tau</code>. شوف إيه اللي بيحصل لو tau صغير قوي أو كبير قوي.
+      <details><summary>تلميح</summary>خليه <code>nn.Parameter</code> وحطه في الـ optimizer. الدرس بيقول: صغير قوي = gradient noise، كبير قوي = الـ loss يقف عالي (plateau). اتأكد إن tau يفضل موجب (مثلًا اتعلم <code>log_tau</code>).</details></li>
+    <li><b>Linear بس:</b> بدّل الـ MLP بـ <code>nn.Linear(768, 512)</code> واحسب فرق الـ loss.
+      <details><summary>تلميح</summary>ده نفس معمل ٠٥ بس بالحجم الحقيقي. الدرس بيقول الـ non-linearity بتفرق أكتر على صور طبيعية وأقل على synthetic، فمتستغربش لو الفرق طلع صغير هنا.</details></li>
+    <li><b>L2 penalty:</b> ضيف penalty صغيرة على أوزان الـ projector وشوف تتفاعل إزاي مع الـ cosine.
+      <details><summary>تلميح</summary>إما <code>weight_decay</code> في Adam أو <code>loss + lam * sum(p.pow(2).sum())</code>. الـ cosine مش فارق معاه الطول (scale-invariant)، فالـ penalty غالبًا بتصغّر الاتجاهات اللي مش مستخدمة.</details></li>
+    <li><b>احفظ وحمّل:</b> احفظ أوزان الـ projector، وبعدين حمّلها جنب الـ encoder المتجمد واعمل inference من غير backward.
+      <details><summary>تلميح</summary><code>torch.save(projector.state_dict(), "proj.pt")</code> وبعدين <code>load_state_dict</code> جوه <code>torch.no_grad()</code>. لاحظ إن الـ projector هو الحاجة الجديدة الوحيدة اللي بتشحنها؛ الـ encoder لسه بيعمل forward وقت الـ deploy.</details></li>
+    <li><b>إضافة مني · retrieval حقيقي صغير:</b> بعد التدريب، خد الـ 32 صورة واعمل لكل واحدة projection، واحسب cosine مع الـ 32 caption كلهم، وشوف كام صورة الـ caption بتاعها جه رقم ١ (recall@1). ده أول اختبار عملي بيعمله أي حد بيبني image search أو VLM عشان يعرف الـ alignment نافع ولا لأ.
+      <details><summary>تلميح</summary>اعمل مصفوفة <code>S = normalize(I) @ normalize(T).T</code> حجمها 32×32، وبعدين <code>(S.argmax(dim=1) == torch.arange(32)).float().mean()</code>. لاحظ إن الـ loss per-pair مش بيطلب إن الصورة تبعد عن captions التانية، فممكن الرقم يطلع ضعيف، وده بالظبط سبب الـ InfoNCE في درس ٦٢.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d488-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالهوش صريح</h2></div>
+  <h3>الحدس: الـ projection = «قاموس» مش «فهم»</h3>
+  <p>الـ projector مش بيفهم الصورة؛ الفهم كله جوه الـ encoder المتجمد. هو بس بيترجم إحداثيات. عشان كده لو الـ encoder ضعيف، مفيش projection هتصلّحه.</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist">
+    <li>• <b>نسيان تجميد حاجة:</b> لو نسيت <code>freeze</code> أو حطيت <code>encoder.parameters()</code> في الـ optimizer، هتدرّب 86M بدل 1.3M وتبوظ الـ encoder على داتا صغيرة.</li>
+    <li>• <b>نسيان الـ mask في الـ mean pooling:</b> الـ padding (id 0) هيدخل في المتوسط ويخلي الـ captions القصيرة شبه بعض. الـ test بتاع <code>pooling_ignores_padding</code> موجود عشان كده.</li>
+    <li>• <b>shapes مش متطابقة:</b> لو <code>text_hidden</code> مختلف عن <code>out_dim</code>، الـ loss بيرمي <code>ValueError</code> عمدًا بدل ما يعمل broadcasting غلط في صمت.</li>
+    <li>• <b>تفتكر إن loss 0.8 فشل:</b> على synthetic عشوائية مفيش علاقة حقيقية بين الصورة والـ caption، فالمهم إن الـ loss بينزل، مش إنه يوصل صفر.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents</h3>
+  <p>لما تبعت صورة لـ VLM، الصورة بتتحول لـ tokens بالـ encoder، والـ projection بتحولهم لشكل text tokens، والـ LLM بيقراهم كأنهم كلمات جنب سؤالك. في VLMs زي LLaVA، الـ projection بتطلّع tokens كتير (مش متجه واحد) بتتحط في الـ sequence. وفي الـ agents اللي بتشوف screenshots، نفس الكوبري ده هو اللي بيخلي الـ LLM «يشوف» الشاشة.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d488-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d488-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d488-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d488-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح ليه image tokens مينفعش تدخل الـ decoder على طول</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فاهم CLS pooling وmean pooling والـ mask بتاع الـ padding</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> شفت في المعمل إن الـ linear مش بيقدر يثني الفضاء والـ MLP بيقدر</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت الـ projector والـ loss والـ training loop بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> شغّلت الـ tests وعدّت</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>MLP projection (linear, GELU, linear)</td><td>LLaVA 1.5، والـ head الأخير في BLIP-2</td></tr>
+    <tr><td>Linear projection واحدة</td><td>MiniGPT-4</td></tr>
+    <tr><td>Cross-attention adapter</td><td>BLIP-2 Q-Former، Qwen-VL</td></tr>
+    <tr><td>Frozen encoder + frozen LM</td><td>المرحلة الأولى من تدريب LLaVA وأي VLM مبني على adapter</td></tr>
+    <tr><td>Cosine similarity</td><td>CLIP/SigLIP، image search، الـ RAG بالصور</td></tr>
+    <tr><td>Mean pooling</td><td>SigLIP، وsentence embeddings</td></tr>
+  </table></div>
+  <p><b>الجاي:</b> هنكمّل في Track B ونقرب من InfoNCE (contrastive) اللي بتخلي كل صورة تبعد عن captions غيرها.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F60-projection-layer-modality-align" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/60-projection-layer-modality-align</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt;
+const root=document.getElementById('d488-root');
+
+// roadmap
+const L=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17];for(let i=20;i<=87;i++)L.push(i);
+const rm=document.getElementById('d488-roadmap');
+L.forEach(n=>{const s=document.createElement('span');s.textContent=n;if(n===60)s.className='now';rm.appendChild(s)});
+
+// ---------- Lab: pooling ----------
+const pc=document.getElementById('d488-poolCanvas'),px=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+let poolMode='cls',seed=1,tok=[];
+function rnd(){seed=(seed*16807)%2147483647;return seed/2147483647}
+function makeTok(){tok=[];for(let i=0;i<197;i++)tok.push(rnd())}
+makeTok();
+function drawPool(){
+  px.clearRect(0,0,PW,PH);
+  const S=15,ox=20,oy=40;
+  px.fillStyle=css('--muted');px.font='12px JetBrains Mono, monospace';px.fillText('CLS',ox,oy-10);px.fillText('196 patch tokens (14×14)',ox+40,oy-10);
+  const col=v=>`hsl(${190+v*40},55%,${35+v*30}%)`;
+  // CLS cell
+  px.fillStyle=col(tok[0]);px.fillRect(ox,oy,S*1.6,S*1.6);
+  px.strokeStyle=poolMode==='cls'?css('--vec-b'):css('--line');px.lineWidth=poolMode==='cls'?3:1;px.strokeRect(ox,oy,S*1.6,S*1.6);
+  for(let i=0;i<196;i++){const r=Math.floor(i/14),c=i%14,x=ox+40+c*S,y=oy+r*S;
+    px.globalAlpha=poolMode==='mean'?1:.35;px.fillStyle=col(tok[i+1]);px.fillRect(x,y,S-2,S-2)}
+  px.globalAlpha=1;
+  // pooled
+  const v=poolMode==='cls'?tok[0]:tok.slice(1).reduce((a,b)=>a+b,0)/196;
+  const tx=ox+40+14*S+50,ty=oy+80;
+  AI.arrow(px,ox+40+14*S+6,ty+15,tx-6,ty+15,css('--ink'),2);
+  px.fillStyle=col(v);px.fillRect(tx,ty,60,30);px.strokeStyle=css('--vec-a');px.lineWidth=2;px.strokeRect(tx,ty,60,30);
+  px.fillStyle=css('--ink');px.fillText('pooled',tx+6,ty-8);px.fillText('1 × 768',tx,ty+48);
+  px.fillStyle=css('--muted');px.fillText(poolMode==='cls'?'= tokens[:, 0]':'= mean(tokens)',tx-14,ty+66);
+  if(poolMode==='mean'){px.strokeStyle=css('--vec-b');px.lineWidth=2;px.strokeRect(ox+38,oy-2,14*S+2,14*S+2)}
+  document.getElementById('d488-poolMode').textContent=poolMode==='cls'?'CLS':'Mean';
+}
+const pb1=document.getElementById('d488-poolCls'),pb2=document.getElementById('d488-poolMean');
+pb1.addEventListener('click',()=>{poolMode='cls';pb1.classList.add('primary');pb2.classList.remove('primary');drawPool()});
+pb2.addEventListener('click',()=>{poolMode='mean';pb2.classList.add('primary');pb1.classList.remove('primary');drawPool()});
+document.getElementById('d488-poolShuffle').addEventListener('click',()=>{makeTok();drawPool()});
+drawPool();
+
+// ---------- param calculator ----------
+const INs=[512,768,1024,1280],HIDs=[512,768,1024,2048,4096],OUTs=[256,512,1024,2048,4096];
+function params(){
+  const a=INs[+document.getElementById('d488-pIn').value],h=HIDs[+document.getElementById('d488-pHid').value],o=OUTs[+document.getElementById('d488-pOut').value];
+  const f1=a*h+h,f2=h*o+o,t=f1+f2;
+  document.getElementById('d488-pInV').textContent=a;document.getElementById('d488-pHidV').textContent=h;document.getElementById('d488-pOutV').textContent=o;
+  document.getElementById('d488-pFc1').textContent=f1.toLocaleString('en');
+  document.getElementById('d488-pFc2').textContent=f2.toLocaleString('en');
+  document.getElementById('d488-pTot').textContent=t.toLocaleString('en');
+  document.getElementById('d488-pPct').textContent=f(t/86e6*100,1)+'%';
+}
+['d488-pIn','d488-pHid','d488-pOut'].forEach(id=>document.getElementById(id).addEventListener('input',params));params();
+
+// ---------- Lab: cosine loss ----------
+const cc=document.getElementById('d488-cosCanvas'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h,CS=36,cox=CW/2,coy=CH/2;
+let I=[3,1],T=[1,3],cd=null;
+const cP=p=>[cox+p[0]*CS,coy-p[1]*CS],cW=(x,y)=>[(x-cox)/CS,(coy-y)/CS];
+function drawCos(){
+  cx.clearRect(0,0,CW,CH);AI.grid(cx,CW,CH,CS,cox,coy);
+  const mi=Math.hypot(...I),mt=Math.hypot(...T),cos=(mi&&mt)?(I[0]*T[0]+I[1]*T[1])/(mi*mt):0,loss=1-cos;
+  // unit circle + normalized dots
+  cx.strokeStyle=css('--muted');cx.setLineDash([4,4]);cx.lineWidth=1;cx.beginPath();cx.arc(cox,coy,CS,0,7);cx.stroke();cx.setLineDash([]);
+  [[I,mi,'--vec-a'],[T,mt,'--vec-b']].forEach(([v,m,c])=>{if(!m)return;cx.fillStyle=css(c);cx.beginPath();cx.arc(cox+v[0]/m*CS,coy-v[1]/m*CS,4,0,7);cx.fill()});
+  const [ix,iy]=cP(I),[tx,ty]=cP(T);
+  AI.arrow(cx,cox,coy,tx,ty,css('--vec-b'),3.5);AI.arrow(cx,cox,coy,ix,iy,css('--vec-a'),3.5);
+  cx.font='bold 12px JetBrains Mono, monospace';
+  cx.fillStyle=css('--vec-a');cx.fillText('image_emb',ix+8,iy-8);cx.fillStyle=css('--vec-b');cx.fillText('text_emb',tx+8,ty-8);
+  // loss bar 0..2
+  const bw=CW-40;cx.fillStyle=css('--soft');cx.fillRect(20,CH-24,bw,12);
+  cx.fillStyle=loss<.3?css('--ok'):loss>1.3?css('--bad'):css('--vec-b');cx.fillRect(20,CH-24,bw*loss/2,12);
+  cx.fillStyle=css('--muted');cx.font='11px JetBrains Mono, monospace';cx.fillText('0',20,CH-28);cx.fillText('1',20+bw/2-3,CH-28);cx.fillText('2',20+bw-8,CH-28);
+  document.getElementById('d488-cI').textContent=`[${f(I[0],1)}, ${f(I[1],1)}]`;
+  document.getElementById('d488-cT').textContent=`[${f(T[0],1)}, ${f(T[1],1)}]`;
+  document.getElementById('d488-cCos').textContent=f(cos,3);
+  document.getElementById('d488-cLoss').textContent=f(loss,3);
+  const v=document.getElementById('d488-cVerdict');
+  if(loss<.05){v.textContent='aligned: نفس الاتجاه، الـ loss تقريبًا صفر (حتى لو الأطوال مختلفة)';v.style.color=css('--ok')}
+  else if(loss>1.95){v.textContent='عكس بعض: أقصى loss = 2';v.style.color=css('--bad')}
+  else if(Math.abs(loss-1)<.05){v.textContent='متعامدين: loss = 1';v.style.color=css('--muted')}
+  else{v.textContent=loss<1?'قريبين، لسه فيه مسافة':'بعاد، الـ projection لسه محتاجة تتعلم';v.style.color=css('--ink')}
+}
+cc.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(cc,e),a=cP(I),b=cP(T);
+  cd=Math.hypot(x-a[0],y-a[1])<Math.hypot(x-b[0],y-b[1])?'I':'T';cc.setPointerCapture(e.pointerId);cMove(e)});
+function cMove(e){if(!cd)return;const [x,y]=AI.evPos(cc,e);let p=cW(x,y);
+  p=[Math.max(-6.5,Math.min(6.5,Math.round(p[0]*2)/2)),Math.max(-4.5,Math.min(4.5,Math.round(p[1]*2)/2))];
+  if(cd==='I')I=p;else T=p;drawCos()}
+cc.addEventListener('pointermove',cMove);cc.addEventListener('pointerup',()=>cd=null);
+root.querySelectorAll('[data-d488c]').forEach(b=>b.addEventListener('click',()=>{const k=b.dataset.d488c;T=[1,2];
+  if(k==='same')I=[1,2];if(k==='perp')I=[-4,2];if(k==='opp')I=[-2,-4];if(k==='long')I=[2.5,5];drawCos()}));
+drawCos();
+
+// ---------- Lab: training toy ----------
+const tc=document.getElementById('d488-trCanvas'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+const lc=document.getElementById('d488-lossCanvas'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+const N=8,X=[],Y=[];
+for(let i=0;i<N;i++){const a=-Math.PI/2+i*Math.PI/(N-1)*0.95;X.push([Math.cos(a),Math.sin(a)]);Y.push([Math.cos(2*a+0.6),Math.sin(2*a+0.6)])}
+let model='lin',P=[],hist=[],step=0,running=false,raf=null;const H=16;
+let s2=7;function r2(){s2=(s2*16807)%2147483647;return s2/2147483647-.5}
+function init(){s2=7;hist=[];step=0;
+  if(model==='lin'){P=[0.9,0.3,-0.3,0.9].map(v=>v+r2()*.2)}
+  else{P=[];for(let i=0;i<H*2+H+2*H+2;i++)P.push(r2()*1.2)}
+  document.getElementById('d488-tParams').textContent=P.length;
+}
+const gelu=z=>0.5*z*(1+Math.tanh(0.7978845608*(z+0.044715*z*z*z)));
+function fwd(p,x){
+  if(model==='lin')return[p[0]*x[0]+p[1]*x[1],p[2]*x[0]+p[3]*x[1]];
+  const h=[];for(let j=0;j<H;j++)h.push(gelu(p[j*2]*x[0]+p[j*2+1]*x[1]+p[2*H+j]));
+  const o=3*H;let a=p[o+2*H],b=p[o+2*H+1];
+  for(let j=0;j<H;j++){a+=p[o+j]*h[j];b+=p[o+H+j]*h[j]}return[a,b];
+}
+function lossOf(p){let L=0,C=0;for(let i=0;i<N;i++){const o=fwd(p,X[i]),m=Math.hypot(...o)||1e-9,c=(o[0]*Y[i][0]+o[1]*Y[i][1])/m;C+=c;L+=1-c}return[L/N,C/N]}
+function trainStep(){
+  const lr=+document.getElementById('d488-lr').value/100,g=[],e=1e-4,base=lossOf(P)[0];
+  for(let k=0;k<P.length;k++){const q=P.slice();q[k]+=e;g.push((lossOf(q)[0]-base)/e)}
+  for(let k=0;k<P.length;k++)P[k]-=lr*g[k]*(model==='lin'?1:4);
+  step++;hist.push(lossOf(P)[0]);
+}
+function drawTr(){
+  tx.clearRect(0,0,TW,TH);
+  const R=110,ox=TW/2,oy=TH/2+5;
+  tx.strokeStyle=css('--line');tx.lineWidth=1;tx.beginPath();tx.arc(ox,oy,R,0,7);tx.stroke();
+  tx.font='11px JetBrains Mono, monospace';
+  for(let i=0;i<N;i++){
+    const y=Y[i];AI.arrow(tx,ox,oy,ox+y[0]*R,oy-y[1]*R,css('--vec-b'),2);
+    tx.fillStyle=css('--vec-b');tx.fillText(i+1,ox+y[0]*(R+12)-3,oy-y[1]*(R+12)+4);
+    const x=X[i];tx.globalAlpha=.35;AI.arrow(tx,ox,oy,ox+x[0]*R*.55,oy-x[1]*R*.55,css('--muted'),1.5);tx.globalAlpha=1;
+    const o=fwd(P,x),m=Math.hypot(...o)||1;AI.arrow(tx,ox,oy,ox+o[0]/m*R*.85,oy-o[1]/m*R*.85,css('--vec-a'),2.5);
+    tx.fillStyle=css('--vec-a');tx.fillText(i+1,ox+o[0]/m*R*.7+4,oy-o[1]/m*R*.7);
+  }
+  tx.fillStyle=css('--muted');tx.fillText('gray: image (frozen)  orange: caption (frozen)  blue: projector(image)',8,14);
+  lx.clearRect(0,0,LW,LH);lx.fillStyle=css('--soft');lx.fillRect(0,0,LW,LH);
+  lx.strokeStyle=css('--line');lx.beginPath();lx.moveTo(30,LH-15);lx.lineTo(LW-5,LH-15);lx.moveTo(30,5);lx.lineTo(30,LH-15);lx.stroke();
+  lx.fillStyle=css('--muted');lx.font='10px JetBrains Mono, monospace';lx.fillText('2',18,12);lx.fillText('0',18,LH-15);lx.fillText('loss',36,14);
+  if(hist.length>1){lx.strokeStyle=css('--vec-a');lx.lineWidth=2;lx.beginPath();
+    const mx=Math.max(300,hist.length);
+    hist.forEach((v,i)=>{const x=30+(LW-35)*i/mx,y=LH-15-(LH-20)*Math.min(2,v)/2;i?lx.lineTo(x,y):lx.moveTo(x,y)});lx.stroke()}
+  const [Lm,Cm]=lossOf(P);
+  document.getElementById('d488-tStep').textContent=step;
+  document.getElementById('d488-tLoss').textContent=f(Lm,3);
+  document.getElementById('d488-tCos').textContent=f(Cm,3);
+}
+function loop(){if(!document.body.contains(tc)){running=false;return}
+  for(let k=0;k<3;k++)trainStep();drawTr();
+  if(running&&step<900)raf=requestAnimationFrame(loop);else{running=false;goBtn.textContent='▶ درّب'}}
+const goBtn=document.getElementById('d488-tGo');
+goBtn.addEventListener('click',()=>{running=!running;goBtn.textContent=running?'⏸ وقّف':'▶ درّب';if(running)loop();else cancelAnimationFrame(raf)});
+document.getElementById('d488-lr').addEventListener('input',e=>document.getElementById('d488-lrV').textContent=f(e.target.value/100));
+const mL=document.getElementById('d488-mLin'),mM=document.getElementById('d488-mMlp');
+function setModel(m){model=m;mL.classList.toggle('primary',m==='lin');mM.classList.toggle('primary',m==='mlp');running=false;cancelAnimationFrame(raf);goBtn.textContent='▶ درّب';init();drawTr()}
+mL.addEventListener('click',()=>setModel('lin'));mM.addEventListener('click',()=>setModel('mlp'));
+document.getElementById('d488-tReset').addEventListener('click',()=>setModel(model));
+init();drawTr();
+
+// ---------- quiz ----------
+AI.quiz(document.getElementById('d488-quizBox'),[
+ ['ليه الـ text decoder مش بيقدر ياكل tokens الـ vision encoder على طول؟',['الـ image tokens متشفرة','الـ image tokens قصيرة قوي','لأنهم في file format مختلف','الـ image tokens عايشة في basis الـ encoder اتعلمه في vision pretraining وملوش علاقة بمتجهات كلمات الـ decoder'],3,'كل encoder بيتعلم basis مستقل؛ لازم module كوبري يعمل align في فضاء مشترك.'],
+ ['ليه الـ MLP بطبقتين كفاية عمليًا للـ modality alignment؟',['الـ projection بطبقة واحدة ممنوعة','PyTorch بيطلب طبقتين','ثنية non-linear واحدة (GELU) بين طبقتين linear كفاية عمليًا تعمل align لـ features شبه CLIP مع text embeddings','الـ projections الأعمق ممنوعة'],2,'LLaVA واللي جه بعده بيستخدموا MLP بطبقتين لأن الـ non-linearity بتصلّح اختلاف الانحناء اللي الـ linear لوحده مش بيقدر عليه.'],
+ ['ليه الـ vision encoder متجمد في مرحلة الـ alignment دي؟',['الـ encoder فاضي','الـ encoder بتاع 86M مينفعش يتدرب من جديد على mock corpus صغير؛ الـ projection بتاعة 1.3M لوحدها خفيفة كفاية تتعمل align في دقايق','Frozen يعني أسرع في الوقت','PyTorch مش بيدعم تدريب الـ encoder'],1,'تجميد الـ encoder وجدول الكلام بيخلي الـ projection هي الحاجة الوحيدة اللي بتتعلم، وده شكل كل VLM مبني على adapter.'],
+ ['cosine_alignment_loss بترجع كام لما المتجهين عكس بعض؟',['Infinity','1.0','0.0','2.0'],3,'الـ loss = 1 − cos. المتجهات العكسية cos بتاعها = −1، فالـ loss = 1 − (−1) = 2.0.'],
+ ['ليه بنستخدم CLS pooling عشان نطلّع متجه واحد للصورة من 197 token؟',['بيوفر مساحة على الديسك','PyTorch بيجمع الـ tokens لوحده','الـ patch tokens مش مستخدمة','الـ caption متجه واحد لكل sample فالصورة كمان محتاجة متجه واحد؛ والـ CLS هو الملخص الجاهز اللي الـ encoder عامله'],3,'الـ alignment صورة واحدة قصاد caption واحد؛ الـ CLS pooling بيطلّع متجه الصورة من غير ولا parameter زيادة.'],
+ ['أنهي نظام production أقرب حاجة لشكل درس ٦٠؟',['LLaVA 1.5: encoder متجمد، LLM متجمد، وبيدرّب MLP projection بطبقتين بس','PaLM','AlphaFold','Stable Diffusion'],0,'المرحلة الأولى في تدريب LLaVA هي بالظبط كده: encoder وLM متجمدين وكوبري MLP بطبقتين هو الحاجة الوحيدة اللي بتتدرب.'],
+ ['(إضافة مني) لو ضربت image_emb في 10 من غير ما تغيّر اتجاهه، الـ cosine loss هيحصله إيه؟',['هيتضرب في 10','مش هيتغير، لأن الـ cosine scale-invariant','هيبقى صفر','هيبقى 2'],1,'الـ normalize بيشيل الطول، فالمهم الاتجاه بس. عشان كده الـ L2 penalty في تمرين ٤ مش بتبوّظ الـ alignment.'],
+ ['(إضافة مني) في MockTextEmbedding، ليه فيه mask = (ids != 0)؟',['عشان يسرّع الـ embedding lookup','عشان الـ id صفر محجوز للـ padding ومينفعش يدخل في المتوسط','عشان يجمّد الجدول','عشان يعمل shuffle للكلمات'],1,'من غير الـ mask، caption قصير متكمل بأصفار هيتسحب ناحية embedding الصفر. الـ test بتاع pooling_ignores_padding بيتأكد من ده.']
+],6,()=>{const c=root.querySelector('input[data-ck="c7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(488,root);
+
+AI.onTheme(()=>{if(!document.body.contains(tc))return false;drawPool();drawCos();drawTr()});
+})();
+</script>

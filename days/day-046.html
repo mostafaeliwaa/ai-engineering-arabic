@@ -1,0 +1,653 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 03 · Backpropagation from Scratch</span>
+  <h1>اليوم ٤٦: الـ Backpropagation، إزاي الشبكة بتعرف مين الغلطان</h1>
+  <p class="lede">امبارح بنيت شبكة بتعمل <b>forward pass</b>، بس الأوزان كنت بتظبطها بإيدك. النهاردة هتبني <b>autograd engine</b> صغير من الصفر (كلاس <code>Value</code>)، بيحسب الـ gradient لكل وزن في الشبكة في <b>backward pass واحد</b>، وبعدين تدرّب بيه شبكة على XOR وعلى دايرة من غير ما تلمس ولا وزن بإيدك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (فيه نسخة Julia كمان)</b></span>
+    <span>بعده: <b>Activation Functions</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d46-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d46-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 45) بنينا Multi-Layer Network وعملنا forward pass. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه neuron واحد مايقدرش يحل XOR؟</summary>لأن الـ neuron الواحد بيرسم خط مستقيم واحد بس. نقط XOR (<span class="ltr">[0,1]</span> و<span class="ltr">[1,0]</span> في ناحية، و<span class="ltr">[0,0]</span> و<span class="ltr">[1,1]</span> في الناحية التانية) مفيش خط واحد يفصلهم. الحل كان إننا نرص neurons في layers.</details>
+  <details><summary>٢. شبكة 2-3-1: الـ W بتاعة الـ hidden layer شكلها (shape) إيه؟</summary><span class="ltr">(3, 2)</span>. الصفوف = عدد neurons الـ layer الحالية، والأعمدة = عدد مخرجات الـ layer اللي قبلها. والـ output layer الـ W بتاعتها <span class="ltr">(1, 3)</span>.</details>
+  <details><summary>٣. حلّينا XOR امبارح إزاي؟ وإيه المشكلة في الطريقة دي؟</summary>بأوزان كبيرة (20 و-20) حطيناها بإيدينا: neuron بيقلد OR وneuron بيقلد NAND، والـ output بيعمل AND عليهم. المشكلة إن الطريقة دي مستحيلة في شبكة فيها ملايين الأوزان. النهاردة الشبكة هتلاقي الأوزان دي لوحدها.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>المشكلة: ٢.٣ مليون وزن، مين الغلطان؟</div>
+    <div><b>20 min</b>الـ chain rule والـ computational graph + معمل ٠١</div>
+    <div><b>15 min</b>الـ vanishing gradient + معمل ٠٢</div>
+    <div><b>10 min</b>اشتقاق شبكة من layerين</div>
+    <div><b>40 min</b>ابني الـ Value engine ودرّب على XOR والدايرة</div>
+    <div><b>10 min</b>معمل ٠٣: شوف التدريب بعينك</div>
+    <div><b>15 min</b>التمارين والكويز</div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section id="d46-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الشبكة غلطت، نلوم مين؟</h2></div>
+  <p>عندك hidden layer واحدة فيها 768 دخل و3072 خرج. يعني <b>2,359,296 وزن</b>. الشبكة طلّعت إجابة غلط. أنهي وزن من دول السبب، وكل واحد يتعدل بقد إيه؟</p>
+  <p><b>الطريقة الساذجة:</b> امسك وزن واحد، زقه حتة صغيرة، شغّل الـ forward pass تاني، وشوف الـ loss زاد ولا قل. كده عرفت الـ gradient بتاع الوزن ده بس. كرر ده لكل وزن، يعني ٢.٣ مليون forward pass، في كل خطوة تدريب، على ملايين الأمثلة. هتحتاج عمر كامل عشان تدرّب أي حاجة مفيدة.</p>
+  <p><b>الـ Backpropagation:</b> forward pass واحد + backward pass واحد = <b>كل</b> الـ gradients مرة واحدة. الفرق هنا مش «تحسين سرعة»، ده الفرق بين حاجة ممكن تتدرب وحاجة مستحيلة. والسر كله هو الـ <b>chain rule</b> من التفاضل، متطبقة بنظام على <b>computational graph</b>.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيل مصنع فيه خط إنتاج طويل والمنتج النهائي طلع بايظ. بدل ما توقف المصنع وتجرّب تغيّر كل ماكينة لوحدها، بتمشي من آخر الخط لأوله: كل محطة بتقول «أنا وصلني عيب بالحجم ده، ونصيبي منه قد كده، والباقي بعدّيه للمحطة اللي قبلي». مشوار واحد بالعكس وكل محطة عرفت نصيبها من اللوم.</div>
+</section>
+
+<!-- CHAIN RULE + GRAPH -->
+<section id="d46-graph">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Chain Rule والـ Computational Graph</h2></div>
+  <p>فاكر الـ chain rule من Phase 1؟ لو <span class="ltr">y = f(g(x))</span> يبقى:</p>
+  <div class="formula">dy/dx = f'(g(x)) · g'(x)      ← اضرب المشتقات على طول السلسلة</div>
+  <p>في الشبكة، «السلسلة» هي العمليات من الدخل لحد الـ loss: ضرب في وزن، جمع bias، activation، وفي الآخر loss بيقارن الخرج بالـ target. الـ Backpropagation بتمشي على السلسلة دي بالعكس وتحسب كل عملية ساهمت في الغلط بقد إيه.</p>
+  <h3>كل forward pass بيبني graph</h3>
+  <p>كل <b>node</b> هي عملية (ضرب، جمع، sigmoid)، وكل <b>edge</b> بتشيل قيمة رايحة لقدام، وgradient راجع لورا. مثال neuron واحد:</p>
+  <div class="formula">z1 = w·x     z2 = z1 + b     a = sigmoid(z2)     L = (a − y)²</div>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>Forward (شمال ← يمين):</b> x وw بيطلعوا z1، نزود b يطلع z2، الـ sigmoid يدينا a، ونقارن a بالـ target y.</li>
+    <li><b>Backward (يمين ← شمال):</b> نبدأ بـ <span class="ltr">∂L/∂a</span>، نضرب في مشتقة الـ sigmoid <span class="ltr">∂a/∂z2</span> فيطلع <span class="ltr">∂L/∂z2</span>. وبما إن z2 = z1 + b، يبقى <span class="ltr">∂L/∂b = ∂L/∂z2</span> و<span class="ltr">∂L/∂z1 = ∂L/∂z2</span>. وفي الآخر <span class="ltr">∂L/∂w = ∂L/∂z1 · x</span> و<span class="ltr">∂L/∂x = ∂L/∂z1 · w</span>.</li>
+  </ul>
+  <div class="note ai"><strong>القاعدة الذهبية:</strong> كل node ليها شغلانة واحدة في الـ backward pass: تاخد الـ gradient اللي جايلها من فوق، تضربه في المشتقة المحلية (local derivative) بتاعتها، وتبعته لتحت. بس كده.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: امشي في الـ graph بالعكس بنفسك</h3>
+      <p>حرّك x وw وb وy. الأرقام <b style="color:var(--vec-a)">الزرقا</b> فوق كل node هي القيم في الـ forward. دوس «خطوة backward» كذا مرة وشوف الـ gradients <b style="color:var(--vec-b)">البرتقاني</b> بتتحسب من الـ loss لحد الأوزان، node ورا node.</p>
+      <p>تحت فيه <b>gradient check</b>: بيحسب <span class="ltr">∂L/∂w</span> بالطريقة الساذجة (يزق w حتة صغيرة ويقيس). لاحظ إن الرقمين متطابقين، بس الـ backprop جابهم كلهم في مشوار واحد.</p>
+      <p>ودوس «خطوة gradient descent» كذا مرة: w وb هيتحركوا عكس الـ gradient والـ loss هيقل.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d46-gc" width="560" height="300" aria-label="computational graph لنيورون واحد"></canvas>
+      <div class="mrow">
+        <label>x = <span id="d46-vx">1.5</span><input type="range" id="d46-x" min="-3" max="3" step="0.1" value="1.5"></label>
+        <label>w = <span id="d46-vw">0.8</span><input type="range" id="d46-w" min="-3" max="3" step="0.1" value="0.8"></label>
+        <label>b = <span id="d46-vb">-0.5</span><input type="range" id="d46-b" min="-3" max="3" step="0.1" value="-0.5"></label>
+        <label>y (target) = <span id="d46-vy">0</span><input type="range" id="d46-y" min="0" max="1" step="1" value="0"></label>
+      </div>
+      <div class="btns">
+        <button type="button" id="d46-step" class="primary">خطوة backward ←</button>
+        <button type="button" id="d46-all">اعرض كله</button>
+        <button type="button" id="d46-reset">امسح الـ gradients</button>
+        <button type="button" id="d46-gd">خطوة gradient descent (lr=1)</button>
+      </div>
+      <div class="readout">
+        <div><small>L</small><b id="d46-rl">0</b></div>
+        <div><small>∂L/∂w (backprop)</small><b id="d46-rgw">–</b></div>
+        <div><small>∂L/∂w (numerical)</small><b id="d46-rnum">–</b></div>
+        <div><small>∂L/∂b</small><b id="d46-rgb">–</b></div>
+      </div>
+      <div class="verdict" id="d46-gmsg">ابدأ من الـ loss: دوس «خطوة backward».</div>
+    </div>
+  </div>
+
+  <h3>Forward ضد Backward: الذاكرة مقابل السرعة</h3>
+  <p>الـ forward pass بيخزن كل القيم اللي في النص: z وa ودخل كل layer. ليه؟ لأن الـ backward محتاجها. مثلًا <span class="ltr">∂L/∂w = ∂L/∂z1 · x</span> محتاجة x، ومشتقة الـ sigmoid <span class="ltr">a(1−a)</span> محتاجة a. ده الـ <b>trade-off</b> اللي في قلب الـ backprop: بتدفع <b>ذاكرة</b> (تخزين الـ activations) وتاخد <b>سرعة</b> (مشوار واحد بدل ملايين).</p>
+  <div class="formula">dL/dL = 1  →  dL/da = 2(a−y)  →  dL/dz = dL/da · a(1−a)  →  dL/dW = dL/dz · x ,  dL/db = dL/dz</div>
+</section>
+
+<!-- VANISHING -->
+<section id="d46-vanish">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Gradient بيعدي في الشبكة… وبيدبل</h2></div>
+  <p>في شبكة من ٣ layers، الـ gradient بيتسلسل في كل layer، وفي كل واحدة بيتضرب في مشتقة الـ sigmoid:</p>
+  <div class="formula">dL/dz3 = dL/da3 · σ'(z3)   →   dL/dz2 = dL/da2 · σ'(z2)   →   dL/dz1 = dL/da1 · σ'(z1)</div>
+  <p>مشتقة الـ sigmoid هي <span class="ltr">a(1 − a)</span>، وأقصى قيمة ليها <b>0.25</b> (لما a = 0.5 يعني z = 0). يعني بعد ٣ layers الـ gradient اتضرب في <span class="ltr">0.25³ = 0.0156</span> على الأكتر. وبعد ١٠: <span class="ltr">0.25¹⁰ ≈ 0.000001</span>.</p>
+  <p>ده اسمه <b>vanishing gradient</b>. الـ sigmoid بتكبس الخرج بين 0 و1، ومشتقتها دايمًا أقل من 0.25. لو رصّيت layers كتير منها، الـ gradient بيوصل للـ layers الأولانية تقريبًا صفر، فالـ layers دي بالكاد بتتعلم.</p>
+  <div class="note"><strong>تشبيه:</strong> لعبة التليفون المكسور: كل واحد بيوطّي صوته للربع وهو بيعدّي الرسالة. بعد ١٠ أشخاص، اللي في الأول مش سامع حاجة خالص. الـ backprop نفسها شغالة صح ١٠٠٪، المشكلة في «الوسط» اللي بتعدي فيه. الحل (ReLU وأخواتها) هو موضوع درس بكرة.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: شوف الـ gradient بيختفي</h3>
+      <p>كل عمود هو حجم الـ gradient اللي بيوصل لـ layer معينة (مقياس log: كل خط = ×10 أصغر). الـ output layer على اليمين، والـ layer الأولى على الشمال.</p>
+      <p>زوّد العمق. وحرّك <span class="ltr">z</span> بعيد عن الصفر: الـ sigmoid بتتشبع (saturate) والمشتقة بتقل أكتر بكتير من 0.25. وبعدين جرّب «ReLU» كمعاينة لبكرة.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d46-vc" width="560" height="260" aria-label="حجم الجريدينت في كل layer"></canvas>
+      <div class="mrow">
+        <label>عدد الـ layers = <span id="d46-vdv">10</span><input type="range" id="d46-vd" min="1" max="20" step="1" value="10"></label>
+        <label>z (pre-activation) = <span id="d46-vzv">0</span><input type="range" id="d46-vz" min="-5" max="5" step="0.1" value="0"></label>
+      </div>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">activation: <select id="d46-vact"><option value="sig">sigmoid</option><option value="relu">ReLU (z&gt;0)</option></select></label>
+      </div>
+      <div class="readout">
+        <div><small>المشتقة المحلية</small><b id="d46-vloc">0.25</b></div>
+        <div><small>gradient عند layer 1</small><b id="d46-vfirst">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DERIVATION -->
+<section id="d46-derive">
+  <div class="station-head"><span class="tag">04</span><h2>اشتقاق كامل لشبكة من Layerين</h2></div>
+  <p>دخل x، hidden layer بـ sigmoid، output layer بـ sigmoid، وMSE loss.</p>
+  <h3>Forward</h3>
+  <div class="formula">z1 = W1·x + b1    a1 = σ(z1)    z2 = W2·a1 + b2    a2 = σ(z2)    L = (a2 − y)²</div>
+  <h3>Backward (الـ chain rule خطوة خطوة)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الـ gradient</th><th>القيمة</th><th>بالبلدي</th></tr>
+    <tr><td class="ltr">∂L/∂a2</td><td class="ltr">2(a2 − y)</td><td>الغلط عند الخرج</td></tr>
+    <tr><td class="ltr">∂a2/∂z2</td><td class="ltr">a2(1 − a2)</td><td>مشتقة الـ sigmoid، من القيمة المتخزنة</td></tr>
+    <tr><td class="ltr">∂L/∂z2</td><td class="ltr">2(a2 − y) · a2(1 − a2)</td><td>اضرب الاتنين</td></tr>
+    <tr><td class="ltr">∂L/∂W2</td><td class="ltr">∂L/∂z2 · a1</td><td>نصيب W2 = الغلط × اللي دخلها</td></tr>
+    <tr><td class="ltr">∂L/∂b2</td><td class="ltr">∂L/∂z2</td><td>الـ bias بياخد الغلط زي ما هو</td></tr>
+    <tr><td class="ltr">∂L/∂a1</td><td class="ltr">∂L/∂z2 · W2</td><td>الغلط بيرجع للـ hidden layer عن طريق الأوزان</td></tr>
+    <tr><td class="ltr">∂a1/∂z1</td><td class="ltr">a1(1 − a1)</td><td>sigmoid تاني</td></tr>
+    <tr><td class="ltr">∂L/∂z1</td><td class="ltr">∂L/∂a1 · ∂a1/∂z1</td><td></td></tr>
+    <tr><td class="ltr">∂L/∂W1</td><td class="ltr">∂L/∂z1 · x</td><td></td></tr>
+    <tr><td class="ltr">∂L/∂b1</td><td class="ltr">∂L/∂z1</td><td></td></tr>
+  </table></div>
+  <p>كل gradient هو حاصل ضرب مشتقات محلية من الـ loss لحد المكان ده. <b>ده كل الـ backpropagation.</b></p>
+</section>
+
+<!-- CODE -->
+<section id="d46-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: ابني الـ Autograd Engine</h2></div>
+  <p>شغّل نسخة الريبو الأول من الـ root بتاع الريبو عشان تشوف الهدف:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/03-deep-learning-core/03-backpropagation/code/main.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> اقفل الملف واكتب <code>my_backprop.py</code> بإيدك خطوة خطوة. بص على الأصل بس لو اتزنقت. الكود standard library بس (<code>math</code> و<code>random</code>)، مش محتاج تسطّب حاجة.</p>
+
+  <h3>خطوة ١: الـ Value node</h3>
+  <p>كل رقم في الحسبة هيبقى <code>Value</code>: شايل قيمته، والـ gradient بتاعه، واتعمل منين (عشان يعرف يرجّع الـ gradient لورا).</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+
+class Value:
+    def __init__(self, data, children=(), op=''):
+        self.data = data
+        self.grad = 0.0                    <span class="c"># لسه مفيش gradient</span>
+        self._backward = lambda: None      <span class="c"># هتتملي لما العملية تتعمل</span>
+        self._children = set(children)     <span class="c"># مين اللي طلّعني؟ (للـ topological sort)</span>
+        self._op = op
+
+    def __repr__(self):
+        return f"Value(data={self.data:.4f}, grad={self.grad:.4f})"</pre></div>
+
+  <h3>خطوة ٢: العمليات ومعاها الـ backward بتاعها</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other), '+')
+
+        def _backward():
+            self.grad += out.grad          <span class="c"># مشتقة الجمع = 1 للاتنين</span>
+            other.grad += out.grad
+
+        out._backward = _backward
+        return out
+
+    def __radd__(self, other):             <span class="c"># عشان sum() و 0 + Value تشتغل</span>
+        return self.__add__(other)
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other), '*')
+
+        def _backward():
+            self.grad += other.data * out.grad    <span class="c"># ∂(ab)/∂a = b</span>
+            other.grad += self.data * out.grad    <span class="c"># ∂(ab)/∂b = a</span>
+
+        out._backward = _backward
+        return out
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
+    def __neg__(self):
+        return self * -1
+
+    def __sub__(self, other):              <span class="c"># a - b = a + (-b)</span>
+        return self + (-other)</pre></div>
+  <div class="note"><strong>ليه <code>+=</code> مش <code>=</code>؟</strong> لأن نفس الـ Value ممكن يدخل في أكتر من عملية (زي x اللي داخل في <span class="ltr">x·w1</span> و<span class="ltr">x·w2</span>). الـ gradient بتاعه = <b>مجموع</b> الـ gradients الجاية من كل الطرق. لو كتبت <code>=</code> هتمسح نصيب طريق وتسيب التاني.</div>
+
+  <h3>خطوة ٣: الـ Sigmoid والـ Loss</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def sigmoid(self):
+        x = max(-500, min(500, self.data))     <span class="c"># حماية من overflow في exp</span>
+        s = 1.0 / (1.0 + math.exp(-x))
+        out = Value(s, (self,), 'sigmoid')
+
+        def _backward():
+            self.grad += (s * (1 - s)) * out.grad   <span class="c"># σ'(x) = s(1-s)، s متحسبة خلاص</span>
+
+        out._backward = _backward
+        return out</pre></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def mse_loss(predicted, target):
+    diff = predicted + Value(-target)      <span class="c"># الطرح = جمع مع السالب</span>
+    return diff * diff                     <span class="c"># (pred - target)²</span></pre></div>
+
+  <h3>خطوة ٤: الـ Backward pass بالـ topological sort</h3>
+  <p>الـ topological sort بيرتب الـ nodes بحيث كل node تتعالج <b>بعد</b> ما الـ gradient بتاعها يتجمع بالكامل من كل الطرق اللي فوقها.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def backward(self):
+        topo = []
+        visited = set()
+
+        def build_topo(v):
+            if v not in visited:
+                visited.add(v)
+                for child in v._children:
+                    build_topo(child)
+                topo.append(v)             <span class="c"># الابن بيتضاف قبل أبوه</span>
+
+        build_topo(self)
+        self.grad = 1.0                    <span class="c"># dL/dL = 1</span>
+        for v in reversed(topo):           <span class="c"># من الـ loss لحد الدخل</span>
+            v._backward()</pre></div>
+
+  <h3>خطوة ٥: Neuron و Layer و Network</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Neuron:
+    def __init__(self, n_inputs):
+        scale = (2.0 / n_inputs) ** 0.5    <span class="c"># init متظبط عشان الـ sigmoid ماتتشبعش</span>
+        self.weights = [Value(random.uniform(-scale, scale)) for _ in range(n_inputs)]
+        self.bias = Value(0.0)
+
+    def __call__(self, x):
+        act = sum((wi * xi for wi, xi in zip(self.weights, x)), self.bias)
+        return act.sigmoid()
+
+    def parameters(self):
+        return self.weights + [self.bias]
+
+
+class Layer:
+    def __init__(self, n_inputs, n_outputs):
+        self.neurons = [Neuron(n_inputs) for _ in range(n_outputs)]
+
+    def __call__(self, x):
+        out = [n(x) for n in self.neurons]
+        return out[0] if len(out) == 1 else out
+
+    def parameters(self):
+        params = []
+        for n in self.neurons:
+            params.extend(n.parameters())
+        return params
+
+
+class Network:
+    def __init__(self, sizes):             <span class="c"># مثلًا [2, 4, 1]</span>
+        self.layers = []
+        for i in range(len(sizes) - 1):
+            self.layers.append(Layer(sizes[i], sizes[i + 1]))
+
+    def __call__(self, x):
+        for layer in self.layers:
+            x = layer(x)
+            if not isinstance(x, list):
+                x = [x]
+        return x[0] if len(x) == 1 else x
+
+    def parameters(self):
+        params = []
+        for layer in self.layers:
+            params.extend(layer.parameters())
+        return params
+
+    def zero_grad(self):                   <span class="c"># صفّر قبل كل backward</span>
+        for p in self.parameters():
+            p.grad = 0.0</pre></div>
+
+  <h3>خطوة ٦: درّب على XOR (full batch)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>random.seed(42)
+net = Network([2, 4, 1])
+
+xor_data = [
+    ([0.0, 0.0], 0.0),
+    ([0.0, 1.0], 1.0),
+    ([1.0, 0.0], 1.0),
+    ([1.0, 1.0], 0.0),
+]
+
+learning_rate = 1.0
+
+for epoch in range(1000):
+    total_loss = Value(0.0)
+    for inputs, target in xor_data:        <span class="c"># اجمع loss الأربع أمثلة</span>
+        x = [Value(i) for i in inputs]
+        pred = net(x)
+        total_loss = total_loss + mse_loss(pred, target)
+
+    net.zero_grad()
+    total_loss.backward()                  <span class="c"># كل الـ gradients في مشوار واحد</span>
+
+    for p in net.parameters():
+        p.data -= learning_rate * p.grad   <span class="c"># امشي عكس الـ gradient</span>
+
+    if epoch % 100 == 0:
+        print(f"Epoch {epoch:4d} | Loss: {total_loss.data:.6f}")
+
+print("\nXOR Results:")
+for inputs, target in xor_data:
+    pred = net([Value(i) for i in inputs])
+    print(f"  {inputs} -> {pred.data:.4f} (expected {target})")</pre></div>
+  <details><summary>إيه اللي المفروض تشوفه؟</summary>الدرس مش كاتب أرقام الناتج بالظبط، فالأرقام عندك هي المرجع. اللي المفروض يحصل: الـ loss يبتدي عالي ويقل بشكل واضح على مدار الـ 1000 epoch، والتوقعات في الآخر تبقى قريبة من 0 لـ <span class="ltr">[0,0]</span> و<span class="ltr">[1,1]</span>، وقريبة من 1 للاتنين التانيين. نسخة الريبو كمان بتطبع <code>rounded</code> جنب كل توقع.</details>
+
+  <h3>خطوة ٧: Circle classification (online SGD)</h3>
+  <p>في درس امبارح ظبطت أوزان الدايرة بإيدك. دلوقتي سيب الشبكة تتعلمها.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>random.seed(7)
+
+def generate_circle_data(n=100):
+    data = []
+    for _ in range(n):
+        x1 = random.uniform(-1.5, 1.5)
+        x2 = random.uniform(-1.5, 1.5)
+        label = 1.0 if x1 * x1 + x2 * x2 &lt; 1.0 else 0.0   <span class="c"># جوه الدايرة = 1</span>
+        data.append(([x1, x2], label))
+    return data
+
+circle_data = generate_circle_data(80)
+circle_net = Network([2, 8, 1])
+learning_rate = 0.5
+
+for epoch in range(2000):
+    random.shuffle(circle_data)            <span class="c"># عشان ماتحفظش الترتيب</span>
+    total_loss_val = 0.0
+    for inputs, target in circle_data:
+        pred = circle_net([Value(i) for i in inputs])
+        loss = mse_loss(pred, target)
+        circle_net.zero_grad()
+        loss.backward()
+        for p in circle_net.parameters():  <span class="c"># update بعد كل مثال = online SGD</span>
+            p.data -= learning_rate * p.grad
+        total_loss_val += loss.data
+
+    if epoch % 200 == 0:
+        correct = sum(
+            1 for inputs, target in circle_data
+            if (1.0 if circle_net([Value(i) for i in inputs]).data &gt; 0.5 else 0.0) == target
+        )
+        print(f"Epoch {epoch:4d} | Loss: {total_loss_val:.4f} | "
+              f"Accuracy: {correct / len(circle_data) * 100:.1f}%")</pre></div>
+  <p>هنا بنعمل <b>online SGD</b>: نحدّث الأوزان بعد كل مثال بدل ما نجمع الـ batch كله. ده بيكسر الـ symmetry أسرع وبيقلل تشبع الـ sigmoid. والـ <code>shuffle</code> كل epoch بيمنع الشبكة إنها تحفظ ترتيب الداتا. وفي الآخر نسخة الريبو بتجرب ٥ نقط (زي <span class="ltr">[0,0]</span> جوه و<span class="ltr">[1.2,1.2]</span> بره) وتطبع OK أو WRONG.</p>
+  <p>مفيش أي ضبط بإيدك: انت حددت الـ architecture والـ loss والداتا، والخوارزمية لقت الأوزان لوحدها.</p>
+
+  <h3>خطوة ٨: نفس الكلام في PyTorch</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+
+model = nn.Sequential(
+    nn.Linear(2, 4), nn.Sigmoid(),
+    nn.Linear(4, 1), nn.Sigmoid(),
+)
+optimizer = torch.optim.SGD(model.parameters(), lr=1.0)
+criterion = nn.MSELoss()
+
+X = torch.tensor([[0,0],[0,1],[1,0],[1,1]], dtype=torch.float32)
+y = torch.tensor([[0],[1],[1],[0]], dtype=torch.float32)
+
+for epoch in range(1000):
+    loss = criterion(model(X), y)
+    optimizer.zero_grad()      <span class="c"># = net.zero_grad()</span>
+    loss.backward()            <span class="c"># = total_loss.backward()</span>
+    optimizer.step()           <span class="c"># = p.data -= lr * p.grad</span>
+
+with torch.no_grad():          <span class="c"># inference: forward بس</span>
+    for i in range(4):
+        print(X[i].tolist(), "->", round(model(X[i]).item(), 4))</pre></div>
+  <p>نفس الخوارزمية بالظبط، بس PyTorch بيضيف GPU وmixed precision وgradient checkpointing ومئات الـ layer types. الـ backward pass جواه هو نفس الـ chain rule على نفس الـ computational graph.</p>
+  <div class="note ai"><strong>Training ضد Inference:</strong> الـ training = forward ثم backward ثم update. الـ inference = forward <b>بس</b>: لا gradients ولا تعديل. لما بتكلم Claude أو GPT من الـ API ده inference: البرومبت بتاعك بيعدّي لقدام في الشبكة والـ tokens بتطلع، ومفيش وزن بيتغير. بس كل وزن في الشبكة دي اتشكّل بالـ backprop.</div>
+  <p>الدرس كمان بيطلّع ملف <code>outputs/prompt-gradient-debugger.md</code>: prompt تقدر تستخدمه تاني عشان تشخّص مشاكل الـ gradients (vanishing وexploding وNaN) في أي شبكة.</p>
+</section>
+
+<!-- LAB 3 -->
+<section id="d46-train">
+  <div class="station-head"><span class="tag">06</span><h2>معمل ٠٣: شوف الـ backprop بيدرّب XOR قدام عينك</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>ده نفس اللي في الكود: شبكة <span class="ltr">2 → H → 1</span> كلها sigmoid، بنفس الـ init (<span class="ltr">±√(2/n)</span>، bias = 0)، وMSE على الأربع نقط مع بعض (full batch)، والـ gradients محسوبة بالجدول اللي في المحطة ٠٤ بالظبط.</p>
+      <p>الخريطة بتوري خرج الشبكة لكل نقطة في المستوى: <b style="color:var(--vec-a)">أزرق</b> = قريب من 1، <b style="color:var(--vec-b)">برتقاني</b> = قريب من 0. شوف الحدود بتتقوس لحد ما تفصل XOR.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>جرّب H = 2 وseeds مختلفة: ساعات بتعلق في local minimum.</li>
+        <li>جرّب lr كبير (8) وصغير (0.1).</li>
+        <li>بص على «متوسط |grad|» لكل layer. ده تمرين ٥ قدامك.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d46-tc" width="560" height="280" aria-label="خريطة قرار الشبكة ومنحنى الـ loss"></canvas>
+      <div class="mrow">
+        <label>H (hidden) = <span id="d46-thv">4</span><input type="range" id="d46-th" min="2" max="8" step="1" value="4"></label>
+        <label>learning rate = <span id="d46-tlv">1</span><input type="range" id="d46-tl" min="0.1" max="8" step="0.1" value="1"></label>
+      </div>
+      <div class="btns">
+        <button type="button" id="d46-tgo" class="primary">ابدأ التدريب</button>
+        <button type="button" id="d46-tone">epoch واحدة</button>
+        <button type="button" id="d46-treset">seed جديد</button>
+      </div>
+      <div class="readout">
+        <div><small>epoch</small><b id="d46-tep">0</b></div>
+        <div><small>total loss</small><b id="d46-tloss">–</b></div>
+        <div><small>متوسط |grad| W1</small><b id="d46-tg1">–</b></div>
+        <div><small>متوسط |grad| W2</small><b id="d46-tg2">–</b></div>
+      </div>
+      <div class="readout" id="d46-tpred"></div>
+    </div>
+  </div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d46-exercises">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>اعمل ١ و٢ و٥ النهاردة على الأقل. ٣ و٤ ممكن يستنوا بكرة.</p>
+  <ol class="ex">
+    <li><b>Subtraction و Negation:</b> اعمل <code>__neg__</code> و<code>__sub__</code> <span class="ltr">(a − b = a + (−1·b))</span>، واتأكد من الـ gradients بإيدك على <span class="ltr">(a − b)²</span>.
+      <details><summary>تلميح + إجابة</summary><code>__neg__</code> = <code>self * -1</code>، و<code>__sub__</code> = <code>self + (-other)</code> (موجودين في نسخة الريبو). جرّب a=3 وb=1: القيمة 4، و<span class="ltr">∂/∂a = 2(a−b) = 4</span>، و<span class="ltr">∂/∂b = −2(a−b) = −4</span>. اكتب <code>d = a - b; L = d * d; L.backward()</code> وقارن.</details></li>
+    <li><b>ReLU:</b> ضيف <code>relu</code> (الخرج <span class="ltr">max(0, x)</span>، والمشتقة 1 لو x &gt; 0 وغير كده 0). حطه بدل الـ sigmoid في الـ hidden layers ودرّب XOR تاني. قارن سرعة التقارب.
+      <details><summary>تلميح</summary><pre>def relu(self):
+    out = Value(max(0.0, self.data), (self,), 'relu')
+    def _backward():
+        self.grad += (1.0 if self.data &gt; 0 else 0.0) * out.grad
+    out._backward = _backward
+    return out</pre>سيب الـ sigmoid في الـ output عشان الخرج يفضل بين 0 و1. هتحتاج تعدّل الـ Neuron يقبل نوع الـ activation. المفروض تشوف تدريب أسرع، وده معاينة لدرس بكرة. لو neuron علّق على صفر دايمًا (dead ReLU)، غيّر الـ seed أو قلّل الـ lr.</details></li>
+    <li><b><code>__pow__</code>:</b> اعمل أُس لأرقام صحيحة، واستخدمه بدل <code>mse_loss</code>: <code>(pred - target) ** 2</code>. اتأكد إن الـ gradients زي النسخة الأصلية.
+      <details><summary>تلميح</summary>الخرج <code>self.data ** n</code>، والـ backward: <code>self.grad += n * self.data ** (n - 1) * out.grad</code>. ليه النتيجة هتطابق؟ لأن <code>diff * diff</code> بيدّي diff نصيبين من الضرب، كل واحد <code>diff.data * out.grad</code>، ومجموعهم <code>2·diff</code>، ودي نفس مشتقة الأُس 2. ودي فايدة <code>+=</code> تاني.</details></li>
+    <li><b>Gradient clipping:</b> بعد <code>backward()</code> احبس كل gradient بين <span class="ltr">[−1, 1]</span>. درّب شبكة أعمق (٤ layers sigmoid أو أكتر) وقارن منحنيات الـ loss بالـ clipping ومن غيره.
+      <details><summary>تلميح</summary><code>for p in net.parameters(): p.grad = max(-1.0, min(1.0, p.grad))</code>. ده خط الدفاع الأول ضد الـ <b>exploding</b> gradients. خد بالك: في شبكة sigmoid عميقة المشكلة الأشهر هي الـ <b>vanishing</b>، والـ clipping مابيكبّرش gradient صغير. فمتستغربش لو الفرق طلع صغير، وده في حد ذاته درس.</details></li>
+    <li><b>شوف الـ vanishing بنفسك:</b> بعد تدريب XOR اطبع الـ gradient لكل parameter، وحدد أنهي layer فيها أصغر gradients.
+      <details><summary>تلميح</summary>لف على <code>net.layers</code> واحسب متوسط <code>abs(p.grad)</code> لكل layer. جرّبها كمان على <span class="ltr">Network([2, 4, 4, 4, 4, 1])</span>: المفروض الـ layers الأولانية يبقى عندها gradients أصغر. معمل ٠٣ بيعرض الرقمين دول وانت بتدرّب.</details></li>
+    <li><b>إضافة مني · Gradient check زي ما المحترفين بيعملوا:</b> اكتب <code>grad_check(net, data, eps=1e-5)</code>: لكل parameter، احسب الـ gradient بالـ backprop، وكمان رقميًا <span class="ltr">(L(p+eps) − L(p−eps)) / (2·eps)</span>، واطبع أكبر <b>relative error</b>. ده اللي بتعمله لما تكتب layer جديدة أو custom backward في PyTorch قبل ما تثق فيها.
+      <details><summary>تلميح</summary>عشان تحسب L من غير ما تبوّظ الـ graph: غيّر <code>p.data</code>، اعمل forward جديد واقرا <code>.data</code> بس، ورجّع القيمة. الـ relative error = <span class="ltr">|g_bp − g_num| / max(1e-8, |g_bp| + |g_num|)</span>. لو طلع أقل من حوالي <span class="ltr">1e-6</span> كده تمام، ولو أكبر بكتير غالبًا عندك <code>=</code> بدل <code>+=</code> أو مشتقة غلط. PyTorch عنده نفس الفكرة جاهزة: <code>torch.autograd.gradcheck</code>.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d46-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ماقالوش صريح</h2></div>
+  <h3>الـ intuition: الـ gradient = «لو حركت ده سنة، الـ loss يتحرك قد إيه»</h3>
+  <p>متفكرش في الـ gradient كمعادلة. فكّر فيه كـ <b>حساسية</b>: لو <span class="ltr">∂L/∂w = 0.3</span>، يبقى لو زوّدت w بـ 0.01 الـ loss هيزيد حوالي 0.003. الإشارة بتقولك تمشي في أنهي اتجاه، والحجم بيقولك الوزن ده مهم قد إيه دلوقتي.</p>
+  <h3>أخطاء شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>نسيان <code>zero_grad()</code>:</b> بما إن الـ gradients بتتجمع بـ <code>+=</code>، لو ماصفّرتش هتجمع gradients الخطوة اللي فاتت على الحالية. نفس المشكلة بالظبط في PyTorch لو نسيت <code>optimizer.zero_grad()</code>.</li>
+    <li><b><code>=</code> بدل <code>+=</code></b> جوه <code>_backward</code>: الكود هيشتغل من غير error بس الـ gradients غلط. ده أخبث bug لأنه ساكت. الـ gradient check بيكشفه.</li>
+    <li><b>تحديث الأوزان قبل ما الـ backward يخلص:</b> لازم كل الـ gradients تتحسب الأول وبعدين تعمل update.</li>
+    <li><b>الـ recursion في <code>build_topo</code>:</b> مع graph فيه آلاف الـ nodes، Python ممكن توصل لحد الـ recursion. ده كويس للتعلم بس، والمكتبات الحقيقية بتشتغل على tensors كاملة مش أرقام فردية.</li>
+    <li><b>الذاكرة:</b> الـ training بياكل ذاكرة أكتر بكتير من الـ inference لأن كل الـ activations لازم تتخزن للـ backward. عشان كده تقدر تشغّل موديل inference على GPU ماينفعش تدرّبه عليه. والـ <b>gradient checkpointing</b> اللي الدرس ذكره بيخزن جزء بس ويعيد حساب الباقي: بيدفع حسابات زيادة عشان يوفّر ذاكرة.</li>
+  </ul>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>كل خطوة pretraining أو fine-tuning لأي LLM هي بالظبط <code>loss.backward()</code> على graph فيه مليارات الـ parameters.</li>
+    <li>الـ <b>residual connections</b> في الـ Transformer (هتشوفها في Phase 7) بتدّي الـ gradient «طريق سريع» بيعدّي من غير ما يتضرب في مشتقات صغيرة، وده جزء كبير من سبب إننا نقدر ندرّب شبكات بعشرات الـ layers.</li>
+    <li>في الـ <b>LoRA</b> (Day 1): الـ backprop لسه بيعدّي في الأوزان المتجمدة عشان يوصل للـ adapters، بس الـ update بيحصل للـ adapters بس.</li>
+    <li>الـ Agent اللي بيكلم LLM من API مابيعملش backprop خالص: ده inference. الـ «تعلم» في الـ agents غالبًا بيبقى في الـ prompt أو الـ memory مش في الأوزان.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d46-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d46-quizbox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d46-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d46-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح ليه الـ backprop بيحسب كل الـ gradients في مشوار واحد بدل مشوار لكل وزن</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> مشيت في graph معمل ٠١ بالعكس وفهمت كل node بتضرب في مشتقتها المحلية</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> فهمت الـ vanishing gradient وليه 0.25 هو الرقم المهم</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت <code>Value</code> بإيدي ودرّبت XOR والدايرة</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت ٣ تمارين على الأقل (منهم الـ gradient check)</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Chain rule / Backpropagation</td><td>كل خطوة تدريب في أي neural network، من XOR لحد GPT</td></tr>
+    <tr><td>Computational graph</td><td>الـ autograd في PyTorch وJAX، و<code>torch.compile</code></td></tr>
+    <tr><td>Gradient accumulation (<code>+=</code>)</td><td><code>optimizer.zero_grad()</code>، وتجميع gradients كذا batch صغير لما الذاكرة ماتكفيش</td></tr>
+    <tr><td>Topological sort</td><td>ترتيب الـ backward في أي autograd engine</td></tr>
+    <tr><td>Vanishing gradients</td><td>سبب ReLU، والـ residual connections، والـ normalization</td></tr>
+    <tr><td>تخزين الـ activations</td><td>استهلاك ذاكرة الـ training، والـ gradient checkpointing</td></tr>
+    <tr><td>Training ضد Inference</td><td>الـ API calls للـ LLMs (inference بس)، والـ fine-tuning (training)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Activation Functions. هنعرف ليه الـ ReLU بيحل جزء كبير من مشكلة الـ vanishing اللي شفتها في معمل ٠٢، ونقارن sigmoid وtanh وReLU وأخواتهم.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F03-backpropagation" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/03-backpropagation</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d46-checklist').closest('.day');
+
+// roadmap
+const rm=$('d46-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===3)s.className='now';rm.appendChild(s)}
+
+const sig=z=>1/(1+Math.exp(-Math.max(-500,Math.min(500,z))));
+
+// ---------- Lab 1: computational graph ----------
+const gc=$('d46-gc'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+let stage=0;
+const S={x:1.5,w:0.8,b:-0.5,y:0};
+const N={x:[40,70],w:[40,170],mul:[150,120],b:[150,240],add:[270,170],sig:[380,170],y:[380,260],L:[500,200]};
+const E=[['x','mul'],['w','mul'],['mul','add'],['b','add'],['add','sig'],['sig','L'],['y','L']];
+const lbl={x:'x',w:'w',mul:'×  z1',b:'b',add:'+  z2',sig:'σ  a',y:'y',L:'L'};
+// order nodes get gradients
+const order=[['L'],['sig'],['add'],['b','mul'],['w','x']];
+const msgs=['ابدأ من الـ loss: دوس «خطوة backward».',
+ 'dL/dL = 1. دي نقطة البداية دايمًا.',
+ 'dL/da = 2(a − y). ده الغلط عند الخرج.',
+ 'dL/dz2 = dL/da · a(1−a). مشتقة الـ sigmoid من القيمة المتخزنة.',
+ 'عقدة الجمع بتعدّي الـ gradient زي ما هو للاتنين: dL/db = dL/dz1 = dL/dz2.',
+ 'عقدة الضرب: كل طرف بياخد قيمة التاني × الـ gradient. dL/dw = dL/dz1 · x و dL/dx = dL/dz1 · w. خلصنا.'];
+function fwd(s){const z1=s.w*s.x,z2=z1+s.b,a=sig(z2),L=(a-s.y)**2;return{z1,z2,a,L}}
+function grads(s){const v=fwd(s);const gL=1,ga=2*(v.a-s.y),gz2=ga*v.a*(1-v.a);return{L:gL,sig:ga,add:gz2,b:gz2,mul:gz2,w:gz2*s.x,x:gz2*s.w,y:null}}
+function drawG(){
+  const v=fwd(S),g=grads(S),shown=new Set();order.slice(0,stage).forEach(o=>o.forEach(n=>shown.add(n)));
+  const val={x:S.x,w:S.w,b:S.b,y:S.y,mul:v.z1,add:v.z2,sig:v.a,L:v.L};
+  gx.clearRect(0,0,GW,GH);
+  E.forEach(([a,b])=>{const [x1,y1]=N[a],[x2,y2]=N[b];const ang=Math.atan2(y2-y1,x2-x1);
+    AI.arrow(gx,x1+30*Math.cos(ang),y1+20*Math.sin(ang),x2-32*Math.cos(ang),y2-22*Math.sin(ang),css('--muted'),1.5);
+    if(shown.has(b)&&shown.has(a)){gx.save();gx.setLineDash([4,4]);gx.strokeStyle=css('--vec-b');gx.lineWidth=2;gx.beginPath();gx.moveTo(x2,y2+6);gx.lineTo(x1,y1+6);gx.stroke();gx.restore()}});
+  Object.keys(N).forEach(k=>{const [x,y]=N[k];const op=['mul','add','sig','L'].includes(k);
+    gx.fillStyle=css('--panel');gx.strokeStyle=shown.has(k)?css('--vec-b'):css('--ink');gx.lineWidth=shown.has(k)?2.5:1.5;
+    gx.beginPath();if(op){gx.ellipse(x,y,32,20,0,0,7)}else{gx.rect(x-26,y-18,52,36)}gx.fill();gx.stroke();
+    gx.fillStyle=css('--ink');gx.font='600 13px JetBrains Mono, monospace';gx.textAlign='center';gx.fillText(lbl[k],x,y+5);
+    gx.fillStyle=css('--vec-a');gx.font='12px JetBrains Mono, monospace';gx.fillText(f(val[k],3),x,y-26);
+    if(shown.has(k)&&g[k]!=null){gx.fillStyle=css('--vec-b');gx.font='600 12px JetBrains Mono, monospace';gx.fillText('∂ '+f(g[k],4),x,y+36)}
+  });gx.textAlign='left';
+  gx.fillStyle=css('--muted');gx.font='12px JetBrains Mono, monospace';gx.fillText('forward →  (value)',8,GH-26);gx.fillStyle=css('--vec-b');gx.fillText('← backward (∂L/∂node)',8,GH-10);
+  $('d46-rl').textContent=f(v.L,4);
+  const h=1e-5,num=(fwd({...S,w:S.w+h}).L-fwd({...S,w:S.w-h}).L)/(2*h);
+  $('d46-rgw').textContent=stage>=5?f(g.w,6):'–';$('d46-rnum').textContent=f(num,6);
+  $('d46-rgb').textContent=stage>=4?f(g.b,6):'–';
+  $('d46-gmsg').textContent=msgs[stage];
+}
+['x','w','b','y'].forEach(k=>$('d46-'+k).addEventListener('input',e=>{S[k]=+e.target.value;$('d46-v'+k).textContent=S[k];drawG()}));
+$('d46-step').addEventListener('click',()=>{stage=Math.min(5,stage+1);drawG()});
+$('d46-all').addEventListener('click',()=>{stage=5;drawG()});
+$('d46-reset').addEventListener('click',()=>{stage=0;drawG()});
+$('d46-gd').addEventListener('click',()=>{const g=grads(S);S.w=Math.max(-3,Math.min(3,S.w-g.w));S.b=Math.max(-3,Math.min(3,S.b-g.b));
+  ['w','b'].forEach(k=>{$('d46-'+k).value=S[k];$('d46-v'+k).textContent=f(S[k],3)});stage=5;drawG()});
+drawG();
+
+// ---------- Lab 2: vanishing ----------
+const vc=$('d46-vc'),vx=AI.setupCanvas(vc),VW=+vc.dataset.w,VH=+vc.dataset.h;
+function drawV(){
+  const D=+$('d46-vd').value,z=+$('d46-vz').value,act=$('d46-vact').value;
+  $('d46-vdv').textContent=D;$('d46-vzv').textContent=z;
+  const s=sig(z),loc=act==='sig'?s*(1-s):1;
+  $('d46-vloc').textContent=act==='sig'?f(loc,4):'1 (لو z > 0)';
+  // gradient reaching layer k (1..D) = loc^(D-k+1)
+  const vals=[];for(let k=1;k<=D;k++)vals.push(Math.pow(loc,D-k+1));
+  $('d46-vfirst').textContent=vals[0]<1e-4?vals[0].toExponential(2):f(vals[0],5);
+  vx.clearRect(0,0,VW,VH);
+  const top=20,bot=VH-30,minL=-14,toY=l=>top+(0-l)/(0-minL)*(bot-top);
+  vx.strokeStyle=css('--grid');vx.fillStyle=css('--muted');vx.font='11px JetBrains Mono, monospace';vx.lineWidth=1;
+  for(let l=0;l>=minL;l-=2){const y=toY(l);vx.beginPath();vx.moveTo(44,y);vx.lineTo(VW-6,y);vx.stroke();vx.fillText('1e'+l,4,y+4)}
+  const bw=(VW-56)/D;
+  vals.forEach((v,i)=>{const l=Math.max(minL,Math.log10(Math.max(v,1e-300)));const y=toY(l);
+    vx.fillStyle=v<1e-3?css('--bad'):css('--vec-a');vx.fillRect(50+i*bw+2,y,Math.max(2,bw-4),bot-y);
+    if(D<=12||i%2===0){vx.fillStyle=css('--ink');vx.textAlign='center';vx.fillText('L'+(i+1),50+i*bw+bw/2,VH-12);vx.textAlign='left'}});
+  vx.fillStyle=css('--muted');vx.fillText('← input side',50,12);vx.textAlign='right';vx.fillText('output side →',VW-8,12);vx.textAlign='left';
+}
+['d46-vd','d46-vz'].forEach(id=>$(id).addEventListener('input',drawV));$('d46-vact').addEventListener('change',drawV);drawV();
+
+// ---------- Lab 3: XOR trainer ----------
+const tc=$('d46-tc'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+const XD=[[[0,0],0],[[0,1],1],[[1,0],1],[[1,1],0]];
+let seed=42,net=null,ep=0,hist=[],run=false,raf=null,lastG=[0,0];
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function init(){const H=+$('d46-th').value,r=rng(seed),s1=Math.sqrt(2/2),s2=Math.sqrt(2/H);
+  net={H,W1:Array.from({length:H},()=>[(r()*2-1)*s1,(r()*2-1)*s1]),b1:new Array(H).fill(0),W2:Array.from({length:H},()=>(r()*2-1)*s2),b2:0};ep=0;hist=[];lastG=[0,0]}
+function predict(x){const h=net.W1.map((w,j)=>sig(w[0]*x[0]+w[1]*x[1]+net.b1[j]));return{h,o:sig(h.reduce((a,v,j)=>a+v*net.W2[j],net.b2))}}
+function epoch(){const H=net.H,lr=+$('d46-tl').value;const gW1=net.W1.map(()=>[0,0]),gb1=new Array(H).fill(0),gW2=new Array(H).fill(0);let gb2=0,L=0;
+  XD.forEach(([x,y])=>{const {h,o}=predict(x);L+=(o-y)**2;const dO=2*(o-y)*o*(1-o);gb2+=dO;
+    for(let j=0;j<H;j++){gW2[j]+=dO*h[j];const dz=dO*net.W2[j]*h[j]*(1-h[j]);gW1[j][0]+=dz*x[0];gW1[j][1]+=dz*x[1];gb1[j]+=dz}});
+  for(let j=0;j<H;j++){net.W2[j]-=lr*gW2[j];net.b1[j]-=lr*gb1[j];net.W1[j][0]-=lr*gW1[j][0];net.W1[j][1]-=lr*gW1[j][1]}net.b2-=lr*gb2;
+  lastG=[gW1.reduce((a,w)=>a+Math.abs(w[0])+Math.abs(w[1]),0)/(2*H),gW2.reduce((a,v)=>a+Math.abs(v),0)/H];
+  ep++;hist.push(L);if(hist.length>3000)hist.shift();return L}
+function drawT(){
+  tx.clearRect(0,0,TW,TH);const M=260,ox=10,oy=10,lo=-0.25,hi=1.25,cell=M/40;
+  const ca=css('--vec-a'),cb=css('--vec-b');
+  for(let i=0;i<40;i++)for(let j=0;j<40;j++){const x=lo+(i+.5)/40*(hi-lo),y=hi-(j+.5)/40*(hi-lo),o=predict([x,y]).o;
+    tx.globalAlpha=o*.75;tx.fillStyle=ca;tx.fillRect(ox+i*cell,oy+j*cell,cell+.5,cell+.5);tx.globalAlpha=(1-o)*.75;tx.fillStyle=cb;tx.fillRect(ox+i*cell,oy+j*cell,cell+.5,cell+.5)}
+  tx.globalAlpha=1;
+  XD.forEach(([x,y])=>{const px=ox+(x[0]-lo)/(hi-lo)*M,py=oy+(hi-x[1])/(hi-lo)*M;tx.fillStyle=y?ca:cb;tx.strokeStyle=css('--ink');tx.lineWidth=2.5;tx.beginPath();tx.arc(px,py,9,0,7);tx.fill();tx.stroke()});
+  // loss curve
+  const lx=290,lw=TW-lx-10,ly=20,lh=TH-50;tx.strokeStyle=css('--line');tx.lineWidth=1;tx.strokeRect(lx,ly,lw,lh);
+  tx.fillStyle=css('--muted');tx.font='11px JetBrains Mono, monospace';tx.fillText('total loss (max 1.5)',lx,14);tx.fillText('epoch → '+ep,lx,TH-14);
+  if(hist.length>1){tx.strokeStyle=css('--vec-a');tx.lineWidth=2;tx.beginPath();hist.forEach((L,i)=>{const X=lx+i/(hist.length-1)*lw,Y=ly+lh-Math.min(1.5,L)/1.5*lh;i?tx.lineTo(X,Y):tx.moveTo(X,Y)});tx.stroke()}
+  $('d46-tep').textContent=ep;$('d46-tloss').textContent=hist.length?f(hist[hist.length-1],5):'–';
+  $('d46-tg1').textContent=ep?lastG[0].toExponential(2):'–';$('d46-tg2').textContent=ep?lastG[1].toExponential(2):'–';
+  const pr=$('d46-tpred');pr.innerHTML='';XD.forEach(([x,y])=>{const d=document.createElement('div');const o=predict(x).o;d.innerHTML='<small>['+x+'] → هدف '+y+'</small><b>'+f(o,3)+'</b>';d.querySelector('b').style.color=(o>.5)===(y===1)?css('--ok'):css('--bad');pr.appendChild(d)});
+}
+function loop(){if(!run||!document.body.contains(tc)){run=false;return}for(let k=0;k<10;k++)epoch();drawT();if(ep>=3000){stop();return}raf=requestAnimationFrame(loop)}
+function stop(){run=false;cancelAnimationFrame(raf);$('d46-tgo').textContent='كمّل التدريب'}
+$('d46-tgo').addEventListener('click',()=>{if(run){stop();return}run=true;$('d46-tgo').textContent='وقّف';loop()});
+$('d46-tone').addEventListener('click',()=>{stop();epoch();drawT()});
+$('d46-treset').addEventListener('click',()=>{stop();seed=(seed*7+13)%9973;init();drawT();$('d46-tgo').textContent='ابدأ التدريب'});
+$('d46-th').addEventListener('input',e=>{$('d46-thv').textContent=e.target.value;stop();init();drawT();$('d46-tgo').textContent='ابدأ التدريب'});
+$('d46-tl').addEventListener('input',e=>{$('d46-tlv').textContent=e.target.value});
+init();drawT();
+
+// ---------- quiz ----------
+const Q=[
+ ['يعني إيه الـ chain rule في سياق الـ neural networks؟',['تكنيك لتقسيم الداتا لـ batches','طريقة لعمل initialization للأوزان','قاعدة لربط الـ layers ببعض','لو y = f(g(x)) يبقى dy/dx = f\'(g(x)) · g\'(x): اضرب المشتقات على طول الطريق'],3,'الـ chain rule بتخليك تحسب مشتقة دالة مركبة بضرب المشتقات المحلية في كل خطوة. والـ backprop بتطبقها بنظام على الـ computational graph.'],
+ ['ليه الـ backpropagation أكفأ من إنك تحسب كل gradient لوحده؟',['بتستهلك ذاكرة أقل','بتحسب كل الـ gradients في backward pass واحد بدل forward pass لكل parameter','بتشتغل على الشبكات الصغيرة بس','بتتجنب الـ chain rule'],1,'الحساب المنفصل محتاج forward pass لكل parameter (ملايين المرات). الـ backprop بتحسبهم كلهم في مشوار واحد لأنها بتستخدم القيم اللي اتخزنت في الـ forward.'],
+ ['في الـ backward pass، ليه بنستخدم += بدل = لما نجمع الـ gradients؟',['دي عادة في Python','لأن الـ Value ممكن يدخل في أكتر من عملية، فالـ gradient بتاعه مجموع الـ gradients من كل الطرق','عشان الكود يبقى أسرع','عشان نمنع الـ overflow'],1,'لو x داخل في x·w1 و x·w2، الـ gradient الكلي بتاعه = مجموع اللي راجع من العمليتين. والـ += بتجمعهم صح.'],
+ ['إيه سبب الـ vanishing gradient في شبكات sigmoid العميقة؟',['الـ loss function مش مناسبة','الشبكة فيها parameters كتير','الـ learning rate صغير','أقصى قيمة لمشتقة الـ sigmoid 0.25، فالـ gradients بتصغر بشكل أُسّي مع كل layer'],3,'مشتقة الـ sigmoid أقصاها 0.25 عند z = 0. كل layer بتضرب الـ gradient في 0.25 على الأكتر، فبعد ١٠ layers يبقى 0.25^10 ≈ 0.000001 من الأصل.'],
+ ['ليه الـ topological sort مهم في الـ backward pass؟',['بيقلل استهلاك الذاكرة','بيسرّع الـ forward pass','بيضمن إن الـ gradient بتاع كل node يتجمع بالكامل قبل ما يتوزع على الـ children','بيخلي الكود أنضف'],2,'لازم كل node تستلم الـ gradient من كل الطرق اللي بعدها قبل ما تعدّيه. من غير الترتيب ده الـ gradients هتطلع ناقصة.'],
+ ['(سؤال مني) L = (a − y)² و a = 0.8 و y = 1. قيمة ∂L/∂a كام؟',['0.04','−0.4','0.4','−0.2'],1,'∂L/∂a = 2(a − y) = 2(0.8 − 1) = −0.4. الإشارة السالبة معناها إن زيادة a هتقلل الـ loss، وده منطقي لأن الهدف 1.'],
+ ['(سؤال مني) لما بتبعت prompt لـ LLM من API، إيه اللي بيحصل للأوزان؟',['بيحصل backward pass صغير عشان يتعلم منك','forward pass بس (inference)، ومفيش أي وزن بيتغير','الأوزان بتتحدث كل ١٠٠ request','بيعمل gradient check الأول'],1,'الـ inference هو forward بس من غير gradients ولا updates. الـ backprop حصل وقت التدريب وهو اللي شكّل الأوزان دي.']
+];
+AI.quiz($('d46-quizbox'),Q,5,()=>{const c=root.querySelector('input[data-ck="c5"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+AI.checklist(46,root);
+
+// ---------- theme ----------
+AI.onTheme(()=>{if(!document.body.contains(gc))return false;drawG();drawV();drawT()});
+})();
+</script>

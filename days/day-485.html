@@ -1,0 +1,565 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 57 · End-to-End Research Demo</span>
+  <h1>اليوم ٤٨٥: كل القطع بتتركب في لوب بحث واحد</h1>
+  <p class="lede">النهاردة مش هتبني primitive جديد. هتاخد الـ <b>Paper Writer</b> (درس 54) والـ <b>Critic Loop</b> (درس 55) والـ <b>Iteration Scheduler</b> (درس 56) وتوصّلهم ببعض بـ imports عادية في Python، وتشغّل لوب بحث كامل لحد ما يقف لوحده ويطلّع <b>تقرير واحد</b> فيه ناتج كل مرحلة. لو أي عقد (contract) بين مرحلتين فيه خرم، الديمو هو اللي هيكشفه.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (stdlib + numpy)</b></span>
+    <span>النوع: <b>مشروع مُوجَّه (Build)</b></span>
+    <span>المتطلبات: <b>دروس 50–56</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — 85 lessons</span>
+    <div class="roadmap" id="d485-roadmap" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d485-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر الـ Scheduler</h2></div>
+  <p>امبارح بنيت الـ <b>Iteration Scheduler</b>: طابور hypotheses بيغذّي slots شغالة بالتوازي، وكل نتيجة بترجع على الـ result bus وتحدّث درجة الـ UCB بتاعة الـ branch. النهاردة الـ report اللي بيطلّعه هو أول حاجة الديمو هيقراها. جاوب في دماغك الأول وبعدين افتح الإجابة:</p>
+  <details><summary>١. الـ UCB بيدي درجة كام لـ branch عمره ما اتجرّب؟ وليه؟</summary>بيديله <code>+inf</code>، فأي branch جديد بيتجرّب الأول. ده بيضمن الاستكشاف (exploration) قبل ما نلزق في الـ leader.</details>
+  <details><summary>٢. إمتى الـ scheduler بيطلّع <code>paper.trigger</code>؟</summary>لما متوسط الـ reward بتاع branch يعدّي <code>paper_threshold</code> (افتراضيًا 0.7) والـ branch ده لسه ما طلّعش ورقة قبل كده.</details>
+  <details><summary>٣. إيه قيم <code>stop_reason</code> الممكنة؟</summary><code>queue_empty</code> (الطابور خلص ومفيش حاجة شغالة)، <code>max_experiments</code> (عدد التجارب خلص)، و<code>deadline</code> (الوقت خلص).</details>
+</section>
+
+<!-- PLAN -->
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ Scheduler</div>
+    <div><b>15 min</b>الفكرة: الديمو = اختبار تركيب (composition)</div>
+    <div><b>20 min</b>المعامل: شغّل الـ pipeline واكسر مرحلة</div>
+    <div><b>35 min</b>المشروع: ٥ milestones بالكود</div>
+    <div><b>15 min</b>تمارين + كويز + checklist</div>
+  </div>
+</section>
+
+<!-- CONCEPT 1 -->
+<section id="d485-what">
+  <div class="station-head"><span class="tag">01</span><h2>إيه اللي بيتركب هنا؟ ست مراحل</h2></div>
+  <p>فكّر في الديمو زي خط إنتاج في مصنع: كل ماكينة اتصنعت واتجربت لوحدها في درس، والنهاردة بتحطهم جنب بعض على سير واحد. لو مقاس الحتة اللي طالعة من ماكينة مش مظبوط على الماكينة اللي بعدها، السير هيقف هنا بالظبط.</p>
+  <div class="formula">Seed → Scheduler ⇄ Experiment runner → Result bus → Paper trigger → Best picker → Critic loop → Paper writer → Demo report</div>
+  <ol class="ex">
+    <li><b>Seed:</b> ليستة فيها ٣ hypotheses، واحدة لكل branch: <code>alpha</code> و<code>beta</code> و<code>gamma</code>.</li>
+    <li><b>Scheduler:</b> بيشغّل ٦ تجارب على الـ branches دي بـ ٣ slots بالتوازي.</li>
+    <li><b>Result bus:</b> بيرجّع النتايج للـ scheduler، وبيطلّع paper trigger واحد أو أكتر.</li>
+    <li><b>Best-result picker:</b> بيختار أحسن نتيجة واحدة بس.</li>
+    <li><b>Critic loop:</b> بيلف على مسودة مبنية من النتيجة دي لحد ما توصل للهدف.</li>
+    <li><b>Paper writer:</b> بيطلّع الـ LaTeX والـ BibTeX والـ manifest النهائي.</li>
+  </ol>
+  <p>أهداف الدرس بالترتيب: توصّل اللوب كله من الأول للآخر، تركّب الـ primitives بـ imports عادية مش framework، تشغّله لحد ما يقف لوحده ويطلّع تقرير واحد، تخليه <b>deterministic</b> عشان الـ tests تقدر تتأكد من شكل الناتج، وتخلي أي عقد يتكسر يطلّع خطأ واضح بدل ما المرحلة اللي بعده تشتغل على input بايظ.</p>
+</section>
+
+<!-- LAB 1 -->
+<section id="d485-lab1">
+  <div class="station-head"><span class="tag">02</span><h2>معمل: شغّل الـ pipeline واكسر مرحلة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>دوس «شغّل» وشوف كل مرحلة بتنوّر وتسلّم ناتجها للي بعدها. الأسهم بين الـ Scheduler والـ Experiment runner رايحة جاية: دي حلقة الـ fan-in اللي اتعلمتها امبارح.</p>
+      <p>بعدين اختار «ما فيش trigger» وشغّل تاني: الـ picker هيرمي <code>NoTriggerError</code> والـ pipeline هيقف <b>قبل</b> الـ critic والـ writer. ده معنى <b>short-circuit</b>.</p>
+      <div class="note"><strong>لاحظ:</strong> مع «عنوان فاضي» الـ writer نفسه هو اللي بيرمي <code>PaperValidationError</code>. كل مرحلة بتحرس العقد بتاعها هي.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d485-pipe" width="520" height="300" aria-label="مراحل الـ pipeline"></canvas>
+      <div class="btns">
+        <button type="button" class="primary" id="d485-run">شغّل</button>
+        <select id="d485-fault" aria-label="نوع العطل">
+          <option value="none">كله سليم</option>
+          <option value="notrigger">ما فيش trigger (كل الـ rewards واطية)</option>
+          <option value="orphan">trigger لـ branch مش موجود</option>
+          <option value="title">عنوان الورقة فاضي</option>
+        </select>
+      </div>
+      <div class="verdict" id="d485-pipeMsg">جاهز. دوس شغّل.</div>
+    </div>
+  </div>
+</section>
+
+<!-- CONCEPT 2 -->
+<section id="d485-import">
+  <div class="station-head"><span class="tag">03</span><h2>ليه import مش copy؟</h2></div>
+  <p>كل درس قبل كده فيه <code>main.py</code> بيعرض dataclasses و functions عامة. الديمو بيستوردهم عن طريق تعديل <code>sys.path</code> على فولدر كل درس. ده مش framework wiring؛ ده نفس الـ import اللي ملفات الـ tests في الدروس اللي فاتت بتستخدمه أصلًا.</p>
+  <p>بس فيه مشكلة صغيرة: الدروس التلاتة كل واحد فيهم اسم ملفه <code>main.py</code>. لو عملت <code>import main</code> تلات مرات هتاخد نفس الموديول. عشان كده الكود بيستخدم <code>importlib.util.spec_from_file_location</code> ويحمّل كل ملف <b>بالمسار بتاعه</b> تحت اسم مختلف (<code>_t_d2_paper_writer</code>, <code>_t_d2_critic_loop</code>, <code>_t_d2_scheduler</code>). الدروس دي مش packages متثبتة، هي فولدرات <code>code/</code> مستقلة.</p>
+  <div class="formula">57 demo → 54 PaperWriter · 55 CriticLoop · 56 IterationScheduler · inline stub (seed + runner)</div>
+  <p>الـ <b>inline stub</b> بيقوم مقام دروس 50 لـ 53: مولّد صغير للـ seed hypotheses ودالة reward متزامنة. تقدر تبدّله بالـ primitives الحقيقية من الدروس دي بتعديل اتنين imports بس.</p>
+  <div class="note ai"><strong>تشبيه:</strong> زي ما تشغّل فيلم بـ «ممثلين بدلاء» في البروفة. الـ stub بيقف مكان الممثل الحقيقي لحد ما ييجي، والمشهد نفسه (الـ wiring) مش بيتغير.</div>
+</section>
+
+<!-- CONCEPT 3 + LAB 2 -->
+<section id="d485-picker">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Best-result picker و الـ originality tag</h2></div>
+  <p>الـ scheduler بيطلّع paper triggers لكل branch. الـ picker بيختار الـ branch اللي <b>متوسط الـ reward</b> بتاعه أعلى وسط الـ branches اللي عملت trigger. لو فيه تعادل، بيكسره <b>أبجديًا</b> باسم الـ branch عشان النتيجة تبقى ثابتة. دالة صغيرة pure، والـ test بيثبتها على report ثابت.</p>
+  <p>بعد كده الديمو بيبني <code>MiniPaper</code> من الـ branch المختار: الـ abstract فيه اسم الـ branch، وفيه قسمين (Introduction و Results)، والـ <code>originality_tag</code> بيتحدد من المتوسط:</p>
+  <div class="formula">reward ≥ 0.8 → high     reward ≥ 0.6 → medium     otherwise → low</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل: انت الـ picker</h3>
+      <p>حرّك متوسط كل branch والـ threshold. الـ branch اللي بيعدّي الخط المتقطع بيعمل trigger. شوف مين بيكسب، وجرّب تخلي alpha و beta متساويين بالظبط عشان تشوف كسر التعادل الأبجدي.</p>
+      <p>القيم الأصلية في الديمو كـ base rewards: alpha = 0.82، beta = 0.55، gamma = 0.15 (وفيه noise = 0.04 فوقهم).</p>
+      <div class="btns"><button type="button" id="d485-tie">اعمل تعادل alpha = beta</button><button type="button" id="d485-reset">رجّع قيم الديمو</button></div>
+    </div>
+    <div class="instrument">
+      <canvas id="d485-bars" width="520" height="240" aria-label="متوسط الـ reward لكل branch"></canvas>
+      <div class="mrow">
+        <label>alpha <span id="d485-va">0.82</span><input type="range" id="d485-a" min="0" max="1" step="0.01" value="0.82"></label>
+        <label>beta <span id="d485-vb">0.55</span><input type="range" id="d485-b" min="0" max="1" step="0.01" value="0.55"></label>
+        <label>gamma <span id="d485-vg">0.15</span><input type="range" id="d485-g" min="0" max="1" step="0.01" value="0.15"></label>
+        <label>paper_threshold <span id="d485-vt">0.70</span><input type="range" id="d485-t" min="0.3" max="0.95" step="0.01" value="0.7"></label>
+      </div>
+      <div class="readout">
+        <div><small>triggers</small><b id="d485-trig">alpha</b></div>
+        <div><small>best_branch</small><b id="d485-best">alpha</b></div>
+        <div><small>originality_tag</small><b id="d485-orig">high</b></div>
+      </div>
+      <div class="verdict" id="d485-pickMsg"></div>
+    </div>
+  </div>
+</section>
+
+<!-- CONCEPT 4 -->
+<section id="d485-wire">
+  <div class="station-head"><span class="tag">05</span><h2>توصيل الـ Critic Loop والـ Paper Writer</h2></div>
+  <h3>الـ Critic Loop</h3>
+  <p>الـ critic loop من درس 55 شغال على <code>MiniPaper</code>. الـ reviser بيلف على المسودة لحد ما تـ <b>converge</b>. في الديمو: <code>max_rounds=6</code> و<code>target_score=8.0</code>. الناتج (<code>LoopResult</code>) حالته يا <code>converged</code> يا <code>stopped</code>.</p>
+  <h3>الـ Paper Writer</h3>
+  <p>الـ writer من درس 54 عايز شكل <code>Paper</code> الكامل بالـ figures والـ bibliography. الدالة <code>mini_to_full_paper</code> بتعمل «ترقية»:</p>
+  <ol class="ex">
+    <li>بتجمع كل الـ cite keys اللي في الأقسام (بدون تكرار) وتعمل لكل واحد <code>BibEntry</code>. يعني أي cite موجود في النص موجود في الـ bibliography، فالـ validation بيعدّي.</li>
+    <li>لو مفيش ولا cite، بتضيف مرجع <code>{branch}-baseline</code> وتحطه في الـ intro.</li>
+    <li>بتعمل figure واحدة <code>{branch}-results</code> وتربطها بقسم الـ results بس.</li>
+  </ol>
+  <h3>شكل الـ Demo Report</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الحقل</th><th>جاي منين</th></tr>
+    <tr><td class="ltr">scheduler_report</td><td>الـ Scheduler (فيه الـ trace والـ branches والـ triggers)</td></tr>
+    <tr><td class="ltr">best_branch, best_reward</td><td>الـ Picker</td></tr>
+    <tr><td class="ltr">critic_result</td><td>الـ Critic Loop</td></tr>
+    <tr><td class="ltr">paper_manifest</td><td>الـ Paper Writer</td></tr>
+    <tr><td class="ltr">stop_reason</td><td>الـ Scheduler</td></tr>
+  </table></div>
+  <p>كل حقل جاي <b>زي ما هو</b> من المرحلة اللي فوقه. الديمو مش بيحوّل أي ناتج، هو بيركّبهم بس. وده بالظبط الاختبار اللي الديمو بيعمله.</p>
+  <h3>التعامل مع الأعطال</h3>
+  <pre class="term">Scheduler ........ returns SchedulerReport with stop_reason
+                   in {queue_empty, max_experiments, deadline}
+Best-result pick . raises NoTriggerError if no paper trigger fired
+Critic loop ...... returns LoopResult with status converged or stopped
+Paper writer ..... raises PaperValidationError on contract break</pre>
+  <p>أي عطل في أي مرحلة بيوقف الديمو بـ exception ليه نوع (typed). ولو فيه trigger لـ branch مش موجود في قايمة الـ branches، الـ picker بيرمي <code>BestResultError</code>.</p>
+</section>
+
+<!-- LAB 3: determinism -->
+<section id="d485-det">
+  <div class="station-head"><span class="tag">06</span><h2>معمل: الـ Determinism كجزء من العقد</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الديمو deterministic بالتصميم: الـ runner شغال بـ numpy متحدد له seed، والـ reviser بيمشي على dimensions ثابتة بترتيب ثابت، والـ prose generator هو الـ mock من درس 54، والـ UCB picker بيكسر التعادل بترتيب الـ iteration مش عشوائي.</p>
+      <p>يعني نفس الـ seed = نفس التقرير. الـ test بيشغّل الديمو مرتين ويقارن.</p>
+      <p>المعمل ده بيقلّد الفكرة بـ PRNG صغير في JavaScript (مش نفس أرقام numpy): شغّل مرتين بنفس الـ seed وبعدين غيّره.</p>
+      <label style="display:flex;gap:8px;align-items:center">seed: <input type="range" id="d485-seed" min="1" max="30" step="1" value="11" style="flex:1"><b class="mono" id="d485-seedv">11</b></label>
+      <div class="btns"><button type="button" class="primary" id="d485-twice">شغّل مرتين</button></div>
+    </div>
+    <div class="instrument">
+      <canvas id="d485-runs" width="520" height="220" aria-label="مقارنة تشغيلتين"></canvas>
+      <div class="verdict" id="d485-detMsg"></div>
+    </div>
+  </div>
+</section>
+
+<!-- PROJECT / CODE -->
+<section id="d485-code">
+  <div class="station-head"><span class="tag">07</span><h2>المشروع: ٥ milestones، اكتبهم بإيدك</h2></div>
+  <p>أول حاجة شغّل الديمو الأصلي من جذر الريبو عشان تشوف الهدف:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/57-end-to-end-research-demo/code/main.py
+python3 -m pytest phases/19-capstone-projects/57-end-to-end-research-demo/code/tests -q</pre></div>
+  <details><summary>شكل الناتج المتوقع</summary>
+    <p>JSON فيه المفاتيح دي. الـ tests بتضمن إن <code>best_branch</code> = <code>alpha</code> و <code>best_reward</code> &gt; 0.7 و <code>critic_status</code> = <code>converged</code>، والأرقام بالظبط هتشوفها عندك:</p>
+    <pre class="term">{
+  "stop_reason": "...",          # واحد من queue_empty / max_experiments / deadline
+  "best_branch": "alpha",
+  "best_reward": 0.8...,
+  "critic_status": "converged",
+  "critic_rounds": ...,
+  "paper_sections": ["intro", "results", ...],
+  "paper_figures": ["alpha-results"],
+  "experiments_run": ...
+}</pre></details>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_demo.py</code> جنب الأصلي واكتب كل milestone بنفسك. متعملش copy-paste؛ بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>Milestone 1: حمّل التلات دروس بالمسار</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import os, sys, importlib.util
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+LESSON_ROOT = os.path.dirname(os.path.dirname(HERE))   <span class="c"># فولدر phase 19</span>
+
+def _load_module(name, file_path):
+    <span class="c"># حمّل main.py بالمسار تحت اسم فريد عشان مفيش تصادم</span>
+    spec = importlib.util.spec_from_file_location(name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {name} from {file_path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+paper_writer_mod = _load_module("_t_d2_paper_writer",
+    os.path.join(LESSON_ROOT, "54-paper-writer", "code", "main.py"))
+critic_loop_mod = _load_module("_t_d2_critic_loop",
+    os.path.join(LESSON_ROOT, "55-critic-loop", "code", "main.py"))
+scheduler_mod = _load_module("_t_d2_scheduler",
+    os.path.join(LESSON_ROOT, "56-iteration-scheduler", "code", "main.py"))</pre></div>
+  <p><b>Check:</b> اطبع <code>scheduler_mod.IterationScheduler</code> و <code>critic_loop_mod.CriticLoop</code>. لو طلعوا classes من غير error، الـ milestone خلص.</p>
+
+  <h3>Milestone 2: الأخطاء الـ typed والـ report والـ seed</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from dataclasses import dataclass
+Hypothesis = scheduler_mod.Hypothesis
+
+class NoTriggerError(Exception):
+    """مفيش branch عدّى الـ threshold"""
+
+class BestResultError(Exception):
+    """الـ picker استلم ليستة فاضية"""
+
+@dataclass
+class DemoReport:
+    scheduler_report: dict
+    best_branch: str
+    best_reward: float
+    critic_result: dict
+    paper_manifest: dict
+    stop_reason: str
+
+def make_seed_hypotheses():
+    <span class="c"># stub بيقوم مقام دروس 50-53: hypothesis لكل branch</span>
+    return [
+        Hypothesis(id="h-alpha-1", branch="alpha", payload={"q": "method-x"}),
+        Hypothesis(id="h-beta-1",  branch="beta",  payload={"q": "method-y"}),
+        Hypothesis(id="h-gamma-1", branch="gamma", payload={"q": "method-z"}),
+    ]</pre></div>
+  <p><b>Check:</b> <code>len({h.branch for h in make_seed_hypotheses()}) == 3</code>.</p>
+
+  <h3>Milestone 3: الـ picker والـ MiniPaper</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>MiniPaper = critic_loop_mod.MiniPaper
+MiniSection = critic_loop_mod.MiniSection
+
+def pick_best_branch(scheduler_report):
+    if not scheduler_report.paper_triggers:
+        raise NoTriggerError("no branch crossed the paper threshold")
+    by_branch = {b.branch: b for b in scheduler_report.branches}
+    triggered = [by_branch[n] for n in scheduler_report.paper_triggers if n in by_branch]
+    if not triggered:                         <span class="c"># trigger لـ branch مش موجود</span>
+        raise BestResultError("trigger list empty after lookup")
+    triggered.sort(key=lambda b: (-b.mean, b.branch))   <span class="c"># أعلى متوسط، والتعادل أبجدي</span>
+    best = triggered[0]
+    return best.branch, best.mean
+
+def _originality_for_reward(reward):
+    if reward &gt;= 0.8: return "high"
+    if reward &gt;= 0.6: return "medium"
+    return "low"
+
+def build_mini_paper(branch, reward):
+    return MiniPaper(
+        title=f"Auto-Research Findings on Branch {branch}",
+        abstract=f"We summarise the best yielding branch {branch} from the auto-research loop.",
+        sections=[
+            MiniSection(id="intro", title="Introduction", body="initial observations"),
+            MiniSection(id="results", title="Results", body=""),
+        ],
+        originality_tag=_originality_for_reward(reward),
+    )</pre></div>
+  <p><b>Check:</b> اعمل <code>SchedulerReport</code> فيه <code>paper_triggers=[]</code> واتأكد إن <code>pick_best_branch</code> بيرمي <code>NoTriggerError</code>.</p>
+
+  <h3>Milestone 4: رقّي الـ MiniPaper لـ Paper كامل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>Paper, Section = paper_writer_mod.Paper, paper_writer_mod.Section
+Figure, BibEntry = paper_writer_mod.Figure, paper_writer_mod.BibEntry
+
+def mini_to_full_paper(mini, branch):
+    cites = []
+    for sec in mini.sections:                  <span class="c"># اتحاد كل الـ cites بدون تكرار</span>
+        for c in sec.cites:
+            if c not in cites:
+                cites.append(c)
+    bib = [BibEntry(key=k, entry_type="article",
+                    fields={"title": f"Source {k}", "author": "Synthesised", "year": "2026"})
+           for k in cites]
+    if not bib:                                <span class="c"># مفيش مراجع؟ ضيف baseline</span>
+        bib = [BibEntry(key=f"{branch}-baseline", entry_type="article",
+                        fields={"title": "Baseline", "author": "Synthesised", "year": "2026"})]
+        for sec in mini.sections:
+            if sec.id == "intro":
+                sec.cites.append(f"{branch}-baseline")
+                break
+    fig = Figure(id=f"{branch}-results", path=f"figs/{branch}.pdf",
+                 caption=f"Reward trajectory on branch {branch}")
+    sections = [Section(id=s.id, title=s.title, body=s.body, cites=list(s.cites),
+                        figure_refs=[fig.id] if s.id == "results" else [])
+                for s in mini.sections]
+    return Paper(title=mini.title, authors=["Auto-Research Demo"], abstract=mini.abstract,
+                 sections=sections, figures=[fig], bibliography=bib)</pre></div>
+  <p><b>Check:</b> <code>full = mini_to_full_paper(build_mini_paper("alpha", 0.9), "alpha")</code>، بعدين <code>full.title = ""</code> واكتب بيه: لازم يطلع <code>PaperValidationError</code>.</p>
+
+  <h3>Milestone 5: وصّل كله في <code>run_demo</code></h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import asyncio, tempfile
+
+async def _run_demo_async(out_dir, seed=11):
+    seed_list = make_seed_hypotheses()
+    if not seed_list:
+        raise BestResultError("seed list is empty")
+    runner = scheduler_mod.make_deterministic_runner(
+        base_rewards={"alpha": 0.82, "beta": 0.55, "gamma": 0.15},
+        noise=0.04, delay_ms=2.0, seed=seed)
+    sched = scheduler_mod.IterationScheduler(
+        runner=runner, slots=3, max_experiments=6,
+        paper_threshold=0.7, prune_floor=0.2, prune_after_runs=3,
+        expander=scheduler_mod.deterministic_expander)
+    sched_report = await sched.run(seed_list)            <span class="c"># مرحلة ١</span>
+
+    branch, reward = pick_best_branch(sched_report)      <span class="c"># مرحلة ٢ (ممكن ترمي)</span>
+
+    loop = critic_loop_mod.CriticLoop(                    <span class="c"># مرحلة ٣</span>
+        critic=critic_loop_mod.deterministic_critic,
+        reviser=critic_loop_mod.deterministic_reviser,
+        max_rounds=6, target_score=8.0)
+    critic_result = loop.run(build_mini_paper(branch, reward))
+
+    full_paper = mini_to_full_paper(critic_result.paper, branch)   <span class="c"># مرحلة ٤</span>
+    prose = paper_writer_mod.MockProseGenerator(outlines={
+        "intro": f"motivation for branch {branch}",
+        "results": f"summary of reward trajectory on branch {branch}",
+        "method": "method description",
+        "related-work": "related work survey"})
+    manifest = paper_writer_mod.PaperWriter(prose=prose).write(full_paper, out_dir)
+
+    return DemoReport(scheduler_report=sched_report.to_dict(), best_branch=branch,
+                      best_reward=reward, critic_result=critic_result.to_dict(),
+                      paper_manifest=manifest, stop_reason=sched_report.stop_reason)
+
+def run_demo(out_dir=None, seed=11):
+    if out_dir is None:
+        out_dir = tempfile.mkdtemp(prefix="auto-research-demo-")
+    return asyncio.run(_run_demo_async(out_dir, seed=seed))</pre></div>
+  <p><b>Check النهائي:</b> شغّل <code>run_demo</code> مرتين بـ <code>seed=11</code> وقارن <code>best_branch</code> و <code>best_reward</code> وأسماء الأقسام. لازم يتطابقوا. وبعدين شغّل الـ tests الأصلية على نسختك.</p>
+  <div class="note"><strong>ليه الملف تحت جوّه <code>code/</code>؟</strong> عشان <code>LESSON_ROOT</code> محسوب كفولدرين فوق ملفك. لو حطيت <code>my_demo.py</code> في مكان تاني، المسارات هتبوظ وهيطلعلك <code>ImportError</code> أو <code>FileNotFoundError</code>.</div>
+</section>
+
+<!-- GOING FURTHER -->
+<section id="d485-further">
+  <div class="station-head"><span class="tag">08</span><h2>خطوات أبعد من الدرس</h2></div>
+  <p>الدرس بيقترح ٣ امتدادات تعملهم بعد ما الديمو يبقى أخضر:</p>
+  <ol class="ex">
+    <li><b>Persistent state:</b> كل مرحلة تكتب ناتجها في JSON store صغير، فلو حصل restart تكمّل من غير ما تعيد المراحل الرخيصة.</li>
+    <li><b>Dashboard:</b> الـ trace events من الـ scheduler والـ critic loop تتعرض كـ timeline واحد.</li>
+    <li><b>Real model calls:</b> بدّل الـ mocked prose generator والـ deterministic critic بحاجات شغالة بموديل. الـ wiring مش بيتغير.</li>
+  </ol>
+  <p>الفكرة الأساسية: <b>التركيب هو الـ architecture</b>. خمس دروس، أربع imports، تقرير واحد. وكل ما تضيف مرحلة، الـ wiring بيكبر سطر واحد بس.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d485-ex">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <p>الدرس ما فيهوش تمارين مرقّمة، فالتمارين دي مبنية على الـ tests والامتدادات اللي في الدرس نفسه:</p>
+  <ol class="ex">
+    <li><b>اكسر الـ trigger:</b> غيّر <code>base_rewards</code> بحيث مفيش branch يعدّي 0.7، وشغّل. إيه اللي بيحصل؟
+      <details><summary>الإجابة</summary><code>NoTriggerError</code> بيطلع من <code>pick_best_branch</code>، والـ critic والـ writer ما بيشتغلوش خالص. ده المقصود بالـ short-circuit.</details></li>
+    <li><b>كسر التعادل:</b> اعمل <code>SchedulerReport</code> فيه <code>BranchStats</code> لـ beta و alpha بنفس <code>runs=2, reward_sum=1.6</code>. مين بيكسب؟
+      <details><summary>الإجابة</summary><code>alpha</code>، لأن الـ sort key هو <code>(-mean, branch)</code> والتعادل بيتكسر أبجديًا. ده نفس <code>test_ties_break_alphabetically</code>.</details></li>
+    <li><b>Orphan trigger:</b> <code>paper_triggers=["ghost"]</code> و <code>branches=[]</code>. إيه الخطأ؟
+      <details><summary>الإجابة</summary><code>BestResultError</code>: فيه trigger بس مش لاقي الـ branch بتاعه بعد الـ lookup.</details></li>
+    <li><b>Persistent state (امتداد ١):</b> خلي كل مرحلة تكتب ناتجها في ملف JSON، ولو الملف موجود اقراه بدل ما تشغّل المرحلة.
+      <details><summary>تلميح</summary>ابدأ بالـ scheduler report: <code>json.dump(sched_report.to_dict(), f)</code>. خلي بالك إن المرحلة اللي بعده محتاجة object مش dict، فإما تبني <code>SchedulerReport</code> تاني من الـ dict، أو تخزن بس الـ branch والـ reward المختارين.</details></li>
+    <li><b>Timeline (امتداد ٢):</b> اطبع كل events الـ <code>trace</code> اللي في <code>scheduler_report</code> بترتيبها، وبعدهم جولات الـ critic.
+      <details><summary>تلميح</summary>افتح <code>rep.scheduler_report["trace"]</code> وبص على مفاتيح أول event الأول قبل ما تقرر تعرض إيه.</details></li>
+    <li><b>إضافة مني · stage جديد في سطر واحد:</b> ضيف مرحلة <code>safety_check(full_paper)</code> قبل الـ writer ترمي <code>UnsafeClaimError</code> لو الـ abstract فيه كلمة زي «guaranteed» أو «proves». اكتب test يتأكد إن الـ writer ما بيتنادش لما الكلمة موجودة. ده نفس اللي بيحصل في أي agent pipeline حقيقي: guardrail بين التوليد والنشر.
+      <details><summary>تلميح</summary>اعمل exception class جديد، ونادي الدالة بين <code>mini_to_full_paper</code> و <code>writer.write</code>. في الـ test اعمل <code>out_dir</code> مؤقت واتأكد إنه فاضي بعد الـ exception.</details></li>
+  </ol>
+</section>
+
+<!-- MY ADDITION -->
+<section id="d485-mine">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس مش بيقوله صريح</h2></div>
+  <h3>الحدس: الديمو هو integration test</h3>
+  <p>كل درس قبل كده كان unit tests لـ primitive واحد. الديمو هو أول مرة الحتت تتقابل. أغلب الـ bugs في أنظمة الـ agents الحقيقية مش جوه أي component، هي في <b>الحدود بينهم</b>: dict بدل object، مفتاح اسمه مختلف، قايمة فاضية محدش توقعها.</p>
+  <h3>أخطاء شائعة</h3>
+  <ol class="ex">
+    <li><b>ترجّع None بدل ما ترمي:</b> لو الـ picker رجّع None، الـ writer هيقع بعدين بخطأ غامض بعيد عن السبب. الخطأ الـ typed بيشاور على المكان الصح.</li>
+    <li><b>عشوائية مستخبية:</b> <code>random.choice</code> في كسر تعادل، أو <code>set</code> بتلف عليه، أو وقت النظام في اسم ملف. أي واحدة فيهم بتبوّظ اختبار الـ determinism.</li>
+    <li><b>تعديل الناتج في النص:</b> لو الديمو «نضّف» ناتج مرحلة قبل ما يحطه في التقرير، الـ debugging بيبقى أصعب. خليه زي ما هو.</li>
+    <li><b>تصادم أسماء الموديولات:</b> تلات ملفات <code>main.py</code> + <code>import main</code> = هتاخد أول واحد بس من الـ cache بتاع <code>sys.modules</code>.</li>
+  </ol>
+  <h3>بيظهر فين في الـ LLMs والـ agents؟</h3>
+  <p>أي agent framework بيعمل research أو coding بيمشي بنفس الشكل: planner → workers بالتوازي → aggregator → reviewer → writer. لما تبدّل الـ mocks بـ LLM calls حقيقية، الـ determinism بيقل (حتى مع temperature صغيرة)، فالعادة إنك تحتفظ بنسخة mocked من الـ pipeline للـ CI وتختبر الشكل (shape) مش النص بالحرف.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d485-quiz">
+  <div class="station-head"><span class="tag">11</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d485-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d485-done">
+  <div class="station-head"><span class="tag">12</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d485-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أرسم الست مراحل وأقول كل مرحلة بتسلّم إيه للي بعدها</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فاهم ليه بنحمّل الدروس بـ importlib بالمسار</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> كسرت مرحلة في المعمل وشفت الـ short-circuit</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت الخمس milestones بإيدي وشغّلت run_demo</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> اتأكدت إن تشغيلتين بنفس الـ seed بيطلعوا نفس الناتج</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت تمرينين على الأقل وجبت ٥ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Composition عن طريق imports</td><td>بناء pipelines للـ agents من components مختبرة لوحدها</td></tr>
+    <tr><td>Typed failure / short-circuit</td><td>guardrails بين خطوات الـ agent، ووقف الـ workflow قبل ما يكتب حاجة غلط</td></tr>
+    <tr><td>Determinism بالـ seed والـ mocks</td><td>اختبارات CI لأنظمة LLM، والـ regression tests</td></tr>
+    <tr><td>Best-result picker</td><td>اختيار أحسن candidate في best-of-N والـ reranking</td></tr>
+    <tr><td>Critic → writer</td><td>أنظمة الـ self-refine والـ reviewer agents</td></tr>
+    <tr><td>Demo report فيه كل المراحل</td><td>الـ tracing والـ observability في أدوات زي الـ agent dashboards</td></tr>
+  </table></div>
+  <p><b>الجاي:</b> Vision Encoder Patches، بداية سلسلة جديدة عن تقطيع الصورة لـ patches.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F57-end-to-end-research-demo" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/57-end-to-end-research-demo</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt;
+const root=document.getElementById('d485-done').parentNode;
+
+// roadmap
+const L=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87];
+const rm=document.getElementById('d485-roadmap');
+L.forEach(i=>{const s=document.createElement('span');s.textContent=i;if(i===57)s.className='now';rm.appendChild(s)});
+
+// ---------- Lab 1: pipeline ----------
+const pc=document.getElementById('d485-pipe'),px=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+const ST=[
+ {k:'Seed',x:70,y:50},{k:'Scheduler',x:200,y:50},{k:'Runner',x:200,y:140},
+ {k:'Picker',x:340,y:50},{k:'Critic loop',x:340,y:150},{k:'Paper writer',x:340,y:245},{k:'Report',x:460,y:245}
+];
+const BW=104,BH=40;
+let state=ST.map(()=> 'idle'),anim=null,phase=0;
+function box(i){const s=ST[i];const st=state[i];
+  px.fillStyle=st==='ok'?css('--ok'):st==='run'?css('--vec-a'):st==='fail'?css('--bad'):css('--panel');
+  px.strokeStyle=st==='idle'||st==='skip'?css('--line'):'transparent';px.lineWidth=1.5;
+  px.globalAlpha=st==='skip'?.35:1;
+  px.beginPath();px.roundRect?px.roundRect(s.x-BW/2,s.y-BH/2,BW,BH,6):px.rect(s.x-BW/2,s.y-BH/2,BW,BH);px.fill();px.stroke();
+  px.fillStyle=st==='idle'||st==='skip'?css('--ink'):css('--paper');px.font='600 13px JetBrains Mono, monospace';px.textAlign='center';px.textBaseline='middle';
+  px.fillText(s.k,s.x,s.y);px.globalAlpha=1;px.textAlign='left';px.textBaseline='alphabetic'}
+function link(a,b,dy1,dy2){const A=ST[a],B=ST[b];let x1=A.x,y1=A.y,x2=B.x,y2=B.y;
+  if(A.y===B.y){x1+=BW/2;x2-=BW/2}else{y1+=BH/2*(B.y>A.y?1:-1);y2-=BH/2*(B.y>A.y?1:-1)}
+  AI.arrow(px,x1+(dy1||0),y1,x2+(dy2||0),y2,css('--muted'),1.6)}
+function drawPipe(){px.clearRect(0,0,PW,PH);
+  link(0,1);link(1,2,-14,-14);link(2,1,14,14);link(1,3);link(3,4);link(4,5);link(5,6);
+  px.fillStyle=css('--muted');px.font='11px JetBrains Mono, monospace';px.fillText('result bus',214,100);px.fillText('trigger',250,40);
+  ST.forEach((_,i)=>box(i))}
+const FAULT={
+ none:{fail:-1,msg:'✓ اللوب وقف لوحده وطلّع DemoReport فيه الست حقول.'},
+ notrigger:{fail:3,msg:'✗ NoTriggerError: مفيش branch عدّى الـ threshold. الـ critic والـ writer ما اشتغلوش.'},
+ orphan:{fail:3,msg:'✗ BestResultError: فيه trigger لـ branch مش في قايمة الـ branches.'},
+ title:{fail:5,msg:'✗ PaperValidationError: title is empty. الـ writer رفض قبل ما يكتب الملفات.'}
+};
+const order=[0,1,2,1,3,4,5,6];
+function runPipe(){cancelAnimationFrame(anim);state=ST.map(()=>'idle');
+  const fz=FAULT[document.getElementById('d485-fault').value],msg=document.getElementById('d485-pipeMsg');
+  msg.textContent='شغّال…';msg.style.color=css('--muted');
+  const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches,dt=reduce?0:450;let step=0,t0=performance.now();
+  const tick=t=>{if(!document.body.contains(pc))return;
+    if(t-t0>=dt||reduce){t0=t;
+      if(step>0){const prev=order[step-1];if(state[prev]==='run')state[prev]='ok'}
+      if(step<order.length){const i=order[step];
+        if(i===fz.fail){state[i]='fail';for(let j=0;j<ST.length;j++)if(state[j]==='idle')state[j]='skip';drawPipe();msg.textContent=fz.msg;msg.style.color=css('--bad');return}
+        state[i]='run';step++}
+      else{drawPipe();msg.textContent=fz.msg;msg.style.color=css('--ok');return}
+      drawPipe()}
+    anim=requestAnimationFrame(tick)};
+  anim=requestAnimationFrame(tick)}
+document.getElementById('d485-run').addEventListener('click',runPipe);
+drawPipe();
+
+// ---------- Lab 2: picker ----------
+const bc=document.getElementById('d485-bars'),bx=AI.setupCanvas(bc),BWd=+bc.dataset.w,BHd=+bc.dataset.h;
+const ids={alpha:'d485-a',beta:'d485-b',gamma:'d485-g'},lbl={alpha:'d485-va',beta:'d485-vb',gamma:'d485-vg'};
+const tEl=document.getElementById('d485-t');
+function orig(r){return r>=0.8?'high':r>=0.6?'medium':'low'}
+function pick(){
+  const th=+tEl.value;document.getElementById('d485-vt').textContent=th.toFixed(2);
+  const br=Object.keys(ids).map(k=>{const v=+document.getElementById(ids[k]).value;document.getElementById(lbl[k]).textContent=v.toFixed(2);return {k,v}});
+  const trig=br.filter(b=>b.v>=th);
+  const sorted=trig.slice().sort((a,b)=>(b.v-a.v)||(a.k<b.k?-1:a.k>b.k?1:0));
+  const best=sorted[0];
+  document.getElementById('d485-trig').textContent=trig.length?trig.map(b=>b.k).join(', '):'[]';
+  document.getElementById('d485-best').textContent=best?best.k:'—';
+  document.getElementById('d485-orig').textContent=best?orig(best.v):'—';
+  const m=document.getElementById('d485-pickMsg');
+  if(!best){m.textContent='NoTriggerError: الديمو هيقف هنا.';m.style.color=css('--bad')}
+  else if(sorted[1]&&sorted[1].v===best.v){m.textContent='تعادل! اتكسر أبجديًا لصالح '+best.k+'.';m.style.color=css('--vec-b')}
+  else{m.textContent='الفايز: '+best.k+' بمتوسط '+f(best.v)+'.';m.style.color=css('--ok')}
+  // draw
+  bx.clearRect(0,0,BWd,BHd);const ox=40,top=16,h=BHd-50,colW=(BWd-ox-20)/3;
+  bx.strokeStyle=css('--line');bx.lineWidth=1;
+  for(let g=0;g<=4;g++){const y=top+h-h*g/4;bx.beginPath();bx.moveTo(ox,y);bx.lineTo(BWd-10,y);bx.stroke();
+    bx.fillStyle=css('--muted');bx.font='11px JetBrains Mono, monospace';bx.fillText((g/4).toFixed(2),4,y+4)}
+  br.forEach((b,i)=>{const x=ox+i*colW+colW*0.2,w=colW*0.6,y=top+h-h*b.v;
+    bx.fillStyle=best&&b.k===best.k?css('--vec-a'):b.v>=th?css('--vec-b'):css('--muted');
+    bx.globalAlpha=b.v>=th?1:.45;bx.fillRect(x,y,w,h*b.v);bx.globalAlpha=1;
+    bx.fillStyle=css('--ink');bx.font='600 13px JetBrains Mono, monospace';bx.textAlign='center';
+    bx.fillText(b.k,x+w/2,BHd-14);bx.fillText(f(b.v),x+w/2,Math.max(top+12,y-6));bx.textAlign='left'});
+  const ty=top+h-h*th;bx.setLineDash([6,5]);bx.strokeStyle=css('--bad');bx.lineWidth=2;bx.beginPath();bx.moveTo(ox,ty);bx.lineTo(BWd-10,ty);bx.stroke();bx.setLineDash([]);
+  bx.fillStyle=css('--bad');bx.font='11px JetBrains Mono, monospace';bx.fillText('threshold',BWd-80,ty-5);
+}
+[...Object.values(ids),'d485-t'].forEach(id=>document.getElementById(id).addEventListener('input',pick));
+document.getElementById('d485-tie').addEventListener('click',()=>{document.getElementById('d485-a').value=0.8;document.getElementById('d485-b').value=0.8;pick()});
+document.getElementById('d485-reset').addEventListener('click',()=>{document.getElementById('d485-a').value=0.82;document.getElementById('d485-b').value=0.55;document.getElementById('d485-g').value=0.15;tEl.value=0.7;pick()});
+pick();
+
+// ---------- Lab 3: determinism ----------
+const rc=document.getElementById('d485-runs'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+const seedEl=document.getElementById('d485-seed');
+function prng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const base={alpha:0.82,beta:0.55,gamma:0.15},seq=['alpha','beta','gamma','alpha','alpha','beta'];
+function sim(seed){const r=prng(seed);return seq.map(b=>({b,v:Math.max(0,Math.min(1,base[b]+(r()*2-1)*0.04))}))}
+let runs=[sim(11),null],lastSeed=11;
+function drawRuns(){rx.clearRect(0,0,RW,RH);const ox=30,w=(RW-ox-10)/6,h=RH-60;
+  const col={alpha:css('--vec-a'),beta:css('--vec-b'),gamma:css('--muted')};
+  runs.forEach((run,ri)=>{if(!run)return;run.forEach((p,i)=>{const x=ox+i*w+(ri?w*0.5:w*0.1),bw=w*0.38,y=10+h-h*p.v;
+    rx.fillStyle=col[p.b];rx.globalAlpha=ri?.55:1;rx.fillRect(x,y,bw,h*p.v);rx.globalAlpha=1})});
+  rx.fillStyle=css('--ink');rx.font='11px JetBrains Mono, monospace';rx.textAlign='center';
+  seq.forEach((b,i)=>rx.fillText(b,ox+i*w+w/2,RH-34));rx.textAlign='left';
+  rx.fillText('run 1 (solid)   run 2 (faded)',ox,RH-12)}
+function twice(){const s=+seedEl.value,prev=runs[0];const r1=sim(s),r2=sim(s);
+  runs=[r1,r2];drawRuns();
+  const same=r1.every((p,i)=>p.v===r2[i].v);const m=document.getElementById('d485-detMsg');
+  const diff=s!==lastSeed&&prev&&prev.some((p,i)=>p.v!==r1[i].v);
+  m.textContent=(same?'✓ التشغيلتين متطابقين بالظبط (seed='+s+').':'✗ فيه اختلاف!')+(diff?' ولاحظ إن الأرقام اتغيرت عن الـ seed اللي قبله.':'');
+  m.style.color=same?css('--ok'):css('--bad');lastSeed=s}
+seedEl.addEventListener('input',()=>{document.getElementById('d485-seedv').textContent=seedEl.value});
+document.getElementById('d485-twice').addEventListener('click',twice);
+drawRuns();
+
+// ---------- quiz ----------
+AI.quiz(document.getElementById('d485-quizBox'),[
+ ['إيه شغلانة الديمو في الدرس ده؟',['يقيس أداء الـ scheduler مقابل baseline','ينادي language model حقيقي على كل branch','يستبدل الدروس اللي فاتت بـ framework واحد جديد','يركّب الـ primitives من الدروس اللي فاتت عن طريق imports عادية في Python'],3,'الديمو اختبار تركيب. كل مرحلة موجودة في درسها، والديمو بيستوردها ويوصّل التقرير. مفيش framework ولا abstractions جديدة.'],
+ ['ليه الدرس بيحمّل الدروس اللي فاتت بـ importlib بدل import عادي لـ package؟',['عشان importlib أسرع','عشان كل درس فولدر code/ مستقل مش package متثبت، فـ importlib بيحمّله بالمسار','عشان asyncio محتاج importlib','عشان الدروس بتشترك في اسم موديول وهيحصل تصادم'],1,'الدروس مش packages متثبتة. كل واحد فيه main.py جوه فولدر code/ بتاعه. spec_from_file_location بيحمّلهم بالمسار من غير ما يلخبط الـ namespace العام.'],
+ ['الـ best-result picker بيختار إزاي لما أكتر من branch يعمل trigger؟',['بياخد أعلى متوسط reward، والتعادل بيتكسر أبجديًا باسم الـ branch','بياخد الـ branch اللي اتعمله تجارب أكتر','بيختار عشوائي عشان العدل','بياخد أول branch عمل trigger'],0,'أعلى متوسط يكسب، والتعادل بالاسم عشان الديمو يفضل deterministic. العشوائي كان هيبوّظ اختبار الـ determinism.'],
+ ['الـ picker بيرمي أنهي خطأ لما الـ scheduler يقول إن مفيش paper triggers خالص؟',['ValueError','بيرجّع None','PaperValidationError','NoTriggerError، وده بيوقف الديمو قبل ما الـ writer يشتغل'],3,'NoTriggerError هو الـ typed failure. لو رجّع None، الـ writer كان هيشتغل على input بايظ ويقع بعدين بخطأ أصعب تفهمه.'],
+ ['ليه اختبار الـ determinism بيشغّل الديمو مرتين بنفس الـ seed؟',['عشان يمسك memory leak','عشان يتأكد إن الـ branch المختار والـ reward وأسماء أقسام الورقة متطابقين في التشغيلتين','عشان يجرب asyncio مرتين','عشان يثبت إن الـ scheduler عادل'],1,'الـ determinism جزء من العقد. تشغيلتين بنفس الـ seed لازم يطلعوا نفس الحاجات، والـ test بيثبت ده.'],
+ ['التقرير بيبقى فيه إيه بعد تشغيل ناجح؟',['ملف الـ LaTeX النهائي بس','عدد التجارب وكلمة status بس','لوج للـ prompts والـ completions','scheduler_report و best_branch و best_reward و critic_result و paper_manifest و stop_reason'],3,'ناتج كل مرحلة محفوظ. التقرير تركيب من نواتج المراحل مش ملخص متحوّل. الأدوات بتقرا الـ manifest، واللي بيعمل debug بيقرا الـ trace جوه scheduler_report.'],
+ ['(سؤال مني) الـ branch المختار متوسطه 0.65. الـ originality_tag هيبقى إيه؟',['high','medium','low','مش هيتحدد لأنه أقل من 0.7'],1,'0.65 ≥ 0.6 وأقل من 0.8، يعني medium. (لاحظ إنه لازم يكون عدّى الـ paper_threshold الأول عشان يتختار أصلًا، فلو الـ threshold 0.7 مش هيوصل هنا، بس الدالة نفسها بترجع medium.)'],
+ ['(سؤال مني) ليه mini_to_full_paper بتبني الـ bibliography من اتحاد كل الـ cite keys؟',['عشان الورقة تبان أطول','عشان كل cite في النص يبقى ليه BibEntry، فالـ validation بتاع الـ writer يعدّي','عشان الـ critic يدي درجة أعلى','عشان LaTeX بيرفض أي ورقة من غير مراجع'],1,'الدرس بيقول إن كل cite الديمو بيضيفه بيتضاف كمان لقايمة الـ bibliography، فالـ validation بيعدّي.']
+],6,()=>{const c=root.querySelector('input[data-ck="c6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+// ---------- checklist ----------
+AI.checklist(485,root);
+
+// theme
+AI.onTheme(()=>{if(!document.body.contains(pc))return false;drawPipe();pick();drawRuns()});
+})();
+</script>

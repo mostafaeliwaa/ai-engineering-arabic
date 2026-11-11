@@ -1,0 +1,506 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 78 · ZeRO Optimizer State Sharding</span>
+  <h1>اليوم ٥٠٦: قسّم الـ optimizer على الـ ranks، ووفّر أكتر من نص الذاكرة</h1>
+  <p class="lede">الـ Adam بيخزّن رقمين إضافيين لكل parameter، الاتنين float32. موديل 7B معاه <b>56 GB</b> optimizer state، وده على كل rank في DDP العادي. <b>ZeRO stage 1</b> بيقول: ليه كل rank يشيل نسخة كاملة؟ كل واحد يشيل جزء من N بس، ويحدّث الجزء بتاعه، وبعدين الكل يتبادل النتيجة. نفس حجم الـ communication بتاع DDP بالظبط، والذاكرة بتقل خطيًا مع N.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> + PyTorch (gloo)</span>
+    <span>قبله: <b>Data Parallel DDP From Scratch</b></span>
+    <span>بعده: <b>Pipeline Parallel and Bubble Analysis</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d506-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d506-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت DDP. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>DDP بيعمل أنهي collective في الأول، وأنهي في كل step؟
+      <details><summary>الإجابة</summary>broadcast للـ parameters من rank 0 مرة واحدة وقت الإنشاء، وبعد كل backward allreduce-SUM للـ gradients وبعدين قسمة على world_size.</details></li>
+    <li>ليه المتوسط مش المجموع؟
+      <details><summary>الإجابة</summary>المتوسط ما بيتغيرش مع عدد الـ ranks، فالـ lr اللي اتظبط على rank واحد بيشتغل على N. المجموع من غير قسمة بيضرب الـ gradient (وكإنه الـ lr) في N.</details></li>
+    <li>الـ test الأساسي بتاع الدرس كان بيقارن بإيه؟
+      <details><summary>الإجابة</summary>بـ process واحد بيمشي على microbatch كل rank بالترتيب، وبيقسم الـ loss على world_size قبل الـ backward. متوسط الـ gradient بتاعه لازم يساوي الـ allreduce-mean، فالـ loss والـ param norm لازم يتطابقوا.</details></li>
+  </ol>
+  <div class="note ai"><strong>الربط بالنهاردة:</strong> في DDP كل rank شايل <b>كل حاجة</b>: الـ parameters والـ gradients والـ optimizer state. والـ allreduce اللي بنعمله = reduce_scatter + allgather (من درس الـ collectives). ZeRO بياخد الحتتين دول ويفصلهم: يعمل الـ optimizer step في النص، على shard صغير بس.</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>حساب الذاكرة: مين بياكل الـ GPU (معمل ١)</div>
+    <div><b>20 min</b>خطوة ZeRO-1 بالتفصيل (معمل ٢)</div>
+    <div><b>10 min</b>الـ shards والـ padding والـ norm (معمل ٣)</div>
+    <div><b>30 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 PROBLEM + MEMORY LAB -->
+<section id="d506-mem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الـ optimizer أكبر من الموديل نفسه</h2></div>
+  <p>في الـ <b>mixed precision</b> بنعمل الـ forward والـ backward بأرقام 16-bit (أسرع وأصغر)، بس الـ optimizer محتاج دقة 32-bit عشان التحديثات الصغيرة ما تضيعش. فبيبقى عندنا نسخة float32 من الأوزان اسمها <b>master copy</b>، والـ Adam عنده رقمين لكل parameter: <b>first moment</b> (متوسط الـ gradients) و <b>second moment</b> (متوسط مربعاتها). لموديل فيه P parameter:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحاجة</th><th>DDP العادي</th><th>ZeRO-1</th><th>ليه</th></tr>
+    <tr><td>fp16 params</td><td class="ltr">2P</td><td class="ltr">2P</td><td>محتاجينها في الـ forward</td></tr>
+    <tr><td>fp16 grads</td><td class="ltr">2P</td><td class="ltr">2P</td><td>محتاجينها في الـ backward</td></tr>
+    <tr><td>fp32 master copy</td><td class="ltr">4P</td><td class="ltr">4P/N</td><td>الـ optimizer بس اللي بيلمسها</td></tr>
+    <tr><td>fp32 first moment</td><td class="ltr">4P</td><td class="ltr">4P/N</td><td>الـ optimizer بس اللي بيلمسها</td></tr>
+    <tr><td>fp32 second moment</td><td class="ltr">4P</td><td class="ltr">4P/N</td><td>الـ optimizer بس اللي بيلمسها</td></tr>
+    <tr><td><b>المجموع</b></td><td class="ltr"><b>16P bytes</b></td><td class="ltr"><b>4P + 12P/N</b></td><td></td></tr>
+  </table></div>
+  <p>الـ optimizer state هو <b>أكبر بند</b> (12P من 16P)، وفي نفس الوقت <b>أسهل بند يتقسم</b>، لأنه مش بيتلمس في الـ forward ولا الـ backward، بس في الـ step. زي شنط سفر فريق كامل: بدل ما كل واحد يشيل شنط الفريق كله، كل واحد يشيل شنطته بس، ولما حد يحتاج حاجة الفريق يتبادل.</p>
+  <div class="formula">N=8: 16P → 5.5P (−65%)    ·    N=64: 16P → 4.19P (−74%)</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: حاسبة الذاكرة لكل rank</h3>
+      <p>اختار حجم الموديل وعدد الـ ranks والـ stage. الشريط الأول DDP، والتاني الـ stage اللي اخترتها. الخط الأحمر = GPU بـ 80 GB كمرجع.</p>
+      <div class="note"><strong>جرب:</strong> (١) 7B على 8 ranks: DDP = 112 GB ومش هيدخل، و ZeRO-1 = 38.5 GB. (٢) زوّد N لـ 64 وشوف ZeRO-1 ما بينزلش تحت 4P: الـ params والـ grads لسه كاملين. (٣) بدّل لـ stage 2 وبعدين 3 وشوف مين اتقسم كمان.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d506-memc" width="520" height="200" aria-label="ذاكرة كل rank مقسمة على بنودها"></canvas>
+      <p style="color:var(--muted);font-size:14px;margin:0">الحساب من غير activations ولا buffers.</p>
+      <div class="mrow">
+        <label>P = <span id="d506-pv">7</span> B params<input type="range" id="d506-p" min="0" max="9" value="4"></label>
+        <label>N ranks = <span id="d506-nv">8</span><input type="range" id="d506-n" min="1" max="64" value="8"></label>
+      </div>
+      <label style="display:grid;gap:2px">الـ stage<select id="d506-stage"><option value="1">ZeRO-1: optimizer state</option><option value="2">ZeRO-2: + gradients</option><option value="3">ZeRO-3: + parameters</option></select></label>
+      <div class="readout">
+        <div><small>DDP / rank</small><b id="d506-m1">—</b></div>
+        <div><small>ZeRO / rank</small><b id="d506-m2">—</b></div>
+        <div><small>التوفير</small><b id="d506-m3">—</b></div>
+      </div>
+      <div class="verdict" id="d506-mv"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 02 STAGES -->
+<section id="d506-stages">
+  <div class="station-head"><span class="tag">02</span><h2>المراحل التلاتة</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الـ Stage</th><th>بيقسّم إيه</th><th>الذاكرة لكل rank</th><th>الـ communication في الـ step</th></tr>
+    <tr><td>DDP</td><td>ولا حاجة</td><td>params + grads + optim</td><td>1 allreduce</td></tr>
+    <tr><td>ZeRO-1</td><td>optimizer state</td><td>params + grads + optim/N</td><td>1 reduce_scatter + 1 allgather</td></tr>
+    <tr><td>ZeRO-2</td><td>optim + grads</td><td>params + grads/N + optim/N</td><td>1 reduce_scatter + 1 allgather</td></tr>
+    <tr><td>ZeRO-3</td><td>optim + grads + params</td><td>params/N + grads/N + optim/N</td><td>1 allgather لكل layer + 1 reduce_scatter لكل layer</td></tr>
+  </table></div>
+  <ul>
+    <li><b>Stage 1</b> أرخص مكسب، لأن الـ optimizer state هو اللي واكل الميزانية. الدرس بيبنيه كامل.</li>
+    <li><b>Stage 2</b> محتاج منطق إضافي لتجميع shards الـ gradients، بس الـ bandwidth هو هو.</li>
+    <li><b>Stage 3</b> (اللي PyTorch بيسميه FSDP) بيقسّم الـ parameters نفسها، وبيدفع تمنها communication لكل layer في كل forward و backward.</li>
+  </ul>
+  <h3>ليه reduce_scatter أحسن من allreduce وبعدين تقطيع؟</h3>
+  <p>الـ allreduce بيدّي كل rank الـ gradient المجموع <b>كامل</b>. لو rank r محتاج الـ shard بتاعه بس، يبقى <span class="ltr">(N−1)/N</span> من اللي وصله ضايع عليه. الـ reduce_scatter بيوصّل لكل rank الـ shard بتاعه بس. والـ bytes لكل rank هي نفسها (لأن allreduce = reduce_scatter + allgather)، بس النص التاني بيتبدل بـ allgather للـ <b>parameters المحدّثة</b> بعدين. يعني نفس السلك، والذاكرة اتقسمت.</p>
+  <div class="formula">DDP:     allreduce(grads)  →  Adam(full)<br>ZeRO-1:  reduce_scatter(grads)  →  Adam(my shard)  →  allgather(params)</div>
+</section>
+
+<!-- 03 STEP LAB -->
+<section id="d506-step">
+  <div class="station-head"><span class="tag">03</span><h2>خطوة ZeRO-1 بالتفصيل</h2></div>
+  <ol class="ex">
+    <li><b>forward + backward</b> على الموديل الكامل. كل rank عنده gradient كامل (مختلف، لأن الداتا مختلفة).</li>
+    <li><b>reduce_scatter</b> على الـ gradient المفرود (flat). rank r ياخد مجموع الـ shard r بس، ويقسمه على N.</li>
+    <li><b>Adam step</b> على الـ shard r بس، بالـ m و v والـ master اللي عند rank r بس.</li>
+    <li><b>allgather</b> للـ shards المحدّثة. كل rank يرجع عنده الموديل كامل للـ forward الجاي.</li>
+  </ol>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: امشي الخطوة مرحلة مرحلة</h3>
+      <p>٤ ranks، والموديل مفرود في vector من 16 رقم، كل rank مسؤول عن 4. لكل rank: صف الـ gradient، وتحته الـ optimizer state (master + m + v).</p>
+      <div class="note"><strong>جرب:</strong> امشي المراحل الأربعة وراقب «optimizer state لكل rank» و «bytes على السلك». بعدين بدّل لـ DDP وقارن: نفس الـ bytes، بس الـ optimizer state كامل عند كل واحد.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d506-zc" width="520" height="300" aria-label="خطوة ZeRO-1 على أربع ranks"></canvas>
+      <div class="btns">
+        <select id="d506-zmode" aria-label="الطريقة"><option value="z">ZeRO-1</option><option value="d">DDP</option></select>
+        <button type="button" class="primary" id="d506-znext">المرحلة الجاية</button><button type="button" id="d506-zreset">من الأول</button>
+      </div>
+      <div class="readout">
+        <div><small>المرحلة</small><b id="d506-zph">0 / 4</b></div>
+        <div><small>optim state لكل rank</small><b id="d506-zos">—</b></div>
+        <div><small>bytes على السلك لكل rank</small><b id="d506-zw">0</b></div>
+      </div>
+      <div class="verdict" id="d506-zv"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 SHARD LAB -->
+<section id="d506-shard">
+  <div class="station-head"><span class="tag">04</span><h2>الـ flat vector والـ shards والـ padding</h2></div>
+  <p>عشان التقسيم يبقى مجرد slice، الكود بيفرد كل الـ parameters ورا بعض في vector واحد طويل (<code>gather_flat_params</code>)، ويرجّعهم لمكانهم بعدين (<code>scatter_flat_to_params</code>). لو الطول مش بيتقسم على N، بيكمّل بأصفار في الآخر، والـ <code>shard_bounds</code> بترجع <span class="ltr">(start, end, chunk)</span> لكل rank.</p>
+  <p>وفيه نقطة دقيقة بتظهر في تمرين ٤: <b>الـ gradient clipping</b>. الـ L2 norm لازم يتحسب على الـ gradient <b>كله</b>، بس كل rank شايل shard بس. الحل: كل rank يحسب مربع الـ norm المحلي، allreduce للمربعات، وبعدين جذر.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: قسّم، وبعدين احسب الـ norm صح</h3>
+      <p>كل خانة = رقم في الـ flat gradient، ولونها = الـ rank المسؤول عنها. الخانات المخططة = padding. تحت: <span class="ltr">‖g_r‖²</span> لكل rank، والـ norm الحقيقي.</p>
+      <div class="note"><strong>جرب:</strong> (١) total = 17 و N = 4: chunk = 5 والأخير فيه 3 padding. (٢) total = 5 و N = 4: شوف rank 3 بيطلع shard فاضي خالص. (٣) قارن الـ norm المحلي بتاع أي rank بالـ norm الحقيقي: لو قصّيت بالمحلي، كل rank هيقص بنسبة مختلفة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d506-sc" width="520" height="120" aria-label="تقسيم الـ flat vector على الـ ranks"></canvas>
+      <p style="color:var(--muted);font-size:14px;margin:0">الخانات المخططة = padding. الشريط تحت = <span class="ltr">‖g_r‖²</span> لكل rank، والرقم = الـ clip coef لو كل rank حسبه من الـ norm المحلي بتاعه (وده الغلط).</p>
+      <div class="mrow">
+        <label>total = <span id="d506-tv">17</span><input type="range" id="d506-t" min="1" max="40" value="17"></label>
+        <label>N = <span id="d506-snv">4</span><input type="range" id="d506-sn" min="1" max="8" value="4"></label>
+      </div>
+      <label style="display:grid;gap:2px;font-family:var(--f-mono);font-size:13px;direction:ltr">max_norm = <span id="d506-mnv">1.0</span><input type="range" id="d506-mn" min="0.2" max="4" step="0.1" value="1"></label>
+      <div class="readout">
+        <div><small>chunk</small><b id="d506-ch">5</b></div>
+        <div><small>pad</small><b id="d506-pd">3</b></div>
+        <div><small>الـ norm الكلي</small><b id="d506-gn">—</b></div>
+        <div><small>clip coef الصح</small><b id="d506-cc">—</b></div>
+      </div>
+      <ul class="rank-list" id="d506-sl"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- 05 PRODUCTION -->
+<section id="d506-prod">
+  <div class="station-head"><span class="tag">05</span><h2>٣ حاجات بتخلّي ZeRO يتشحن</h2></div>
+  <ol class="ex">
+    <li><b>الـ checkpoint لازم يبقى مقسّم.</b> الـ optimizer state متوزع على الـ ranks، فالـ checkpoint لازم يسجّل مين شايل إيه. من غير كده الحالة المحفوظة مش هتتقري وقت الـ restart. درس ٨٠ بيبني الـ manifest ده عشان تكمّل على نفس الـ world size.</li>
+    <li><b>الـ mixed precision هي الفكرة كلها.</b> ZeRO تقنية mixed precision، والـ fp32 master هو اللي بيتقسم. لو شغّلت ZeRO من غير mixed precision، بتدفع ضريبة الـ fp32 master من غير مكسب الـ forward بـ fp16. الـ production دايمًا بيجمع ZeRO مع autocast أو أوزان bf16.</li>
+    <li><b>Stage 1 مكسب تقريبًا ببلاش.</b> الـ bandwidth زي DDP، والتوفير خطي في N، والتمن الوحيد bookkeeping الـ shard. عشان كده الـ stacks بتبدأ بـ stage 1 إلا لو ذاكرة الـ gradients أو الـ parameters كمان مشكلة. Stage 2 بيقسّم الـ gradients بنفس الـ bandwidth، و stage 3 بس هو اللي بيدفع communication لكل layer.</li>
+  </ol>
+  <div class="tablewrap"><table>
+    <tr><th>الأداة</th><th>إزاي بتختار الـ stage</th></tr>
+    <tr><td>DeepSpeed ZeRO</td><td>المرجع. ملف <code>deepspeed_config.json</code> بيحدد stage 1/2/3 وأحجام الـ partitions.</td></tr>
+    <tr><td>PyTorch FSDP</td><td>البديل الأصلي في PyTorch: <code>ShardingStrategy.SHARD_GRAD_OP</code> = ZeRO-2، و <code>FULL_SHARD</code> = ZeRO-3.</td></tr>
+    <tr><td>HuggingFace Accelerate</td><td>بيلف DeepSpeed و FSDP تحت config واحد.</td></tr>
+  </table></div>
+  <p>الـ Ship It: درس ٧٩ (بكرة) هو محور التقسيم التاني: بدل ما نقسّم الـ optimizer state على نفس الموديل، الـ pipeline بيقسّم الـ layers نفسها على الـ ranks. ودرس ٨١ بيركّب DDP + ZeRO في الـ demo الكامل.</p>
+</section>
+
+<!-- 06 CODE -->
+<section id="d506-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: الكود خطوة بخطوة</h2></div>
+  <p>من جذر الريبو (محتاج <code>torch</code> متسطّب):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/78-zero-parameter-sharding/code/main.py</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_zero.py</code> واكتب الخطوات دي بنفسك. الـ <code>MiniMLP</code> و <code>make_dataset</code> نفس امبارح (بس <code>SEED = 13</code>)، فابدأ من اللي جديد.</p>
+
+  <h3>خطوة ١: افرد الموديل، ورجّعه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def flat_param_numel(module):
+    return sum(p.numel() for p in module.parameters())
+
+def gather_flat_params(module):
+    <span class="c"># كل الـ parameters ورا بعض في vector واحد fp32</span>
+    return torch.cat([p.detach().to(torch.float32).flatten() for p in module.parameters()])
+
+def scatter_flat_to_params(module, flat):
+    <span class="c"># رجّع كل حتة لمكانها وشكلها</span>
+    offset = 0
+    for p in module.parameters():
+        n = p.numel()
+        p.data.copy_(flat[offset:offset + n].reshape(p.shape).to(p.dtype))
+        offset += n
+
+def gather_flat_grads(module):
+    parts = []
+    for p in module.parameters():
+        if p.grad is None:                     <span class="c"># parameter ما خدش gradient: أصفار</span>
+            parts.append(torch.zeros_like(p.data, dtype=torch.float32).flatten())
+        else:
+            parts.append(p.grad.detach().to(torch.float32).flatten())
+    return torch.cat(parts)
+
+def shard_bounds(total, world_size, rank):
+    pad = (-total) % world_size                 <span class="c"># كام صفر نكمّل بيهم</span>
+    chunk = (total + pad) // world_size
+    start = rank * chunk
+    end = min(start + chunk, total)             <span class="c"># ما نعدّيش الطول الحقيقي</span>
+    return start, end, chunk</pre></div>
+
+  <h3>خطوة ٢: الـ ZeroOptimizer، كل rank شايل الـ shard بتاعه بس</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class ZeroOptimizer:
+    def __init__(self, module, world_size, rank, lr=0.05,
+                 beta1=0.9, beta2=0.999, eps=1e-8):
+        self.module, self.world_size, self.rank = module, world_size, rank
+        self.lr, self.beta1, self.beta2, self.eps = lr, beta1, beta2, eps
+        self.step_count = 0
+        self.total = flat_param_numel(module)
+        start, end, chunk = shard_bounds(self.total, world_size, rank)
+        self.shard_start, self.shard_end, self.shard_size = start, end, chunk
+        full = gather_flat_params(module)
+        padded = torch.zeros(chunk * world_size, dtype=torch.float32)
+        padded[:self.total] = full
+        <span class="c"># الـ 3 حاجات دول بس اللي اتقسموا: master و m و v</span>
+        self.master_shard = padded[rank * chunk:(rank + 1) * chunk].clone()
+        self.m_shard = torch.zeros_like(self.master_shard)
+        self.v_shard = torch.zeros_like(self.master_shard)
+
+    def shard_bytes(self):
+        <span class="c"># bytes الـ optimizer state على الـ rank ده بس</span>
+        return (self.master_shard.numel() + self.m_shard.numel()
+                + self.v_shard.numel()) * 4</pre></div>
+
+  <h3>خطوة ٣: الـ step: reduce_scatter → Adam → allgather</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def step(self):
+        flat_grad = gather_flat_grads(self.module)
+        pad = (-self.total) % self.world_size
+        padded_grad = torch.zeros(self.total + pad, dtype=torch.float32)
+        padded_grad[:self.total] = flat_grad
+        chunks = [c.contiguous() for c in padded_grad.chunk(self.world_size)]
+        local_grad = torch.zeros_like(chunks[0])
+        <span class="c"># 1) كل rank ياخد مجموع الـ shard بتاعه بس</span>
+        dist.reduce_scatter(local_grad, chunks, op=dist.ReduceOp.SUM)
+        local_grad.div_(self.world_size)                     <span class="c"># المتوسط زي DDP</span>
+        <span class="c"># 2) Adam على الـ shard بس</span>
+        self.step_count += 1
+        self.m_shard.mul_(self.beta1).add_(local_grad, alpha=1 - self.beta1)
+        self.v_shard.mul_(self.beta2).addcmul_(local_grad, local_grad, value=1 - self.beta2)
+        m_hat = self.m_shard / (1 - self.beta1 ** self.step_count)   <span class="c"># bias correction</span>
+        v_hat = self.v_shard / (1 - self.beta2 ** self.step_count)
+        self.master_shard.addcdiv_(m_hat, v_hat.sqrt().add_(self.eps), value=-self.lr)
+        <span class="c"># 3) الكل يتبادل الـ shards المحدّثة ويرجّع الموديل كامل</span>
+        gathered = [torch.zeros_like(self.master_shard) for _ in range(self.world_size)]
+        dist.all_gather(gathered, self.master_shard)
+        flat_full = torch.cat(gathered)[:self.total]          <span class="c"># شيل الـ padding</span>
+        scatter_flat_to_params(self.module, flat_full)
+
+    def zero_grad(self):
+        for p in self.module.parameters():
+            if p.grad is not None:
+                p.grad.detach_()
+                p.grad.zero_()</pre></div>
+  <p>لاحظ: مفيش <code>torch.optim.Adam</code> هنا. الـ Adam مكتوب بإيدك على الـ shard، عشان تشوف إن الـ m و v موجودين على جزء من N بس. وفي الـ worker الـ parameters بتتعمل لها broadcast من rank 0 قبل ما الـ <code>ZeroOptimizer</code> يتعمل، عشان الـ master shards تبدأ من نفس الموديل.</p>
+
+  <h3>خطوة ٤: جدول الذاكرة والـ main</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def memory_table(p_params, world_size):
+    fp16, fp32 = 2, 4
+    vanilla = (fp16 + fp16 + fp32 + fp32 + fp32) * p_params        <span class="c"># 16P</span>
+    zero1 = (fp16 + fp16) * p_params + (fp32 * 3 * p_params) // world_size   <span class="c"># 4P + 12P/N</span>
+    drop = 100 * (vanilla - zero1) / vanilla
+    rows = [("vanilla DDP", vanilla), (f"ZeRO-1 (N={world_size})", zero1)]
+    out = ["per-rank optimiser memory:"]
+    for name, b in rows:
+        out.append(f"  {name:&lt;20} {b:&gt;12} bytes")
+    out.append(f"  drop: {drop:.1f}%")
+    return "\n".join(out)
+
+def main():
+    results = run_zero()                      <span class="c"># 4 ranks × 20 step على gloo</span>
+    r0_losses, _, _ = results[0]
+    r3_losses, _, _ = results[WORLD_SIZE - 1]
+    for s in range(STEPS):
+        print(f"{s:&lt;6}{r0_losses[s]:&lt;14.6f}{r3_losses[s]:&lt;14.6f}")
+    print("final param norm (must agree across ranks):")
+    for r in range(WORLD_SIZE):
+        _, norm, shard_bytes = results[r]
+        print(f"  rank {r}: norm={norm:.6f}, optim_shard_bytes={shard_bytes}")
+    print(memory_table(flat_param_numel(MiniMLP()), WORLD_SIZE))</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">world_size=4, steps=20, batch=8, model=MiniMLP
+running ZeRO-1 across ranks...
+
+step  rank0_loss    rank3_loss
+0     ...           ...
+...
+
+final param norm (must agree across ranks):
+  rank 0: norm=..., optim_shard_bytes=5196
+  rank 1: norm=..., optim_shard_bytes=5196
+  rank 2: norm=..., optim_shard_bytes=5196
+  rank 3: norm=..., optim_shard_bytes=5196
+
+per-rank optimiser memory:
+  vanilla DDP                 27712 bytes
+  ZeRO-1 (N=4)                12124 bytes
+  drop: 56.2%</pre>
+  <p>الأرقام الثابتة محسوبة: الموديل فيه <span class="ltr">(16·32+32) + (32·32+32) + (32·4+4) = 1732</span> parameter، بيتقسموا على 4 بالظبط (433 لكل rank)، فالـ shard = <span class="ltr">433 × 3 × 4 = 5196</span> bytes. وجدول الذاكرة: <span class="ltr">16 × 1732 = 27712</span> و <span class="ltr">4 × 1732 + 12 × 1732 / 4 = 12124</span>. قيم الـ loss والـ norm بتعتمد على نسخة torch، بس الـ norm لازم يبقى واحد على الأربعة.</p></details>
+  <p>وشغّل الـ tests:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/78-zero-parameter-sharding/tests/test_zero.py</pre></div>
+  <p>الـ tests بتتأكد من <code>shard_bounds</code> (16 على 4 بالظبط، و 17 على 4 بالـ padding)، وإن الفرد والرجوع ما بيغيرش الأوزان، وإن كل الـ ranks بتخلّص بنفس الـ norm، وإن الـ loss بينزل في 20 step، وإن الـ shard أصغر من الـ optimizer state الكامل، وإن جدول الذاكرة فيه السطور المطلوبة.</p>
+</section>
+
+<!-- 07 EXERCISES -->
+<section id="d506-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>وسّعه لـ ZeRO-2</b> بتقسيم الـ gradients: كل rank يخزّن gradient الـ shard بتاعه بس، عن طريق إنك تصفّر الجزء اللي مش بتاعه بعد الـ backward.
+      <details><summary>تلميح</summary>بعد الـ <code>reduce_scatter</code> انت أصلًا عندك <code>local_grad</code> بتاعك. اعمل <code>p.grad = None</code> لكل الـ parameters (أو صفّرهم) قبل الـ Adam، وخزّن <code>local_grad</code> بس. الـ bandwidth ما اتغيرش لأن نفس الـ reduce_scatter و allgather.</details></li>
+    <li><b>Memory profiler</b> يطبع الـ fp32 bytes الفعلية على rank 0 قصاد المعادلة.
+      <details><summary>تلميح</summary>اجمع <code>t.numel() * t.element_size()</code> لكل tensor: الـ params، الـ grads، و master/m/v. هتلاقي الفعلي مختلف عن المعادلة لأن الكود كله fp32 (مفيش fp16 حقيقي)، فالـ params والـ grads 4 bytes مش 2. اشرح الفرق ده في التقرير.</details></li>
+    <li><b>قيس الوقت</b> لكل step في DDP قصاد ZeRO-1 وقسّمه لـ forward و backward و comm.
+      <details><summary>تلميح</summary><code>time.perf_counter()</code> حوالين كل جزء، و <code>dist.barrier()</code> قبل ما تقفل التايمر بتاع الـ comm عشان تقيس أبطأ rank. خد الـ median بعد كام step warmup.</details></li>
+    <li><b>Gradient clipping تحت ZeRO-1:</b> الـ L2 norm لازم يتحسب على كل الـ shards بـ allreduce لمربع الـ norm المحلي.
+      <details><summary>تلميح</summary>بعد الـ <code>reduce_scatter</code> والقسمة: <code>sq = local_grad.pow(2).sum()</code>، <code>dist.all_reduce(sq)</code>، <code>norm = sq.sqrt()</code>، <code>coef = min(1, max_norm / (norm + 1e-6))</code>، <code>local_grad.mul_(coef)</code>. الـ padding أصفار فمش بيأثر. معمل ٣ بيوريك الحسبة دي.</details></li>
+    <li><b>«ZeRO ساذج» بـ allreduce</b> بدل reduce_scatter، وقيس فرق وقت السلك. دافع عن الـ reduce_scatter بالأرقام.
+      <details><summary>تلميح</summary><code>dist.all_reduce(padded_grad)</code> وبعدين خد الـ slice بتاعك. كده بتدفع allreduce كامل (= reduce_scatter + allgather) <b>وكمان</b> allgather للـ params، يعني حوالي ١.٥ ضعف الـ bytes. عدّ الـ bytes بالمعادلات من درس ٧٦ وبعدين قيس.</details></li>
+    <li><b>إضافة مني · قرار حقيقي قبل حجز cluster:</b> اكتب <code>pick_stage(P, N, gpu_gb, act_gb)</code> ترجع أقل stage يدخل الموديل في الـ GPU (DDP، 1، 2، 3)، وتطبع الذاكرة لكل واحد.
+      <details><summary>الحل</summary>لكل stage احسب: DDP <span class="ltr">16P</span>، Z1 <span class="ltr">4P + 12P/N</span>، Z2 <span class="ltr">2P + 14P/N</span>، Z3 <span class="ltr">16P/N</span>، زوّد <code>act_gb</code> (الـ activations ما بتتقسمش بـ ZeRO)، وارجع أول واحد <span class="ltr">≤ gpu_gb</span>. مثال: 13B على 8 GPUs بـ 80 GB ومن غير activations: DDP = 208، Z1 = 71.5 GB، فـ stage 1 يكفي. لو الـ activations 20 GB، Z1 = 91.5 ومش هيدخل، و Z2 = 26 + 22.75 + 20 = 68.75 فـ stage 2.</details></li>
+  </ol>
+</section>
+
+<!-- 08 EXTRA -->
+<section id="d506-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> في DDP كل الـ N ranks بيعملوا <b>نفس</b> الـ Adam step بالظبط على نفس الأرقام. ده تكرار N مرة لحساب واحد ولذاكرة واحدة. ZeRO-1 بيلغي التكرار ده: كل واحد يعمل جزء، والكل يتبادل النتيجة.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>إنك تفتكر الكود بيستخدم fp16 فعلًا.</b> الـ demo كله fp32. الـ 16P و 4P+12P/N في الجدول معادلة للـ mixed precision، مش قياس من الـ run. وكمان العنوان بيقول «optimiser memory» بس الرقم فيه الـ params والـ grads كمان. (تمرين ٢ بيخليك تقيس الفعلي.)</li>
+    <li><b>الـ shard الفاضي.</b> لو الـ total صغير جدًا بالنسبة لـ N (مثلًا 5 على 4)، الـ <code>shard_bounds</code> بترجع لآخر rank <span class="ltr">start = 6</span> و <span class="ltr">end = 5</span>: shard كله padding. الكود شغال لأنه بيستخدم الـ <code>chunk</code> مش <span class="ltr">end − start</span>، بس لو كتبت كود بيعتمد على <span class="ltr">end − start</span> هيطلع سالب.</li>
+    <li><b>ZeRO ما بيقللش الـ activations.</b> لو الـ activations هي اللي مالية الـ GPU (sequences طويلة)، ZeRO مش الحل. الحل activation checkpointing أو pipeline (بكرة).</li>
+    <li><b>إن الـ clipping أو أي حاجة محتاجة «الـ gradient كله» لازم تبقى collective.</b> الـ norm، والـ NaN check، وأي logging لإحصائيات الـ gradient. لو rank حسبها محليًا هيشوف جزء بس.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs</h3>
+  <p>أغلب الـ fine-tuning الكامل لموديلات 7B وأكبر على أكتر من GPU بيستخدم DeepSpeed ZeRO أو FSDP، وده سبب إن config زي <code>"zero_optimization": {"stage": 2}</code> بتشوفه في scripts كتير. وفي الـ pretraining الكبير، ZeRO-1 بيتجمع مع pipeline و tensor parallel. والفكرة نفسها (اللي مش محتاجه دلوقتي ما تشيلوش) هي اللي ورا الـ CPU offload في DeepSpeed.</p>
+</section>
+
+<!-- 09 QUIZ -->
+<section id="d506-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d506-quizBox"></div>
+</section>
+
+<!-- 10 DONE -->
+<section id="d506-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أطلّع 16P و <span class="ltr">4P + 12P/N</span> من الجدول بنفسي</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه ZeRO-1 بنفس bandwidth الـ DDP (allreduce = reduce_scatter + allgather)</label></li>
+    <li><label><input type="checkbox" data-ck="3"> أقدر أفرّق بين stage 1 و 2 و 3 ومين بيدفع communication زيادة</label></li>
+    <li><label><input type="checkbox" data-ck="4"> مشيت خطوة ZeRO-1 في معمل ٢ وفهمت الـ shards والـ norm في معمل ٣</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود بإيدي وشغّلت الـ main والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>ZeRO-1 / 2 / 3</td><td>DeepSpeed config، و ShardingStrategy في FSDP</td></tr>
+    <tr><td>Master copy fp32</td><td>أي تدريب mixed precision (autocast، bf16)</td></tr>
+    <tr><td>Reduce_scatter + allgather</td><td>الـ optimizer step في ZeRO، والـ forward/backward في FSDP</td></tr>
+    <tr><td>Flat buffer + shard bounds</td><td>الـ flat parameters في FSDP، والـ partitions في DeepSpeed</td></tr>
+    <tr><td>Global norm بـ allreduce</td><td>الـ gradient clipping في أي تدريب متقسم</td></tr>
+    <tr><td>Sharded checkpoint</td><td>درس ٨٠، وأي resume لتدريب ZeRO</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Pipeline Parallel and Bubble Analysis. بدل ما نقسّم الـ optimizer، هنقسّم الـ layers نفسها على الـ ranks، ونحسب الوقت اللي بيضيع في أول وآخر الخط.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F78-zero-parameter-sharding" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/78-zero-parameter-sharding</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N0=506,LESSON=78,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d506-roadmap').closest('.day');
+
+// roadmap
+const rm=$('d506-roadmap');for(let i=1;i<=87;i++){if(i===18||i===19)continue;const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)}
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+// ---------- Lab 1: memory ----------
+const PS=[0.125,0.5,1,3,7,13,34,70,180,405];
+const mc=$('d506-memc'),mx=AI.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+const TERMS=[['fp16 params',2,'--vec-a'],['fp16 grads',2,'--ok'],['fp32 master',4,'--vec-b'],['fp32 m',4,'--bad'],['fp32 v',4,'--muted']];
+function memParts(P,N,stage){ // GB per rank
+  const div=[1,1,1,1,1];if(stage>=1){div[2]=div[3]=div[4]=N}if(stage>=2)div[1]=N;if(stage>=3)div[0]=N;
+  return TERMS.map((t,i)=>t[1]*P/div[i])}
+const gb=v=>v>=100?f(v,0)+' GB':v>=10?f(v,1)+' GB':f(v,2)+' GB';
+function drawMem(){const P=PS[+$('d506-p').value],N=+$('d506-n').value,st=+$('d506-stage').value;
+  $('d506-pv').textContent=P;$('d506-nv').textContent=N;
+  const a=memParts(P,N,0),b=memParts(P,N,st),sa=a.reduce((x,y)=>x+y,0),sb=b.reduce((x,y)=>x+y,0);
+  $('d506-m1').textContent=gb(sa);$('d506-m2').textContent=gb(sb);$('d506-m3').textContent=f((sa-sb)/sa*100,1)+'%';
+  mx.clearRect(0,0,MW,MH);const LX=70,R=MW-LX-14,mxv=Math.max(sa,90),sx=R/mxv;
+  mx.font='11px JetBrains Mono, monospace';mx.textBaseline='middle';
+  [[a,'DDP',30],[b,'ZeRO-'+st,96]].forEach(([parts,lab,y])=>{let x=LX;mx.fillStyle=css('--ink');mx.textAlign='left';mx.fillText(lab,6,y+18);
+    parts.forEach((v,i)=>{const w=v*sx;mx.fillStyle=css(TERMS[i][2]);mx.fillRect(x,y,Math.max(0,w-1),36);x+=w});
+    mx.fillStyle=css('--ink');mx.textAlign='left';mx.fillText(gb(parts.reduce((p,q)=>p+q,0)),Math.min(x+6,MW-60),y+18)});
+  const gx=LX+80*sx;mx.strokeStyle=css('--bad');mx.lineWidth=2;mx.setLineDash([5,4]);mx.beginPath();mx.moveTo(gx,20);mx.lineTo(gx,140);mx.stroke();mx.setLineDash([]);
+  mx.fillStyle=css('--bad');mx.textAlign='center';mx.fillText('80 GB',gx,12);
+  // legend
+  let lx=6,ly=160;mx.textAlign='left';TERMS.forEach(t=>{const w=mx.measureText(t[0]).width+26;if(lx+w>MW){lx=6;ly+=18}mx.fillStyle=css(t[2]);mx.fillRect(lx,ly,10,10);mx.fillStyle=css('--ink');mx.fillText(t[0],lx+14,ly+5);lx+=w});
+  const v=$('d506-mv');
+  if(sb<=80&&sa>80){v.textContent='DDP مش هيدخل في 80 GB، و ZeRO-'+st+' هيدخل ✓';v.style.color=css('--ok')}
+  else if(sb>80){v.textContent='لسه أكبر من 80 GB: زوّد N أو اطلع stage أعلى'+(st===1?' (stage 1 مستحيل ينزل تحت 4P = '+gb(4*P)+')':'');v.style.color=css('--bad')}
+  else{v.textContent='الاتنين بيدخلوا، و ZeRO بيسيب مساحة أكبر للـ activations والـ batch';v.style.color=''}}
+['d506-p','d506-n','d506-stage'].forEach(id=>$(id).addEventListener('input',drawMem));drawMem();
+
+// ---------- Lab 2: ZeRO step ----------
+const zc=$('d506-zc'),zx=AI.setupCanvas(zc),ZW=+zc.dataset.w,ZH=+zc.dataset.h,ZN=4,L=16,CH=L/ZN;
+let ph=0;
+const PH_TXT=['كل rank عمل forward + backward على الداتا بتاعته: gradient كامل ومختلف عند كل واحد',
+ 'reduce_scatter: rank r خد مجموع الـ shard r بس وقسمه على 4. الباقي اترمى',
+ 'Adam على الـ shard بس: الـ master و m و v موجودين عند كل rank لربع الموديل بس',
+ 'allgather: الـ shards المحدّثة اتبادلت، وكل rank رجع عنده الموديل كامل للـ forward الجاي ✓'];
+const PH_D=['كل rank عمل forward + backward: gradient كامل ومختلف',
+ 'allreduce: كل rank خد المجموع الكامل للـ 16 رقم وقسمه',
+ 'Adam على الـ 16 رقم كلهم، عند كل rank: نفس الحساب 4 مرات، ونفس الذاكرة 4 مرات',
+ 'خلاص: الكل عنده نفس الـ params (من غير allgather لأن كل واحد حدّث كله)'];
+function drawZ(){const mode=$('d506-zmode').value,z=mode==='z';zx.clearRect(0,0,ZW,ZH);
+  const LX=56,cw=(ZW-LX-8)/L,rowH=68,top=8;zx.font='11px JetBrains Mono, monospace';zx.textBaseline='middle';
+  const rc=[css('--vec-a'),css('--vec-b'),css('--ok'),css('--bad')];
+  for(let r=0;r<ZN;r++){const y=top+r*rowH;zx.fillStyle=css('--ink');zx.textAlign='left';zx.fillText('rank '+r,4,y+14);
+    zx.fillStyle=css('--muted');zx.fillText(ph>=3?'params':'grad',4,y+30);zx.fillText('optim',4,y+52);
+    for(let i=0;i<L;i++){const own=Math.floor(i/CH)===r,x=LX+i*cw;let col=css('--soft'),alpha=1;
+      if(ph===0){col=rc[r];alpha=.55}
+      else if(ph===1||ph===2){if(z){col=own?css('--ink'):css('--soft')}else col=css('--ink')}
+      else{col=z?rc[Math.floor(i/CH)]:css('--ink')}
+      zx.globalAlpha=alpha;zx.fillStyle=col;zx.fillRect(x+1,y+6,cw-2,30);zx.globalAlpha=1;
+      // optimizer state
+      const hasOpt=z?own:true;
+      zx.fillStyle=hasOpt?(ph===2&&(z?own:true)?css('--vec-b'):css('--muted')):css('--soft');zx.globalAlpha=hasOpt?.8:.5;zx.fillRect(x+1,y+42,cw-2,18);zx.globalAlpha=1}
+    if(z){zx.strokeStyle=css('--ink');zx.lineWidth=1.5;zx.strokeRect(LX+r*CH*cw+.5,y+4,CH*cw-1,58)}}
+  const v=$('d506-zv');v.textContent=(z?PH_TXT:PH_D)[ph];v.style.color=ph===3?css('--ok'):'';
+  $('d506-zph').textContent=ph+1+' / 4';$('d506-zos').textContent=z?'4 × 3 = 12 رقم (ربع)':'16 × 3 = 48 رقم (كامل)';
+  // per-rank bytes in units of element: RS = (N-1)/N*L, AG = same; allreduce = 2*(N-1)/N*L
+  const unit=(ZN-1)/ZN*L;const w=z?(ph>=1?unit:0)+(ph>=3?unit:0):(ph>=1?2*unit:0);
+  $('d506-zw').textContent=w+' رقم'}
+$('d506-znext').addEventListener('click',()=>{ph=Math.min(3,ph+1);drawZ()});
+$('d506-zreset').addEventListener('click',()=>{ph=0;drawZ()});
+$('d506-zmode').addEventListener('input',()=>{ph=0;drawZ()});drawZ();
+
+// ---------- Lab 3: shards + global norm ----------
+const sc=$('d506-sc'),sx2=AI.setupCanvas(sc),SW=+sc.dataset.w,SH=+sc.dataset.h;
+let gseed=11;const grnd=()=>{gseed=(gseed*16807)%2147483647;return (gseed/2147483647-.5)*1.2};
+const GV=[];for(let i=0;i<40;i++)GV.push(grnd());
+function drawS(){const T=+$('d506-t').value,N=+$('d506-sn').value,mn=+$('d506-mn').value;
+  $('d506-tv').textContent=T;$('d506-snv').textContent=N;$('d506-mnv').textContent=mn.toFixed(1);
+  const pad=((-T)%N+N)%N,chunk=(T+pad)/N;$('d506-ch').textContent=chunk;$('d506-pd').textContent=pad;
+  const cols=['--vec-a','--vec-b','--ok','--bad','--muted','--ink','--vec-a','--vec-b'];
+  sx2.clearRect(0,0,SW,SH);const tot=T+pad,cw=Math.min(28,(SW-16)/tot),x0=8;
+  sx2.font='10px JetBrains Mono, monospace';sx2.textAlign='center';sx2.textBaseline='middle';
+  for(let i=0;i<tot;i++){const r=Math.floor(i/chunk),x=x0+i*cw;
+    if(i<T){sx2.fillStyle=css(cols[r]);sx2.globalAlpha=r>=6?.55:.85;sx2.fillRect(x+1,30,cw-2,34);sx2.globalAlpha=1}
+    else{sx2.save();sx2.beginPath();sx2.rect(x+1,30,cw-2,34);sx2.clip();sx2.fillStyle=css('--soft');sx2.fillRect(x+1,30,cw-2,34);
+      sx2.strokeStyle=css('--muted');sx2.lineWidth=1;sx2.beginPath();for(let k=-40;k<cw+40;k+=6){sx2.moveTo(x+k,64);sx2.lineTo(x+k+34,30)}sx2.stroke();sx2.restore();
+      sx2.strokeStyle=css('--muted');sx2.strokeRect(x+1.5,30.5,cw-3,33)}
+    if(cw>=14){sx2.fillStyle=css('--ink');sx2.fillText(i,x+cw/2,76)}}
+  for(let r=0;r<N;r++){const x=x0+r*chunk*cw;sx2.strokeStyle=css('--ink');sx2.lineWidth=2;sx2.beginPath();sx2.moveTo(x,22);sx2.lineTo(x,70);sx2.stroke();
+    sx2.fillStyle=css('--ink');sx2.textAlign='left';sx2.fillText('r'+r,x+3,14)}
+  sx2.beginPath();sx2.moveTo(x0+tot*cw,22);sx2.lineTo(x0+tot*cw,70);sx2.stroke();
+  // norms
+  const sq=[];let g2=0;for(let r=0;r<N;r++){const [s,e]=[r*chunk,Math.min(r*chunk+chunk,T)];let a=0;for(let i=s;i<e;i++)a+=GV[i]*GV[i];sq.push([s,e,a]);g2+=a}
+  const gn=Math.sqrt(g2),coef=Math.min(1,mn/(gn+1e-6));$('d506-gn').textContent=f(gn,3);$('d506-cc').textContent=f(coef,3);
+  sx2.fillStyle=css('--muted');sx2.textAlign='left';sx2.font='11px JetBrains Mono, monospace';
+  sx2.fillText('allreduce(Σ‖g_r‖²) → √ = '+f(gn,3),8,104);
+  const ul=$('d506-sl');ul.innerHTML='';const mxs=Math.max(...sq.map(q=>q[2]),1e-9);
+  sq.forEach(([s,e,a],r)=>{const li=document.createElement('li');const local=Math.sqrt(a),lc=Math.min(1,mn/(local+1e-6));
+    const empty=e<=s;li.innerHTML='<span class="ltr">r'+r+' ['+s+','+e+')'+(empty?' ∅':'')+'</span><span style="display:block;height:10px;border-radius:5px;background:var(--soft);overflow:hidden"><i style="display:block;height:100%;background:var(--vec-a);width:'+(a/mxs*100)+'%"></i></span><span class="num">'+(empty?'0':f(lc,2))+'</span>';
+    li.title='‖g_r‖ = '+f(local,3)+' · local clip coef = '+f(lc,3);ul.appendChild(li)});}
+['d506-t','d506-sn','d506-mn'].forEach(id=>$(id).addEventListener('input',drawS));drawS();
+
+// ---------- quiz ----------
+AI.quiz($('d506-quizBox'),[
+ ['ليه ZeRO بيقسّم الـ optimizer state الأول قبل الـ parameters؟',['الـ optimizer state هو أكبر بند في الذاكرة، ومش بيتلمس غير في الـ step، مش في الـ forward ولا الـ backward','DeepSpeed بيفرض كده','الـ optimizer أهم','الـ parameters أسهل'],0,'للـ Adam في mixed precision، الـ fp32 master + الـ moments = 12P bytes لكل rank قصاد 4P للـ fp16 params + grads. تقسيم أكبر بند الأول بيكسب أكبر ذاكرة بأقل تعقيد.'],
+ ['شكل الـ communication في الـ step بتاعة ZeRO stage 1؟',['ولا حاجة','broadcast واحد','allreduce واحد','reduce_scatter واحد على الـ gradients + allgather واحد على الـ parameters المحدّثة'],3,'الـ reduce_scatter بيوصّل لكل rank shard الـ gradient بتاعه بس، والـ allgather بيرجّع الـ parameter shards المحدّثة. نفس bytes الـ allreduce، والذاكرة اتقسمت على N.'],
+ ['ليه الـ bandwidth في الـ step هو نفس DDP؟',['مش نفسه','سحر','ZeRO بيستخدم compression','allreduce = reduce_scatter + allgather في الـ bandwidth؛ ZeRO بيقسمهم نصين على داتا مختلفة'],3,'الـ ring allreduce أصلًا بيتعمل reduce_scatter وبعدين allgather. ZeRO بيعمل نفس العمليتين بس الـ allgather بيلفّ الـ parameters المحدّثة مش الـ gradient المجموع.'],
+ ['موديل 7B بـ Adam و mixed precision على 8 ranks. التوفير قصاد DDP العادي قد إيه؟',['99%','0%','10%','حوالي 65% (DDP = 16P، و ZeRO-1 = 4P + 12P/N = 5.5P)'],3,'DDP: 2P + 2P + 4P + 4P + 4P = 16P. ZeRO-1: 2P + 2P + (4P+4P+4P)/8 = 5.5P. التوفير (16−5.5)/16 = 65.6%.'],
+ ['ZeRO-2 بيضيف إيه على ZeRO-1؟',['بيشيل الـ optimizer','كمان بيرمي الـ gradients اللي مش من الـ shard بعد الـ reduce_scatter، فذاكرة الـ gradients بتقل، والـ bandwidth زي ما هو','ولا حاجة','بيغيّر الـ backend لـ NCCL'],1,'ZeRO-2 بيصفّر جزء الـ gradient اللي مش بتاع الـ rank بعد الـ reduce_scatter: نفس bandwidth الـ ZeRO-1 بس ذاكرة gradients أقل.'],
+ ['ليه الـ checkpoint بتاع ZeRO لازم يسجّل مين شايل أنهي shard؟',['مش لازم','شكليات','compression','من غير ملكية كل rank، الحالة المحفوظة مش هتتقري وقت الـ restart؛ الـ resume على نفس الـ world size محتاج يرجّع كل shard لصاحبه'],3,'درس ٨٠ بيبني الـ sharded checkpoint manifest عشان كده بالظبط: تشغيل ZeRO يكمّل على نفس الـ topology.'],
+ ['(سؤال مني) موديل 13B على 16 rank بـ ZeRO-1. الذاكرة لكل rank (من غير activations)؟',['13 GB','208 GB','61.75 GB','26 GB'],2,'4P + 12P/N = 52 + 156/16 = 52 + 9.75 = 61.75 GB. لاحظ إن الـ 52 GB بتوع الـ params والـ grads ثابتين مهما زوّدت N.'],
+ ['(سؤال مني) تحت ZeRO-1 عايز تعمل gradient clipping. الطريقة الصح؟',['كل rank يقص الـ shard بتاعه بالـ norm المحلي','rank 0 بس يقص','كل rank يحسب ‖g_r‖² المحلي، allreduce للمجموع، جذر، وبعدين كل rank يقص بنفس المعامل','ما ينفعش clipping مع ZeRO'],2,'الـ norm لازم يبقى على الـ gradient كله. القص بالـ norm المحلي بيدّي كل shard معامل مختلف وبيغيّر اتجاه الـ gradient.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N0,root);
+AI.onTheme(()=>{if(!document.body.contains(mc))return false;drawMem();drawZ();drawS()});
+})();
+</script>

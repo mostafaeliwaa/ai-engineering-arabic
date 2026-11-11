@@ -1,0 +1,608 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 85 · Content Classifier Integration</span>
+  <h1>اليوم ٥١٣: آخر بوابة قبل ما الرد يوصل لليوزر</h1>
+  <p class="lede">النهاردة هتبني <b>output-side classifiers</b>: تلات فلاتر بتبص على <b>رد الموديل نفسه</b> مش على سؤال اليوزر، وواحد <b>router</b> بياخد رأيهم ويقرر: <code>block</code> ولا <code>redact</code> ولا <code>warn</code> ولا <code>log</code>. ده مشروع تخرج، فهتمشي على خطة بمراحل وكل مرحلة ليها اختبار.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Refusal Evaluation</b></span>
+    <span>بعده: <b>Constitutional Rules Engine</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d513-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d513-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت إطار لتقييم الرفض (Refusal Evaluation). جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه الفرق بين <b>under-refusal</b> و<b>over-refusal</b>؟ وليه لازم تقيس الاتنين؟
+      <details><summary>الإجابة</summary>under-refusal: الموديل جاوب على prompt متعلّم إنه <code>unsafe</code>. over-refusal: الموديل رفض prompt متعلّم إنه <code>safe</code>. لو قست واحد بس هتشحن موديل يا إما بيرفض واجب الكيميا يا إما بيشرح الأذى. الاتنين bugs.</details></li>
+    <li>ليه استخدمنا mock LLM ثابت (deterministic) بدل موديل حقيقي؟
+      <details><summary>الإجابة</summary>عشان الموديل الحقيقي «هدف متحرك»: أي تغيير في الـ system prompt أو الـ temperature بيحرك المقاييس. مع mock ثابت، أي تغيير في الأرقام سببه معروف: تغيير في الكود. وبعدين ممكن تبدّل الـ mock بنداء HTTP لموديل حقيقي من غير ما تغيّر إطار القياس.</details></li>
+    <li>موديل بيقول <code>confidence:0.9</code> بس صح في ٦٠٪ من الحالات بس. الـ ECE في الـ bin ده تقريبًا كام؟
+      <details><summary>الإجابة</summary>حوالي <span class="ltr">|0.9 − 0.6| = 0.3</span>. الـ ECE بيقيس هل الموديل «عارف إمتى هو صح»، ومستقل عن over/under refusal.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>المشكلة: ليه نفحص الـ output؟</div>
+    <div><b>20 min</b>المعامل: الـ router والـ Luhn والـ trigrams</div>
+    <div><b>35 min</b>ابني المشروع على ٥ مراحل</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 PROBLEM -->
+<section id="d513-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الـ input مش هو الباب الوحيد</h2></div>
+  <p>تخيل مطعم بيفحص المكونات اللي داخلة المطبخ كويس جدًا. ده مهم، بس لو مفيش حد بيدوق الطبق قبل ما يطلع للزبون، أي غلطة جوه المطبخ هتوصل للترابيزة. نفس الكلام هنا: الموديل ممكن يعدّي كل فحوصات الـ input، ويطلّع رد:</p>
+  <ul class="checklist">
+    <li>• فيه <b>PII</b> (بيانات شخصية): إيميل، رقم تليفون، رقم كارت.</li>
+    <li>• بيكرر <b>شتايم أو تحرش</b> اتعلمها من الداتا اللي اتدرب عليها.</li>
+    <li>• بيرجّع <b>الـ system prompt</b> نفسه لليوزر لأنه سأل سؤال ذكي.</li>
+  </ul>
+  <p>الـ <b>output classifier</b> بيشوف الرد الحقيقي، مش السؤال، وبيسأل سؤال مختلف: <b>بغض النظر الـ prompt وصل هنا إزاي، هل اللي إحنا على وشك نبعته لليوزر مقبول؟</b></p>
+  <div class="note"><strong>حجتين بيقولهم الناس عشان يسيبوا الخطوة دي، والاتنين غلط:</strong>
+    <br>١) «الـ input classification كفاية»: لأ، أي نوع هجوم جديد الـ input pipeline مش مغطيه هيوصل لليوزر مباشرة. ده bypass من أول محاولة.
+    <br>٢) «هيزود الـ latency»: صحيح، بس ليها حل: الـ classifiers تشتغل <b>بالتوازي مع الـ streaming</b>، والبوابة (gate) تمسك آخر chunk في buffer وتطبّق حكم الـ classifier قبل ما تعمله flush.</div>
+  <p>المشروع: تلات classifiers مستقلين ورا <b>policy router</b> واحد:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Classifier</th><th>بيدور على إيه</th><th>إزاي</th></tr>
+    <tr><td class="ltr">toxicity</td><td>شتايم وتحرش</td><td>قايمة كلمات + حدود كلمة + فحص نفي قبلها</td></tr>
+    <tr><td class="ltr">pii</td><td>إيميل، تليفون، SSN، كارت، IP</td><td>regex لكل شكل + Luhn للكروت</td></tr>
+    <tr><td class="ltr">instruction-leakage</td><td>تسريب الـ system prompt</td><td>تشابه trigrams بين الرد والـ system prompt</td></tr>
+  </table></div>
+</section>
+
+<!-- 02 CONCEPT + LAB 1 -->
+<section id="d513-router">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Verdict والـ Router: كل واحد يقول رأيه، والأخطر يكسب</h2></div>
+  <p>كل classifier هو callable بيرجّع <code>ClassifierVerdict</code> فيه ٤ حاجات:</p>
+  <div class="formula">ClassifierVerdict(name, score ∈ [0,1], severity ∈ {none, low, medium, high}, findings: list[str])</div>
+  <p>والـ router بياخد قايمة الـ verdicts، يطلّع <b>أعلى severity</b>، ويطبّق جدول ثابت:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Severity</th><th>Action</th><th>يعني إيه</th></tr>
+    <tr><td class="ltr">high</td><td class="ltr">block</td><td>ارمي الرد كله ورجّع رسالة رفض (policy refusal)</td></tr>
+    <tr><td class="ltr">medium</td><td class="ltr">redact</td><td>شغّل الـ redactor بتاع كل classifier اشتغل وامسح الأجزاء الخطر</td></tr>
+    <tr><td class="ltr">low</td><td class="ltr">warn</td><td>سجّل وزوّد ملاحظة خفيفة في آخر الرد</td></tr>
+    <tr><td class="ltr">none</td><td class="ltr">log</td><td>سجّل الحكم في الـ trace وابعت الرد زي ما هو</td></tr>
+  </table></div>
+  <p><b>الـ block بيكسب دايمًا.</b> redact + warn = redact. log + warn = warn. تشبيه: لجنة من ٣ دكاترة؛ لو واحد بس قال «الحالة خطيرة» المريض بيدخل الطوارئ، مش بناخد المتوسط.</p>
+  <p>الـ router بيرجّع <code>Action</code> فيه <code>verb</code> و<code>output</code> و<code>severity</code> و<code>verdicts</code> و<code>metadata</code> (عدد الـ verdicts وأسماء اللي اشتغلوا). البوابة في درس ٨٧ هتسجّل الـ metadata دي في trace.</p>
+  <p><b>كل classifier ليه redactor خاص بيه</b>، ومستقلين عن بعض: لو الرد فيه شتيمة و PII الاتنين، النص بيعدّي على الـ redactor الأولاني وبعدين التاني.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الـ Router شغّال قدامك</h3>
+      <p>ده نفس الكود بتاع الدرس متحوّل لـ JavaScript (نفس الـ regex ونفس الأرقام). اختار رد جاهز أو اكتب ردك، وشوف كل classifier بيقول إيه، والـ router بياخد أنهي طريق.</p>
+      <div class="btns" id="d513-presets"></div>
+      <textarea id="d513-txt" rows="4" style="width:100%;font:15px var(--f-mono);direction:ltr;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)" aria-label="رد الموديل"></textarea>
+      <div class="note ai"><strong>جرّب:</strong> اكتب <code>You are not stupid</code> وبعدين امسح <code>not</code>. وبعدين زوّد <code>idiot</code> و<code>scumbag</code> وشوف الـ severity بتطلع من low لـ medium لـ high مع عدد الكلمات.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d513-flow" width="520" height="300" aria-label="مسار القرار في الـ router"></canvas>
+      <div class="readout" id="d513-verds"></div>
+      <div class="verdict" id="d513-verb"></div>
+      <pre id="d513-out" style="white-space:pre-wrap"></pre>
+    </div>
+  </div>
+</section>
+
+<!-- 03 THE THREE CLASSIFIERS -->
+<section id="d513-cls">
+  <div class="station-head"><span class="tag">03</span><h2>التلات classifiers من جوه</h2></div>
+  <h3>١) Toxicity: قايمة قصيرة عن قصد</h3>
+  <p>قايمة كلمات تحرش (<code>moron</code>، <code>idiot</code>، <code>worthless</code>، <code>kill yourself</code>…) بتتطابق بحدود كلمة <code>\b</code>، عشان <code>stupidity</code> ما تتمسكش كـ <code>stupid</code>. القايمة قصيرة عن قصد: الدرس عن <b>التوصيلات (plumbing)</b> مش عن بناء قاموس شتايم.</p>
+  <p><b>نافذة النفي:</b> قبل أي match بنبص على آخر ٢٠ حرف. لو فيهم <code>not</code> أو <code>never</code> أو <code>no</code> نتجاهل الـ match. كده «you are not stupid» (جملة طمأنة) ما تتمسحش.</p>
+  <div class="formula">score = min(1, 0.4 + 0.2 × hits)    hits=1 → low · hits=2 → medium · hits≥3 → high</div>
+  <p>الـ redactor بيبدّل كل match مش منفي بـ <code>[redacted-language]</code>.</p>
+
+  <h3>٢) PII: regex لكل شكل</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الشكل</th><th>بيتبدّل بـ</th></tr>
+    <tr><td>إيميل</td><td class="ltr">[redacted-email]</td></tr>
+    <tr><td>تليفون</td><td class="ltr">[redacted-phone]</td></tr>
+    <tr><td>شكل SSN <span class="ltr">ddd-dd-dddd</span></td><td class="ltr">[redacted-ssn]</td></tr>
+    <tr><td>كارت (١٣–١٩ رقم <b>و</b> بيعدّي Luhn)</td><td class="ltr">[redacted-card]</td></tr>
+    <tr><td>IPv4</td><td class="ltr">[redacted-ip]</td></tr>
+  </table></div>
+  <div class="formula">score = min(1, 0.5 + 0.15 × findings)    ssn/card → high · email أو ≥3 findings → medium · غير كده → low</div>
+  <p>يعني تليفون لوحده أو IP لوحده = low (warn)، إيميل = medium (redact)، كارت = high (block).</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: خوارزمية Luhn خطوة بخطوة</h3>
+      <p>مش أي ١٦ رقم يبقى كارت. أرقام الكروت فيها <b>check digit</b> بيخلي مجموع معين يقبل القسمة على ١٠. ده بيفرّق بين كارت حقيقي الشكل وأي سلسلة أرقام عشوائية (رقم طلب، رقم شحنة) فيقلل الـ false positives.</p>
+      <ol class="ex">
+        <li>امشي على الأرقام، وكل رقم في الخانة اللي بتتضاعف (حسب زوجية الطول) اضربه في ٢.</li>
+        <li>لو الناتج أكبر من ٩ اطرح ٩.</li>
+        <li>اجمع كله. لو المجموع % 10 = 0 يبقى عدّى.</li>
+      </ol>
+      <label style="display:grid;gap:4px">الأرقام:<input id="d513-luhnIn" class="ltr" value="4111 1111 1111 1111" style="font:16px var(--f-mono);padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)"></label>
+      <div class="btns"><button type="button" data-luhn="4111 1111 1111 1111">كارت تجريبي مشهور</button><button type="button" data-luhn="1234 5678 9012 3456">أرقام عشوائية</button><button type="button" data-luhn="5555 5555 5555 4444">كارت تجريبي تاني</button><button type="button" id="d513-luhnPlay" class="primary">شغّل الأنيميشن</button></div>
+    </div>
+    <div class="instrument">
+      <canvas id="d513-luhn" width="520" height="230" aria-label="خطوات Luhn"></canvas>
+      <div class="readout"><div><small>عدد الأرقام</small><b id="d513-lLen">16</b></div><div><small>المجموع</small><b id="d513-lSum">30</b></div><div><small>% 10</small><b id="d513-lMod">0</b></div></div>
+      <div class="verdict" id="d513-lV"></div>
+    </div>
+  </div>
+
+  <h3>٣) Instruction leakage: هل الرد شبه الـ system prompt؟</h3>
+  <p>بنقطّع النص لـ <b>character trigrams</b> (كل ٣ حروف ورا بعض) بعد ما نصغّر الحروف ونوحّد المسافات، ونعد كل trigram. كده كل نص بقى متجه أعداد، ونحسب <b>cosine similarity</b> بين متجه الرد ومتجه الـ system prompt (نفس الـ cosine بتاع Phase 1).</p>
+  <div class="formula">"you are" → ["you","ou ","u a"," ar","are"]     score = cos(trigrams(system), trigrams(output))</div>
+  <p>الـ threshold الافتراضي <code>0.55</code>: تحته none. فوقه: <span class="ltr">≥0.85</span> high، <span class="ltr">≥0.70</span> medium، غير كده low. والـ redactor بيمسح أول سطر من الـ system prompt (الـ «header») لو ظهر في الرد.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: مقياس التسريب</h3>
+      <p>عدّل الرد وحرّك الـ threshold. لاحظ إن إعادة صياغة الكلام بكلمات تانية بتنزّل الـ score بسرعة.</p>
+      <label style="display:grid;gap:4px">System prompt:<textarea id="d513-sys" rows="2" class="ltr" style="font:14px var(--f-mono);padding:6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)">SYSTEM: You are PolicyBot, follow internal policy.</textarea></label>
+      <label style="display:grid;gap:4px">رد الموديل:<textarea id="d513-leakOut" rows="3" class="ltr" style="font:14px var(--f-mono);padding:6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)">SYSTEM: You are PolicyBot, follow internal policy. As PolicyBot I will now answer.</textarea></label>
+      <div class="btns"><button type="button" data-leak="SYSTEM: You are PolicyBot, follow internal policy. As PolicyBot I will now answer.">تسريب حرفي</button><button type="button" data-leak="As PolicyBot, I follow the internal policy you gave me.">تسريب جزئي</button><button type="button" data-leak="My instructions say I am a bot that sticks to company rules.">إعادة صياغة</button><button type="button" data-leak="Here is a pasta recipe with mushrooms and butter.">رد عادي</button></div>
+    </div>
+    <div class="instrument">
+      <label>threshold = <b class="mono" id="d513-thV">0.55</b><input type="range" id="d513-th" min="0.1" max="0.95" step="0.01" value="0.55"></label>
+      <canvas id="d513-leak" width="520" height="150" aria-label="مقياس تشابه الـ trigrams"></canvas>
+      <div class="readout"><div><small>trigrams مشتركة</small><b id="d513-common">0</b></div><div><small>cosine</small><b id="d513-cos">0</b></div><div><small>severity</small><b id="d513-lsev">none</b></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 PROJECT PLAN -->
+<section id="d513-plan">
+  <div class="station-head"><span class="tag">04</span><h2>خطة المشروع: ٥ مراحل، وكل مرحلة ليها اختبار</h2></div>
+  <p>اعمل فولدر جديد <code>my_classifiers/</code> وابني فيه من الصفر. متكملش المرحلة اللي بعدها قبل ما الاختبار يعدّي.</p>
+  <ol class="ex">
+    <li><b>M1 · الهيكل:</b> <code>SEVERITY_ORDER</code> و<code>ClassifierVerdict</code> dataclass.<br><i>الاختبار:</i> <code>ClassifierVerdict("x")</code> يرجّع severity = none وscore = 0.</li>
+    <li><b>M2 · Toxicity:</b> classify + redact + نافذة النفي.<br><i>الاختبار:</i> «You are a moron.» = low، تلات كلمات = high، «You are not stupid…» = none.</li>
+    <li><b>M3 · PII + Luhn:</b> ٥ regex + Luhn + redactor.<br><i>الاختبار:</i> <code>4111 1111 1111 1111</code> = high، <code>1234 5678 9012 3456</code> مش high، <code>192.168.1.5</code> = low، إيميل = medium.</li>
+    <li><b>M4 · Leakage:</b> trigrams + cosine + threshold.<br><i>الاختبار:</i> وصفة مكرونة = none؛ رد بيكرر «PolicyBot… refuse harmful requests… cite sources» = أي severity غير none.</li>
+    <li><b>M5 · Router + demo + report:</b> <code>run</code> و<code>decide</code> واكتب <code>classifier_report.json</code>.<br><i>الاختبار:</i> كل verb من الأربعة (block/redact/warn/log) يظهر مرة على الأقل في الـ demo، و«كارت + إيميل + شتيمة» = block.</li>
+  </ol>
+</section>
+
+<!-- 05 CODE -->
+<section id="d513-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: الكود خطوة بخطوة</h2></div>
+  <p>شغّل الأصل الأول عشان تشوف الهدف، من الـ root بتاع الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/85-content-classifier-integration/code/main.py</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Content classifier router demo
+
+  case                         verb     severity  fired
+  clean response               log      none      -
+  low toxicity                 warn     low       toxicity
+  medium pii (email)           redact   medium    pii
+  high pii (luhn-valid card)   block    high      pii
+  instruction leakage          block    high      instruction-leakage
+  negated toxicity             log      none      -
+
+  artifact written to .../85-content-classifier-integration/outputs/classifier_report.json</pre></details>
+  <p><b>القاعدة:</b> متعملش copy-paste. اقفل الملف واكتب كل خطوة بنفسك، وبص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١ (M1): الـ Verdict</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from dataclasses import dataclass, field
+
+SEVERITY_ORDER = ("none", "low", "medium", "high")   <span class="c"># الترتيب هو اللي بيخلي max يشتغل</span>
+
+@dataclass
+class ClassifierVerdict:
+    name: str
+    severity: str = "none"
+    score: float = 0.0
+    findings: list[str] = field(default_factory=list)   <span class="c"># وصف كل حاجة اتمسكت</span></pre></div>
+
+  <h3>خطوة ٢ (M2): Toxicity مع نافذة النفي</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import re
+
+HARASSMENT_TERMS = ["moron", "idiot", "stupid", "worthless", "trash human",
+                    "kill yourself", "lowlife", "scumbag", "useless person", "good for nothing"]
+_NEGATION_WINDOW = 20
+
+class ToxicityClassifier:
+    name = "toxicity"
+
+    def __init__(self, terms=None):
+        self._terms = [t.lower() for t in (terms if terms is not None else HARASSMENT_TERMS)]
+        joined = "|".join(re.escape(t) for t in self._terms)
+        self._needle = re.compile(rf"\b({joined})\b", re.IGNORECASE)   <span class="c"># حدود كلمة</span>
+
+    def _negated_at(self, text, start):
+        window = text[max(0, start - _NEGATION_WINDOW):start].lower()   <span class="c"># آخر ٢٠ حرف قبل الكلمة</span>
+        return bool(re.search(r"\b(not|never|no)\b", window))
+
+    def classify(self, text):
+        findings, hits = [], 0
+        for m in self._needle.finditer(text):
+            if self._negated_at(text, m.start()):
+                continue                                   <span class="c"># "not stupid" مش شتيمة</span>
+            findings.append(f"matched '{m.group(0)}'")
+            hits += 1
+        if not findings:
+            return ClassifierVerdict(name=self.name)
+        score = min(1.0, 0.4 + 0.2 * hits)
+        sev = "high" if hits >= 3 else "medium" if hits == 2 else "low"
+        return ClassifierVerdict(self.name, sev, score, findings)
+
+    def redact(self, text):
+        def _sub(m):
+            return m.group(0) if self._negated_at(text, m.start()) else "[redacted-language]"
+        return self._needle.sub(_sub, text)</pre></div>
+
+  <h3>خطوة ٣ (M3): PII و Luhn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+_PHONE_RE = re.compile(r"\b(?:\+?\d{1,3}[ .-]?)?(?:\(?\d{3}\)?[ .-]?)\d{3}[ .-]?\d{4}\b")
+_SSN_RE   = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+_CARD_RE  = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")          <span class="c"># 13 لـ 19 رقم بمسافات أو شرط</span>
+_IPV4_RE  = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+def _luhn(digits):
+    s, parity = 0, len(digits) % 2
+    for i, ch in enumerate(digits):
+        d = int(ch)
+        if i % 2 == parity:          <span class="c"># الخانات اللي بتتضاعف</span>
+            d *= 2
+            if d > 9:
+                d -= 9
+        s += d
+    return s % 10 == 0
+
+class PIIClassifier:
+    name = "pii"
+
+    def classify(self, text):
+        findings = []
+        findings += [f"email '{m.group(0)}'" for m in _EMAIL_RE.finditer(text)]
+        findings += [f"phone '{m.group(0)}'" for m in _PHONE_RE.finditer(text)]
+        findings += [f"ssn '{m.group(0)}'" for m in _SSN_RE.finditer(text)]
+        for m in _CARD_RE.finditer(text):
+            digits = re.sub(r"\D", "", m.group(0))
+            if 13 &lt;= len(digits) &lt;= 19 and _luhn(digits):   <span class="c"># شكل كارت + check digit صح</span>
+                findings.append(f"card '{m.group(0)}'")
+        findings += [f"ip '{m.group(0)}'" for m in _IPV4_RE.finditer(text)]
+        if not findings:
+            return ClassifierVerdict(name=self.name)
+        score = min(1.0, 0.5 + 0.15 * len(findings))
+        if any(f.startswith(("ssn", "card")) for f in findings):
+            sev = "high"
+        elif len(findings) >= 3 or any(f.startswith("email") for f in findings):
+            sev = "medium"
+        else:
+            sev = "low"
+        return ClassifierVerdict(self.name, sev, score, findings)
+
+    def redact(self, text):
+        out = _EMAIL_RE.sub("[redacted-email]", text)
+        out = _PHONE_RE.sub("[redacted-phone]", out)
+        out = _SSN_RE.sub("[redacted-ssn]", out)
+        def _card_sub(m):
+            d = re.sub(r"\D", "", m.group(0))
+            return "[redacted-card]" if 13 &lt;= len(d) &lt;= 19 and _luhn(d) else m.group(0)
+        out = _CARD_RE.sub(_card_sub, out)
+        return _IPV4_RE.sub("[redacted-ip]", out)</pre></div>
+
+  <h3>خطوة ٤ (M4): Instruction leakage بالـ trigrams</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+from collections import Counter
+
+def _trigrams(text):
+    cleaned = re.sub(r"\s+", " ", text.strip().lower())   <span class="c"># وحّد المسافات وصغّر الحروف</span>
+    grams = Counter()
+    if len(cleaned) &lt; 3:
+        grams[cleaned] += 1
+        return grams
+    for i in range(len(cleaned) - 2):
+        grams[cleaned[i:i + 3]] += 1
+    return grams
+
+def _cosine(a, b):
+    common = set(a) &amp; set(b)
+    if not a or not b or not common:
+        return 0.0
+    dot = sum(a[g] * b[g] for g in common)
+    na = math.sqrt(sum(v * v for v in a.values()))
+    nb = math.sqrt(sum(v * v for v in b.values()))
+    return dot / (na * nb)
+
+class InstructionLeakageClassifier:
+    name = "instruction-leakage"
+
+    def __init__(self, system_prompt, threshold=0.55):
+        self._sys = system_prompt
+        self._sys_grams = _trigrams(system_prompt)    <span class="c"># بنحسبها مرة واحدة</span>
+        self._threshold = threshold
+
+    def classify(self, text):
+        score = _cosine(self._sys_grams, _trigrams(text))
+        if score &lt; self._threshold:
+            return ClassifierVerdict(name=self.name)
+        sev = "high" if score >= 0.85 else "medium" if score >= 0.70 else "low"
+        return ClassifierVerdict(self.name, sev, score,
+                                 [f"trigram overlap with system prompt: {score:.2f}"])
+
+    def redact(self, text):
+        marker = self._sys.split("\n", 1)[0].strip()   <span class="c"># أول سطر = الـ header</span>
+        if marker and marker.lower() in text.lower():
+            return re.sub(re.escape(marker), "[redacted-system-prompt]", text, flags=re.IGNORECASE)
+        return text</pre></div>
+
+  <h3>خطوة ٥ (M5): الـ Router</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from dataclasses import asdict
+
+REFUSAL_TEXT = "I cannot share that. The response was blocked by an output safety classifier."
+
+@dataclass
+class Action:
+    verb: str
+    output: str
+    severity: str
+    verdicts: list = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+
+class Router:
+    def __init__(self, classifiers):
+        self._classifiers = list(classifiers)
+
+    def run(self, text):
+        return self.decide(text, [c.classify(text) for c in self._classifiers])
+
+    def decide(self, text, verdicts):
+        max_sev = max((v.severity for v in verdicts), key=SEVERITY_ORDER.index, default="none")
+        meta = {"verdict_count": len(verdicts),
+                "fired": [v.name for v in verdicts if v.severity != "none"]}
+        ser = [asdict(v) for v in verdicts]
+        if max_sev == "high":                                   <span class="c"># الـ block بيكسب</span>
+            return Action("block", REFUSAL_TEXT, max_sev, ser, meta)
+        if max_sev == "medium":
+            out = text
+            for c in self._classifiers:                         <span class="c"># redactor كل واحد اشتغل، بالترتيب</span>
+                if c.name in meta["fired"]:
+                    out = c.redact(out)
+            return Action("redact", out, max_sev, ser, meta)
+        if max_sev == "low":
+            note = "\n\n[note: an output safety classifier flagged this response at low severity]"
+            return Action("warn", text + note, max_sev, ser, meta)
+        return Action("log", text, max_sev, ser, meta)
+
+router = Router([ToxicityClassifier(), PIIClassifier(),
+                 InstructionLeakageClassifier("SYSTEM: You are PolicyBot, follow internal policy.")])
+for t in ["You moron, your code is full of bugs.",
+          "You can reach our support team at help@example.com for follow up.",
+          "Sure, the card on file is 4111 1111 1111 1111 and the address is 1 Pine St."]:
+    a = router.run(t)
+    print(a.verb, a.severity, a.metadata["fired"], "|", a.output[:60])</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">warn low ['toxicity'] | You moron, your code is full of bugs.
+
+[note: an output safe
+redact medium ['pii'] | You can reach our support team at [redacted-email] for follo
+block high ['pii'] | I cannot share that. The response was blocked by an output s</pre></details>
+
+  <h3>خطوة ٦: شغّل الـ tests بتاعة الدرس</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd phases/19-capstone-projects/85-content-classifier-integration/code
+python3 -m unittest tests -v</pre></div>
+  <p>الـ tests بتغطي: النص النضيف = none، كلمة واحدة = low، تلاتة = high، النفي بيتخطى، الكارت الصح = high والعشوائي لأ، الـ IP = low، الـ block بيكسب الـ redact، والـ <code>metadata["fired"]</code> فيه <code>pii</code>.</p>
+</section>
+
+<!-- 06 EXERCISES -->
+<section id="d513-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Classifier رابع للـ code injection:</b> الرد فيه <code>&lt;script&gt;</code> أو <code>eval(</code> وغيرهم. قرر سياسة الـ severity بتاعته ووصّله بالـ router.
+      <details><summary>تلميح</summary>نفس واجهة الباقيين: <code>name</code> و<code>classify</code> و<code>redact</code>. فكّر: <code>&lt;script&gt;</code> في رد هيتعرض في صفحة ويب = high (XSS)، بس <code>eval(</code> جوه code block في شات برمجة ممكن يبقى طبيعي = low. الـ redactor ممكن يعمل escape لـ <code>&lt;</code> بدل ما يمسح.</details></li>
+    <li><b>وزن لكل classifier:</b> خلّي الـ router يدّي الـ PII وزن أكبر من الـ toxicity. ورّي الفرق على نفس الـ fixtures.
+      <details><summary>تلميح</summary>حوّل الـ severity لرقم (index في <code>SEVERITY_ORDER</code>)، اضربه في وزن، واعمل <code>min(3, round(...))</code>. مثلًا وزن PII = 1.5 هيخلي التليفون لوحده (low=1) يطلع medium=2 فيتعمله redact بدل warn. شغّل الـ demo قبل وبعد وقارن عمود verb.</details></li>
+    <li><b>Confidence threshold:</b> أي verdict الـ score بتاعه أقل من threshold ينزل severity درجة. اعمل sweep على الـ threshold وقيس الـ block rate بيتغير إزاي.
+      <details><summary>تلميح</summary>لاحظ إن الـ scores هنا مش احتمالات حقيقية: toxicity بتبدأ من 0.6، و PII من 0.65. لو الـ threshold بين 0.65 و 0.87، الكارت (score 0.65) هينزل من high لـ medium فيتعمله redact بدل block، والتسريب (0.87) يفضل block. ارسم block rate مقابل threshold من 0 لـ 1.</details></li>
+    <li><b>إضافة مني · تمرين شغل حقيقي:</b> هات ٢٠ رد حقيقي من أي شات بوت بتستخدمه (أو اكتبهم)، علّم كل رد بإيدك: فيه PII؟ فيه شتيمة؟ وبعدين شغّل الـ router واحسب لكل classifier: precision و recall. فين الـ false positives؟
+      <details><summary>تلميح</summary>هتلاقي غالبًا إن regex التليفون بيمسك أرقام طلبات أو تواريخ، وإن الـ toxicity بتفوّت شتايم مش في القايمة. ده بالظبط اللي درس ٨٣ و٨٤ علّموهولك: أي فلتر من غير قياس هو مجرد إحساس.</details></li>
+  </ol>
+</section>
+
+<!-- 07 EXTRA -->
+<section id="d513-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <ul class="checklist">
+    <li><b>نافذة النفي سلاح بحدين:</b> «No, you idiot» فيها <code>no</code> قبل الكلمة بأقل من ٢٠ حرف، فالشتيمة هتعدّي. جرّبها في المعمل ١. أي heuristic بيقلل false positives غالبًا بيزوّد false negatives.</li>
+    <li><b>الـ regex بتاع Python فيه <code>\w</code> Unicode:</b> يعني إيميل فيه حروف عربي ممكن يتمسك في Python ومايتمسكش في JavaScript. لو بتنقل فلتر بين لغتين، اختبره على نفس الـ fixtures (ده اللي عملته وأنا بحوّل المعمل ١: طابقت النتايج مع <code>classifier_report.json</code> الأصلي).</li>
+    <li><b>الـ trigrams بتمسك التسريب الحرفي بس:</b> لو الموديل لخّص الـ system prompt أو ترجمه، الـ cosine هينزل تحت الـ threshold. جرّب «إعادة صياغة» في المعمل ٣. حل شائع: canary token (كلمة عشوائية سرية جوه الـ system prompt)، لو ظهرت في الرد يبقى فيه تسريب أكيد.</li>
+    <li><b>السياق مهم:</b> لو اليوزر هو اللي اداك إيميله وطلب تنسقه في خطاب، الـ redact هنا بيبوظ الخدمة. في الشغل الحقيقي الـ router بياخد كمان context (مين صاحب البيانات).</li>
+    <li><b>الـ block بعد ما اليوزر شاف الكلام مالوش لازمة:</b> مع الـ streaming، لازم البوابة تمسك buffer. ده بالظبط اللي هتبنيه في درس ٨٧ (during-gen filter).</li>
+    <li><b>فين بتظهر في الـ LLMs والـ agents؟</b> نفس الفكرة بتتطبق على <b>tool outputs</b> في الـ agents: نتيجة tool ممكن تحتوي PII أو تعليمات مدسوسة قبل ما ترجع للموديل أو لليوزر. وفيه classifiers مبنية كموديلات (زي Llama Guard) بتصنّف الـ prompt والـ response الاتنين، بس الـ router والـ actions بيفضلوا نفس الفكرة.</li>
+  </ul>
+</section>
+
+<!-- 08 QUIZ -->
+<section id="d513-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d513-quizBox"></div>
+</section>
+
+<!-- 09 WRAP -->
+<section id="d513-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح ليه الـ output classification لازمة حتى لو الـ input اتفحص</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم جدول severity → action وإن الـ block بيكسب</label></li>
+    <li><label><input type="checkbox" data-ck="3"> جربت Luhn والـ trigrams في المعامل</label></li>
+    <li><label><input type="checkbox" data-ck="4"> بنيت المراحل M1 لـ M5 بإيدي والـ tests عدّت</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Output classifier</td><td>الـ moderation على ردود الشات بوت، فحص نتايج الـ tools في الـ agents</td></tr>
+    <tr><td>Severity router</td><td>أي guardrail layer: قرار واحد من آراء كتير</td></tr>
+    <tr><td>Redaction</td><td>إخفاء PII في الـ logs والردود، الامتثال للخصوصية</td></tr>
+    <tr><td>Luhn check</td><td>أي نظام بيكشف أرقام كروت في نص (DLP)</td></tr>
+    <tr><td>Trigram cosine</td><td>كشف تسريب الـ system prompt، كشف النصوص المكررة</td></tr>
+    <tr><td>Action + metadata</td><td>الـ trace اللي البوابة في درس ٨٧ بتسجله</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Constitutional Rules Engine. قواعد مكتوبة في YAML يقدر يقراها أي حد، بتتأكد من «عقود» زي «أي رفض لازم يقترح خطوة جاية»، ومعاها fixer بيصلّح الرد.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F85-content-classifier-integration" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/85-content-classifier-integration</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=513,LESSON=85,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d513-roadmap').closest('.day');
+
+// roadmap (phase 19 lesson numbers)
+const rm=$('d513-roadmap'),LS=[];for(let i=1;i<=87;i++)if(i!==18&&i!==19)LS.push(i);
+LS.forEach(i=>{const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)});
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+// ---- JS port of classifiers.py + Router (same regexes, same thresholds) ----
+const SEV=['none','low','medium','high'];
+const TERMS=['moron','idiot','stupid','worthless','trash human','kill yourself','lowlife','scumbag','useless person','good for nothing'];
+const escRe=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+let NEG_WIN=20;
+function negatedAt(t,start){return /\b(not|never|no)\b/.test(t.slice(Math.max(0,start-NEG_WIN),start).toLowerCase())}
+const tox={name:'toxicity',
+  re:()=>new RegExp('\\b('+TERMS.map(escRe).join('|')+')\\b','gi'),
+  classify(t){const f=[];let hits=0;for(const m of t.matchAll(this.re())){if(negatedAt(t,m.index))continue;f.push("matched '"+m[0]+"'");hits++}
+    if(!f.length)return{name:this.name,severity:'none',score:0,findings:[]};
+    return{name:this.name,severity:hits>=3?'high':hits===2?'medium':'low',score:Math.min(1,0.4+0.2*hits),findings:f}},
+  redact(t){return t.replace(this.re(),(m,_g,off)=>negatedAt(t,off)?m:'[redacted-language]')}};
+const EMAIL=/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g,PHONE=/\b(?:\+?\d{1,3}[ .-]?)?(?:\(?\d{3}\)?[ .-]?)\d{3}[ .-]?\d{4}\b/g,
+  SSN=/\b\d{3}-\d{2}-\d{4}\b/g,CARD=/\b(?:\d[ -]?){12,18}\d\b/g,IPV4=/\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+function luhn(d){let s=0;const p=d.length%2;for(let i=0;i<d.length;i++){let x=+d[i];if(i%2===p){x*=2;if(x>9)x-=9}s+=x}return s%10===0}
+const cardOk=m=>{const d=m.replace(/\D/g,'');return d.length>=13&&d.length<=19&&luhn(d)};
+const pii={name:'pii',
+  classify(t){const f=[];
+    for(const m of t.matchAll(EMAIL))f.push("email '"+m[0]+"'");
+    for(const m of t.matchAll(PHONE))f.push("phone '"+m[0]+"'");
+    for(const m of t.matchAll(SSN))f.push("ssn '"+m[0]+"'");
+    for(const m of t.matchAll(CARD))if(cardOk(m[0]))f.push("card '"+m[0]+"'");
+    for(const m of t.matchAll(IPV4))f.push("ip '"+m[0]+"'");
+    if(!f.length)return{name:this.name,severity:'none',score:0,findings:[]};
+    let sev='low';if(f.some(x=>x.startsWith('ssn')||x.startsWith('card')))sev='high';else if(f.length>=3||f.some(x=>x.startsWith('email')))sev='medium';
+    return{name:this.name,severity:sev,score:Math.min(1,0.5+0.15*f.length),findings:f}},
+  redact(t){return t.replace(EMAIL,'[redacted-email]').replace(PHONE,'[redacted-phone]').replace(SSN,'[redacted-ssn]').replace(CARD,m=>cardOk(m)?'[redacted-card]':m).replace(IPV4,'[redacted-ip]')}};
+function trigrams(t){const c=t.trim().toLowerCase().replace(/\s+/g,' '),g=new Map();if(c.length<3){g.set(c,1);return g}for(let i=0;i<c.length-2;i++){const k=c.slice(i,i+3);g.set(k,(g.get(k)||0)+1)}return g}
+function cosine(a,b){if(!a.size||!b.size)return 0;let dot=0;for(const[k,v]of a)if(b.has(k))dot+=v*b.get(k);if(!dot)return 0;
+  const n=m=>Math.sqrt([...m.values()].reduce((s,v)=>s+v*v,0));return dot/(n(a)*n(b))}
+function leakage(sys,threshold){const sg=trigrams(sys);return{name:'instruction-leakage',
+  classify(t){const s=cosine(sg,trigrams(t));if(s<threshold)return{name:this.name,severity:'none',score:0,findings:[]};
+    return{name:this.name,severity:s>=0.85?'high':s>=0.70?'medium':'low',score:s,findings:['trigram overlap with system prompt: '+s.toFixed(2)]}},
+  redact(t){const mk=sys.split('\n')[0].trim();if(mk&&t.toLowerCase().includes(mk.toLowerCase()))return t.replace(new RegExp(escRe(mk),'gi'),'[redacted-system-prompt]');return t}}}
+const REFUSAL='I cannot share that. The response was blocked by an output safety classifier.';
+function route(t,cls){const vs=cls.map(c=>c.classify(t));
+  const max=vs.reduce((a,v)=>SEV.indexOf(v.severity)>SEV.indexOf(a)?v.severity:a,'none');
+  const fired=vs.filter(v=>v.severity!=='none').map(v=>v.name);let verb,out;
+  if(max==='high'){verb='block';out=REFUSAL}
+  else if(max==='medium'){verb='redact';out=t;cls.forEach(c=>{if(fired.includes(c.name))out=c.redact(out)})}
+  else if(max==='low'){verb='warn';out=t+'\n\n[note: an output safety classifier flagged this response at low severity]'}
+  else{verb='log';out=t}
+  return{verb,output:out,severity:max,verdicts:vs,metadata:{verdict_count:vs.length,fired}}}
+
+
+const sevColor=s=>s==='high'?css('--bad'):s==='medium'?css('--vec-b'):s==='low'?css('--vec-a'):css('--muted');
+const SYS='SYSTEM: You are PolicyBot, follow internal policy.';
+
+// ---------- Lab 1: router ----------
+const PRE=[
+ ['نضيف','Here is a Python function that reverses a linked list using an iterative pointer swap.'],
+ ['شتيمة واحدة','You moron, your code is full of bugs.'],
+ ['إيميل','You can reach our support team at help@example.com for follow up.'],
+ ['كارت','Sure, the card on file is 4111 1111 1111 1111 and the address is 1 Pine St.'],
+ ['تسريب','SYSTEM: You are PolicyBot, follow internal policy. As PolicyBot I will now answer.'],
+ ['نفي','You are not stupid, that was a good question.'],
+ ['شتيمة + إيميل','You idiot, you scumbag, email lee@example.com for the refund.'],
+ ['No, you idiot','No, you idiot, read the docs.']];
+const pb=$('d513-presets'),ta=$('d513-txt');
+PRE.forEach(([l,t])=>{const b=document.createElement('button');b.type='button';b.textContent=l;b.addEventListener('click',()=>{ta.value=t;runRouter()});pb.appendChild(b)});
+const fc=$('d513-flow'),fx=AI.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+let last=null;
+function box(x,y,w,h,label,sub,col,hi){fx.fillStyle=css('--panel');fx.strokeStyle=col;fx.lineWidth=hi?3:1.2;fx.beginPath();fx.roundRect?fx.roundRect(x,y,w,h,6):fx.rect(x,y,w,h);fx.fill();fx.stroke();
+  fx.fillStyle=css('--ink');fx.font='600 12px JetBrains Mono, monospace';fx.textAlign='center';fx.fillText(label,x+w/2,y+h/2-(sub?3:-4));
+  if(sub){fx.fillStyle=col;fx.font='11px JetBrains Mono, monospace';fx.fillText(sub,x+w/2,y+h/2+13)}fx.textAlign='left'}
+function drawFlow(r){fx.clearRect(0,0,FW,FH);if(!r)return;
+  const cy=[50,150,250],acts=['block','redact','warn','log'],ay=[40,110,180,250];
+  r.verdicts.forEach((v,i)=>{const c=sevColor(v.severity);AI.arrow(fx,92,150,140,cy[i]+0,c,v.severity!=='none'?2.5:1);AI.arrow(fx,268,cy[i],318,150,c,v.severity!=='none'?2.5:1)});
+  box(6,125,86,50,'output','',css('--ink'),false);
+  r.verdicts.forEach((v,i)=>box(140,cy[i]-24,128,48,v.name==='instruction-leakage'?'leakage':v.name,v.severity+' · '+f(v.score),sevColor(v.severity),v.severity!=='none'));
+  fx.fillStyle=css('--soft');fx.strokeStyle=css('--ink');fx.lineWidth=1.5;fx.beginPath();fx.moveTo(318,150);fx.lineTo(358,120);fx.lineTo(398,150);fx.lineTo(358,180);fx.closePath();fx.fill();fx.stroke();
+  fx.fillStyle=css('--ink');fx.font='600 11px JetBrains Mono, monospace';fx.textAlign='center';fx.fillText('max',358,154);fx.textAlign='left';
+  acts.forEach((a,i)=>{const on=a===r.verb,col=on?sevColor(r.severity==='none'?'none':r.severity):css('--line');
+    AI.arrow(fx,398,150,430,ay[i]+16,on?col:css('--line'),on?3:1);box(432,ay[i],82,32,a,'',on?(r.verb==='log'?css('--ok'):col):css('--line'),on)});
+}
+function runRouter(){const r=route(ta.value,[tox,pii,leakage(SYS,0.55)]);last=r;
+  $('d513-verds').innerHTML='';r.verdicts.forEach(v=>{const d=document.createElement('div');d.innerHTML='<small></small><b></b>';d.querySelector('small').dir='ltr';d.querySelector('small').style.textAlign='right';d.querySelector('small').textContent=v.name+(v.findings.length?' · '+v.findings.join(', '):'');d.querySelector('b').textContent=v.severity+' · '+f(v.score);d.querySelector('b').style.color=sevColor(v.severity);$('d513-verds').appendChild(d)});
+  const msg={block:'block: الرد اتشال واترجعت رسالة رفض',redact:'redact: اتمسحت الأجزاء الخطر والباقي اتبعت',warn:'warn: الرد اتبعت ومعاه ملاحظة',log:'log: الرد اتبعت زي ما هو واتسجل الحكم'};
+  const v=$('d513-verb');v.textContent=msg[r.verb]+' (max severity = '+r.severity+')';v.style.color=r.verb==='log'?css('--ok'):sevColor(r.severity);
+  $('d513-out').textContent=r.output;drawFlow(r)}
+ta.addEventListener('input',runRouter);ta.value=PRE[1][1];runRouter();
+
+// ---------- Lab 2: Luhn ----------
+const lc=$('d513-luhn'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h,li=$('d513-luhnIn');let lStep=99,lTimer=null;
+function luhnDraw(){const d=li.value.replace(/\D/g,'').slice(0,19);const p=d.length%2;lx.clearRect(0,0,LW,LH);
+  const n=d.length||1,cw=Math.min(26,(LW-20)/n),x0=(LW-cw*n)/2;let s=0;
+  lx.font='12px JetBrains Mono, monospace';lx.textAlign='center';
+  lx.fillStyle=css('--muted');lx.fillText('digit',x0-2>30?x0-22:14,40);
+  for(let i=0;i<d.length;i++){const x=x0+i*cw+cw/2,dbl=i%2===p,shown=i<lStep;let v=+d[i],w=v;if(dbl){w=v*2;if(w>9)w-=9}if(shown)s+=w;
+    lx.fillStyle=dbl?css('--vec-b'):css('--soft');lx.globalAlpha=dbl?.25:1;lx.fillRect(x-cw/2+1,22,cw-2,26);lx.globalAlpha=1;
+    lx.fillStyle=css('--ink');lx.font='600 15px JetBrains Mono, monospace';lx.fillText(d[i],x,41);
+    if(shown){lx.font='11px JetBrains Mono, monospace';lx.fillStyle=dbl?css('--vec-b'):css('--muted');lx.fillText(dbl?'×2':'',x,66);
+      lx.fillStyle=css('--ink');lx.font='600 14px JetBrains Mono, monospace';lx.fillText(String(w),x,92);
+      if(dbl&&v*2>9){lx.fillStyle=css('--bad');lx.font='10px JetBrains Mono, monospace';lx.fillText('−9',x,110)}}
+    if(i===lStep-1){lx.strokeStyle=css('--vec-a');lx.lineWidth=2;lx.strokeRect(x-cw/2,18,cw,100)}}
+  const done=lStep>=d.length,ok=d.length>=13&&d.length<=19&&s%10===0;
+  lx.textAlign='left';lx.font='13px JetBrains Mono, monospace';lx.fillStyle=css('--muted');
+  lx.fillText('orange = doubled position (i % 2 == len % 2)',10,150);
+  lx.fillStyle=css('--ink');lx.font='600 16px JetBrains Mono, monospace';lx.fillText('running sum = '+s+(done?'   sum % 10 = '+(s%10):''),10,185);
+  // progress bar of sum mod 10
+  lx.fillStyle=css('--soft');lx.fillRect(10,200,LW-20,12);lx.fillStyle=done?(ok?css('--ok'):css('--bad')):css('--vec-a');lx.fillRect(10,200,(LW-20)*((s%10)/10||(done&&s%10===0?1:0)),12);
+  $('d513-lLen').textContent=d.length;$('d513-lSum').textContent=s;$('d513-lMod').textContent=done?s%10:'…';
+  const V=$('d513-lV');if(!done){V.textContent='بيحسب…';V.style.color=css('--muted')}
+  else if(d.length<13||d.length>19){V.textContent='الطول برا 13–19: مش كارت أصلًا';V.style.color=css('--muted')}
+  else{V.textContent=ok?'عدّى Luhn، يعني كارت: severity = high والـ router هيعمل block':'ما عدّاش Luhn، يعني مش كارت ومش هيتمسك';V.style.color=ok?css('--bad'):css('--ok')}}
+function luhnPlay(){clearInterval(lTimer);const n=li.value.replace(/\D/g,'').length;if(matchMedia('(prefers-reduced-motion:reduce)').matches){lStep=99;luhnDraw();return}
+  lStep=0;luhnDraw();lTimer=setInterval(()=>{if(!document.body.contains(lc)){clearInterval(lTimer);return}lStep++;luhnDraw();if(lStep>=n)clearInterval(lTimer)},280)}
+li.addEventListener('input',()=>{lStep=99;luhnDraw()});
+root.querySelectorAll('[data-luhn]').forEach(b=>b.addEventListener('click',()=>{li.value=b.dataset.luhn;luhnPlay()}));
+$('d513-luhnPlay').addEventListener('click',luhnPlay);luhnDraw();
+
+// ---------- Lab 3: trigram leakage ----------
+const kc=$('d513-leak'),kx=AI.setupCanvas(kc),KW=+kc.dataset.w,KH=+kc.dataset.h;
+function leakRun(){const th=+$('d513-th').value,sys=$('d513-sys').value,out=$('d513-leakOut').value;
+  $('d513-thV').textContent=th.toFixed(2);const a=trigrams(sys),b=trigrams(out);let common=0;for(const k of a.keys())if(b.has(k))common++;
+  const s=cosine(a,b),v=leakage(sys,th).classify(out);
+  $('d513-common').textContent=common+' / '+a.size;$('d513-cos').textContent=f(s,3);const sv=$('d513-lsev');sv.textContent=v.severity;sv.style.color=sevColor(v.severity);
+  kx.clearRect(0,0,KW,KH);const X=t=>10+t*(KW-20);
+  [[0,th,'none'],[th,Math.max(th,.70),'low'],[Math.max(th,.70),Math.max(th,.85),'medium'],[Math.max(th,.85),1,'high']].forEach(([x1,x2,sev])=>{if(x2<=x1)return;kx.fillStyle=sevColor(sev);kx.globalAlpha=.22;kx.fillRect(X(x1),40,X(x2)-X(x1),36);kx.globalAlpha=1;
+    kx.fillStyle=sevColor(sev);kx.font='11px JetBrains Mono, monospace';kx.textAlign='center';kx.fillText(sev,(X(x1)+X(x2))/2,92)});
+  kx.fillStyle=css('--muted');kx.font='11px JetBrains Mono, monospace';[0,.55,.7,.85,1].forEach(t=>{kx.fillText(t,X(t),122)});
+  kx.strokeStyle=css('--ink');kx.setLineDash([4,4]);kx.beginPath();kx.moveTo(X(th),30);kx.lineTo(X(th),86);kx.stroke();kx.setLineDash([]);
+  kx.fillStyle=css('--ink');kx.beginPath();kx.moveTo(X(s),36);kx.lineTo(X(s)-7,20);kx.lineTo(X(s)+7,20);kx.closePath();kx.fill();
+  kx.font='600 12px JetBrains Mono, monospace';kx.fillText('cos='+s.toFixed(2),Math.min(KW-40,Math.max(40,X(s))),14);kx.textAlign='left'}
+['d513-th','d513-sys','d513-leakOut'].forEach(id=>$(id).addEventListener('input',leakRun));
+root.querySelectorAll('[data-leak]').forEach(b=>b.addEventListener('click',()=>{$('d513-leakOut').value=b.dataset.leak;leakRun()}));leakRun();
+
+// ---------- quiz ----------
+AI.quiz($('d513-quizBox'),[
+ ['ليه نشغّل output-side classifiers لو الـ input اتفحص خلاص؟',['لأن أي bypass للـ input هيطلّع output اليوزر هيشوفه، والـ output هو آخر مكان نمسكه فيه','لأن الـ input classifiers بقت deprecated','لأن الـ standard library بتطلب الاتنين','عشان نخلي السيستم أبطأ عن قصد'],0,'الـ output هو آخر فرصة. أي نوع هجوم جديد الـ input pipeline ما يعرفوش هيوصل لليوزر لو مفيش فحص على الرد.'],
+ ['أنهي تلات classifiers اتوصّلوا في الدرس ده؟',['OCR و ASR و TTS','Quality و factuality و citation','Toxicity و PII و instruction-leakage','Sentiment و language و length'],2,'toxicity للشتايم، PII للبيانات الشخصية، وinstruction-leakage لتسريب الـ system prompt.'],
+ ['الـ router بيعمل إيه لو verdict واحد high والتاني medium؟',['بيشغّل الـ actions الاتنين ورا بعض','بياخد أعلى severity ويطبّق الـ action بتاعها؛ الـ block بيكسب الـ redact','بيرمي الاتنين ويبعت الأصل','بيشغّل الـ medium بس'],1,'max severity = high → block. مفيش متوسط ومفيش تنفيذ الاتنين.'],
+ ['ليه بنستخدم Luhn check جوه الـ PII classifier؟',['عشان نضغط الـ regex','عشان نحسب الـ SSN','عشان نفرّق بين أرقام شكلها كارت وأي سلسلة أرقام عشوائية بأقل false positives','عشان نحوّل الأرقام لحروف'],2,'الـ regex بيمسك أي ١٣–١٩ رقم. الـ Luhn بيتأكد إن الـ check digit صح، فأرقام زي 1234 5678 9012 3456 ما تتمسكش.'],
+ ['الـ instruction-leakage classifier بيقرر إزاي؟',['بيدور على أقواس معقوفة في الرد','بيحسب trigram cosine بين الرد والـ system prompt المعروف، ويقارنه بـ threshold','بينادي موديل تاني','بيعد الـ tokens'],1,'character trigrams + cosine similarity. الـ threshold الافتراضي 0.55، وفوق 0.85 = high.'],
+ ['ليه الـ toxicity classifier بيبص على نفي في نافذة صغيرة على الشمال (قبل الكلمة)؟',['عشان يزوّد الـ false positives','عشان يبطّأ الـ regex','عشان يتخطى جمل زي "you are not stupid" وما يعملش redact لجمل الطمأنة العادية','عشان الـ Unicode بيطلب النفي'],2,'من غيرها، جملة طمأنة هتتعامل كشتيمة. بس خد بالك من العكس: "No, you idiot" هتعدّي.'],
+ ['(سؤال مني) رد فيه رقم تليفون واحد بس، ومفيش حاجة تانية. الـ router هيعمل إيه؟',['block','redact','warn','log'],2,'تليفون لوحده = finding واحد ومش email ولا card/ssn → severity low → warn. الإيميل بس هو اللي بيطلّع medium لوحده.'],
+ ['(سؤال مني) ليه الـ trigram leakage classifier ممكن يفوّت تسريب حقيقي؟',['لأن الـ cosine دايمًا بيطلع 1','لأن لو الموديل لخّص أو ترجم الـ system prompt بكلام تاني، الـ trigrams المشتركة بتقل والـ score ينزل تحت الـ threshold','لأنه بيشتغل على الـ input بس','لأنه بيحتاج GPU'],1,'الـ trigrams بتقيس تشابه الحروف مش المعنى، فهي ممتازة في التسريب الحرفي وضعيفة في إعادة الصياغة.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+
+AI.onTheme(()=>{if(!document.body.contains(fc))return false;drawFlow(last);luhnDraw();leakRun()});
+})();
+</script>

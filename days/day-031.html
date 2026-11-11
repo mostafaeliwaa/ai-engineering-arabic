@@ -1,0 +1,659 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 09 · Model Evaluation</span>
+  <h1>اليوم ٣١: الموديل قد طريقة قياسك ليه</h1>
+  <p class="lede">موديلك جاب <b>95% accuracy</b>. كويس؟ يمكن. لو 95% من الداتا class واحد، موديل بيقول نفس الإجابة دايمًا هيجيب 95% وهو ملوش أي لازمة. لو قيّمت على نفس داتا التدريب، الرقم ملوش معنى. ولو الداتا فيها وقت وعملت shuffle، يمكن الموديل بيستخدم المستقبل عشان يتوقع الماضي. النهاردة هتتعلم تقيس صح: <b>splits</b> و<b>cross-validation</b> و<b>precision/recall/F1/AUC</b> و<b>MSE/MAE/R²</b> و<b>learning curves</b>، وأشهر غلطات التقييم.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة <b>Julia</b>)</span>
+    <span>محتاج: <b>Probability &amp; Distributions و Statistics for ML، ودروس Phase 2 من ١ لـ ٨</b></span>
+    <span>بعده: <b>Bias-Variance Tradeoff</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d31-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<section id="d31-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: Feature Engineering</h2></div>
+  <details><summary>١. الـ target encoding ليه خطير؟</summary>لأنه بيستخدم متوسط الـ target نفسه كـ feature. لو اتحسب على الداتا كلها، labels الـ test بتتسرب للتدريب، ولو الـ category صغيرة الـ encoding بيبقى تقريبًا الإجابة نفسها. لازم يتحسب على الـ train بس (ومع smoothing).</details>
+  <details><summary>٢. الـ IDF لكلمة موجودة في كل المستندات بيساوي كام؟</summary><span class="ltr">log(N / N) = log(1) = 0</span>. يعني الكلمة اتشالت عمليًا من التمثيل.</details>
+  <details><summary>٣. امتى الـ correlation يفوّت feature مفيدة والـ MI يمسكها؟</summary>لما العلاقة مش خطية، زي <span class="ltr">y = x²</span> و x متماثلة حوالين الصفر. النهاردة هنكمّل في نفس الخط: إزاي نعرف إن الموديل نفسه كويس فعلًا، مش بس الـ features.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>Train / Val / Test</div>
+    <div><b>15 min</b>K-fold و stratified + معمل ٢</div>
+    <div><b>20 min</b>Confusion matrix و metrics و ROC + معمل ١</div>
+    <div><b>10 min</b>Regression metrics + معمل ٤</div>
+    <div><b>10 min</b>Learning و validation curves + معمل ٣</div>
+    <div><b>25 min</b>اكتب الكود + تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d31-split">
+  <div class="station-head"><span class="tag">01</span><h2>Train و Validation و Test: تلات أدوار</h2></div>
+  <div class="formula">Full Dataset → Train (60–70%) → Fit Model ⇄ Validation (15–20%) → Tune Hyperparameters → Final Model → Test (15–20%) → Report Performance</div>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>دوره</th><th>التشبيه</th></tr>
+    <tr><td><b>Train</b></td><td>الموديل بيتعلم منه وبيشوف أمثلته</td><td>الكتاب والتمارين المحلولة</td></tr>
+    <tr><td><b>Validation</b></td><td>تظبط بيه الـ hyperparameters وتختار بين الموديلات. الموديل ما بيتدربش عليه، بس <b>قراراتك</b> بتتأثر بيه</td><td>الامتحانات التجريبية</td></tr>
+    <tr><td><b>Test</b></td><td>بيتلمس <b>مرة واحدة</b> في الآخر خالص عشان تعلن الأداء النهائي</td><td>الامتحان الحقيقي، ورقته مقفولة لحد يومه</td></tr>
+  </table></div>
+  <p>لو بصيت على نتيجة الـ test ورجعت غيرت الموديل، يبقى مبقاش test. بقى validation set تاني. الـ test هو ضمانك إن الرقم اللي بتعلنه بيعبّر عن داتا الموديل عمره ما شافها.</p>
+</section>
+
+<!-- STATION 2 -->
+<section id="d31-cv">
+  <div class="station-head"><span class="tag">02</span><h2>K-Fold Cross-Validation</h2></div>
+  <p>مع داتا صغيرة، split واحد بيضيّع داتا وبيدي تقدير فيه noise (حظك في الـ split بيفرق). الـ K-fold بيستخدم كل الداتا للتدريب وللـ validation:</p>
+  <ol class="ex">
+    <li>قسّم الداتا لـ K أجزاء (folds) متساوية.</li>
+    <li>لكل fold: درّب على الـ <span class="ltr">K−1</span> التانيين، وقيّم على ده.</li>
+    <li>خد متوسط الـ K نتايج.</li>
+  </ol>
+  <p>الشائع <span class="ltr">K = 5</span> أو <span class="ltr">K = 10</span>. كل نقطة بتتستخدم في الـ validation <b>مرة واحدة بالظبط</b>، والمتوسط أثبت من أي split لوحده. <b>تشبيه:</b> بدل ما تحكم على لاعب من ماتش واحد، بتتفرج على 5 ماتشات وتاخد المتوسط.</p>
+  <p><b>Stratified K-fold:</b> بيحافظ على نسبة الـ classes في كل fold. لو الداتا 70% A و 30% B، كل fold هيبقى تقريبًا نفس النسبة. ده مهم جدًا للداتا الـ imbalanced، لأن الـ split العشوائي ممكن يحط كل عينات الـ minority في fold واحد.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: شوف الـ folds وعينات الـ minority</h3>
+      <p>كل مربع صغير = عينة. البرتقالي = الـ minority class. كل صف = fold والمربعات الغامقة هي الـ validation بتاعه. تحت كل fold عدد عينات الـ minority اللي في الـ validation.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>خلّي الـ minority 5% واختار «plain»، ودوس «shuffle تاني» كذا مرة: عدد الـ minority في كل fold بيتنطط (ساعات 0 أو 1). الـ recall على fold زي ده رقم مالوش معنى.</li>
+        <li>اختار «stratified»: كل fold فيه تقريبًا نفس العدد. ده كل الفرق.</li>
+        <li>لاحظ: في الحالتين كل عينة ظهرت في الـ validation مرة واحدة بالظبط.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d31-cvC" width="520" height="300" aria-label="معمل الـ folds"></canvas>
+      <div class="mrow">
+        <label>K = <span id="d31-kV">5</span><input type="range" id="d31-k" min="2" max="10" value="5"></label>
+        <label>minority = <span id="d31-mV">5%</span><input type="range" id="d31-mr" min="2" max="50" value="5"></label>
+      </div>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px">split <select id="d31-cvMode"><option value="plain">plain K-fold</option><option value="strat">stratified K-fold</option></select></label>
+        <button type="button" id="d31-shuf">shuffle تاني</button>
+      </div>
+      <div class="readout">
+        <div><small>minority لكل fold</small><b id="d31-per">–</b></div>
+        <div><small>أقل … أكتر</small><b id="d31-rng">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d31-cls">
+  <div class="station-head"><span class="tag">03</span><h2>Classification Metrics: كله طالع من الـ Confusion Matrix</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Predicted Positive</th><th>Predicted Negative</th></tr>
+    <tr><th>Actually Positive</th><td><b>TP</b> (True Positive)</td><td><b>FN</b> (False Negative)</td></tr>
+    <tr><th>Actually Negative</th><td><b>FP</b> (False Positive)</td><td><b>TN</b> (True Negative)</td></tr>
+  </table></div>
+  <div class="formula">Accuracy  = (TP + TN) / (TP + TN + FP + FN)
+Precision = TP / (TP + FP)
+Recall    = TP / (TP + FN)
+F1        = 2 · P · R / (P + R)</div>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>Accuracy:</b> نسبة الصح. بتضلل لما الـ classes مش متوازنة.</li>
+    <li><b>Precision:</b> «من كل اللي قلت عليهم positive، كام صح؟». مهمة لما الـ false positive غالي: spam filter بيرمي إيميل حقيقي في الـ spam.</li>
+    <li><b>Recall</b> (sensitivity): «من كل الـ positives الحقيقية، مسكت كام؟». مهمة لما الـ false negative غالي: فحص سرطان بيفوّت ورم.</li>
+    <li><b>F1:</b> الـ harmonic mean بتاعهم. بيوازن الاتنين لما مفيش واحد أهم بوضوح. ولأنه harmonic، لو واحد فيهم واطي الـ F1 بيقع (ما ينفعش تعوّض recall صفر بـ precision عالي).</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> صياد بشبكة. الـ <b>precision</b> = من اللي طلع في الشبكة، كام سمك وكام زبالة. الـ <b>recall</b> = من كل السمك اللي في البحيرة، مسكت كام. شبكة صغيرة = precision عالي و recall واطي. شبكة ضخمة = العكس.</div>
+  <h3>AUC-ROC</h3>
+  <p>أغلب الـ classifiers بيطلّعوا <b>score</b> (احتمال)، وانت بتختار <b>threshold</b> تقطع عنده. الـ ROC curve بيرسم <span class="ltr">TPR = recall</span> قصاد <span class="ltr">FPR = FP / (FP + TN)</span> لكل threshold ممكن. المساحة تحته = <b>AUC</b>: 0.5 = تخمين عشوائي، 1.0 = فصل كامل. وهو <b>threshold-independent</b>: بيقيس قد إيه الموديل بيرتب الـ positives فوق الـ negatives، مهما كان الـ cutoff اللي هتختاره. (تفسير مفيد: AUC = احتمال إن positive عشوائي ياخد score أعلى من negative عشوائي.)</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: حرّك الـ threshold وشوف كل الأرقام</h3>
+      <p>فوق: توزيع الـ scores للـ negatives (أزرق) والـ positives (برتقالي). الخط الأسود هو الـ threshold: اللي على يمينه predicted positive. تحت: الـ ROC curve والنقطة الحالية عليه.</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li>حرّك الـ threshold يمين: precision بتعلى و recall بتقل. شمال: العكس. ده الـ tradeoff.</li>
+        <li>قلّل «الفصل»: الـ ROC بيقرب من القطر والـ AUC من 0.5. الـ threshold ما بيغيرش الـ AUC خالص.</li>
+        <li>خلّي الـ positives 5% ودوس «دايمًا negative»: الـ accuracy حوالين 95% والـ recall والـ F1 صفر. ده الدرس كله في زرار.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d31-thC" width="520" height="200" aria-label="توزيعات الـ scores"></canvas>
+      <canvas id="d31-rocC" width="520" height="230" aria-label="منحنى ROC"></canvas>
+      <div class="mrow">
+        <label>threshold = <span id="d31-tV">0.50</span><input type="range" id="d31-t" min="0" max="1" step="0.01" value="0.5"></label>
+        <label>الفصل = <span id="d31-sepV">1.5</span><input type="range" id="d31-sep" min="0" max="4" step="0.1" value="1.5"></label>
+        <label>positives = <span id="d31-pV">30%</span><input type="range" id="d31-pos" min="2" max="50" value="30"></label>
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="d31-allneg"> دايمًا negative</label>
+      </div>
+      <div class="readout">
+        <div><small>TP / FN</small><b id="d31-tpfn">–</b></div>
+        <div><small>FP / TN</small><b id="d31-fptn">–</b></div>
+        <div><small>accuracy</small><b id="d31-acc">–</b></div>
+        <div><small>precision</small><b id="d31-pre">–</b></div>
+        <div><small>recall</small><b id="d31-rec">–</b></div>
+        <div><small>F1</small><b id="d31-f1">–</b></div>
+        <div><small>AUC</small><b id="d31-auc">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d31-reg">
+  <div class="station-head"><span class="tag">04</span><h2>Regression Metrics</h2></div>
+  <div class="formula">MSE  = mean( (y_true − y_pred)² )
+RMSE = √MSE
+MAE  = mean( |y_true − y_pred| )
+R²   = 1 − SS_res / SS_tot      SS_res = Σ(y_true − y_pred)²     SS_tot = Σ(y_true − y_mean)²</div>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>MSE:</b> بيعاقب الغلط الكبير تربيعيًا. حساس للـ outliers.</li>
+    <li><b>RMSE:</b> نفس وحدة الـ target (جنيه، متر)، فأسهل في الفهم من الـ MSE.</li>
+    <li><b>MAE:</b> كل الأخطاء بشكل خطي. أقوى قصاد الـ outliers.</li>
+    <li><b>R²:</b> نسبة الـ variance اللي الموديل شرحها. 1.0 = مثالي. 0.0 = مش أحسن من إنك تقول المتوسط دايمًا. ويقدر يبقى <b>سالب</b> لو الموديل أوحش من المتوسط.</li>
+  </ul>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: outlier واحد قصاد MSE و MAE</h3>
+      <p>الخط هو توقعات الموديل، والنقط هي القيم الحقيقية. اسحب النقطة البرتقالي لفوق أو تحت (أو حرّك السلايدر) وشوف الأرقام. وجرب «الموديل = المتوسط» عشان تشوف R² = 0، و«موديل وحش» عشان تشوفه سالب.</p>
+      <p>لاحظ: لما النقطة تبعد الضعف، مساهمتها في الـ MSE بتبقى أربع أضعاف، وفي الـ MAE الضعف بس.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d31-rgC" width="520" height="280" aria-label="معمل regression metrics"></canvas>
+      <div class="mrow">
+        <label>outlier = <span id="d31-oV">0</span><input type="range" id="d31-o" min="-30" max="30" step="0.5" value="0"></label>
+        <label>model <select id="d31-model"><option value="fit">الخط الكويس</option><option value="mean">الموديل = المتوسط</option><option value="bad">موديل وحش</option></select></label>
+      </div>
+      <div class="readout">
+        <div><small>MSE</small><b id="d31-mse">–</b></div>
+        <div><small>RMSE</small><b id="d31-rmse">–</b></div>
+        <div><small>MAE</small><b id="d31-mae">–</b></div>
+        <div><small>R²</small><b id="d31-r2">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d31-curves">
+  <div class="station-head"><span class="tag">05</span><h2>Learning Curves و Validation Curves</h2></div>
+  <h3>Learning curve: الأداء قصاد حجم الـ train</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li><b>High bias (underfitting):</b> المنحنيين بيتقابلوا عند score واطي. داتا أكتر مش هتفيد، محتاج موديل أعقد.</li>
+    <li><b>High variance (overfitting):</b> الـ train عالي والـ validation أوطى بكتير، والفجوة كبيرة. داتا أكتر المفروض تفيد.</li>
+  </ul>
+  <h3>Validation curve: الأداء قصاد hyperparameter</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>complexity قليلة: الاتنين واطيين (underfitting).</li>
+    <li>complexity مظبوطة: الاتنين عاليين وقريبين.</li>
+    <li>complexity عالية: الـ train فاضل عالي والـ validation بيقع (overfitting).</li>
+  </ul>
+  <p>أحسن قيمة للـ hyperparameter هي اللي الـ validation score عندها في القمة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: polynomial regression على <span class="ltr">sin</span> فيها noise</h3>
+      <p>بنفيت polynomial بدرجة مختارة على داتا <span class="ltr">y = sin(πx) + noise</span>، والـ score هنا R² (أعلى أحسن). الأزرق = train، البرتقالي = validation (60 نقطة ثابتة).</p>
+      <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+        <li><b>learning curve</b> بدرجة 1: الخطين بيتقابلوا واطي. ده high bias. زوّد الـ train ومفيش فايدة.</li>
+        <li>بدرجة 12: مع train صغير الـ train score حوالين 1 والـ validation تحت خالص. الفجوة بتقل لما الداتا تزيد. ده high variance.</li>
+        <li>بدّل لـ <b>validation curve</b> بـ train = 30: القمة في درجة متوسطة، وبعدها الـ validation بيقع والـ train فاضل طالع.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d31-lcC" width="520" height="280" aria-label="learning و validation curves"></canvas>
+      <div class="mrow">
+        <label>mode <select id="d31-lcMode"><option value="lc">learning curve</option><option value="vc">validation curve</option></select></label>
+        <label><span id="d31-lcLbl">degree</span> = <span id="d31-lcV">1</span><input type="range" id="d31-lcP" min="1" max="12" value="1"></label>
+      </div>
+      <div class="readout">
+        <div><small>آخر train</small><b id="d31-lcTr">–</b></div>
+        <div><small>آخر val</small><b id="d31-lcVa">–</b></div>
+        <div><small>التشخيص</small><b id="d31-lcDx">–</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6 -->
+<section id="d31-mist">
+  <div class="station-head"><span class="tag">06</span><h2>أشهر غلطات التقييم</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الغلطة</th><th>شكلها</th><th>الحل</th></tr>
+    <tr><td><b>Data leakage</b></td><td>scaler اتعمله fit على الداتا كلها قبل الـ split، داتا من المستقبل في time series، feature مشتقة من الـ target</td><td>اعمل split الأول، بعدين preprocess</td></tr>
+    <tr><td><b>Class imbalance</b></td><td>99% معاملات سليمة و1% fraud. «دايمًا سليمة» = 99% accuracy</td><td>precision و recall و F1 و AUC-ROC بدل الـ accuracy</td></tr>
+    <tr><td><b>Wrong metric</b></td><td>تعظّم accuracy وانت محتاج recall (تشخيص طبي)، أو RMSE والداتا فيها outliers تقيلة</td><td>اختار المقياس من تكلفة الغلط الحقيقية (MAE للـ outliers)</td></tr>
+    <tr><td><b>بدون stratified splits</b></td><td>fold فيه عينات minority قليلة جدًا، فالتقدير بيتنطط</td><td>stratified K-fold</td></tr>
+    <tr><td><b>Testing too often</b></td><td>كل ما تبص على الـ test وتعدّل، بتعمل overfit عليه</td><td>الـ test استخدام واحد</td></tr>
+  </table></div>
+  <h3>مقارنة موديلين: هل الفرق حقيقي؟</h3>
+  <p>الكود في الآخر بيقارن موديلين على نفس الـ 5 folds بـ <b>paired t-test</b>: يحسب الفرق في كل fold، وبعدين:</p>
+  <div class="formula">t = mean(diff) / ( std(diff) / √k )          |t| &gt; 2.78  →  significant at p &lt; 0.05 with df = 4</div>
+  <p>لو |t| أقل، الفرق ممكن يكون صدفة، والـ output بتاع الدرس بينصح ساعتها تختار الموديل الأبسط. وبيقول كمان: موديل متوسطه 0.85 و std 0.02 أوثق من واحد متوسطه 0.87 و std 0.10.</p>
+  <div class="note"><strong>من الـ output في الريبو (skill-evaluation.md):</strong> checklist من 7 خطوات: (١) split صح قبل أي preprocessing، stratified للـ classification، test مرة واحدة، وللـ time series split بالوقت من غير shuffle. (٢) اختار المقياس (جدول للـ classification وجدول للـ regression). (٣) اعمل baseline: الـ majority class أو متوسط الـ train، وأي موديل ما يغلبهمش مش بيتعلم. (٤) cross-validate واكتب الـ mean والـ std. (٥) قارن إحصائيًا. (٦) راجع الغلطات. (٧) درّب على train + validation مع بعض وقيّم على الـ test مرة واحدة، واكتب المقياس مع confidence interval لو ينفع ومقارنة بالـ baseline.</div>
+</section>
+
+<!-- CODE -->
+<section id="d31-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من الـ root بتاع الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/09-model-evaluation/code/evaluation.py</pre></div>
+  <p>وفيه نسخة Julia (stdlib بس) بتعمل الـ split والـ metrics والـ CV والـ imbalanced والـ regression metrics:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>julia phases/02-ml-fundamentals/09-model-evaluation/code/main.jl</pre></div>
+  <details><summary>إيه اللي هتشوفه</summary><p>في نسخة Python: <span class="ltr">Train: 180, Val: 60, Test: 60</span> (لأن <span class="ltr">int(300·0.6) = 180</span> و <span class="ltr">int(300·0.8) = 240</span>)، بعدين الـ confusion matrix والـ metrics والـ AUC على الـ test، وبعدين 5 fold scores للـ plain وللـ stratified مع الـ mean والـ std. في جزء الـ imbalanced: الـ always-negative baseline الـ accuracy بتاعه عالية (قد نسبة الـ negatives) والـ precision والـ recall والـ F1 = <span class="ltr">0.0000</span> بالظبط. بعدين regression metrics مع مقارنة بالـ mean baseline (R² بتاعه حوالين الصفر)، وجدول learning curve، وفي الآخر paired t-statistic. الأرقام التانية بتعتمد على الـ seed، قارن الاتجاهات. ملحوظة: في نسخة Julia جزء الـ regression بيعمل توقعات = القيمة الحقيقية + noise (مش موديل متدرب) ومن غير seed، فأرقامه بتتغير كل مرة.</p></details>
+  <p>اكتب في <code>my_eval.py</code> بإيدك.</p>
+
+  <h3>خطوة ١: train / val / test</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+import math
+
+def train_val_test_split(X, y, train_ratio=0.6, val_ratio=0.2, seed=42):
+    random.seed(seed)
+    n = len(X)
+    idx = list(range(n))
+    random.shuffle(idx)                           <span class="c"># shuffle مرة واحدة</span>
+    a = int(n * train_ratio)
+    b = int(n * (train_ratio + val_ratio))
+    tr, va, te = idx[:a], idx[a:b], idx[b:]
+    pick = lambda ids, arr: [arr[i] for i in ids]
+    return (pick(tr, X), pick(tr, y), pick(va, X), pick(va, y), pick(te, X), pick(te, y))</pre></div>
+
+  <h3>خطوة ٢: K-fold و stratified و cross_validate</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def kfold_split(n, k=5, seed=42):
+    random.seed(seed)
+    idx = list(range(n))
+    random.shuffle(idx)
+    size = n // k
+    folds = []
+    for i in range(k):
+        start = i * size
+        end = start + size if i &lt; k - 1 else n    <span class="c"># الباقي يروح لآخر fold</span>
+        folds.append((idx[:start] + idx[end:], idx[start:end]))
+    return folds
+
+def stratified_kfold_split(y, k=5, seed=42):
+    random.seed(seed)
+    by_class = {}
+    for i, label in enumerate(y):
+        by_class.setdefault(label, []).append(i)
+    for label in by_class:
+        random.shuffle(by_class[label])
+    folds = [{"train": [], "val": []} for _ in range(k)]
+    for label, ids in by_class.items():          <span class="c"># قسّم كل class لوحده</span>
+        size = len(ids) // k
+        for i in range(k):
+            start = i * size
+            end = start + size if i &lt; k - 1 else len(ids)
+            folds[i]["val"].extend(ids[start:end])
+            folds[i]["train"].extend(ids[:start] + ids[end:])
+    return [(f["train"], f["val"]) for f in folds]
+
+def cross_validate(X, y, model_fn, k=5, metric_fn=None, stratified=False):
+    folds = stratified_kfold_split(y, k) if stratified else kfold_split(len(X), k)
+    scores = []
+    for tr, va in folds:
+        model = model_fn()                        <span class="c"># موديل جديد لكل fold</span>
+        model.fit([X[i] for i in tr], [y[i] for i in tr])
+        preds = [model.predict(X[i]) for i in va]
+        y_val = [y[i] for i in va]
+        if metric_fn:
+            scores.append(metric_fn(y_val, preds))
+        else:
+            scores.append(sum(a == b for a, b in zip(y_val, preds)) / len(y_val))
+    return scores</pre></div>
+
+  <h3>خطوة ٣: confusion matrix و metrics و ROC/AUC</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def confusion_matrix(y_true, y_pred):
+    tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
+    tn = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 0)
+    fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
+    fn = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 0)
+    return tp, tn, fp, fn
+
+def accuracy(y_true, y_pred):
+    tp, tn, fp, fn = confusion_matrix(y_true, y_pred)
+    total = tp + tn + fp + fn
+    return (tp + tn) / total if total &gt; 0 else 0.0
+
+def precision(y_true, y_pred):
+    tp, tn, fp, fn = confusion_matrix(y_true, y_pred)
+    return tp / (tp + fp) if (tp + fp) &gt; 0 else 0.0   <span class="c"># ما قلتش positive خالص = 0</span>
+
+def recall(y_true, y_pred):
+    tp, tn, fp, fn = confusion_matrix(y_true, y_pred)
+    return tp / (tp + fn) if (tp + fn) &gt; 0 else 0.0
+
+def f1_score(y_true, y_pred):
+    p, r = precision(y_true, y_pred), recall(y_true, y_pred)
+    return 2 * p * r / (p + r) if (p + r) &gt; 0 else 0.0
+
+def roc_curve(y_true, y_scores):
+    thresholds = sorted(set(y_scores), reverse=True)  <span class="c"># كل score ممكن يبقى threshold</span>
+    P = sum(y_true)
+    N = len(y_true) - P
+    fpr, tpr = [], []
+    for th in thresholds:
+        pred = [1 if s &gt;= th else 0 for s in y_scores]
+        tp = sum(1 for t, p in zip(y_true, pred) if t == 1 and p == 1)
+        fp = sum(1 for t, p in zip(y_true, pred) if t == 0 and p == 1)
+        tpr.append(tp / P if P &gt; 0 else 0.0)
+        fpr.append(fp / N if N &gt; 0 else 0.0)
+    return fpr, tpr, thresholds
+
+def auc_roc(y_true, y_scores):
+    fpr, tpr, _ = roc_curve(y_true, y_scores)
+    pts = sorted(zip(fpr, tpr))
+    area = 0.0
+    for i in range(1, len(pts)):                  <span class="c"># trapezoid rule</span>
+        width = pts[i][0] - pts[i - 1][0]
+        height = (pts[i][1] + pts[i - 1][1]) / 2
+        area += width * height
+    return area</pre></div>
+  <p>خد بالك: الـ ROC هنا بيبدأ من أعلى threshold (أول نقطة مش بالضرورة <span class="ltr">(0, 0)</span>) وبيوصل لـ <span class="ltr">(1, 1)</span> عند أقل threshold. لو أعلى score عند عينة واحدة، أول نقطة الـ FPR أو الـ TPR بتاعها صفر، فمفيش مساحة بتضيع. بس لو أعلى score متعادل بين positive و negative، المثلث الصغير من <span class="ltr">(0,0)</span> لأول نقطة مش بيتحسب (المكتبات بتضيف <span class="ltr">(0,0)</span> في الأول). والمساحة بتتحسب بالـ trapezoid بين كل نقطتين متجاورتين، ولو فيه scores متساوية النقطتين بيتوصلوا بخط مايل، وده معناه «نص الفرصة» في الترتيب.</p>
+
+  <h3>خطوة ٤: regression metrics</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def mse(y_true, y_pred):
+    return sum((t - p) ** 2 for t, p in zip(y_true, y_pred)) / len(y_true)
+
+def rmse(y_true, y_pred):
+    return math.sqrt(mse(y_true, y_pred))         <span class="c"># نفس وحدة الـ target</span>
+
+def mae(y_true, y_pred):
+    return sum(abs(t - p) for t, p in zip(y_true, y_pred)) / len(y_true)
+
+def r_squared(y_true, y_pred):
+    m = sum(y_true) / len(y_true)
+    ss_res = sum((t - p) ** 2 for t, p in zip(y_true, y_pred))
+    ss_tot = sum((t - m) ** 2 for t in y_true)
+    return 0.0 if ss_tot == 0 else 1.0 - ss_res / ss_tot</pre></div>
+
+  <h3>خطوة ٥: learning curve</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def learning_curve(X, y, model_fn, metric_fn, train_sizes=None, val_ratio=0.2, seed=42):
+    random.seed(seed)
+    idx = list(range(len(X)))
+    random.shuffle(idx)
+    v = int(len(X) * val_ratio)
+    val_idx, pool = idx[:v], idx[v:]              <span class="c"># validation ثابت</span>
+    X_val = [X[i] for i in val_idx]
+    y_val = [y[i] for i in val_idx]
+    if train_sizes is None:
+        train_sizes = [int(len(pool) * r) for r in [0.1, 0.2, 0.4, 0.6, 0.8, 1.0]]
+    tr_scores, va_scores = [], []
+    for size in train_sizes:                      <span class="c"># train بيكبر تدريجيًا</span>
+        sub = pool[:size]
+        Xt, yt = [X[i] for i in sub], [y[i] for i in sub]
+        model = model_fn()
+        model.fit(Xt, yt)
+        tr_scores.append(metric_fn(yt, [model.predict(x) for x in Xt]))
+        va_scores.append(metric_fn(y_val, [model.predict(x) for x in X_val]))
+    return train_sizes, tr_scores, va_scores</pre></div>
+
+  <h3>خطوة ٦: موديل بسيط والداتا والتجربة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class SimpleLogistic:
+    def __init__(self, lr=0.1, epochs=100):
+        self.lr, self.epochs = lr, epochs
+        self.weights, self.bias = None, 0.0
+
+    def sigmoid(self, z):
+        z = max(-500, min(500, z))                <span class="c"># حماية من overflow</span>
+        return 1.0 / (1.0 + math.exp(-z))
+
+    def fit(self, X, y):
+        self.weights, self.bias = [0.0] * len(X[0]), 0.0
+        for _ in range(self.epochs):
+            for xi, yi in zip(X, y):              <span class="c"># SGD صف بصف</span>
+                err = yi - self.predict_proba(xi)
+                for j in range(len(xi)):
+                    self.weights[j] += self.lr * err * xi[j]
+                self.bias += self.lr * err
+
+    def predict_proba(self, x):
+        return self.sigmoid(sum(w * xi for w, xi in zip(self.weights, x)) + self.bias)
+
+    def predict(self, x):
+        return 1 if self.predict_proba(x) &gt;= 0.5 else 0
+
+def make_classification_data(n=300, seed=42):
+    random.seed(seed)
+    X, y = [], []
+    for _ in range(n):
+        x1, x2 = random.gauss(0, 1), random.gauss(0, 1)
+        X.append([x1, x2])
+        y.append(1 if (x1 + x2 + random.gauss(0, 0.5)) &gt; 0 else 0)
+    return X, y
+
+def make_imbalanced_data(n=300, minority_ratio=0.05, seed=42):
+    random.seed(seed)
+    X, y = [], []
+    for _ in range(n):
+        if random.random() &lt; minority_ratio:      <span class="c"># ~5% positive حوالين [3,3]</span>
+            X.append([random.gauss(3, 0.5), random.gauss(3, 0.5)]); y.append(1)
+        else:
+            X.append([random.gauss(0, 1), random.gauss(0, 1)]); y.append(0)
+    return X, y
+
+if __name__ == "__main__":
+    X, y = make_classification_data(300)
+    Xtr, ytr, Xva, yva, Xte, yte = train_val_test_split(X, y)
+    print("Train/Val/Test:", len(Xtr), len(Xva), len(Xte))
+    model = SimpleLogistic(lr=0.1, epochs=200)
+    model.fit(Xtr, ytr)
+    pred = [model.predict(x) for x in Xte]
+    print("confusion:", confusion_matrix(yte, pred))
+    print("acc/prec/rec/f1:", [round(m(yte, pred), 4) for m in (accuracy, precision, recall, f1_score)])
+    print("AUC:", round(auc_roc(yte, [model.predict_proba(x) for x in Xte]), 4))
+
+    for strat in (False, True):
+        s = cross_validate(X, y, lambda: SimpleLogistic(0.1, 200), k=5, metric_fn=accuracy, stratified=strat)
+        m = sum(s) / len(s)
+        print("stratified" if strat else "plain", [round(v, 4) for v in s], "mean", round(m, 4))
+
+    Xi, yi = make_imbalanced_data(300)
+    zero = [0] * len(yi)                          <span class="c"># الـ baseline الكذاب</span>
+    print("always-negative acc:", round(accuracy(yi, zero), 4), "recall:", recall(yi, zero))
+
+    a = cross_validate(X, y, lambda: SimpleLogistic(0.1, 100), k=5, metric_fn=accuracy)
+    b = cross_validate(X, y, lambda: SimpleLogistic(0.1, 500), k=5, metric_fn=accuracy)
+    d = [p - q for p, q in zip(a, b)]
+    md = sum(d) / len(d)
+    sd = math.sqrt(sum((v - md) ** 2 for v in d) / len(d))
+    t = md / (sd / math.sqrt(len(d))) if sd &gt; 0 else 0.0
+    print("paired t:", round(t, 4), "(|t| &gt; 2.78 → significant, df=4)")</pre></div>
+  <p>الريبو فيه كمان <code>SimpleLinearRegression</code> (gradient descent) و <code>make_regression_data</code> <span class="ltr">(y = 3·x1 + 2·x2 + noise)</span> مع standardize، وبيطبع MSE و RMSE و MAE و R² قصاد mean baseline، وجدول الـ learning curve. ضيفهم لنسختك.</p>
+
+  <h3>خطوة ٧: scikit-learn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.model_selection import cross_val_score, StratifiedKFold, learning_curve
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, confusion_matrix, mean_squared_error, r2_score,
+)
+from sklearn.linear_model import LogisticRegression
+
+model = LogisticRegression()
+scores = cross_val_score(model, X, y, cv=StratifiedKFold(5), scoring="f1")</pre></div>
+  <p>مفيش سحر: الـ cross-validation for-loops و indices، وكل metric عدّ TP/FP/TN/FN. المكتبة بتضيف parallelism و scoring options أكتر وتكامل مع الـ pipelines.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d31-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Precision-Recall curve:</b> ارسم precision قصاد recall لكل threshold، واحسب الـ average precision (المساحة تحته). قارنه بالـ ROC على داتا imbalanced واشرح إمتى كل واحد أكتر فايدة.
+      <details><summary>تلميح</summary>نفس loop الـ <code>roc_curve</code>، بس احسب <span class="ltr">TP/(TP+FP)</span> بدل الـ FPR. في الـ imbalanced، الـ FPR بيفضل صغير حتى لو الـ FP كتير (لأن الـ TN ضخم)، فالـ ROC بيبان متفائل. الـ PR curve بيبص على الـ positives بس فبيكشف المشكلة. استخدم <span class="ltr">make_imbalanced_data</span>.</details></li>
+    <li><b>Nested cross-validation:</b> الـ outer loop بيقيّم الأداء، والـ inner loop بيظبط الـ hyperparameters. استخدمه تقارن موديلين بعدل من غير ما الـ validation يتسرب للتقييم.
+      <details><summary>تلميح</summary>لكل outer fold: خد الـ train بتاعه بس، واعمل جواه K-fold تاني تختار بيه الـ <code>epochs</code> أو الـ <code>lr</code>. درّب بأحسن قيمة على الـ outer train كله وقيّم على الـ outer val. المتوسط على الـ outer folds هو الرقم اللي تعلنه. الـ outer val عمره ما شارك في اختيار الـ hyperparameter.</details></li>
+    <li><b>Permutation test:</b> اعمل shuffle للـ labels، ودرّب، وقيس. كرر 100 مرة تبني null distribution، واحسب الـ p-value للأداء الحقيقي.
+      <details><summary>تلميح</summary><span class="ltr">p = (1 + عدد المرات اللي الـ shuffled score ≥ الحقيقي) / (100 + 1)</span>. على <code>make_classification_data</code> الـ shuffled scores هتبقى حوالين 0.5 والحقيقي أعلى بكتير، فالـ p هيبقى أصغر حاجة ممكنة (<span class="ltr">1/101</span>).</details></li>
+    <li><b>إضافة مني · تقييم classifier مبني على LLM:</b> عندك LLM بيصنّف رسايل الدعم لـ «refund / bug / other» وبيرجع confidence. اعمل 60 رسالة بإيدك بـ labels (ده الـ golden set بتاعك، واقفله زي الـ test)، واحسب confusion matrix 3×3، و precision و recall لكل class، و macro-F1. بعدين اختار threshold للـ confidence: أقل منه الرسالة تروح لإنسان. ارسم الـ recall بتاع «refund» قصاد نسبة الرسايل اللي بتروح لإنسان. ده تقييم حقيقي لأي feature في منتج AI.
+      <details><summary>تلميح</summary>macro-F1 = متوسط الـ F1 بتاع كل class بنفس الوزن، فالـ class الصغير ما يضيعش. ولو بتغيّر الـ prompt كتير وبتبص على نفس الـ 60 رسالة كل مرة، انت بتعمل «testing too often». قسّمهم 40 dev تعدّل عليهم و 20 test تلمسهم في الآخر.</details></li>
+  </ol>
+</section>
+
+<!-- MINE -->
+<section id="d31-mine">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالهوش</h2></div>
+  <h3>الحدس</h3>
+  <p>التقييم محاكاة للمستقبل. السؤال الوحيد: «هل الطريقة اللي بقيس بيها شبه الطريقة اللي الموديل هيتستخدم بيها؟». لو في الـ production الموديل هيشوف داتا الشهر الجاي، يبقى الـ split لازم يكون بالوقت. لو هيشوف يوزرز جداد، يبقى الـ split لازم يكون باليوزر (مش نفس اليوزر في الـ train والـ test). أي حاجة تانية بتديك رقم أحلى من الحقيقة.</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:22px">
+    <li>تسيب الـ threshold على 0.5 وخلاص. الـ threshold قرار business: اختاره على الـ validation حسب تكلفة الـ FP والـ FN.</li>
+    <li>صفوف مكررة أو شبه مكررة (نفس اليوزر، نفس الصورة بقص مختلف) في الـ train والـ test. الموديل بيحفظ والرقم بيكذب. استخدم group split.</li>
+    <li>تعلن رقم الـ cross-validation من غير الـ std. «0.87 ± 0.10» قصة مختلفة عن «0.87 ± 0.01».</li>
+    <li>الـ paired t-test في الكود بيقسم على n في الـ std. الصيغة المعتادة بتستخدم <span class="ltr">n − 1</span> (sample std) فبتدي t أصغر شوية، يعني الكود متفائل شوية في إعلان إن الفرق significant.</li>
+    <li>الـ folds في الـ CV مش مستقلة تمامًا (بيتشاركوا داتا تدريب)، فالـ t-test عليها تقريب مش إثبات.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <p><b>Benchmark contamination</b> = test set leakage على نطاق ضخم: لو أسئلة الـ benchmark كانت في داتا التدريب، الرقم مالوش معنى. <b>Recall@k</b> في الـ retrieval بتاع RAG هو recall حرفيًا: من الـ chunks الصح، كام رجع في أول k. الـ <b>guardrails</b> و الـ content filters بتتقيّم بـ precision و recall وبتختار threshold حسب تكلفة الغلط. الـ <b>eval suites</b> للـ agents (نسبة المهام اللي خلصت صح) لازم يكون ليها test مقفول، وإلا هتعمل overfit على الـ prompts بتاعتك. و<b>LLM-as-judge</b> نفسه موديل، ومحتاج تقيّمه بالـ confusion matrix قصاد labels بشرية قبل ما تصدّقه.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d31-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d31-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d31-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d31-ck">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح دور الـ train والـ validation والـ test، وليه الـ test مرة واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> كتبت K-fold و stratified K-fold وفاهم ليه الـ stratified مهم للـ imbalanced</label></li>
+    <li><label><input type="checkbox" data-ck="3"> أحسب precision و recall و F1 من الـ confusion matrix وأختار المناسب للمشكلة</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم ROC و AUC وإن الـ AUC مش معتمد على الـ threshold</label></li>
+    <li><label><input type="checkbox" data-ck="5"> أعرف MSE و RMSE و MAE و R²، وأقرأ learning curve وأشخّص bias أو variance</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Train / Val / Test</td><td>أي مشروع ML، و golden sets للـ LLM evals</td></tr>
+    <tr><td>Cross-validation</td><td>الداتا الصغيرة، واختيار الـ hyperparameters (الدرس الجاي بعد بكرة)</td></tr>
+    <tr><td>Precision / Recall / F1</td><td>fraud، spam، تشخيص طبي، guardrails، recall@k في RAG</td></tr>
+    <tr><td>AUC-ROC</td><td>مقارنة classifiers من غير ما تختار threshold</td></tr>
+    <tr><td>MSE / MAE / R²</td><td>أي regression: أسعار، طلب، وقت توصيل</td></tr>
+    <tr><td>Learning curves</td><td>تقرر تجمع داتا أكتر ولا تغيّر الموديل</td></tr>
+    <tr><td>Data leakage</td><td>benchmark contamination في الـ LLMs</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Bias-Variance Tradeoff. الفجوة اللي شفتها في معمل ٣ ليها نظرية كاملة: ليه الموديل البسيط بيغلط بطريقة والمعقد بيغلط بطريقة تانية.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F09-model-evaluation" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/09-model-evaluation</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const css=AI.css,f=AI.fmt,$=id=>document.getElementById(id);
+const rm=$('d31-roadmap');for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===9)s.className='now';rm.appendChild(s)}
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(R){let u=0,v=0;while(!u)u=R();v=R();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+/* ---- Lab 1: threshold + ROC ---- */
+const tc=$('d31-thC'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+const rc=$('d31-rocC'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+const Z=(()=>{const R=rng(42),A=[];for(let i=0;i<1000;i++)A.push([gauss(R),R()]);return A})();
+const sig=z=>1/(1+Math.exp(-z));
+function thData(){const sep=+$('d31-sep').value,pr=+$('d31-pos').value/100;return Z.map(([g,u])=>{const y=u<pr?1:0;return{y,s:sig(g+(y?sep/2:-sep/2))}})}
+function drawTh(){const sep=+$('d31-sep').value,pr=+$('d31-pos').value,t=+$('d31-t').value,an=$('d31-allneg').checked;
+  $('d31-tV').textContent=t.toFixed(2);$('d31-sepV').textContent=f(sep,1);$('d31-pV').textContent=pr+'%';
+  const D=thData(),A=css('--vec-a'),B=css('--vec-b');
+  let tp=0,fp=0,tn=0,fn=0;D.forEach(d=>{const p=an?0:(d.s>=t?1:0);if(d.y&&p)tp++;else if(d.y)fn++;else if(p)fp++;else tn++});
+  const P=tp+fn,N=fp+tn,pre=tp+fp?tp/(tp+fp):0,rec=P?tp/P:0,f1=pre+rec?2*pre*rec/(pre+rec):0;
+  $('d31-tpfn').textContent=tp+' / '+fn;$('d31-fptn').textContent=fp+' / '+tn;$('d31-acc').textContent=f((tp+tn)/D.length,3);$('d31-pre').textContent=f(pre,3);$('d31-rec').textContent=f(rec,3);$('d31-f1').textContent=f(f1,3);
+  /* histograms */
+  const bins=40,Hn=new Array(bins).fill(0),Hp=new Array(bins).fill(0);D.forEach(d=>{const i=Math.min(bins-1,Math.floor(d.s*bins));(d.y?Hp:Hn)[i]++});
+  const L=10,R=TW-10,T=10,Bt=TH-22,bw=(R-L)/bins,hm=Math.max(...Hn,...Hp,1);
+  tx.clearRect(0,0,TW,TH);tx.globalAlpha=.55;[[Hn,A],[Hp,B]].forEach(([H,c])=>{tx.fillStyle=c;H.forEach((h,i)=>{const hh=h/hm*(Bt-T);tx.fillRect(L+i*bw+1,Bt-hh,bw-2,hh)})});tx.globalAlpha=1;
+  const xt=L+(an?1:t)*(R-L);tx.strokeStyle=css('--ink');tx.lineWidth=2.5;tx.beginPath();tx.moveTo(xt,T-4);tx.lineTo(xt,Bt);tx.stroke();
+  tx.fillStyle=css('--muted');tx.font='12px JetBrains Mono, monospace';tx.textAlign='center';[0,.25,.5,.75,1].forEach(v=>tx.fillText(v,L+v*(R-L),TH-6));tx.textAlign='left';
+  tx.fillStyle=A;tx.fillText('negatives',L+4,T+12);tx.fillStyle=B;tx.fillText('positives',L+4,T+28);
+  /* ROC */
+  const S=D.slice().sort((a,b)=>b.s-a.s);const pts=[[0,0]];let ctp=0,cfp=0;S.forEach(d=>{d.y?ctp++:cfp++;pts.push([N?cfp/N:0,P?ctp/P:0])});
+  let auc=0;for(let i=1;i<pts.length;i++)auc+=(pts[i][0]-pts[i-1][0])*(pts[i][1]+pts[i-1][1])/2;$('d31-auc').textContent=f(auc,3);
+  const rl=40,rr=RW-150,rt=10,rb=RH-30,X=v=>rl+v*(rr-rl),Y=v=>rb-v*(rb-rt);
+  rx.clearRect(0,0,RW,RH);rx.strokeStyle=css('--grid');rx.lineWidth=1;for(let k=0;k<=4;k++){rx.beginPath();rx.moveTo(X(k/4),rt);rx.lineTo(X(k/4),rb);rx.moveTo(rl,Y(k/4));rx.lineTo(rr,Y(k/4));rx.stroke()}
+  rx.strokeStyle=css('--muted');rx.setLineDash([4,4]);rx.beginPath();rx.moveTo(X(0),Y(0));rx.lineTo(X(1),Y(1));rx.stroke();rx.setLineDash([]);
+  rx.fillStyle=css('--vec-a');rx.globalAlpha=.12;rx.beginPath();rx.moveTo(X(0),Y(0));pts.forEach(p=>rx.lineTo(X(p[0]),Y(p[1])));rx.lineTo(X(1),Y(0));rx.closePath();rx.fill();rx.globalAlpha=1;
+  rx.strokeStyle=css('--vec-a');rx.lineWidth=2.5;rx.beginPath();pts.forEach((p,i)=>i?rx.lineTo(X(p[0]),Y(p[1])):rx.moveTo(X(p[0]),Y(p[1])));rx.stroke();
+  const cx=X(N?fp/N:0),cy=Y(rec);rx.fillStyle=css('--vec-b');rx.strokeStyle=css('--ink');rx.lineWidth=2;rx.beginPath();rx.arc(cx,cy,7,0,7);rx.fill();rx.stroke();
+  rx.fillStyle=css('--muted');rx.font='12px JetBrains Mono, monospace';rx.textAlign='center';rx.fillText('FPR',(rl+rr)/2,RH-8);rx.fillText('0',X(0),rb+14);rx.fillText('1',X(1),rb+14);rx.save();rx.translate(14,(rt+rb)/2);rx.rotate(-Math.PI/2);rx.fillText('TPR (recall)',0,0);rx.restore();rx.textAlign='left';
+  rx.fillStyle=css('--ink');rx.font='13px JetBrains Mono, monospace';rx.fillText('AUC = '+f(auc,3),rr+14,rt+24);rx.fillStyle=css('--muted');rx.font='12px JetBrains Mono, monospace';rx.fillText('FPR = '+f(N?fp/N:0,3),rr+14,rt+48);rx.fillText('TPR = '+f(rec,3),rr+14,rt+66);rx.fillText('random = 0.5',rr+14,rt+90)}
+['d31-t','d31-sep','d31-pos'].forEach(id=>$(id).addEventListener('input',drawTh));$('d31-allneg').addEventListener('change',drawTh);drawTh();
+
+/* ---- Lab 2: folds ---- */
+const cc=$('d31-cvC'),cx=AI.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;let cvSeed=1;
+function drawCV(){const K=+$('d31-k').value,mr=+$('d31-mr').value,strat=$('d31-cvMode').value==='strat',n=100;$('d31-kV').textContent=K;$('d31-mV').textContent=mr+'%';
+  const nm=Math.max(1,Math.round(n*mr/100)),y=[];for(let i=0;i<n;i++)y.push(i<nm?1:0);
+  const R=rng(cvSeed*97+K),sh=a=>{for(let i=a.length-1;i>0;i--){const j=Math.floor(R()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a};
+  const fold=new Array(n);
+  if(!strat){const idx=sh([...Array(n).keys()]),sz=Math.floor(n/K);idx.forEach((v,p)=>fold[v]=Math.min(K-1,Math.floor(p/sz)))}
+  else{[0,1].forEach(c=>{const ids=sh(y.map((v,i)=>v===c?i:-1).filter(i=>i>=0)),sz=Math.floor(ids.length/K);ids.forEach((v,p)=>fold[v]=sz?Math.min(K-1,Math.floor(p/sz)):K-1)})}
+  const order=[...Array(n).keys()];
+  const cols=25,cell=Math.min(18,(CW-20)/cols),rowsPer=Math.ceil(n/cols),blockH=rowsPer*cell+6,bh=(CH-10)/K,sc=Math.min(1,bh/(blockH+12)),cs=cell*sc;
+  cx.clearRect(0,0,CW,CH);cx.font='11px JetBrains Mono, monospace';const per=[];
+  for(let k=0;k<K;k++){const y0=6+k*bh;let m=0;order.forEach((i,p)=>{const r=Math.floor(p/cols),c=p%cols,xx=56+c*cs,yy=y0+r*cs,val=fold[i]===k;if(val&&y[i])m++;
+      cx.fillStyle=y[i]?css('--vec-b'):css('--vec-a');cx.globalAlpha=val?1:.18;cx.fillRect(xx,yy,cs-1.5,cs-1.5)});cx.globalAlpha=1;per.push(m);
+    cx.fillStyle=css('--ink');cx.fillText('fold '+(k+1),4,y0+cs*1.2);cx.fillStyle=css('--muted');cx.fillText('min='+m,4,y0+cs*2.6)}
+  $('d31-per').textContent=per.join(' · ');$('d31-rng').textContent=Math.min(...per)+' … '+Math.max(...per)}
+['d31-k','d31-mr'].forEach(id=>$(id).addEventListener('input',drawCV));$('d31-cvMode').addEventListener('change',drawCV);$('d31-shuf').addEventListener('click',()=>{cvSeed++;drawCV()});drawCV();
+
+/* ---- Lab 3: learning / validation curves ---- */
+const lc=$('d31-lcC'),lx=AI.setupCanvas(lc),LW=+lc.dataset.w,LH=+lc.dataset.h;
+const LD=(()=>{const R=rng(9),P=[];for(let i=0;i<260;i++){const x=R()*2-1;P.push([x,Math.sin(Math.PI*x)+gauss(R)*.3])}return P})();
+const VAL=LD.slice(0,60),POOL=LD.slice(60);
+function fitPoly(P,deg){const m=deg+1,A=[...Array(m)].map(()=>new Array(m+1).fill(0));P.forEach(([x,y])=>{const pw=[1];for(let i=1;i<m;i++)pw.push(pw[i-1]*x);for(let i=0;i<m;i++){for(let j=0;j<m;j++)A[i][j]+=pw[i]*pw[j];A[i][m]+=pw[i]*y}});for(let i=0;i<m;i++)A[i][i]+=1e-8;
+  for(let c=0;c<m;c++){let p=c;for(let r=c+1;r<m;r++)if(Math.abs(A[r][c])>Math.abs(A[p][c]))p=r;[A[c],A[p]]=[A[p],A[c]];const d=A[c][c]||1e-12;for(let r=0;r<m;r++){if(r===c)continue;const k=A[r][c]/d;for(let j=c;j<=m;j++)A[r][j]-=k*A[c][j]}}
+  const w=A.map((r,i)=>r[m]/(r[i]||1e-12));return x=>{let s=0,p=1;for(let i=0;i<m;i++){s+=w[i]*p;p*=x}return s}}
+function r2(P,h){const m=P.reduce((s,p)=>s+p[1],0)/P.length;let a=0,b=0;P.forEach(([x,y])=>{a+=(y-h(x))**2;b+=(y-m)**2});return b?1-a/b:0}
+function drawLC(){const mode=$('d31-lcMode').value,p=+$('d31-lcP').value;let xs,tr=[],va=[];
+  if(mode==='lc'){$('d31-lcLbl').textContent='degree';$('d31-lcP').max=12;xs=[15,20,30,45,70,100,140,200];xs.forEach(nn=>{const S=POOL.slice(0,nn),h=fitPoly(S,p);tr.push(r2(S,h));va.push(r2(VAL,h))})}
+  else{$('d31-lcLbl').textContent='degree (train=30)';xs=[1,2,3,4,5,6,7,8,9,10,11,12];const S=POOL.slice(0,30);xs.forEach(d=>{const h=fitPoly(S,d);tr.push(r2(S,h));va.push(r2(VAL,h))})}
+  $('d31-lcV').textContent=p;
+  const L=44,R=LW-14,T=14,B=LH-34,lo=-.5,X=i=>L+i/(xs.length-1)*(R-L),Y=v=>B-(Math.max(lo,Math.min(1,v))-lo)/(1-lo)*(B-T);
+  lx.clearRect(0,0,LW,LH);lx.strokeStyle=css('--grid');lx.lineWidth=1;lx.font='11px JetBrains Mono, monospace';lx.fillStyle=css('--muted');
+  [-.5,0,.5,1].forEach(v=>{lx.beginPath();lx.moveTo(L,Y(v));lx.lineTo(R,Y(v));lx.stroke();lx.fillText(v,6,Y(v)+4)});
+  [[tr,css('--vec-a')],[va,css('--vec-b')]].forEach(([S,c])=>{lx.strokeStyle=c;lx.lineWidth=2.5;lx.beginPath();S.forEach((v,i)=>i?lx.lineTo(X(i),Y(v)):lx.moveTo(X(i),Y(v)));lx.stroke();lx.fillStyle=c;S.forEach((v,i)=>{lx.beginPath();lx.arc(X(i),Y(v),3.5,0,7);lx.fill()})});
+  if(mode==='vc'){const i=xs.indexOf(p);if(i>=0){lx.strokeStyle=css('--ink');lx.setLineDash([4,4]);lx.beginPath();lx.moveTo(X(i),T);lx.lineTo(X(i),B);lx.stroke();lx.setLineDash([])}}
+  lx.fillStyle=css('--muted');lx.textAlign='center';xs.forEach((v,i)=>lx.fillText(v,X(i),B+15));lx.fillText(mode==='lc'?'training set size':'polynomial degree',(L+R)/2,LH-4);lx.textAlign='left';
+  lx.fillStyle=css('--vec-a');lx.fillText('train R²',L+6,T+12);lx.fillStyle=css('--vec-b');lx.fillText('validation R²',L+80,T+12);
+  let a,b;if(mode==='lc'){a=tr[tr.length-1];b=va[va.length-1]}else{const i=Math.max(0,xs.indexOf(p));a=tr[i];b=va[i]}
+  $('d31-lcTr').textContent=f(a,3);$('d31-lcVa').textContent=f(b,3);
+  const gap=a-b;$('d31-lcDx').textContent=a<.6?'high bias':gap>.15?'high variance':'مظبوط تقريبًا'}
+$('d31-lcMode').addEventListener('change',drawLC);$('d31-lcP').addEventListener('input',drawLC);drawLC();
+
+/* ---- Lab 4: regression metrics ---- */
+const gc=$('d31-rgC'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+const RP=(()=>{const R=rng(21),P=[];for(let i=0;i<20;i++){const x=i/19*10;P.push([x,2+1.5*x+gauss(R)*1.5])}return P})();const OI=13;let dragO=false;
+const gY0=-20,gY1=50,gX=x=>30+x/10*(GW-50),gYp=y=>GH-20-(y-gY0)/(gY1-gY0)*(GH-36),gYw=py=>gY0+(GH-20-py)/(GH-36)*(gY1-gY0);
+function drawRG(){const o=+$('d31-o').value;$('d31-oV').textContent=o;const P=RP.map((p,i)=>i===OI?[p[0],p[1]+o]:p),mode=$('d31-model').value;
+  const m=P.reduce((s,p)=>s+p[1],0)/P.length,h=mode==='mean'?()=>m:mode==='bad'?x=>30-1.5*x:x=>2+1.5*x;
+  let se=0,ae=0,st=0;P.forEach(([x,y])=>{const e=y-h(x);se+=e*e;ae+=Math.abs(e);st+=(y-m)**2});const n=P.length;
+  $('d31-mse').textContent=f(se/n,2);$('d31-rmse').textContent=f(Math.sqrt(se/n),2);$('d31-mae').textContent=f(ae/n,2);$('d31-r2').textContent=f(st?1-se/st:0,3);
+  gx.clearRect(0,0,GW,GH);gx.strokeStyle=css('--grid');gx.lineWidth=1;for(let v=-20;v<=50;v+=10){gx.beginPath();gx.moveTo(30,gYp(v));gx.lineTo(GW-20,gYp(v));gx.stroke()}
+  gx.strokeStyle=css('--ink');gx.lineWidth=2.5;gx.beginPath();gx.moveTo(gX(0),gYp(h(0)));gx.lineTo(gX(10),gYp(h(10)));gx.stroke();
+  P.forEach(([x,y],i)=>{gx.strokeStyle=i===OI?css('--vec-b'):css('--muted');gx.lineWidth=1.2;gx.setLineDash([3,3]);gx.beginPath();gx.moveTo(gX(x),gYp(y));gx.lineTo(gX(x),gYp(h(x)));gx.stroke();gx.setLineDash([]);
+    gx.fillStyle=i===OI?css('--vec-b'):css('--vec-a');gx.beginPath();gx.arc(gX(x),gYp(y),i===OI?8:4.5,0,7);gx.fill()});
+  gx.fillStyle=css('--muted');gx.font='11px JetBrains Mono, monospace';[-20,0,20,40].forEach(v=>gx.fillText(v,2,gYp(v)+4))}
+gc.addEventListener('pointerdown',e=>{const[x,y]=AI.evPos(gc,e),p=RP[OI],o=+$('d31-o').value;if(Math.hypot(x-gX(p[0]),y-gYp(p[1]+o))<24){dragO=true;gc.setPointerCapture(e.pointerId)}});
+gc.addEventListener('pointermove',e=>{if(!dragO)return;const[,y]=AI.evPos(gc,e);const o=Math.max(-30,Math.min(30,Math.round((gYw(y)-RP[OI][1])*2)/2));$('d31-o').value=o;drawRG()});
+gc.addEventListener('pointerup',()=>dragO=false);$('d31-o').addEventListener('input',drawRG);$('d31-model').addEventListener('change',drawRG);drawRG();
+
+/* ---- quiz ---- */
+const ck=document.querySelector('#d31-ck input[data-ck="6"]');
+AI.quiz($('d31-quizBox'),[
+ ['ليه ما ينفعش تظبط الـ hyperparameters على أداء الـ test set؟',['الـ test set صغير جدًا على تقدير موثوق','إنك تعدّل الموديل على نتايج الـ test كأنك بتدرّب عليه، فالأداء اللي بتعلنه يبقى ملوش معنى','الـ hyperparameters ما ينفعش تتغير بعد التدريب','الـ test set دايمًا ليه features مختلفة عن الـ train'],1,'كل تعديل على أساس الـ test بيسرّب معلوماته لقراراتك. الـ test لازم يتستخدم مرة واحدة في الآخر عشان التقدير يبقى unbiased.'],
+ ['داتا فيها 95% negative و 5% positive. موديل بيقول negative لكل عينة. الـ accuracy بتاعه كام؟',['0%','95%','50%','5%'],1,'950 من 1000 صح = 95%. موديل ملوش لازمة بيبان ممتاز، وده ليه الـ accuracy بتضلل في الـ imbalanced. جربتها بزرار «دايمًا negative».'],
+ ['في K-fold بـ K=5، كل عينة بتتستخدم في الـ validation كام مرة؟',['مرة واحدة بالظبط','5 مرات','حسب الـ random seed','ولا مرة، كل الداتا للتدريب'],0,'كل fold بيبقى validation مرة واحدة والـ K−1 التانيين للتدريب. شفتها في معمل ٢.'],
+ ['learning curve فيها train = 0.95 و validation = 0.60 ومش بيتحسن مع داتا أكتر. تجرب إيه؟',['زوّد الـ learning rate','استخدم موديل أبسط أو ضيف regularization تقلل الـ variance','شيل الـ validation set عشان تدي التدريب داتا أكتر','اجمع داتا تدريب أكتر'],1,'فجوة كبيرة بين train عالي و validation واطي = high variance (overfitting). الحل موديل أبسط أو regularization أو dropout، مش داتا أكتر لو الفجوة فاضلة.'],
+ ['AUC-ROC = 0.5 لـ binary classifier. ده معناه إيه؟',['الموديل بيفصل الـ classes بشكل مثالي','الموديل مش أحسن من التخمين العشوائي في ترتيب الـ positives فوق الـ negatives','الموديل accuracy بتاعه 50%','الموديل الـ precision بتاعه = الـ recall'],1,'0.5 = ترتيب عشوائي، و 1.0 = فصل كامل. والمقياس مش معتمد على الـ threshold. خليت «الفصل» صفر في معمل ١ وشفته.'],
+ ['(سؤال إضافي) عملت fit للـ StandardScaler على الداتا كلها وبعدين عملت split. إيه المشكلة؟',['مفيش مشكلة، الـ scaling مش بيتعلم حاجة','data leakage: الـ mean والـ std فيهم معلومات من الـ test، فالتقييم متفائل','الـ scaler هيبوّظ الـ labels','الموديل هيتدرب أبطأ'],1,'أي حاجة بتتعلم من الداتا (scaler، imputer، encoder) لازم تتعمل fit على الـ train بس. split الأول، preprocess بعدين.'],
+ ['(سؤال إضافي) في RAG، الـ recall@5 للـ retriever بيقيس إيه؟',['نسبة الإجابات اللي الـ LLM كتبها صح','من الـ chunks الصح للسؤال، كام واحد ظهر في أول 5 نتايج','سرعة البحث','عدد الـ tokens في أول 5 chunks'],1,'ده نفس تعريف الـ recall: TP / (TP + FN)، والـ positives هنا الـ chunks اللي فيها الإجابة. لو recall واطي، الـ LLM مش هيشوف المعلومة أصلًا.']
+],5,()=>{if(ck){ck.checked=true;AI.store.set('aiefs-d31-6','1')}});
+AI.checklist(31,$('d31-ck'));
+
+AI.onTheme(()=>{if(!document.body.contains(tc))return false;drawTh();drawCV();drawLC();drawRG()});
+})();
+</script>

@@ -1,0 +1,586 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 05 · Chain Rule &amp; Automatic Differentiation</span>
+  <h1>اليوم ٥: ابني PyTorch صغير بإيدك</h1>
+  <p class="lede">امبارح حسبت الـ gradients بإيدك لـ neuron واحد. بس الشبكة الحقيقية مئات الدوال جوه بعض، وملايين الـ weights. النهاردة هتبني <b>autograd engine</b> كامل في كلاس اسمه <code>Value</code>: بيسجل كل عملية، ويرسم الـ graph، ويرجع بالـ chain rule يحسب كل الـ gradients في لفة واحدة. وفي الآخر هتدرّب بيه neural network على XOR من غير PyTorch ولا NumPy.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia)</span>
+    <span>قبله: <b>Calculus for ML</b></span>
+    <span>بعده: <b>Probability and Distributions</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d5-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d5-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <ol class="ex">
+    <li>اكتب قاعدة الـ gradient descent في سطر.
+      <details><summary>الإجابة</summary><span class="ltr">w = w − lr · dL/dw</span>. النهاردة هنبني الحتة اللي بتحسب <span class="ltr">dL/dw</span> أوتوماتيك.</details></li>
+    <li>الـ derivative بتاع <span class="ltr">(3x + 1)²</span> كام؟
+      <details><summary>الإجابة</summary>بالـ chain rule: برا <span class="ltr">2u</span> وجوه 3، يعني <span class="ltr">6(3x + 1)</span>.</details></li>
+    <li>ليه الـ numerical gradient مش بيستخدم في التدريب، مع إنه شغال مع أي دالة؟
+      <details><summary>الإجابة</summary>بطيء جدًا: محتاج تحسب الدالة مرتين لكل parameter. لموديل بمليون weight يبقى مليونين forward pass في كل خطوة. بس هو ممتاز إنك تتأكد بيه (gradient checking)، وهنستخدمه النهاردة بالظبط كده.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>الـ chain rule والـ graph والـ modes + المعامل ١–٣</div>
+    <div><b>40 min</b>ابني الـ Value class خطوة خطوة</div>
+    <div><b>15 min</b>درّب الـ MLP على XOR + المعمل ٤</div>
+    <div><b>10 min</b>الكويز + تمرين</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d5-chain">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة، والـ Chain Rule تاني بعمق</h2></div>
+  <p>الـ neural network مش دالة بسيطة. هي مئات الدوال متركبة: matrix multiply، add bias، activation، matrix multiply تاني، softmax، cross-entropy. الخرج دالة في دالة في دالة. ولازم تعرف gradient الـ loss بالنسبة لكل weight.</p>
+  <ul class="checklist">
+    <li><b>بالإيد:</b> مستحيل لملايين الـ parameters.</li>
+    <li><b>Numerical (finite differences):</b> بطيء جدًا.</li>
+    <li><b>الـ chain rule (الرياضة) + الـ automatic differentiation (الـ algorithm):</b> gradients مظبوطة لأي تركيبة دوال، في وقت قريب من forward pass واحد. ده اللي PyTorch وTensorFlow وJAX بيعملوه.</li>
+  </ul>
+  <div class="formula">y = f(g(x))   ⇒   dy/dx = dy/dg · dg/dx = f′(g(x)) · g′(x)</div>
+  <p>مثال: <span class="ltr">y = sin(x²)</span>. جوه <span class="ltr">g = x²</span> و<span class="ltr">g′ = 2x</span>، وبرا <span class="ltr">f = sin(g)</span> و<span class="ltr">f′ = cos(g)</span>، يبقى <span class="ltr">dy/dx = cos(x²) · 2x</span>.</p>
+  <div class="formula">y = f(g(h(x)))   ⇒   dy/dx = f′(g(h(x))) · g′(h(x)) · h′(x)</div>
+  <p>كل layer في الشبكة حلقة في السلسلة دي، وكل حلقة بتساهم بالـ derivative المحلي بتاعها.</p>
+  <div class="note"><strong>تشبيه:</strong> فكّر في تروس مترابطة. لو الترس الأول لف لفة، التاني بيلف 3 لفات، والتالت بيلف ضعف التاني. يبقى التالت بيلف <span class="ltr">3 × 2 = 6</span> لفات لكل لفة من الأول. الـ chain rule هو بالظبط ضرب نسب التروس.</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d5-graph">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Computational Graph: القيم لقدام، والـ gradients لورا</h2></div>
+  <p>كل عملية بتبقى <b>node</b>. الداتا بتمشي forward في الـ graph، والـ gradients بترجع backward. مثال الدرس: <span class="ltr">y = relu(x1 · x2 + b)</span> مع <span class="ltr">x1 = 2, x2 = 3, b = 1</span>.</p>
+  <div class="formula" style="white-space:pre-line">Forward:  a = x1·x2 = 6  →  c = a + b = 7  →  y = relu(c) = 7
+Backward: dy/dy = 1  →  dy/dc = 1 (لأن c &gt; 0)  →  dy/da = 1 ، dy/db = 1  →  dy/dx1 = x2 = 3 ، dy/dx2 = x1 = 2</div>
+  <p>لاحظ القواعد المحلية: الـ <b>جمع</b> بيعدّي الـ gradient زي ما هو للاتنين. الـ <b>ضرب</b> بيدي كل طرف قيمة الطرف التاني مضروبة في الـ gradient اللي جاي. الـ <b>relu</b> بيعدّيه لو الدخل موجب، ويقفله (صفر) لو سالب.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: امشي في الـ graph خطوة خطوة</h3>
+      <p>دوس «خطوة forward» لحد ما الـ y تتحسب، وبعدين «خطوة backward» وشوف الـ gradient بيرجع node ورا node. الأزرق قيمة، والبرتقالي gradient.</p>
+      <p>غيّر الأرقام عشان <span class="ltr">c</span> تبقى سالبة (مثلًا b = −10) وشوف الـ relu بيقفل كل الـ gradients: كلها بتبقى صفر. دي اسمها «dead ReLU».</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d5-gCv" width="520" height="300" aria-label="computation graph"></canvas>
+      <div class="mrow">
+        <label>x1 = <span id="d5-vx1">2</span><input type="range" id="d5-x1" min="-4" max="4" step="0.5" value="2"></label>
+        <label>x2 = <span id="d5-vx2">3</span><input type="range" id="d5-x2" min="-4" max="4" step="0.5" value="3"></label>
+        <label>b = <span id="d5-vb">1</span><input type="range" id="d5-b" min="-10" max="10" step="0.5" value="1"></label>
+        <label>المرحلة: <b id="d5-stage" class="mono">0 / 7</b></label>
+      </div>
+      <div class="btns">
+        <button type="button" id="d5-fw" class="primary">خطوة forward</button>
+        <button type="button" id="d5-bw">خطوة backward</button>
+        <button type="button" id="d5-all">الكل مرة واحدة</button>
+        <button type="button" id="d5-rs">من الأول</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d5-modes">
+  <div class="station-head"><span class="tag">03</span><h2>Forward mode ضد Reverse mode</h2></div>
+  <p>فيه طريقتين تطبق بيهم الـ chain rule على الـ graph:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الـ Mode</th><th>البذرة (seed)</th><th>الاتجاه</th><th>أحسن لما</th></tr>
+    <tr><td>Forward</td><td class="ltr">dxᵢ/dxᵢ = 1</td><td>من الدخل للخرج</td><td>دخل قليل وخرج كتير</td></tr>
+    <tr><td>Reverse</td><td class="ltr">dy/dy = 1</td><td>من الخرج للدخل</td><td>دخل كتير وخرج قليل (الـ neural nets)</td></tr>
+  </table></div>
+  <p>على <span class="ltr">y = sin(x²)</span> عند x = 2:</p>
+  <div class="formula" style="white-space:pre-line">Forward:  x = 2 (dx/dx = 1)  →  a = x² (da/dx = 2x = 4)  →  y = sin(a) (dy/dx = cos(4)·4 = −2.615)
+Reverse:  y (dy/dy = 1)  →  a (dy/da = cos(4) = −0.654)  →  x (dy/dx = −0.654 · 4 = −2.615)</div>
+  <p>نفس الإجابة. الفرق في التكلفة: الشبكة فيها ملايين الدخل (الـ weights) وخرج واحد (الـ loss). الـ forward mode محتاج لفة لكل weight. الـ reverse محتاج <b>لفة backward واحدة</b> ويطلع كل الـ gradients. عشان كده الـ backpropagation هو reverse mode.</p>
+  <h3>Dual numbers: طريقة أنيقة للـ forward mode</h3>
+  <p>رقم dual شكله <span class="ltr">a + bε</span> حيث <span class="ltr">ε² = 0</span>. عمليًا هو زوج <span class="ltr">(قيمة، derivative)</span>:</p>
+  <div class="formula" style="white-space:pre-line">(a, a′) + (b, b′) = (a + b, a′ + b′)
+(a, a′) · (b, b′) = (a·b, a′·b + a·b′)        ← قاعدة الضرب
+sin(a, a′) = (sin a, cos a · a′)</div>
+  <p>ابدأ بالمتغير بـ derivative = 1، والـ derivative بيتحسب لوحده مع كل عملية.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: كام لفة محتاج؟</h3>
+      <p>حرّك عدد الـ parameters. الـ forward mode محتاج لفة لكل parameter، والـ reverse لفة forward + لفة backward مهما كان العدد. (الـ numerical محتاج 2 forward لكل parameter.)</p>
+      <p>وتحت: آلة حاسبة بالـ dual numbers لـ <span class="ltr">sin(x²)</span>. غيّر x وشوف الزوج (قيمة، derivative) بيتنقل.</p>
+    </div>
+    <div class="instrument">
+      <label style="display:grid;gap:2px">عدد الـ parameters = <b class="mono" id="d5-vnp">1,000</b><input type="range" id="d5-np" min="0" max="9" step="1" value="3"></label>
+      <canvas id="d5-mCv" width="520" height="150" aria-label="مقارنة عدد اللفات"></canvas>
+      <label style="display:grid;gap:2px">x = <b class="mono" id="d5-vdx">2</b><input type="range" id="d5-dx" min="-3" max="3" step="0.1" value="2"></label>
+      <div class="formula" id="d5-dual" style="white-space:pre-line"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d5-engine">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Autograd engine محتاج ٣ حاجات</h2></div>
+  <ol class="ex">
+    <li><b>Value wrapping:</b> كل رقم جوه object شايل قيمته والـ gradient بتاعه.</li>
+    <li><b>Graph recording:</b> كل عملية بتسجل مين دخلها، ودالة صغيرة بتعرف تحسب الـ gradient المحلي.</li>
+    <li><b>Backward pass:</b> ترتيب topological للـ graph، وبعدين تمشي عليه بالعكس وتطبق الـ chain rule عند كل node.</li>
+  </ol>
+  <h3>الـ Topological sort: ليه الترتيب مهم؟</h3>
+  <p>قبل ما node يبعت الـ gradient لولاده، لازم يكون استلم الـ gradient <b>كامل</b> من كل اللي بيستخدموه. الـ topological sort بيرتب الـ nodes بحيث كل node ييجي بعد كل اللي اعتمد عليهم. بنمشي عليه بالعكس، فكل node بيتعالج بعد ما كل الـ gradients بتاعته وصلت.</p>
+  <h3>الـ += مش = (Gradient accumulation)</h3>
+  <p>لو قيمة اتستخدمت في أكتر من عملية، الـ gradient بتاعها = <b>مجموع</b> كل المساهمات. لو كتبت <code>=</code> بدل <code>+=</code> المساهمة الأخيرة هتمسح اللي قبلها.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: bug الـ = ضد +=</h3>
+      <p>الدالة <span class="ltr">f = x·y + x</span>. الـ x داخلة في عمليتين. الصح: <span class="ltr">df/dx = y + 1</span>. بدّل بين الطريقتين وشوف الـ = بتضيّع مساهمة.</p>
+      <div class="note"><strong>نفس الفكرة في PyTorch:</strong> الـ <code>.grad</code> بيتجمع عبر الندهات. عشان كده لازم <code>optimizer.zero_grad()</code> (أو <code>p.grad = 0</code> في الكود بتاعنا) قبل كل backward، وإلا الـ gradients بتاعة الخطوة اللي فاتت هتتجمع على الجديدة.</div>
+    </div>
+    <div class="instrument">
+      <div class="mrow">
+        <label>x = <span id="d5-vax">3</span><input type="range" id="d5-ax" min="-4" max="4" step="0.5" value="3"></label>
+        <label>y = <span id="d5-vay">2</span><input type="range" id="d5-ay" min="-4" max="4" step="0.5" value="2"></label>
+      </div>
+      <div class="btns"><button type="button" data-d5acc="add" class="primary">self.grad += …</button><button type="button" data-d5acc="set">self.grad = … (bug)</button></div>
+      <div class="formula" id="d5-accOut" style="white-space:pre-line"></div>
+      <div class="verdict" id="d5-accV"></div>
+    </div>
+  </div>
+  <h3>PyTorch بيعمل إيه تحت الغطا؟</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>x = torch.tensor(2.0, requires_grad=True)
+y = x ** 2 + 3 * x + 1
+y.backward()
+print(x.grad)     <span class="c"># 7.0 = 2*x + 3 = 2*2 + 3</span></pre></div>
+  <ol class="ex">
+    <li>بيعمل node لـ x لأن <code>requires_grad=True</code>.</li>
+    <li>كل عملية (<code>**</code> و<code>*</code> و<code>+</code>) بتعمل node جديد وبتسجل دالة الـ backward بتاعتها.</li>
+    <li><code>y.backward()</code> بيشغّل الـ reverse-mode على الـ graph المسجل.</li>
+    <li>الـ <code>grad_fn</code> بتاع كل node بيحسب الـ gradients المحلية ويبعتها للآباء.</li>
+    <li>الـ gradients بتتجمع في <code>.grad</code> بالجمع، مش بالاستبدال.</li>
+  </ol>
+  <p>والـ graph <b>dynamic</b> (define-by-run): بيتبني من جديد في كل forward pass. عشان كده تقدر تحط if/else وloops جوه الموديل في PyTorch عادي.</p>
+</section>
+
+<!-- STATION 5 -->
+<section id="d5-xor">
+  <div class="station-head"><span class="tag">05</span><h2>المعمل الكبير: درّب MLP على XOR بالـ engine بتاعك</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>XOR: الخرج 1 لو الدخلين مختلفين، و−1 لو زي بعض (بنستخدم ±1 عشان الـ tanh). مستحيل تفصله بخط واحد، فمحتاجين hidden layer.</p>
+      <p>الموديل <span class="ltr">MLP([2, 4, 1])</span>: كل neuron بيحسب <span class="ltr">tanh(w1·x1 + w2·x2 + b)</span>. الـ loss مجموع مربعات الأخطاء على الـ 4 نقط. كل خطوة: forward، صفّر الـ grads، backward، حدّث.</p>
+      <p>المعمل ده شغال بـ autograd مكتوب بـ JavaScript بنفس منطق الـ <code>Value</code> اللي هتكتبه. الخلفية الملونة هي خرج الموديل لكل نقطة في المربع: الأزرق موجب والبرتقالي سالب.</p>
+      <div class="note ai"><strong>جرّب:</strong> lr = 0.05 زي الكود (بطيء شوية)، وبعدين 0.2. ودوس «weights جديدة» كذا مرة: ساعات التدريب بيعلق في حل وحش. ده local minimum حقيقي قدامك.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d5-xCv" width="520" height="300" aria-label="تدريب XOR"></canvas>
+      <label style="display:grid;gap:2px">lr = <b class="mono" id="d5-vxlr">0.05</b><input type="range" id="d5-xlr" min="0.01" max="0.5" step="0.01" value="0.05"></label>
+      <div class="readout">
+        <div><small>step</small><b id="d5-xs">0</b></div>
+        <div><small>loss</small><b id="d5-xl"></b></div>
+        <div><small>parameters</small><b>17</b></div>
+      </div>
+      <div class="btns"><button type="button" id="d5-xRun" class="primary">درّب ▶</button><button type="button" id="d5-x1s">خطوة</button><button type="button" id="d5-xNew">weights جديدة</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d5-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: ابني الـ engine</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/01-math-foundations/05-chain-rule-and-autodiff/code/autodiff.py
+<span class="c"># نسخة Julia:</span>
+julia phases/01-math-foundations/05-chain-rule-and-autodiff/code/main.jl</pre></div>
+  <p>ده أهم كود في الفيز كله. افتح <code>my_autograd.py</code> واكتبه بإيدك من غير ما تبص، وارجع للأصل بس لما تتزنق. هتستخدمه تاني في Phase 3.</p>
+
+  <h3>خطوة ١: كلاس Value</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Value:
+    def __init__(self, data, children=(), op=''):
+        self.data = float(data)
+        self.grad = 0.0                    <span class="c"># dL/d(هذه القيمة)، بيبدأ صفر</span>
+        self._backward = lambda: None      <span class="c"># هتتملي حسب العملية</span>
+        self._prev = set(children)         <span class="c"># مين عمل القيمة دي</span>
+        self._op = op
+
+    def __repr__(self):
+        return f"Value(data={self.data:.4f}, grad={self.grad:.4f})"</pre></div>
+
+  <h3>خطوة ٢: العمليات مع تسجيل الـ gradient</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other), '+')
+        def _backward():
+            self.grad += out.grad          <span class="c"># الجمع بيعدّي الـ gradient زي ما هو</span>
+            other.grad += out.grad
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other), '*')
+        def _backward():
+            self.grad += other.data * out.grad   <span class="c"># كل طرف ياخد قيمة التاني</span>
+            other.grad += self.data * out.grad
+        out._backward = _backward
+        return out
+
+    def relu(self):
+        out = Value(max(0, self.data), (self,), 'relu')
+        def _backward():
+            self.grad += (1.0 if out.data &gt; 0 else 0.0) * out.grad
+        out._backward = _backward
+        return out</pre></div>
+  <p>كل عملية بتعمل <b>closure</b> عارفة الـ gradient المحلي، وبتضربه في الـ gradient اللي جاي من فوق (<code>out.grad</code>). والـ <code>+=</code> عشان القيمة ممكن تتستخدم أكتر من مرة.</p>
+
+  <h3>خطوة ٣: الـ backward pass</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def backward(self):
+        topo = []
+        visited = set()
+        def build_topo(v):                 <span class="c"># DFS: الولاد الأول وبعدين الأب</span>
+            if v not in visited:
+                visited.add(v)
+                for child in v._prev:
+                    build_topo(child)
+                topo.append(v)
+        build_topo(self)
+
+        self.grad = 1.0                    <span class="c"># البذرة: dy/dy = 1</span>
+        for v in reversed(topo):           <span class="c"># من الخرج للدخل</span>
+            v._backward()</pre></div>
+
+  <h3>خطوة ٤: باقي العمليات</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def __radd__(self, other): return self.__add__(other)    <span class="c"># 2 + v</span>
+    def __rmul__(self, other): return self.__mul__(other)    <span class="c"># 2 * v</span>
+    def __neg__(self):         return self * -1
+    def __sub__(self, other):  return self + (-other)        <span class="c"># مبني من add + neg</span>
+    def __rsub__(self, other): return other + (-self)
+
+    def __pow__(self, n):                                    <span class="c"># n ثابت مش Value</span>
+        out = Value(self.data ** n, (self,), f'**{n}')
+        def _backward():
+            self.grad += n * (self.data ** (n - 1)) * out.grad
+        out._backward = _backward
+        return out
+
+    def __truediv__(self, other):                            <span class="c"># a / b = a * b**-1</span>
+        return self * (other ** -1) if isinstance(other, Value) else self * (Value(other) ** -1)
+
+    def tanh(self):
+        import math
+        t = math.tanh(self.data)
+        out = Value(t, (self,), 'tanh')
+        def _backward():
+            self.grad += (1 - t ** 2) * out.grad
+        out._backward = _backward
+        return out
+
+    def exp(self):
+        import math
+        e = math.exp(self.data)
+        out = Value(e, (self,), 'exp')
+        def _backward():
+            self.grad += e * out.grad          <span class="c"># exp مشتقتها هي نفسها</span>
+        out._backward = _backward
+        return out
+
+    def log(self):
+        import math
+        out = Value(math.log(self.data), (self,), 'log')
+        def _backward():
+            self.grad += (1.0 / self.data) * out.grad
+        out._backward = _backward
+        return out</pre></div>
+  <div class="tablewrap"><table>
+    <tr><th>العملية</th><th>قاعدة الـ backward</th><th>بتستخدم في</th></tr>
+    <tr><td><code>__sub__</code></td><td>بتعيد استخدام add + neg</td><td>حساب الـ loss <span class="ltr">(pred − target)</span></td></tr>
+    <tr><td><code>__pow__</code></td><td class="ltr">n · xⁿ⁻¹</td><td>الـ MSE <span class="ltr">(error²)</span></td></tr>
+    <tr><td><code>__truediv__</code></td><td>بتعيد استخدام mul + pow(−1)</td><td>الـ normalization</td></tr>
+    <tr><td><code>exp</code></td><td class="ltr">exp(x) · upstream</td><td>الـ softmax</td></tr>
+    <tr><td><code>log</code></td><td class="ltr">(1/x) · upstream</td><td>الـ cross-entropy</td></tr>
+    <tr><td><code>tanh</code></td><td class="ltr">(1 − tanh²) · upstream</td><td>activation كلاسيكية</td></tr>
+  </table></div>
+  <p>الحتة الذكية: الطرح والقسمة متعرفين من عمليات موجودة، فبياخدوا gradients صح ببلاش لأن الـ chain rule بيعدّي من خلال الـ add والـ mul والـ pow.</p>
+
+  <h3>خطوة ٥: اتأكد بالحساب اليدوي</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>x1 = Value(2.0); x2 = Value(3.0)
+y = (x1 * x2 + Value(1.0)).relu()
+y.backward()
+print(y.data, x1.grad, x2.grad)              <span class="c"># 7.0 3.0 2.0</span>
+
+a = Value(2.0); b = Value(-3.0); c = Value(10.0)
+f = (a * b + c).relu()                       <span class="c"># relu(4) = 4</span>
+f.backward()
+print(a.grad, b.grad, c.grad)                <span class="c"># -3.0 2.0 1.0</span></pre></div>
+
+  <h3>خطوة ٦: MLP من الصفر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+
+class Neuron:
+    def __init__(self, n_inputs):
+        self.w = [Value(random.uniform(-1, 1)) for _ in range(n_inputs)]
+        self.b = Value(0.0)
+    def __call__(self, x):                   <span class="c"># tanh(w·x + b)</span>
+        act = sum((wi * xi for wi, xi in zip(self.w, x)), self.b)
+        return act.tanh()
+    def parameters(self):
+        return self.w + [self.b]
+
+class Layer:
+    def __init__(self, n_inputs, n_outputs):
+        self.neurons = [Neuron(n_inputs) for _ in range(n_outputs)]
+    def __call__(self, x):
+        return [n(x) for n in self.neurons]
+    def parameters(self):
+        return [p for n in self.neurons for p in n.parameters()]
+
+class MLP:
+    def __init__(self, sizes):               <span class="c"># [2, 4, 1]</span>
+        self.layers = [Layer(sizes[i], sizes[i + 1]) for i in range(len(sizes) - 1)]
+    def __call__(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x[0] if len(x) == 1 else x
+    def parameters(self):
+        return [p for layer in self.layers for p in layer.parameters()]</pre></div>
+
+  <h3>خطوة ٧: درّبه على XOR</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>random.seed(42)
+model = MLP([2, 4, 1])
+xs = [[Value(0), Value(0)], [Value(0), Value(1)], [Value(1), Value(0)], [Value(1), Value(1)]]
+ys = [-1.0, 1.0, 1.0, -1.0]
+
+for step in range(100):
+    preds = [model(x) for x in xs]                                     <span class="c"># ١. forward</span>
+    loss = sum((p + Value(-y)) ** 2 for p, y in zip(preds, ys))        <span class="c"># ٢. loss</span>
+    for p in model.parameters():
+        p.grad = 0.0                                                   <span class="c"># ٣. صفّر!</span>
+    loss.backward()                                                    <span class="c"># ٤. backward</span>
+    for p in model.parameters():
+        p.data -= 0.05 * p.grad                                        <span class="c"># ٥. حدّث</span>
+    if step % 20 == 0 or step == 99:
+        print(f"  step {step:3d}  loss = {loss.data:.4f}")
+
+for x, y in zip(xs, ys):
+    print(f"  input=[{x[0].data:.0f},{x[1].data:.0f}]  target={y:+.0f}  pred={model(x).data:+.3f}")</pre></div>
+  <details><summary>الناتج المتوقع (تقريبًا)</summary><pre class="term">  step   0  loss = 4.1491
+  step  20  loss = 2.9166
+  step  40  loss = 1.4733
+  step  60  loss = 0.6011
+  step  80  loss = 0.2936
+  step  99  loss = 0.1783
+  input=[0,0]  target=-1  pred=-0.853
+  input=[0,1]  target=+1  pred=+0.771
+  input=[1,0]  target=+1  pred=+0.801
+  input=[1,1]  target=-1  pred=-0.753</pre><p>آخر رقم عشري ممكن يفرق شوية حسب ترتيب جمع الـ gradients. المهم الإشارات كلها صح.</p></details>
+
+  <h3>خطوة ٨: Gradient checking</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def gradient_check(build_expr, x_val, h=1e-7):
+    x = Value(x_val)
+    y = build_expr(x)
+    y.backward()
+    autodiff_grad = x.grad                                  <span class="c"># من الـ engine</span>
+    y_plus = build_expr(Value(x_val + h)).data
+    y_minus = build_expr(Value(x_val - h)).data
+    numerical_grad = (y_plus - y_minus) / (2 * h)           <span class="c"># من التعريف</span>
+    return autodiff_grad, numerical_grad, abs(autodiff_grad - numerical_grad)
+
+ad, num, diff = gradient_check(lambda x: (x ** 3 + x * 2 + 1).tanh(), 0.5)
+print(f"Autodiff:  {ad:.8f}")
+print(f"Numerical: {num:.8f}")
+print(f"Difference: {diff:.2e}")                            <span class="c"># لازم &lt; 1e-5</span></pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Autodiff:  0.15252426
+Numerical: 0.15252426
+Difference: 3.66e-10</pre><p>والملف الأصلي بيعمل الفحص ده على ٥ تعبيرات عند x = 0.5: <span class="ltr">x³+2x+1 → 2.75</span>، <span class="ltr">tanh(x²) → 0.94001485</span>، <span class="ltr">(x+1)/(x²+1) → −0.16</span>، <span class="ltr">exp(x)·x → 2.47308191</span>، <span class="ltr">log(x²+1) → 0.8</span>، وكلهم OK.</p></details>
+  <div class="tablewrap"><table>
+    <tr><th>الموقف</th><th>تعمل gradient check؟</th></tr>
+    <tr><td>بتضيف عملية جديدة للـ autograd</td><td>أيوه، دايمًا</td></tr>
+    <tr><td>بتصلّح training loop مش بيتقارب</td><td>أيوه، افحص الـ gradients الأول</td></tr>
+    <tr><td>تدريب production</td><td>لأ، بطيء جدًا (2 forward لكل parameter)</td></tr>
+    <tr><td>unit tests للـ autograd</td><td>أيوه، خليها أوتوماتيك</td></tr>
+  </table></div>
+
+  <h3>خطوة ٩: قارن بـ PyTorch (لو متسطب عندك)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+x1 = torch.tensor(2.0, requires_grad=True)
+x2 = torch.tensor(3.0, requires_grad=True)
+y = torch.relu(x1 * x2 + 1.0)
+y.backward()
+print(x1.grad.item(), x2.grad.item())        <span class="c"># 3.0 2.0 — نفس الـ engine بتاعك</span></pre></div>
+  <p>الملف الأصلي فيه كمان <code>demo_neuron</code>: <span class="ltr">w1=0.5, w2=−1.5, x1=3, x2=2, b=0.1</span> يعني الـ pre-activation <span class="ltr">= −1.4</span> سالب، فالـ relu قافل وكل الـ gradients طالعة صفر. ودي حالة مقصودة عشان تشوف الـ dead ReLU.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d5-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>‎__pow__‎:</b> اتأكد إن <span class="ltr">d/dx(x³)</span> عند x = 2 = 12.
+      <details><summary>تلميح</summary>الكلاس فيه <code>__pow__</code> خلاص. اقرا الـ <code>_backward</code> بتاعها واتأكد إنها بتطبق <span class="ltr">n·xⁿ⁻¹</span> على الـ gradient الجاي. شغّل <code>x = Value(2.0); y = x ** 3; y.backward()</code>: لازم <code>x.grad == 12.0</code>.</details></li>
+    <li><b>tanh:</b> اتأكد إن <span class="ltr">tanh′(0) = 1</span> و<span class="ltr">tanh′(2) ≈ 0.0707</span>.
+      <details><summary>تلميح</summary>استخدم <span class="ltr">1 − tanh(x)²</span> في الـ <code>_backward</code>، وقارن بـ <span class="ltr">(tanh(x+h) − tanh(x−h)) / 2h</span> عند 0 و2. الرقم المظبوط عند 2 هو 0.07065.</details></li>
+    <li><b>neuron كامل:</b> <span class="ltr">y = relu(w1·x1 + w2·x2 + b)</span>. احسب الـ 5 gradients وقارن بـ PyTorch.
+      <details><summary>تلميح</summary>قبل PyTorch اتأكد بإيدك: لو اللي داخل الـ relu موجب يبقى <span class="ltr">dy/dw1 = x1</span> و<span class="ltr">dy/dw2 = x2</span> و<span class="ltr">dy/dx1 = w1</span> و<span class="ltr">dy/dx2 = w2</span> و<span class="ltr">dy/db = 1</span>. لو سالب، الخمسة = 0.</details></li>
+    <li><b>Dual numbers:</b> اعمل كلاس <code>Dual</code> للـ forward mode وتأكد إنه بيدي نفس derivatives الـ reverse mode.
+      <details><summary>تلميح</summary>كل Dual فيه <code>val</code> و<code>der</code>. الضرب بقاعدة <span class="ltr">(a, a′)(b, b′) = (ab, a′b + ab′)</span>. ابدأ الدخل بـ <code>der = 1</code> وقارن بـ <code>x.grad</code> لنفس الدالة. المعمل ٢ بيوريك الأرقام المتوقعة لـ <span class="ltr">sin(x²)</span>.</details></li>
+    <li><b>إضافة مني · عملية جديدة زي شغل الـ frameworks:</b> ضيف <code>sigmoid()</code> للـ Value بقاعدة <span class="ltr">σ′ = σ(1 − σ)</span>، واكتب unit test بيعمل <code>gradient_check</code> عند 5 نقط مختلفة ويفشل لو أي فرق أكبر من <span class="ltr">1e-5</span>. ده بالظبط اللي بيحصل في PyTorch لما حد بيضيف operator جديد.
+      <details><summary>تلميح</summary>احسب <code>s = 1 / (1 + math.exp(-self.data))</code> مرة واحدة واستخدمها جوه الـ closure. اختبر عند <span class="ltr">−5, −1, 0, 1, 5</span>. عند الصفر لازم تطلع 0.25 بالظبط.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d5-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي هيوجعك لو ما خدتش بالك</h2></div>
+  <ul class="checklist">
+    <li><b>نسيت تصفّر الـ grads:</b> أشهر bug. الـ loss بيتصرف غريب لأن كل خطوة بتاخد مجموع كل الـ gradients اللي فاتت. في PyTorch: <code>optimizer.zero_grad()</code> قبل <code>loss.backward()</code>.</li>
+    <li><b>الـ graph بيستهلك ميموري:</b> كل Value بيشيل أولاده لحد ما الـ backward يخلص. عشان كده الـ training أتقل في الميموري من الـ inference بكتير، وعشان كده فيه <code>torch.no_grad()</code> للـ inference: مش بيسجل graph خالص.</li>
+    <li><b>الـ engine بتاعنا scalar:</b> كل رقم Value لوحده، فبطيء جدًا. PyTorch نفس الفكرة بالظبط بس كل node فيه tensor كامل، والـ backward بتاع الـ matmul بيستخدم الـ transpose (يوم ٢ ويوم ٤).</li>
+    <li><b>في الـ LLMs:</b> الـ fine-tuning بالـ LoRA بيعتمد على إن الـ autograd بيحسب gradients للـ parameters اللي <code>requires_grad=True</code> بس، والباقي متجمد. وتقنية زي <b>gradient checkpointing</b> بتمسح قيم من الـ graph في الـ forward وترجع تحسبها في الـ backward عشان توفّر ميموري لما تدرّب موديلات كبيرة.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d5-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d5-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d5-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d5-checklist">
+    <li><label><input type="checkbox" data-ck="1"> مشيت في الـ graph خطوة خطوة وشفت الـ dead ReLU</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أشرح ليه الـ backprop هو reverse mode</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه <code>+=</code> ومش <code>=</code>، وليه بنصفّر الـ grads</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت كلاس Value كامل بإيدي ودرّبت XOR بيه</label></li>
+    <li><label><input type="checkbox" data-ck="5"> عملت gradient check ونجح</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Reverse-mode autodiff</td><td><code>loss.backward()</code> في PyTorch، <code>jax.grad</code></td></tr>
+    <tr><td>Computational graph (dynamic)</td><td>PyTorch eager mode، الـ control flow جوه الموديل</td></tr>
+    <tr><td>Gradient accumulation</td><td><code>zero_grad()</code>، وتجميع gradients على كذا mini-batch عمدًا لما الـ GPU صغير</td></tr>
+    <tr><td>Forward mode / dual numbers</td><td><code>torch.func.jvp</code>، حسابات الـ Jacobian-vector</td></tr>
+    <tr><td>Gradient checking</td><td><code>torch.autograd.gradcheck</code>، اختبار أي custom op</td></tr>
+    <tr><td>Topological sort</td><td>أي نظام بيرتب مهام بتعتمد على بعض (build systems، DAG schedulers)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Probability and Distributions. ليه كل output بتاع موديل هو توزيع احتمالي، والـ softmax والـ cross-entropy من الأساس.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F05-chain-rule-and-autodiff" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/05-chain-rule-and-autodiff</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=5,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d5-roadmap').closest('.day');
+const rm=$('d5-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===N)s.className='now';rm.appendChild(s)}
+const alive=c=>document.body.contains(c);
+const RM=()=>matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// ---------- Lab 1: graph stepper ----------
+const gc=$('d5-gCv'),gx=AI.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+let stage=0;
+const POS={x1:[50,60],x2:[50,170],b:[200,250],a:[200,115],c:[330,180],y:[460,180]};
+const EDGES=[['x1','a'],['x2','a'],['a','c'],['b','c'],['c','y']];
+function graphVals(){const x1=+$('d5-x1').value,x2=+$('d5-x2').value,b=+$('d5-b').value;const a=x1*x2,c=a+b,y=Math.max(0,c),dc=c>0?1:0;
+  return{v:{x1,x2,b,a,c,y},g:{y:1,c:dc,a:dc,b:dc,x1:x2*dc,x2:x1*dc},op:{a:'×',c:'+',y:'relu'}}}
+// forward order: a,c,y (stages 1-3); backward: y,c,(a,b),(x1,x2) (stages 4-7)
+const FW=['a','c','y'],BW=['y','c','a','b','x1','x2'];
+function gDraw(){const {v,g,op}=graphVals();gx.clearRect(0,0,GW,GH);
+  const shownV=k=>['x1','x2','b'].includes(k)||FW.indexOf(k)<stage;
+  const bwDone=Math.max(0,stage-3),shownG=k=>{const i=BW.indexOf(k);if(i<0)return false;const lvl=i===0?1:i===1?2:i<=3?3:4;return lvl<=bwDone};
+  EDGES.forEach(([s,t])=>{const [x1,y1]=POS[s],[x2,y2]=POS[t];const d=Math.hypot(x2-x1,y2-y1),ux=(x2-x1)/d,uy=(y2-y1)/d;
+    AI.arrow(gx,x1+ux*30,y1+uy*30,x2-ux*36,y2-uy*36,shownV(t)?css('--vec-a'):css('--line'),2)});
+  Object.entries(POS).forEach(([k,[x,y]])=>{const isOp=!!op[k];
+    gx.fillStyle=css('--panel');gx.strokeStyle=shownG(k)?css('--vec-b'):css('--ink');gx.lineWidth=shownG(k)?3:1.5;
+    gx.beginPath();if(isOp)gx.roundRect?gx.roundRect(x-34,y-24,68,48,10):gx.rect(x-34,y-24,68,48);else gx.arc(x,y,24,0,7);gx.fill();gx.stroke();
+    gx.textAlign='center';gx.font='bold 13px JetBrains Mono, monospace';gx.fillStyle=css('--ink');gx.fillText(isOp?k+' '+op[k]:k,x,y+4);
+    gx.font='12px JetBrains Mono, monospace';
+    if(shownV(k)){gx.fillStyle=css('--vec-a');gx.fillText('= '+f(v[k]),x,y-32)}
+    if(shownG(k)){gx.fillStyle=css('--vec-b');gx.fillText('grad '+f(g[k]),x,y+42)}});
+  gx.textAlign='left';
+  $('d5-stage').textContent=stage+' / 7';
+  if(stage===7&&v.c<=0){gx.fillStyle=css('--bad');gx.font='bold 14px "IBM Plex Sans Arabic", sans-serif';gx.textAlign='center';gx.fillText('c ≤ 0 → الـ relu قفل الـ gradient: كله صفر',GW/2,22);gx.textAlign='left'}}
+['x1','x2','b'].forEach(k=>$('d5-'+k).addEventListener('input',()=>{$('d5-v'+k).textContent=$('d5-'+k).value;gDraw()}));
+$('d5-fw').addEventListener('click',()=>{if(stage<3)stage++;gDraw()});
+$('d5-bw').addEventListener('click',()=>{if(stage<3)stage=3;else if(stage<7)stage++;gDraw()});
+$('d5-all').addEventListener('click',()=>{stage=7;gDraw()});$('d5-rs').addEventListener('click',()=>{stage=0;gDraw()});
+gDraw();
+
+// ---------- Lab 2: modes + dual ----------
+const mc=$('d5-mCv'),mx=AI.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+const NP=[10,100,500,1000,1e4,1e5,1e6,1e7,1e8,1e9];
+function modes(){const n=NP[+$('d5-np').value];$('d5-vnp').textContent=n.toLocaleString('en');
+  const rows=[['Numerical',2*n,css('--bad')],['Forward mode',n,css('--vec-b')],['Reverse mode',2,css('--ok')]];
+  mx.clearRect(0,0,MW,MH);const maxL=Math.log10(2e9);
+  rows.forEach(([name,v,c],i)=>{const y=14+i*44,w=Math.max(4,(Math.log10(v)/maxL)*(MW-170));mx.fillStyle=c;mx.fillRect(150,y,w,26);
+    mx.fillStyle=css('--ink');mx.font='13px JetBrains Mono, monospace';mx.fillText(name,4,y+18);mx.fillText(v.toLocaleString('en')+' passes',Math.min(MW-120,156+w),y+18)});
+  mx.fillStyle=css('--muted');mx.font='11px JetBrains Mono, monospace';mx.fillText('log scale',MW-64,MH-4)}
+function dual(){const x=+$('d5-dx').value;$('d5-vdx').textContent=x;
+  const X=[x,1],A=[x*x,2*x*1],Y=[Math.sin(A[0]),Math.cos(A[0])*A[1]];
+  const ga=Math.cos(x*x);
+  $('d5-dual').textContent=`Forward (dual):  x = (${f(X[0],3)}, ${X[1]})  →  a = x·x = (${f(A[0],3)}, ${f(A[1],3)})  →  y = sin(a) = (${f(Y[0],3)}, ${f(Y[1],3)})\nReverse:  dy/dy = 1  →  dy/da = cos(a) = ${f(ga,3)}  →  dy/dx = ${f(ga,3)} × ${f(2*x,3)} = ${f(ga*2*x,3)}`}
+$('d5-np').addEventListener('input',modes);$('d5-dx').addEventListener('input',dual);modes();dual();
+
+// ---------- Lab 3: accumulation ----------
+let accMode='add';
+function acc(){const x=+$('d5-ax').value,y=+$('d5-ay').value;$('d5-vax').textContent=x;$('d5-vay').textContent=y;
+  // f = m + x, m = x*y ; backward order: f -> (m, x via add) then m -> (x, y)
+  const viaAdd=1,viaMul=y;let gxv;
+  if(accMode==='add')gxv=viaAdd+viaMul;else gxv=viaMul; // the later closure (mul) overwrites
+  $('d5-accOut').textContent=`f = x·y + x = ${f(x*y+x)}\nمساهمة من (+ x):   1\nمساهمة من (x·y):   y = ${f(y)}\nx.grad = ${f(gxv)}      الصح: y + 1 = ${f(y+1)}`;
+  const v=$('d5-accV');if(Math.abs(gxv-(y+1))<1e-9){v.textContent='صح ✓ المساهمتين اتجمعوا';v.style.color=css('--ok')}else{v.textContent='غلط ✗ المساهمة الأولى اتمسحت';v.style.color=css('--bad')}}
+document.querySelectorAll('[data-d5acc]').forEach(b=>b.addEventListener('click',()=>{accMode=b.dataset.d5acc;document.querySelectorAll('[data-d5acc]').forEach(c=>c.classList.toggle('primary',c===b));acc()}));
+['d5-ax','d5-ay'].forEach(id=>$(id).addEventListener('input',acc));acc();
+
+// ---------- Lab 4: XOR with a tiny JS autograd ----------
+class V{constructor(d,ch){this.d=d;this.g=0;this.p=ch||[];this.b=null}
+  add(o){o=o instanceof V?o:new V(o);const out=new V(this.d+o.d,[this,o]);out.b=()=>{this.g+=out.g;o.g+=out.g};return out}
+  mul(o){o=o instanceof V?o:new V(o);const out=new V(this.d*o.d,[this,o]);out.b=()=>{this.g+=o.d*out.g;o.g+=this.d*out.g};return out}
+  pow2(){const out=new V(this.d*this.d,[this]);out.b=()=>{this.g+=2*this.d*out.g};return out}
+  tanh(){const t=Math.tanh(this.d),out=new V(t,[this]);out.b=()=>{this.g+=(1-t*t)*out.g};return out}
+  backward(){const topo=[],seen=new Set();const build=v=>{if(seen.has(v))return;seen.add(v);v.p.forEach(build);topo.push(v)};build(this);this.g=1;for(let i=topo.length-1;i>=0;i--)if(topo[i].b)topo[i].b()}}
+let W1,B1,W2,B2,xstep=0,xhist=[],xT=null;
+function initNet(){const r=()=>new V(Math.random()*2-1);W1=[0,1,2,3].map(()=>[r(),r()]);B1=[0,1,2,3].map(()=>new V(0));W2=[r(),r(),r(),r()];B2=new V(0);xstep=0;xhist=[]}
+const params=()=>[...W1.flat(),...B1,...W2,B2];
+function fwd(x1,x2){const h=W1.map((w,i)=>w[0].mul(x1).add(w[1].mul(x2)).add(B1[i]).tanh());return h.reduce((s,hi,i)=>s.add(W2[i].mul(hi)),B2).tanh()}
+function fwdNum(x1,x2){const h=W1.map((w,i)=>Math.tanh(w[0].d*x1+w[1].d*x2+B1[i].d));return Math.tanh(h.reduce((s,hi,i)=>s+W2[i].d*hi,B2.d))}
+const XS=[[0,0],[0,1],[1,0],[1,1]],YS=[-1,1,1,-1];
+function xorStep(){const lr=+$('d5-xlr').value;let loss=new V(0);XS.forEach((x,i)=>{loss=loss.add(fwd(x[0],x[1]).add(-YS[i]).pow2())});params().forEach(p=>p.g=0);loss.backward();params().forEach(p=>p.d-=lr*p.g);xhist.push(loss.d);xstep++;return loss.d}
+const xc=$('d5-xCv'),xx=AI.setupCanvas(xc),XW=+xc.dataset.w,XH=+xc.dataset.h;
+function xorDraw(){xx.clearRect(0,0,XW,XH);const S=270,ox=15,oy=15,cell=10;
+  const A=css('--vec-a'),B=css('--vec-b');
+  for(let i=0;i<S/cell;i++)for(let j=0;j<S/cell;j++){const u=-0.25+(i+.5)*cell/S*1.5,v=1.25-(j+.5)*cell/S*1.5,o=fwdNum(u,v);xx.fillStyle=o>0?A:B;xx.globalAlpha=Math.min(.75,Math.abs(o)*.75+.05);xx.fillRect(ox+i*cell,oy+j*cell,cell,cell)}
+  xx.globalAlpha=1;const P=(u,v)=>[ox+(u+.25)/1.5*S,oy+(1.25-v)/1.5*S];
+  XS.forEach((x,i)=>{const [px,py]=P(...x);xx.fillStyle=YS[i]>0?A:B;xx.strokeStyle=css('--ink');xx.lineWidth=2.5;xx.beginPath();xx.arc(px,py,11,0,7);xx.fill();xx.stroke();
+    xx.fillStyle=css('--paper');xx.font='bold 12px JetBrains Mono, monospace';xx.textAlign='center';xx.fillText(YS[i]>0?'+':'−',px,py+4);
+    xx.fillStyle=css('--ink');xx.fillText(f(fwdNum(...x),2),px,py+26)});xx.textAlign='left';
+  const lx=S+40,lw=XW-lx-8;xx.strokeStyle=css('--line');xx.strokeRect(lx,20,lw,XH-50);xx.fillStyle=css('--ink');xx.font='12px JetBrains Mono, monospace';xx.fillText('loss',lx,14);
+  if(xhist.length>1){const mxL=Math.max(...xhist,4.5),n=Math.max(100,xhist.length);xx.strokeStyle=css('--ok');xx.lineWidth=2;xx.beginPath();xhist.forEach((l,i)=>{const p=[lx+i/n*lw,20+(1-l/mxL)*(XH-50)];i?xx.lineTo(...p):xx.moveTo(...p)});xx.stroke()}
+  $('d5-xs').textContent=xstep;$('d5-xl').textContent=xhist.length?f(xhist[xhist.length-1],4):'—'}
+$('d5-xlr').addEventListener('input',()=>$('d5-vxlr').textContent=$('d5-xlr').value);
+$('d5-xRun').addEventListener('click',()=>{clearInterval(xT);let k=0;xT=setInterval(()=>{if(!alive(xc)||k>=100){clearInterval(xT);return}for(let j=0;j<5;j++){xorStep();k++}xorDraw()},RM()?0:60)});
+$('d5-x1s').addEventListener('click',()=>{clearInterval(xT);xorStep();xorDraw()});
+$('d5-xNew').addEventListener('click',()=>{clearInterval(xT);initNet();xorDraw()});
+initNet();xorDraw();
+
+// ---------- quiz ----------
+AI.quiz($('d5-quizBox'),[
+ ['الـ chain rule في الـ calculus بيقول إيه؟',['الدوال مينفعش تتشتق غير لو خطية','الـ derivative بتاع دوال متركبة = حاصل ضرب الـ derivatives بتاعتهم','الـ derivative بتاع مجموع = مجموع الـ derivatives','الـ integral بتاع حاصل ضرب = حاصل ضرب الـ integrals'],1,'لـ y = f(g(x))، الـ chain rule بيقول dy/dx = f′(g(x)) · g′(x). بتضرب الـ derivatives عند كل حلقة. ده الأساس الرياضي للـ backpropagation.'],
+ ['يعني إيه computational graph؟',['graph موجه، الـ nodes فيه عمليات والـ edges بتشيل القيم لقدام أو الـ gradients لورا','رسمة بتوضح architecture الشبكة','graph database لتخزين داتا التدريب','رسم بياني للـ loss مع خطوات التدريب'],0,'الـ computational graph بيمثل تسلسل العمليات. الداتا بتمشي forward فيه، والـ gradients بترجع backward في الـ backpropagation.'],
+ ['ليه PyTorch بيستخدم reverse-mode autodiff بدل forward-mode؟',['الـ forward mode مش بيعرف يتعامل مع الدوال غير الخطية','الـ reverse بيحسب كل الـ gradients في لفة backward واحدة، والـ forward محتاج لفة لكل متغير دخل. والشبكات فيها ملايين الدخل وloss واحد','الـ reverse أدق رقميًا','الـ reverse بيستهلك ميموري أقل'],1,'الشبكة فيها ملايين الـ weights وloss واحد. الـ reverse محتاج لفة backward واحدة. الـ forward محتاج لفة لكل weight، يعني ملايين اللفات.'],
+ ['في الـ Value class، ليه دالة الـ backward بتستخدم += مش = في تجميع الـ gradients؟',['لأن القيمة اللي بتتستخدم في أكتر من عملية بتاخد مساهمة gradient من كل واحدة، ولازم تتجمع','عشان تاخد متوسط الـ gradients على كذا عينة','عشان تمنع الـ overflow في الـ gradients','لأن Python مش بتسمح بـ = جوه الـ closures'],0,'لو قيمة داخلة في كذا عملية (مثلًا x في x*y وفي x+z)، الـ gradient الكلي بتاعها = مجموع كل المساهمات. الـ = هيمسح اللي قبله.'],
+ ['يعني إيه gradient checking وامتى تستخدمه؟',['تتأكد إن الـ gradients تحت حد معين عشان تمنع الانفجار','تقارن gradients الـ autodiff بالـ gradients الـ numerical (finite differences) عشان تتأكد إن الـ backward صح','تتأكد إن كل الـ parameters خدت gradients مش صفر','تراقب حجم الـ gradients أثناء التدريب عشان تكتشف الـ vanishing'],1,'بتحسب الـ derivative بـ (f(x+h) − f(x−h)) / 2h وتقارنه بالـ autodiff. استخدمه لما تضيف عملية جديدة للـ engine أو لما التدريب مش ماشي.'],
+ ['(سؤال مني) في حلقة التدريب نسيت p.grad = 0 قبل backward. إيه اللي هيحصل؟',['إيرور فورًا','الـ gradients هتتجمع من كل الخطوات اللي فاتت والتحديثات هتبقى غلط ومتضخمة','مفيش فرق','الـ loss هيبقى صفر'],1,'لأن الـ backward بيعمل += على الـ grad. من غير تصفير، كل خطوة بتشيل مجموع كل الـ gradients القديمة.'],
+ ['(سؤال مني) y = relu(w·x + b) والـ pre-activation طلع −1.4. dy/dw كام؟',['x','w','1','0'],3,'الـ relu قافل لأن الدخل سالب، فالـ derivative المحلي صفر، وكل اللي وراه صفر. ده الـ dead ReLU.']
+],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+AI.onTheme(()=>{if(!alive(gc))return false;gDraw();modes();xorDraw()});
+})();
+</script>

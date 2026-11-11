@@ -1,0 +1,492 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 77 · Data Parallel DDP From Scratch</span>
+  <h1>اليوم ٥٠٥: ٤ نسخ من الموديل، بيتدربوا كإنهم موديل واحد</h1>
+  <p class="lede">امبارح بنيت الـ collectives. النهاردة هتلبسهم حوالين موديل وتعمل <b>DistributedDataParallel</b> بنفسك: broadcast للـ parameters من rank 0 في الأول، و allreduce للـ gradients بعد كل backward، وبس. الدرس كله بيقول إن DDP مجرد hook فوق الـ allreduce، والـ pattern كله حوالي ٢٠٠ سطر. وهتثبت إن ٤ ranks بيطلّعوا نفس الـ loss بتاع process واحد شاف نفس الداتا.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> + PyTorch (gloo)</span>
+    <span>قبله: <b>Collective Ops From Scratch</b></span>
+    <span>بعده: <b>ZeRO Optimizer State Sharding</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d505-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d505-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>الـ ring allreduce بيتعمل في مرحلتين. إيه هما، وإيه الفرق بينهم في اللي المستقبل بيعمله؟
+      <details><summary>الإجابة</summary>المرحلة الأولى reduce-scatter: المستقبل <b>بيجمع</b> الـ chunk اللي وصلت على النسخة اللي عنده. بعد N−1 خطوة كل rank عنده chunk واحدة مكتملة. المرحلة التانية allgather: الـ chunks المكتملة بتلف والمستقبل <b>بيستبدل</b>. المجموع <span class="ltr">2(N−1)</span> خطوة.</details></li>
+    <li>8 ranks و tensor حجمه 100 MB. كل rank هيبعت قد إيه؟
+      <details><summary>الإجابة</summary><span class="ltr">2 × 100 × 7 / 8 = 175 MB</span>. والرقم ده عمره ما هيعدّي <span class="ltr">2T = 200 MB</span> مهما كبر الـ cluster.</details></li>
+    <li>إمتى تختار tree بدل ring؟
+      <details><summary>الإجابة</summary>للرسايل الصغيرة أو الـ links اللي الـ latency فيها عالية، لأن العمق <span class="ltr">log2(N)</span> hop بس. للرسايل الكبيرة الـ ring بيكسب لأنه بيستغل الـ bandwidth أحسن. NCCL بيختار بالحجم.</details></li>
+  </ol>
+  <div class="note ai"><strong>الربط بالنهاردة:</strong> اتنين من الأربع عمليات اللي بنيتهم امبارح هما كل اللي DDP محتاجه: <b>broadcast</b> مرة واحدة في الأول، و <b>allreduce</b> في كل step.</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>10 min</b>المشكلة: ليه data parallel</div>
+    <div><b>20 min</b>broadcast + allreduce + mean (معمل ١)</div>
+    <div><b>15 min</b>الـ seeds والـ buckets والـ overlap (معمل ٢ و ٣)</div>
+    <div><b>30 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 PROBLEM -->
+<section id="d505-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: التدريب بياخد أسابيع</h2></div>
+  <p>موديل 1B parameter معاه 12 GB activations مش هيدخل في GPU استهلاكي واحد. وحتى لو دخل، التدريب هياخد أسابيع. الـ <b>data parallel</b> بيقول: خد N نسخة من الموديل، كل نسخة على rank، وقسّم الـ batch على الـ N. كل rank يعمل forward و backward على الحتة بتاعته، وفي كل step الـ gradients بتاعة كل الـ ranks تتجمع عشان كل النسخ تفضل <b>متطابقة</b>. الـ optimizer بيخطو على الـ gradient المجمّع.</p>
+  <p>تشبيه: ٤ طباخين بيجرّبوا نفس الوصفة، كل واحد على طبق مختلف من الزباين. في آخر اليوم بيقعدوا ويطلّعوا «متوسط الملاحظات»، وكل واحد يعدّل وصفته بنفس التعديل بالظبط. لو كل واحد عدّل على ملاحظاته هو بس، بعد يومين هيبقى عندك ٤ وصفات مختلفة.</p>
+  <div class="tablewrap"><table>
+    <tr><th>من غير sync</th><th>بـ sync وحش</th><th>بـ sync صح</th></tr>
+    <tr><td>النسخ بتفترق من step 2. بقى عندك N موديل منفصل بالصدفة بدأوا بنفس الأوزان، مش «موديل واحد اتدرب على داتا أكتر».</td><td>allreduce لكل parameter، من غير overlap ولا buckets: الشبكة بقت عنق الزجاجة والـ GPUs قاعدة مستنية السلك.</td><td>buckets + overlap مع الـ backward + NCCL على NVLink: الـ sync تقريبًا ببلاش جنب الحساب. ده اللي PyTorch DDP بيعمله، وهنتعلم نفس الدروس على CPU بـ gloo.</td></tr>
+  </table></div>
+</section>
+
+<!-- 02 CONCEPT + LAB 1 -->
+<section id="d505-concept">
+  <div class="station-head"><span class="tag">02</span><h2>التلات عمليات اللي DDP محتاجها</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المرحلة</th><th>الـ collective</th><th>ليه</th></tr>
+    <tr><td>Init (مرة واحدة)</td><td>broadcast من rank 0</td><td>كل الـ ranks تبدأ بنفس الـ parameters بالظبط</td></tr>
+    <tr><td>بعد كل backward</td><td>allreduce لكل gradient</td><td>الـ optimizer يخطو على <b>متوسط</b> الـ gradient</td></tr>
+    <tr><td>أحيانًا</td><td>broadcast للـ buffers</td><td>عشان running stats بتاعة الـ batchnorm تفضل متزامنة</td></tr>
+  </table></div>
+  <h3>ليه المتوسط مش المجموع؟</h3>
+  <p>allreduce-SUM وبعدين قسمة على world_size = المتوسط. المتوسط <b>ما بيتغيرش مع عدد الـ ranks</b>: الـ learning rate اللي ظبطته على rank واحد هيشتغل على ٤، لأن حجم الـ gradient في الـ step ما اتغيرش. لو سبت المجموع من غير قسمة، الـ gradient بيتضرب في N، وكإنك ضربت الـ learning rate في N، فلازم تعيد ظبط الـ lr كل ما تغيّر حجم الـ cluster. DDP بيلف الـ SUM ويقسم، واعمل زيه.</p>
+  <p>طب ليه مش allreduce-MEAN على طول؟ القسمة على world_size عملية محلية بسيطة على كل rank، والـ MEAN كان هيتعمل بنفس الطريقة جوه. NCCL فيه AVG من نسخة 2.10، و gloo لأ، فبنقسم محليًا بعد الـ SUM.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ٤ نسخ على نفس سطح الـ loss</h3>
+      <p>الخطوط الملونة = parameters بتاعة ٤ replicas (موديل بـ ٢ parameters عشان نقدر نرسمه). كل rank عنده shard داتا مختلف، فالـ gradient بتاعه مختلف. الكونتور = الـ loss على الداتا كلها، والنجمة = أحسن نقطة.</p>
+      <div class="note"><strong>جرب:</strong> (١) «DDP: SUM ÷ N» وشوف الأربعة بيمشوا خط واحد. (٢) «من غير sync» وشوف كل واحد بيروح لأحسن نقطة على الـ shard بتاعه بس. (٣) «SUM من غير قسمة» وشوف الـ lr الفعلي بقى ×4 والتدريب بيتهز أو بيضرب. (٤) رجّع DDP وقفل «broadcast في الأول»: الـ replicas بتبدأ من أماكن مختلفة، وبتتحرك بنفس الخطوات، بس عمرها ما بتتقابل.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d505-rep" width="520" height="340" aria-label="مسارات أربع نسخ من الموديل على سطح الـ loss"></canvas>
+      <p style="color:var(--muted);font-size:14px;margin:0">× = أحسن نقطة لكل shard (بلون الـ rank) · ★ = أحسن نقطة للداتا كلها</p>
+      <div class="btns">
+        <select id="d505-mode" aria-label="طريقة الـ sync"><option value="mean">DDP: SUM ÷ N</option><option value="none">من غير sync</option><option value="sum">SUM من غير قسمة</option></select>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d505-bc" checked> broadcast في الأول</label>
+      </div>
+      <label style="display:grid;gap:2px;font-family:var(--f-mono);font-size:13px;direction:ltr">lr = <span id="d505-lrv">0.30</span><input type="range" id="d505-lr" min="0.05" max="0.6" step="0.05" value="0.3"></label>
+      <div class="readout">
+        <div><small>steps</small><b id="d505-sv">0</b></div>
+        <div><small>أقصى مسافة بين النسخ</small><b id="d505-spread">0</b></div>
+        <div><small>loss rank 0 (كل الداتا)</small><b id="d505-loss">—</b></div>
+        <div><small>الـ lr الفعلي</small><b id="d505-elr">0.30</b></div>
+      </div>
+      <div class="verdict" id="d505-rv"></div>
+      <div class="btns"><button type="button" class="primary" id="d505-run">شغّل 40 step</button><button type="button" id="d505-one">step واحدة</button><button type="button" id="d505-reset">من الأول</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 SEEDS LAB -->
+<section id="d505-seeds">
+  <div class="station-head"><span class="tag">03</span><h2>ليه الـ seed لازم يتثبت صح</h2></div>
+  <p>فيه نوعين من العشوائية في التدريب، وكل نوع محتاج seed مختلف:</p>
+  <ul>
+    <li><b>تهيئة الـ parameters:</b> <code>torch.manual_seed(seed)</code> نفس الرقم على كل الـ ranks. الـ broadcast من rank 0 وقت الإنشاء هو اللي بيضمن إن النسخ متطابقة (وهو بيكتب فوق أي حاجة كل rank عملها)، والـ seed المشترك هو الـ backup: لو الـ broadcast اتنسي أو باظ والـ init مختلف بين الـ ranks، الـ gradient sync لوحده <b>عمره ما هيرجّعهم لبعض</b> (شفتها في معمل ١).</li>
+    <li><b>ترتيب الداتا (shuffling):</b> <code>torch.manual_seed(seed + rank)</code>، رقم مختلف لكل rank. لو كل الـ ranks استخدموا نفس الـ seed للـ shuffle، هيشوفوا نفس ترتيب الـ batches، وكإنك شغّلت N GPU على نفس الداتا. ده بيبوّظ فكرة الـ data parallel من أساسها.</li>
+  </ul>
+  <p>ليه الـ broadcast أصلًا لو الـ seed واحد؟ لأن عمليات الـ float على hardware مختلف (أو بترتيب مختلف) ممكن تختلف على مستوى الـ bits. الـ broadcast هو الطريقة الوحيدة اللي بتضمن أوزان متطابقة byte بـ byte.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: ركّب الـ setup وشوف النتيجة</h3>
+      <p>اختار الإعدادات، والمعمل هيقولك إيه اللي هيحصل للـ replicas. حاول توصل للتركيبة الصح من غير ما تبص على النص اللي فوق.</p>
+      <p style="color:var(--muted);font-size:15px">ملاحظة: كود الدرس ما بيعملش shuffle أصلًا. كل rank بياخد slice بالـ offset <span class="ltr">step·N·B + rank·B</span>، فالداتا بتتقسم بالـ rank تلقائيًا. الـ seed+rank بيفرق لما تستخدم shuffling حقيقي.</p>
+    </div>
+    <div class="instrument" id="d505-seedlab">
+      <label style="display:grid;gap:2px">seed الـ init<select id="d505-s1"><option value="same">torch.manual_seed(SEED) لكل الـ ranks</option><option value="rank">torch.manual_seed(SEED + rank)</option></select></label>
+      <label style="display:grid;gap:2px">seed الـ shuffle<select id="d505-s2"><option value="rank">SEED + rank</option><option value="same">SEED لكل الـ ranks</option></select></label>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="d505-s3" checked> broadcast للـ params من rank 0</label>
+      <div class="tablewrap"><table>
+        <tr><th>السؤال</th><th>النتيجة</th></tr>
+        <tr><td>البداية متطابقة؟</td><td id="d505-o1"></td></tr>
+        <tr><td>كل rank بيشوف داتا مختلفة؟</td><td id="d505-o2"></td></tr>
+        <tr><td>الـ test بتاع الـ param equivalence هيعدّي؟</td><td id="d505-o3"></td></tr>
+      </table></div>
+      <div class="verdict" id="d505-sv2"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 BUCKETS + OVERLAP LAB -->
+<section id="d505-buckets">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Buckets والـ Overlap: إزاي الـ sync يبقى ببلاش</h2></div>
+  <p><b>Buckets:</b> الـ transformer فيه آلاف الـ parameter tensors. allreduce لكل tensor = تدفع الـ latency بتاعة gloo آلاف المرات. DDP بيلم الـ gradients في buckets حوالي 25 MB ويعمل allreduce واحد لكل bucket. نفس الـ bytes على السلك، بس الـ latency اتوزّعت على الـ bucket. زي إنك تبعت ١٠٠ جواب في ظرف واحد بدل ١٠٠ مشوار للبوستة. في موديل الدرس الصغير كل حاجة في bucket واحد، بس الهيكل هو اللي بيتنقل للـ production.</p>
+  <p><b>Overlap:</b> الـ backward بيحسب من آخر layer لأول layer. أول ما الـ bucket بتاع آخر layers يجهز، ابدأ الـ allreduce بتاعه والـ backward لسه شغال على اللي قبله. الحساب والشبكة يشتغلوا في نفس الوقت.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: ظبّط الـ bucket وشغّل الـ overlap</h3>
+      <p>موديل فيه 8 layers. الصف الأول = الـ backward (من L8 لـ L1)، والتاني = الشبكة. كل allreduce بيدفع latency ثابتة + وقت bytes على حسب عدد الـ layers في الـ bucket. الأرقام بوحدات وقت توضيحية.</p>
+      <div class="note"><strong>جرب:</strong> (١) bucket = 1 layer مع latency عالية: كتير من وقت الشبكة ضايع في latency. (٢) bucket = 8: نداء واحد بس، بس مش بيبدأ غير بعد آخر layer، فالـ overlap ما بيلحقش يفيد. (٣) لاقي الحجم اللي في النص اللي بيخلّي الـ step أقصر حاجة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d505-tl" width="520" height="140" aria-label="جدول زمني للـ backward والـ allreduce"></canvas>
+      <p style="color:var(--muted);font-size:14px;margin:0">أزرق = backward لكل layer · رمادي = latency النداء · برتقالي = نقل الـ bytes · الخط الأحمر = آخر الـ step</p>
+      <div class="mrow">
+        <label>layers/bucket = <span id="d505-kv">2</span><input type="range" id="d505-k" min="1" max="8" value="2"></label>
+        <label>latency/call = <span id="d505-av">2</span><input type="range" id="d505-a" min="0" max="10" value="2"></label>
+        <label>compute/layer = <span id="d505-cv">4</span><input type="range" id="d505-c" min="1" max="10" value="4"></label>
+        <label>bytes-time/layer = <span id="d505-gv">3</span><input type="range" id="d505-g" min="1" max="10" value="3"></label>
+      </div>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d505-ov" checked> overlap مع الـ backward</label>
+      <div class="readout">
+        <div><small>allreduce calls</small><b id="d505-calls">4</b></div>
+        <div><small>وقت الـ step</small><b id="d505-step">—</b></div>
+        <div><small>comm ظاهر (مش مستخبي)</small><b id="d505-vis">—</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 05 PRODUCTION -->
+<section id="d505-prod">
+  <div class="station-head"><span class="tag">05</span><h2>٣ حاجات بتخلّي DDP يتشحن</h2></div>
+  <ol class="ex">
+    <li><b>find_unused_parameters:</b> فيه forward paths بتتخطى parameters أحيانًا (early exit، أو الـ router بتاع mixture-of-experts). الـ parameters دي ما لهاش gradient، بس الـ hook بتاع DDP لسه مستنيها عشان الـ bucket يجهز، فالـ allreduce بيعمل deadlock. <code>find_unused_parameters=True</code> بيخلّي DDP يبص مين أخد gradient قبل ما يجمع. التمن: مشي على الـ graph كل step، فسيبه مقفول إلا لو الـ forward بتاعك فيه تفريعات.</li>
+    <li><b>static_graph:</b> لو الـ forward ثابت بين الـ steps، <code>static_graph=True</code> بيخلّي DDP يحسب جدول الـ buckets مرة واحدة. بيوفّر كام ms في كل step، ودول بيتجمعوا على 10000 step.</li>
+    <li><b>Gradient accumulation محتاج حرص:</b> إنك تجمّع gradients على K microbatch من غير sync في كل واحد = مكسب throughput كبير (الدرس بيقول ١٠ أضعاف). DDP فيه <code>no_sync()</code> كـ context manager بيوقف الـ allreduce اللي بعد الـ backward. لو نسيته، هتعمل allreduce K مرة على الفاضي.</li>
+  </ol>
+  <div class="formula">with no_sync: allreduce calls per optimizer step = buckets × 1   ·   without: buckets × K</div>
+  <div class="tablewrap"><table>
+    <tr><th>الأداة</th><th>بتعمل إيه</th></tr>
+    <tr><td>PyTorch DDP</td><td>التطبيق الأساسي. <code>torch.nn.parallel.DistributedDataParallel(model)</code> فيه الـ buckets والـ overlap والـ <code>no_sync</code>.</td></tr>
+    <tr><td>HuggingFace Accelerate</td><td>launcher بيتعامل مع env vars بتاعة <code>torchrun</code> ولفّ الموديل. نفس DDP من جوه.</td></tr>
+    <tr><td>Megatron-LM data parallel</td><td>بيجمع DDP مع tensor parallel للموديلات الكبيرة. جزء الـ data parallel هو نفس allreduce-بعد-الـ backward.</td></tr>
+  </table></div>
+  <p>الـ Ship It: درس ٧٨ (بكرة) هيبدّل الـ allreduce بـ reduce_scatter عشان كل rank يخزّن shard من الـ optimizer state بس. ودرس ٨١ هيركّب DDP مع ZeRO في الـ demo الكامل.</p>
+</section>
+
+<!-- 06 CODE -->
+<section id="d505-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: الكود خطوة بخطوة</h2></div>
+  <p>من جذر الريبو (محتاج <code>torch</code> متسطّب):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/77-data-parallel-ddp/code/main.py</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_ddp.py</code> واكتب الخطوات دي بنفسك. بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الثوابت والموديل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch, torch.nn as nn, torch.distributed as dist
+
+SEED = 7
+WORLD_SIZE = 4
+STEPS = 20
+BATCH = 8
+IN_DIM, HID_DIM, OUT_DIM = 16, 32, 4
+
+class MiniMLP(nn.Module):
+    <span class="c"># صغير يتعلم في ثواني، وكبير كفاية يبيّن الـ wiring</span>
+    def __init__(self, in_dim=IN_DIM, hid_dim=HID_DIM, out_dim=OUT_DIM):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hid_dim), nn.ReLU(),
+            nn.Linear(hid_dim, hid_dim), nn.ReLU(),
+            nn.Linear(hid_dim, out_dim),
+        )
+    def forward(self, x):
+        return self.net(x)</pre></div>
+
+  <h3>خطوة ٢: الـ wrapper نفسه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class DistributedDataParallel:
+    def __init__(self, module, world_size):
+        self.module = module
+        self.world_size = world_size
+        self._broadcast_params()                    <span class="c"># وقت الإنشاء: الكل ياخد أوزان rank 0</span>
+
+    def _broadcast_params(self):
+        for p in self.module.parameters():
+            dist.broadcast(p.data, src=0)
+
+    def sync_grads(self):                           <span class="c"># بعد الـ backward وقبل optim.step</span>
+        for p in self.module.parameters():
+            if p.grad is None:
+                continue
+            dist.all_reduce(p.grad.data, op=dist.ReduceOp.SUM)
+            p.grad.data.div_(self.world_size)       <span class="c"># SUM ÷ N = المتوسط</span>
+
+    def forward(self, x):
+        return self.module(x)
+
+    def parameters(self):
+        return self.module.parameters()</pre></div>
+  <p>مش <code>nn.Module</code> كامل، مجرد الدالتين اللي الـ loop محتاجهم، عشان تكلفة كل عملية تبان قدامك. وده allreduce لكل parameter (6 tensors هنا)، يعني من غير buckets. تمرين ١ بيضيفهم.</p>
+
+  <h3>خطوة ٣: الداتا والـ worker</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_dataset(seed, n_total):
+    <span class="c"># regression صناعي: y = x @ w + noise، نفس الداتا عند الكل</span>
+    g = torch.Generator().manual_seed(seed)
+    x = torch.randn(n_total, IN_DIM, generator=g)
+    w = torch.randn(IN_DIM, OUT_DIM, generator=g)
+    y = x @ w + 0.1 * torch.randn(n_total, OUT_DIM, generator=g)
+    return x, y
+
+def _ddp_worker(rank, world_size, init_file, iface, steps, batch, lr, out_queue):
+    os.environ["GLOO_SOCKET_IFNAME"] = iface
+    dist.init_process_group(backend="gloo", init_method=f"file://{init_file}",
+                            rank=rank, world_size=world_size)
+    torch.manual_seed(SEED)                          <span class="c"># نفس الـ init seed عند الكل (backup)</span>
+    model = MiniMLP()
+    ddp = DistributedDataParallel(model, world_size=world_size)
+    optim = torch.optim.SGD(ddp.parameters(), lr=lr)
+    loss_fn = nn.MSELoss()
+    x_all, y_all = make_dataset(SEED + 1000, n_total=world_size * batch * steps)
+    losses = []
+    for step in range(steps):
+        offset = step * world_size * batch + rank * batch   <span class="c"># الـ shard بتاعي في الـ step دي</span>
+        x, y = x_all[offset:offset + batch], y_all[offset:offset + batch]
+        optim.zero_grad(set_to_none=True)
+        loss = loss_fn(ddp.forward(x), y)
+        loss.backward()
+        ddp.sync_grads()                              <span class="c"># السطر الوحيد اللي بيفرق عن التدريب العادي</span>
+        optim.step()
+        losses.append(loss.item())
+    final_norm = sum(p.detach().pow(2).sum().item() for p in ddp.parameters()) ** 0.5
+    out_queue.put((rank, losses, final_norm))
+    out_queue.close(); out_queue.join_thread()
+    os._exit(0)</pre></div>
+  <p>الـ <code>run_ddp</code> بيعمل process لكل rank بـ <code>mp.get_context("spawn")</code>، وملف rendezvous في temp dir، ويستنى النتايج من Queue (timeout 120 ثانية)، وبعدين ينضّف الـ processes والملف.</p>
+
+  <h3>خطوة ٤: المرجع، process واحد بيمشي على shards الكل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def reference_single_process(world_size=WORLD_SIZE, steps=STEPS, batch=BATCH, lr=0.05):
+    torch.manual_seed(SEED)
+    model = MiniMLP()
+    optim = torch.optim.SGD(model.parameters(), lr=lr)
+    loss_fn = nn.MSELoss()
+    x_all, y_all = make_dataset(SEED + 1000, n_total=world_size * batch * steps)
+    losses = []
+    for step in range(steps):
+        optim.zero_grad(set_to_none=True)
+        for r in range(world_size):                    <span class="c"># نفس الـ shards بترتيب الـ ranks</span>
+            offset = step * world_size * batch + r * batch
+            x, y = x_all[offset:offset + batch], y_all[offset:offset + batch]
+            loss = loss_fn(model(x), y) / world_size    <span class="c"># ÷ N قبل الـ backward</span>
+            loss.backward()                            <span class="c"># الـ grads بتتراكم = المتوسط</span>
+            if r == 0:
+                rank0_loss = loss.item() * world_size
+        optim.step()
+        losses.append(rank0_loss)
+    final_norm = sum(p.detach().pow(2).sum().item() for p in model.parameters()) ** 0.5
+    return losses, final_norm</pre></div>
+  <p>الفكرة: مجموع <span class="ltr">grad(loss_r / N)</span> على كل الـ r = متوسط الـ gradients = نفس اللي الـ allreduce-mean بيطلّعه. فلو الـ sync صح، الـ loss لازم يتطابق مع DDP في كل step.</p>
+
+  <h3>خطوة ٥: الـ main</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def main():
+    ddp_results = run_ddp()
+    ref_losses, ref_norm = reference_single_process()
+    rank0_losses, rank0_norm = ddp_results[0]
+    rank3_losses, _ = ddp_results[WORLD_SIZE - 1]
+    for s in range(STEPS):
+        drift = abs(rank0_losses[s] - rank3_losses[s])
+        print(f"{s:&lt;6}{ref_losses[s]:&lt;14.6f}{rank0_losses[s]:&lt;14.6f}{rank3_losses[s]:&lt;14.6f}{drift:&lt;14.2e}")
+    print(f"final param norm: ref={ref_norm:.6f}, ddp_rank0={rank0_norm:.6f}")</pre></div>
+  <details><summary>الناتج المتوقع (الشكل)</summary><pre class="term">world_size=4, steps=20, batch=8, model=MiniMLP
+running DDP across ranks...
+running single-process reference...
+
+step  ref_loss      ddp_rank0     ddp_rank3     rank_drift
+0     ...           ...           ...           ...
+...
+19    ...           ...           ...           ...
+
+final param norm: ref=..., ddp_rank0=...</pre>
+  <p>الأرقام بتعتمد على نسخة torch، فما حطّتهاش. اللي لازم تشوفه: عمود <code>ref_loss</code> = عمود <code>ddp_rank0</code> لحد float epsilon، والـ norm الاتنين متساويين. <b>انتبه:</b> عمود <code>rank_drift</code> هو الفرق بين loss rank 0 و loss rank 3، ودول بيحسبوا على shards داتا مختلفة، فمش لازم يبقى صفر. الدليل على إن الـ parameters متطابقة هو الـ test اللي بيقارن الـ norm بتاع كل الـ ranks.</p></details>
+  <p>وشغّل الـ tests:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/77-data-parallel-ddp/tests/test_ddp.py</pre></div>
+  <p>الـ tests بتتأكد إن loss الـ rank 0 = المرجع لـ 4 أرقام عشرية في كل step، وإن كل الـ ranks بيخلّصوا بنفس الـ param norm (5 أرقام)، وإن الـ norm = norm المرجع، وإن الموديل فيه 6 parameter tensors، وإن world_size=2 شغال، وإن <code>SEED = 7</code>.</p>
+</section>
+
+<!-- 07 EXERCISES -->
+<section id="d505-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>Buckets بحجم قابل للتعديل</b> وقيس السرعة مقارنة بـ allreduce لكل parameter على موديل أعمق.
+      <details><summary>تلميح</summary>امشي على الـ parameters بالعكس (نفس ترتيب الـ backward)، ولم الـ grads لحد ما حجمها يعدّي <code>bucket_bytes</code>. لكل bucket: <code>flat = torch.cat([g.flatten() for g in grads])</code>، allreduce واحد، اقسم، وبعدين رجّع كل حتة لمكانها بـ <code>copy_</code> و <code>view_as</code>.</details></li>
+    <li><b>اعمل <code>no_sync()</code></b> كـ context manager، واتأكد إن الـ gradient accumulation على K microbatch = baseline بـ process واحد.
+      <details><summary>تلميح</summary>استخدم <code>contextlib.contextmanager</code>: حط flag <code>self._sync = False</code> جوه الـ with ورجّعه True بعده. <code>sync_grads</code> ترجع على طول لو الـ flag False. الـ loss لازم يتقسم على K. أول K−1 microbatch جوه <code>no_sync</code>، والأخير بره، فالـ allreduce يحصل مرة واحدة.</details></li>
+    <li><b>وضع <code>find_unused_parameters</code>:</b> خلّي الـ forward يتخطى layer أحيانًا. من غير الـ flag المفروض الـ run يعمل deadlock.
+      <details><summary>تلميح</summary>الـ layer اللي اتخطت <code>p.grad</code> بتاعها None. الكود الحالي بيعمل <code>continue</code>، ولو rank واحد تخطى والباقي لأ، الـ ranks هتعمل عدد مختلف من الـ allreduce calls، وده بالظبط اللي بيعلّق. الحل: لو <code>grad is None</code> حط أصفار وكمّل allreduce، عشان كل الـ ranks تعمل نفس عدد النداءات.</details></li>
+    <li><b>بدّل gloo بـ <code>torch.distributed.barrier()</code> بس</b> عشان تحس بالفرق بين sync بالـ allreduce و sync بالـ barrier.
+      <details><summary>تلميح</summary>الـ barrier بيخلّي الكل يستنى بعض بس، من غير ما ينقل أي أرقام. الـ ranks هتمشي بنفس السرعة بس هتتدرب على gradients مختلفة وتفترق. اطبع الـ norm بتاع كل rank وشوف.</details></li>
+    <li><b>قيس overhead الـ sync</b> كنسبة من وقت الـ step لـ batch sizes 1 و 16 و 256 واشرح.
+      <details><summary>تلميح</summary>حجم الـ gradient ثابت (قد عدد الـ parameters) مهما كان الـ batch، والحساب بيكبر مع الـ batch. فالنسبة المتوقعة إنها تقل لما الـ batch يكبر. قيس بـ <code>time.perf_counter()</code> حوالين <code>sync_grads</code> لوحدها وحوالين الـ step كلها.</details></li>
+    <li><b>إضافة مني · gradient clipping صح تحت DDP:</b> ضيف <code>clip_grad_norm_(max_norm)</code> واتأكد إن كل الـ ranks بتقص بنفس النسبة.
+      <details><summary>الحل</summary>اعمل الـ clipping <b>بعد</b> <code>sync_grads</code>. بعد الـ allreduce كل الـ ranks معاها نفس الـ gradient بالظبط، فالـ norm هيطلع واحد عند الكل والقص هيبقى واحد. لو عملته قبل الـ sync، كل rank هيقص gradient الـ shard بتاعه بنسبة مختلفة، والمتوسط مش هيبقى gradient الـ batch الكامل مقصوص.</details></li>
+  </ol>
+</section>
+
+<!-- 08 EXTRA -->
+<section id="d505-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> لو البداية واحدة وكل الـ ranks خطت بنفس الـ gradient، يبقى النهاية واحدة. DDP كله عبارة عن ضمان الشرطين دول: الـ broadcast للبداية، والـ allreduce للخطوة.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>الـ effective batch اتضرب في N.</b> كل rank بيشوف B، فالـ optimizer بيخطو على gradient لـ <span class="ltr">N×B</span> مثال. الـ mean بيحافظ على حجم الـ gradient، بس الـ noise بقى أقل والـ steps لكل epoch بقت أقل N مرة. ده سبب إن ناس كتير بتعدّل الـ lr لما تكبّر الـ cluster رغم إن الـ mean «المفروض» يغني عن ده.</li>
+    <li><b>الـ logging من كل الـ ranks.</b> لو كل rank طبع وحفظ checkpoint، هتلاقي N نسخة من كل حاجة. الـ convention: rank 0 بس هو اللي بيكتب.</li>
+    <li><b>إنك تفتكر الـ loss لازم يبقى واحد على كل الـ ranks.</b> الـ loss المحلي مختلف لأن الداتا مختلفة. اللي لازم يبقى واحد هو الـ parameters.</li>
+    <li><b>إن أي rank يعمل عدد collectives مختلف.</b> أي <code>if rank == 0:</code> حوالين allreduce = deadlock. كل الـ ranks لازم تنادي نفس الـ collectives بنفس الترتيب.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs</h3>
+  <p>تقريبًا كل fine-tuning على أكتر من GPU بيبدأ بـ DDP (مثلًا عن طريق Accelerate أو <code>torchrun</code>). ولما الموديل يكبر لدرجة إن نسخة كاملة مع الـ optimizer ما تدخلش في GPU واحد، بتنقل لـ ZeRO أو FSDP، وده موضوع بكرة. وفي التدريب الكبير الـ data parallel بيبقى البُعد الخارجي فوق الـ tensor و pipeline parallel.</p>
+</section>
+
+<!-- 09 QUIZ -->
+<section id="d505-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d505-quizBox"></div>
+</section>
+
+<!-- 10 DONE -->
+<section id="d505-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح DDP في جملتين: broadcast في الأول و allreduce-mean بعد كل backward</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه المتوسط مش المجموع، وشفت الـ SUM بيضرب في معمل ١</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الفرق بين seed الـ init و seed الـ shuffle</label></li>
+    <li><label><input type="checkbox" data-ck="4"> جربت الـ buckets والـ overlap في معمل ٣</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود بإيدي وشغّلت الـ main والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Broadcast at init</td><td>أول سطر في أي DDP wrapper</td></tr>
+    <tr><td>Allreduce-mean</td><td>مزامنة الـ gradients في كل step</td></tr>
+    <tr><td>Buckets</td><td><code>bucket_cap_mb</code> في PyTorch DDP</td></tr>
+    <tr><td>Overlap</td><td>الـ hooks اللي بتشتغل لما الـ bucket يجهز أثناء الـ backward</td></tr>
+    <tr><td>no_sync</td><td>gradient accumulation في Accelerate و DDP</td></tr>
+    <tr><td>Reference loop</td><td>أي test لصحة كود distributed</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> ZeRO Optimizer State Sharding. هنبدّل الـ allreduce بـ reduce_scatter + allgather، ونخلّي كل rank يشيل جزء من N من الـ optimizer state بس.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F77-data-parallel-ddp" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/77-data-parallel-ddp</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N0=505,LESSON=77,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d505-roadmap').closest('.day');
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// roadmap
+const rm=$('d505-roadmap');for(let i=1;i<=87;i++){if(i===18||i===19)continue;const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)}
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+// ---------- Lab 1: replicas ----------
+// loss_r(w) = 0.5*((w1-a_r)^2 + K*(w2-b_r)^2); global optimum = mean of (a_r,b_r)
+const K=3,OPT=[[1.6,1.1],[-1.4,1.5],[1.2,-1.3],[-1.0,-0.9]],NR=4;
+const G=[OPT.reduce((s,o)=>s+o[0],0)/NR,OPT.reduce((s,o)=>s+o[1],0)/NR];
+const COLS=()=>[css('--vec-a'),css('--vec-b'),css('--ok'),css('--bad')];
+const pc=$('d505-rep'),px=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h,SC=48,ox=PW/2,oy=PH/2;
+let W=[],paths=[],steps=0,timer=null,seed=3;
+const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647-.5};
+const toP=w=>[ox+w[0]*SC,oy-w[1]*SC];
+const gloss=w=>{let s=0;OPT.forEach(o=>s+=0.5*((w[0]-o[0])**2+K*(w[1]-o[1])**2));return s/NR};
+function resetRep(){clearInterval(timer);seed=3;const start=[-3.6,2.8];
+  W=[];for(let r=0;r<NR;r++){const w=$('d505-bc').checked?start.slice():[start[0]+rnd()*2.4,start[1]+rnd()*1.6];W.push(w)}
+  paths=W.map(w=>[w.slice()]);steps=0;updRep()}
+function stepRep(){const mode=$('d505-mode').value,lr=+$('d505-lr').value;
+  const g=W.map((w,r)=>{const o=OPT[r];return[(w[0]-o[0])+rnd()*0.3,K*(w[1]-o[1])+rnd()*0.3]});
+  let use;
+  if(mode==='none')use=g;
+  else{const s=[g.reduce((a,v)=>a+v[0],0),g.reduce((a,v)=>a+v[1],0)];const d=mode==='mean'?NR:1;use=g.map(()=>[s[0]/d,s[1]/d])}
+  W=W.map((w,r)=>{const n=[w[0]-lr*use[r][0],w[1]-lr*use[r][1]];return n.map(v=>Math.max(-1e3,Math.min(1e3,v)))});
+  W.forEach((w,r)=>paths[r].push(w.slice()));steps++;updRep()}
+function updRep(){const mode=$('d505-mode').value,lr=+$('d505-lr').value;
+  $('d505-lrv').textContent=lr.toFixed(2);$('d505-sv').textContent=steps;
+  const elr=mode==='sum'?lr*NR:lr;$('d505-elr').textContent=f(elr);
+  let sp=0;for(let i=0;i<NR;i++)for(let j=i+1;j<NR;j++)sp=Math.max(sp,Math.hypot(W[i][0]-W[j][0],W[i][1]-W[j][1]));
+  $('d505-spread').textContent=sp>99?'>99':f(sp,3);const L=gloss(W[0]);$('d505-loss').textContent=L>1e4?'انفجر':f(L,3);
+  const v=$('d505-rv');
+  if(!steps){v.textContent='دوس شغّل';v.style.color=''}
+  else if(L>50||mode==='sum'&&elr*K>=2&&steps>5){v.textContent='الـ lr الفعلي ×'+NR+' كبير على المحور الحاد: التدريب بيتهز/بيضرب. لازم تعيد ظبط الـ lr مع كل N';v.style.color=css('--bad')}
+  else if(mode==='none'&&sp>0.5){v.textContent='كل replica راحت لأحسن نقطة على الداتا بتاعتها: بقى عندك ٤ موديلات مختلفة';v.style.color=css('--bad')}
+  else if(sp<1e-9){v.textContent='الأربعة نسخة واحدة بالظبط ✓ بيقربوا من النجمة (أحسن نقطة على الداتا كلها)';v.style.color=css('--ok')}
+  else if(mode!=='none'&&!$('d505-bc').checked){v.textContent='بيتحركوا بنفس الخطوات بس المسافة بينهم ثابتة: الـ sync لوحده عمره ما هيلمّهم';v.style.color=css('--vec-b')}
+  else{v.textContent='';v.style.color=''}
+  drawRep()}
+function drawRep(){px.clearRect(0,0,PW,PH);AI.grid(px,PW,PH,SC,ox,oy);
+  // contours of global loss
+  px.strokeStyle=css('--muted');px.globalAlpha=.45;px.lineWidth=1;
+  const base=gloss(G);[0.5,1.5,3,5,8,12,17].forEach(c=>{const lv=c;px.beginPath();
+    for(let t=0;t<=64;t++){const a=t/64*2*Math.PI,rx=Math.sqrt(2*lv),ry=Math.sqrt(2*lv/K);const p=toP([G[0]+rx*Math.cos(a),G[1]+ry*Math.sin(a)]);t?px.lineTo(...p):px.moveTo(...p)}px.stroke()});
+  px.globalAlpha=1;
+  const C=COLS();
+  OPT.forEach((o,r)=>{const p=toP(o);px.strokeStyle=C[r];px.lineWidth=2;px.beginPath();px.moveTo(p[0]-5,p[1]-5);px.lineTo(p[0]+5,p[1]+5);px.moveTo(p[0]+5,p[1]-5);px.lineTo(p[0]-5,p[1]+5);px.stroke()});
+  const gp=toP(G);px.fillStyle=css('--ink');px.font='18px sans-serif';px.textAlign='center';px.textBaseline='middle';px.fillText('★',gp[0],gp[1]);
+  paths.forEach((pt,r)=>{px.strokeStyle=C[r];px.lineWidth=r===0?3:2;px.globalAlpha=.85;px.beginPath();
+    pt.forEach((w,i)=>{const p=toP(w.map(v=>Math.max(-20,Math.min(20,v))));i?px.lineTo(...p):px.moveTo(...p)});px.stroke();px.globalAlpha=1;
+    const last=toP(pt[pt.length-1].map(v=>Math.max(-20,Math.min(20,v))));px.fillStyle=C[r];px.beginPath();px.arc(last[0],last[1],5,0,7);px.fill()});
+}
+$('d505-run').addEventListener('click',()=>{clearInterval(timer);let n=0;
+  timer=setInterval(()=>{if(!document.body.contains(pc)){clearInterval(timer);return}stepRep();if(++n>=40)clearInterval(timer)},reduce?1:70)});
+$('d505-one').addEventListener('click',()=>{clearInterval(timer);stepRep()});
+$('d505-reset').addEventListener('click',resetRep);
+['d505-mode','d505-bc','d505-lr'].forEach(id=>$(id).addEventListener('input',resetRep));
+resetRep();
+
+// ---------- Lab 2: seeds ----------
+function seeds(){const init=$('d505-s1').value,shuf=$('d505-s2').value,bc=$('d505-s3').checked;
+  const ok=css('--ok'),bad=css('--bad'),set=(id,t,c)=>{const e=$(id);e.textContent=t;e.style.color=c};
+  const same=bc||init==='same';
+  set('d505-o1',bc?'أيوه، byte بـ byte (الـ broadcast كتب فوق أي init)':init==='same'?'غالبًا، بس من غير ضمان على مستوى الـ bits بين hardware مختلف':'لأ: كل rank بدأ بأوزان مختلفة',bc?ok:init==='same'?css('--vec-b'):bad);
+  set('d505-o2',shuf==='rank'?'أيوه':'لأ: الكل بيشوف نفس ترتيب الـ batches',shuf==='rank'?ok:bad);
+  set('d505-o3',same?'أيوه':'لأ: بيفشل من step 1',same?ok:bad);
+  const v=$('d505-sv2');
+  if(bc&&init==='same'&&shuf==='rank'){v.textContent='ده الـ setup الصح: broadcast + init seed مشترك كـ backup + shuffle seed مختلف لكل rank ✓';v.style.color=ok}
+  else if(!same){v.textContent='الـ replicas بدأت مختلفة، والـ gradient sync هيحرّكهم بنفس الخطوات بس عمره ما هيلمّهم';v.style.color=bad}
+  else if(shuf==='same'){v.textContent='الـ replicas متطابقة، بس كلهم بيحسبوا نفس الـ gradient على نفس الداتا: دفعت N GPU وخدت شغل واحد';v.style.color=bad}
+  else{v.textContent='شغال، بس من غير الـ backup: لو الـ broadcast اتنسي في يوم، مفيش حاجة هتنقذك';v.style.color=css('--vec-b')}}
+['d505-s1','d505-s2','d505-s3'].forEach(id=>$(id).addEventListener('input',seeds));seeds();
+
+// ---------- Lab 3: buckets & overlap timeline ----------
+const tc=$('d505-tl'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h,LAY=8;
+function tl(){const k=+$('d505-k').value,a=+$('d505-a').value,c=+$('d505-c').value,g=+$('d505-g').value,ov=$('d505-ov').checked;
+  ['k','a','c','g'].forEach(n=>$('d505-'+n+'v').textContent=$('d505-'+n).value);
+  const comp=[];for(let i=0;i<LAY;i++)comp.push([i*c,(i+1)*c,'L'+(LAY-i)]);
+  const nb=Math.ceil(LAY/k),net=[];let free=ov?0:LAY*c;
+  for(let b=0;b<nb;b++){const lastLayer=Math.min(LAY,(b+1)*k),ready=ov?lastLayer*c:LAY*c,dur=a+g*(lastLayer-b*k);
+    const s=Math.max(free,ready);net.push([s,s+dur,s+a,'b'+b]);free=s+dur}
+  const end=Math.max(LAY*c,free),vis=end-LAY*c;
+  $('d505-calls').textContent=nb;$('d505-step').textContent=end;$('d505-vis').textContent=vis+' ('+Math.round(vis/end*100)+'%)';
+  tx.clearRect(0,0,TW,TH);const LX=70,R=TW-LX-10,maxT=Math.max(end,LAY*10+8*10+80),sx=R/maxT;
+  tx.font='11px JetBrains Mono, monospace';tx.textBaseline='middle';tx.textAlign='left';tx.fillStyle=css('--ink');
+  tx.fillText('backward',4,40);tx.fillText('network',4,95);
+  comp.forEach(([s,e,l])=>{tx.fillStyle=css('--vec-a');tx.fillRect(LX+s*sx+.5,24,(e-s)*sx-1,32);
+    if((e-s)*sx>18){tx.fillStyle=css('--paper');tx.textAlign='center';tx.fillText(l,LX+(s+e)/2*sx,40);tx.textAlign='left'}});
+  net.forEach(([s,e,la,l])=>{tx.fillStyle=css('--muted');tx.globalAlpha=.55;tx.fillRect(LX+s*sx+.5,79,(la-s)*sx,32);tx.globalAlpha=1;
+    tx.fillStyle=css('--vec-b');tx.fillRect(LX+la*sx,79,Math.max(0,(e-la)*sx-1),32);
+    if((e-s)*sx>18){tx.fillStyle=css('--ink');tx.textAlign='center';tx.fillText(l,LX+(s+e)/2*sx,95);tx.textAlign='left'}});
+  const xe=LX+end*sx;tx.strokeStyle=css('--bad');tx.lineWidth=1.5;tx.beginPath();tx.moveTo(xe,16);tx.lineTo(xe,120);tx.stroke();
+  tx.fillStyle=css('--bad');tx.textAlign='center';tx.fillText('step end = '+end,Math.min(xe,TW-50),10);}
+['d505-k','d505-a','d505-c','d505-g','d505-ov'].forEach(id=>$(id).addEventListener('input',tl));tl();
+
+// ---------- quiz ----------
+AI.quiz($('d505-quizBox'),[
+ ['ليه DDP بيعمل broadcast للـ parameters وقت الإنشاء بدل ما يعتمد على نفس الـ seed عند كل الـ ranks؟',['الـ broadcast بيوفّر ذاكرة','الـ broadcast أسرع من الـ seed','PyTorch بيمنع نفس الـ seed','الـ init بنفس الـ seed ممكن يختلف بـ float epsilon بين الـ ranks؛ الـ broadcast بيضمن أوزان متطابقة byte بـ byte قبل التدريب'],3,'عمليات الـ float على hardware مختلف (أو بترتيب processes مختلف) ممكن تختلف على مستوى الـ bits. الـ broadcast من rank 0 هو الطريقة الوحيدة للتطابق الكامل.'],
+ ['DDP بيعمل إيه بعد الـ backward وقبل optimizer.step؟',['allreduce-SUM لـ gradient كل parameter وبعدين قسمة على world_size عشان يطلع المتوسط','ولا حاجة','بيحفظ checkpoint','بيعمل broadcast للـ logits'],0,'المتوسط ما بيتغيرش مع world_size، فالـ lr اللي اتظبط على rank واحد بيشتغل على N.'],
+ ['ليه نقسم على world_size بعد allreduce-SUM بدل ما نستخدم allreduce-MEAN؟',['allreduce-MEAN مش موجود في gloo','world_size مش معروف','القسمة على world_size عملية محلية على كل rank، والـ MEAN كان هيتعمل بنفس الطريقة جوه','القسمة بتطلّع NaN'],2,'الطريقتين نفس الحساب. NCCL فيه AVG من نسخة 2.10، و gloo لأ، فبنقسم محليًا بعد الـ SUM.'],
+ ['الـ gradient bucketing في DDP الـ production بيحقق إيه؟',['بيلم allreduce صغيرين كتير في allreduce واحد كبير، فالـ latency الثابتة بتتوزع','بيفضّي ذاكرة الـ gradients','بيحوّل الـ gradients لـ int8','بيتخطى الـ backward'],0,'موديل 1B parameter فيه آلاف الـ grad tensors، و allreduce لكل واحد = تدفع latency gloo أو NCCL آلاف المرات.'],
+ ['ليه no_sync() موجودة في PyTorch DDP؟',['عشان تغيّر الـ backend','عشان تقفل DDP','للـ debugging','الـ gradient accumulation على K microbatch محتاج يتخطى الـ allreduce بعد الـ backward في K−1 منهم، و no_sync بتعمل الوقفة دي'],3,'من غير no_sync الـ allreduce بيشتغل K مرة في كل accumulated step والـ throughput بيقع.'],
+ ['ليه المرجع في الدرس بيمشي على microbatch كل rank بالترتيب في process واحد؟',['دي الطريقة الوحيدة لاستخدام gloo','process واحد أسرع','بيوفّر ذاكرة','بيدّي baseline دقيق: متوسط الـ gradient المتسلسل لازم يساوي متوسط الـ allreduce بتاع DDP في كل step'],3,'التطابق مع المرجع هو الـ test الأساسي للصحة؛ من غيره bugs الـ gradient sync بتستخبى لحد step 10000.'],
+ ['(سؤال مني) نسيت تقسم على world_size بعد الـ allreduce-SUM على 8 ranks. إيه اللي حصل فعليًا؟',['ولا حاجة','الـ gradient اتضرب في 8، وكإن الـ lr اتضرب في 8','الـ ranks افترقت','الـ allreduce بقى أبطأ 8 مرات'],1,'الـ ranks لسه متطابقة (كلهم خدوا نفس الـ SUM)، بس الخطوة بقت 8 أضعاف. على N=1 كان شغال وعلى 8 ممكن يضرب.'],
+ ['(سؤال مني) نسيت الـ broadcast وكل rank عمل init بـ seed مختلف، بس الـ allreduce شغال صح. بعد 1000 step؟',['النسخ هتتقابل في الآخر','النسخ هتفضل مختلفة: الـ sync بيدّي الكل نفس الخطوة، فالفرق في نقطة البداية بيفضل موجود','هيحصل deadlock','الـ loss هيبقى NaN'],1,'ده بالظبط اللي الدرس بيقوله: الـ gradient sync لوحده عمره ما بيرجّع الـ replicas لبعض. شفتها في معمل ١.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N0,root);
+AI.onTheme(()=>{if(!document.body.contains(pc))return false;drawRep();seeds();tl()});
+})();
+</script>

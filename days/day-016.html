@@ -1,0 +1,735 @@
+<div class="day" id="d16-root">
+<header class="top">
+  <span class="eyebrow">Phase 1 · Lesson 16 · Sampling Methods</span>
+  <h1>اليوم ١٦: الـ Sampling، إزاي الموديل بيختار من بين كل الاحتمالات</h1>
+  <p class="lede">الموديل بيطلّع 50,000 logit، واحد لكل token. يختار مين؟ لو اختار الأعلى دايمًا الكلام هيبقى نسخة واحدة مملة، ولو اختار عشوائي خالص هيطلع كلام فاضي. النهاردة هتبني كل طرق الـ sampling من رقم عشوائي واحد بين 0 و1، لحد الـ temperature والـ top-p اللي بتغيرهم كل يوم في الـ API.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Statistics for ML</b></span>
+    <span>بعده: <b>Linear Systems</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 1 — 22 lessons</span>
+    <div class="roadmap" id="d16-roadmap" aria-label="دروس الفيز الأولى"></div>
+  </div>
+</header>
+
+<section id="d16-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: افتكر امبارح</h2></div>
+  <p>امبارح كان عن الإحصاء للـ ML. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ Law of Large Numbers بتقول إيه، وليه هنحتاجها النهاردة؟</summary>كل ما تزود عدد العينات، متوسطها بيقرب من المتوسط الحقيقي (الـ expectation). النهاردة الـ Monte Carlo كلها قايمة على الفكرة دي: نحسب تكامل صعب بمجرد إننا ناخد متوسط عينات عشوائية.</details>
+  <details><summary>٢. لو الـ variance بتاعة متغير هي σ²، الـ variance بتاعة متوسط N عينة مستقلة منه قد إيه؟</summary><span class="ltr">σ² / N</span>. يعني الـ standard deviation بتاعة المتوسط <span class="ltr">σ / √N</span>. هتشوفها النهاردة باسم «خطأ الـ Monte Carlo بيقل زي <span class="ltr">1/√N</span>».</details>
+  <details><summary>٣. يعني إيه CDF؟</summary><span class="ltr">F(x) = P(X ≤ x)</span>: احتمال إن القيمة تطلع أصغر من أو تساوي x. دالة طالعة دايمًا من 0 لـ 1. النهاردة هنقلبها (inverse CDF) عشان نولّد عينات من أي توزيع.</details>
+</section>
+
+<section>
+  <h2>خطة الساعتين</h2>
+  <div class="plan">
+    <div><b>10 min</b>التسخين + ليه الـ sampling في كل حتة</div>
+    <div><b>25 min</b>Uniform، Inverse CDF، Rejection، Importance، Monte Carlo</div>
+    <div><b>20 min</b>MCMC و Gibbs + معمل الـ Metropolis</div>
+    <div><b>20 min</b>Temperature، top-k، top-p + معمل الـ LLM</div>
+    <div><b>10 min</b>Reparameterization، Gumbel-Softmax، Stratified، Diffusion</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d16-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه الـ Sampling مهم؟ ٤ أدوار</h2></div>
+  <p>أي نظام generative AI هو في الآخر نظام sampling. طريقة الاختيار هي اللي بتحدد الجودة والتنوع وقد إيه تقدر تتحكم في الناتج.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الدور</th><th>المعنى</th><th>أمثلة</th></tr>
+    <tr><td><b>Generation</b></td><td>الناتج نفسه بيتولد بالسحب</td><td>الـ LLMs، الـ diffusion، الـ GANs. الـ temperature والـ top-k والـ top-p هي المفاتيح اللي المهندسين بيلعبوا فيها كل يوم</td></tr>
+    <tr><td><b>Training</b></td><td>العشوائية جزء من التدريب</td><td>الـ SGD بيسحب mini-batches، الـ dropout بيسحب neurons يقفلها، الـ data augmentation بيسحب تحويلات، والـ importance sampling بيقلل الـ variance في الـ RL (PPO، TRPO)</td></tr>
+    <tr><td><b>Estimation</b></td><td>تقدير حاجات ملهاش حل مقفول</td><td>متوسط الـ loss على توزيع الداتا، الـ partition function، الـ evidence في Bayes. كلها بالـ Monte Carlo</td></tr>
+    <tr><td><b>Exploration</b></td><td>تلف في فضاء الاحتمالات</td><td>MCMC في الـ Bayesian inference، الـ evolutionary strategies، الـ Thompson sampling في الـ bandits</td></tr>
+  </table></div>
+  <div class="note"><strong>التحدي الأساسي:</strong> الكمبيوتر يعرف يسحب مباشرة من توزيعات بسيطة بس (uniform و normal). أي توزيع تاني محتاج طريقة تحوّل العينات البسيطة لعينات من التوزيع اللي انت عايزه. الدرس كله عبارة عن الطرق دي.</div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d16-basic">
+  <div class="station-head"><span class="tag">02</span><h2>من رقم Uniform لأي توزيع</h2></div>
+  <h3>الـ Uniform: نقطة البداية</h3>
+  <p>المولّد العشوائي بيطلّع U في <span class="ltr">[0, 1)</span>، وأي فترة طولها واحد ليها نفس الاحتمال. زي عجلة حظ متقسمة بالتساوي.</p>
+  <div class="formula">P(a ≤ U ≤ b) = b − a     E[U] = 0.5     Var(U) = 1/12</div>
+  <p>عايز عنصر من n عناصر؟ <span class="ltr">⌊n·U⌋</span>. عايز رقم في <span class="ltr">[a, b]</span>؟ <span class="ltr">a + (b − a)·U</span>. الفكرة المهمة: رقم uniform واحد فيه كمية العشوائية المظبوطة عشان يطلّع عينة واحدة من أي توزيع؛ الشطارة إنك تلاقي التحويل الصح.</p>
+
+  <h3>الـ Inverse CDF: اقلب الدالة</h3>
+  <p>الـ CDF بتاخد قيمة وتديك احتمال. المعكوس بتاعها بياخد احتمال ويديك قيمة. لو U uniform، يبقى <span class="ltr">X = F⁻¹(U)</span> ماشي على التوزيع اللي انت عايزه.</p>
+  <div class="formula">P(F⁻¹(U) ≤ x) = P(U ≤ F(x)) = F(x)</div>
+  <p><b>تشبيه:</b> تخيل طابور الناس مترتب حسب الطول، وانت بتختار «ترتيب مئوي» عشوائي (U) وتشوف الشخص اللي في المكان ده. الأماكن اللي فيها ناس كتير (الـ CDF طالعة فيها بسرعة) هتتختار أكتر.</p>
+  <p><b>مثال الـ Exponential:</b></p>
+  <div class="formula">F(x) = 1 − e^(−λx)  →  x = −ln(1 − u)/λ  →  x = −ln(u)/λ</div>
+  <p>آخر خطوة صح لأن <span class="ltr">1 − U</span> و U ليهم نفس التوزيع. الطريقة دي ممتازة لما تعرف تكتب <span class="ltr">F⁻¹</span> بشكل مقفول. الـ normal معندوش inverse CDF مقفول، فبنستخدم طرق تانية زي Box-Muller أو تقريب رقمي.</p>
+  <p><b>النسخة الـ discrete:</b> اعمل الـ CDF كـ cumulative sum، اسحب U، ودوّر على أول index الـ cumsum فيه عدّى U. ده نفس <code>sample_categorical</code> من درس ٦، ونفس <code>sample_from_probs</code> في كود النهاردة.</p>
+
+  <h3>الـ Rejection Sampling: ارمي واقبل أو ارفض</h3>
+  <p>لما مش قادر تقلب الـ CDF بس تقدر تحسب الـ PDF (حتى لو مضروبة في ثابت مش معروف). محتاج توزيع proposal q تعرف تسحب منه، ورقم M بحيث <span class="ltr">p(x) ≤ M·q(x)</span> في كل حتة.</p>
+  <ol class="ex">
+    <li>اسحب x من q.</li>
+    <li>اسحب u من Uniform(0,1).</li>
+    <li>لو <span class="ltr">u &lt; p(x) / (M·q(x))</span> اقبل x، غير كده ارفض وارجع للخطوة ١.</li>
+  </ol>
+  <div class="formula">acceptance rate = Z / M     (= 1/M لو p متعملها normalize)</div>
+  <p><b>تشبيه:</b> بترمي سهام عشوائية على مستطيل حوالين شكل التوزيع، وبتحتفظ بس باللي وقع تحت المنحنى. كل ما المستطيل (M) يبقى لازق في الشكل، كل ما ترمي أقل. في بُعد أو اتنين أو تلاتة شغالة كويس؛ في أبعاد عالية نسبة القبول بتقع بشكل exponential لأن معظم حجم الـ proposal بيترفض. ده الـ curse of dimensionality بتاع الطريقة دي.</p>
+  <p>أمثلة الدرس: <b>truncated normal</b> (proposal uniform على المدى، وM هي أعلى قيمة للـ PDF فيه)، و<b>نص دايرة</b> (ترمي في المستطيل وتقبل اللي جوه)، وده بالظبط إزاي الـ Monte Carlo بيحسب π: نسبة القبول = نسبة المساحة <span class="ltr">π/4</span>.</p>
+
+  <h3>الـ Importance Sampling: وزّن بدل ما ترفض</h3>
+  <p>أحيانًا مش محتاج عينات من p نفسها؛ محتاج متوسط حاجة تحت p، ومعاك عينات من توزيع تاني q.</p>
+  <div class="formula">E_p[f(x)] = E_q[f(x)·w(x)]     w(x) = p(x)/q(x)     ≈ (1/N) Σ f(xᵢ)·w(xᵢ)</div>
+  <p><b>تشبيه:</b> عملت استبيان في جامعة فيها طلبة هندسة أكتر من الطبيعي. بدل ما ترمي الاستبيان، بتدي كل طالب هندسة وزن أقل وكل طالب تاني وزن أكبر عشان يمثلوا المجتمع الحقيقي.</p>
+  <div class="note ai"><strong>في الـ RL:</strong> في الـ PPO بتجمع trajectories بالـ policy القديمة <span class="ltr">π_old</span> بس عايز تحسّن الجديدة <span class="ltr">π_new</span>. الوزن هو <span class="ltr">π_new(a|s) / π_old(a|s)</span>، والـ PPO بيعمل clip للوزن ده عشان الـ policy الجديدة متبعدش أوي عن القديمة.</div>
+  <p>المشكلة: لو q بعيدة أوي عن p، عينات قليلة هتاخد أوزان ضخمة وتسيطر على النتيجة (variance عالية). الحل الجزئي: <b>self-normalized</b>، تقسم على مجموع الأوزان:</p>
+  <div class="formula">E_p[f(x)] ≈ Σ wᵢ f(xᵢ) / Σ wᵢ</div>
+
+  <h3>الـ Monte Carlo Estimation</h3>
+  <p>عايز تكامل؟ اسحب نقط uniform من المنطقة، خد متوسط قيمة الدالة، واضرب في حجم المنطقة. قانون الأعداد الكبيرة بيضمن إنه بيقرب.</p>
+  <div class="formula">I ≈ (Volume(D) / N) · Σ g(xᵢ)       Error = O(1/√N)  مهما كان عدد الأبعاد</div>
+  <p>الحتة الأخيرة هي السر: الخطأ مش معتمد على الأبعاد، عشان كده الـ Monte Carlo بيكسب في الأبعاد العالية اللي الـ grid فيها مستحيل. لتقدير متوسط: <span class="ltr">E[f(X)] ≈ (1/N) Σ f(xᵢ)</span>، والـ variance بتاعة التقدير <span class="ltr">Var(f(X))/N</span>.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: احسب π بالسهام</h3>
+      <p>بنرمي نقط uniform في المربع <span class="ltr">[-1,1]×[-1,1]</span>. اللي جوه الدايرة أزرق، اللي برة برتقالي. <span class="ltr">π ≈ 4 × (جوه / الكل)</span>.</p>
+      <p>الرسمة الصغيرة تحت بتوريك الخطأ على مقياس log مع خط <span class="ltr">1/√N</span> المرجعي. لاحظ إنك عشان تقلل الخطأ ١٠ مرات محتاج نقط أكتر ١٠٠ مرة.</p>
+      <div class="note"><strong>ده كمان rejection sampling:</strong> النقط الزرقا هي عينات uniform من جوه الدايرة، والبرتقالي هو المرفوض. نسبة القبول = <span class="ltr">π/4 ≈ 0.785</span>.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d16-pi" width="400" height="400" aria-label="نقط عشوائية داخل مربع ودايرة"></canvas>
+      <canvas id="d16-pierr" width="400" height="140" aria-label="الخطأ مقابل عدد النقط"></canvas>
+      <div class="readout">
+        <div><small>N</small><b id="d16-piN">0</b></div>
+        <div><small>تقدير π</small><b id="d16-piE">—</b></div>
+        <div><small>الخطأ</small><b id="d16-piErr">—</b></div>
+        <div><small>نسبة القبول</small><b id="d16-piAcc">—</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d16-piRun">شغّل</button>
+        <button type="button" id="d16-pi1k">+1,000 مرة واحدة</button>
+        <button type="button" id="d16-piReset">من الأول</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d16-mcmc">
+  <div class="station-head"><span class="tag">03</span><h2>الـ MCMC: مشي عشوائي بيوصل للتوزيع</h2></div>
+  <p>لما التوزيع معقد ومعاك بس صيغة متناسبة معاه (من غير ثابت الـ normalization)، الـ MCMC بيبني سلسلة Markov الـ stationary distribution بتاعتها هي التوزيع اللي انت عايزه. بعد خطوات كفاية، العينات من السلسلة تقريبًا عينات من p.</p>
+  <h3>Metropolis-Hastings</h3>
+  <ol class="ex">
+    <li>ابدأ من أي نقطة <span class="ltr">x₀</span>.</li>
+    <li>اقترح خطوة <span class="ltr">x' ~ q(x'|x)</span>.</li>
+    <li>احسب <span class="ltr">α = [p(x')·q(x|x')] / [p(x)·q(x'|x)]</span>.</li>
+    <li>اقبل باحتمال <span class="ltr">min(1, α)</span>: لو <span class="ltr">u &lt; α</span> روح لـ x'، غير كده افضل مكانك (ونسجّل x تاني).</li>
+    <li>ارمي أول B عينة (burn-in) وخد الباقي.</li>
+  </ol>
+  <p>لو الـ proposal متماثلة (زي Gaussian حوالين النقطة الحالية) النسبة بتبقى <span class="ltr">p(x')/p(x)</span> بس، ودي الـ Metropolis الأصلية. ولاحظ إن الثابت المجهول بيتشال في القسمة، وده سر قوتها.</p>
+  <p><b>تشبيه:</b> متسلق في الضباب عايز يقضي وقت في كل حتة بنسبة ارتفاعها. لو الخطوة المقترحة لفوق، يطلع دايمًا. لو لتحت، يطلع أحيانًا بنسبة الارتفاعين. كده بيقضي وقت أكتر في القمم من غير ما يتحبس فيها.</p>
+  <p><b>ليه بتشتغل؟</b> قاعدة القبول بتحقق <b>detailed balance</b>: احتمال إنك تكون في x وتروح x' = احتمال إنك تكون في x' وترجع x. ده كفاية إن p تبقى الـ stationary distribution.</p>
+  <div class="formula">p(x) · T(x → y) = p(y) · T(y → x)</div>
+  <p><b>حاجات عملية:</b></p>
+  <ul class="checklist">
+    <li>• <b>Burn-in:</b> ارمي العينات الأولى قبل ما السلسلة توصل للتوازن.</li>
+    <li>• <b>Thinning:</b> خد كل k عينة عشان تقلل الارتباط بين العينات المتتالية.</li>
+    <li>• <b>حجم الخطوة:</b> صغير أوي = قبول عالي بس استكشاف بطيء. كبير أوي = معظم الاقتراحات بتترفض والسلسلة واقفة مكانها.</li>
+    <li>• نسبة القبول المثالية لـ Gaussian proposal في أبعاد عالية تقريبًا <b>0.234</b>.</li>
+  </ul>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: Metropolis على توزيع بقمتين</h3>
+      <p>نفس الـ target اللي في الكود: <span class="ltr">0.4·N(−3,1) + 0.6·N(3,1)</span>. الخط الأحمر هو الكثافة الحقيقية، والأعمدة هي الـ histogram بتاع السلسلة. تحت فيه الـ trace (مكان السلسلة مع الوقت).</p>
+      <p>جرّب <span class="ltr">proposal_std</span> = 0.3: القبول عالي بس السلسلة بتعلق في قمة واحدة وبتنط للتانية نادرًا. جرّب 10: معظم الخطوات بتترفض والـ trace شكله سلالم. ما بين الاتنين بيمشي أحسن.</p>
+    </div>
+    <div class="instrument">
+      <canvas id="d16-mh" width="480" height="230" aria-label="هيستوجرام عينات MCMC مقابل الكثافة"></canvas>
+      <canvas id="d16-trace" width="480" height="130" aria-label="مسار السلسلة"></canvas>
+      <label style="display:grid;gap:2px">proposal_std = <b class="mono" id="d16-stdv">1.0</b><input type="range" id="d16-std" min="0.1" max="10" step="0.1" value="1"></label>
+      <div class="readout">
+        <div><small>خطوات</small><b id="d16-mhN">0</b></div>
+        <div><small>acceptance</small><b id="d16-mhAcc">—</b></div>
+        <div><small>mean</small><b id="d16-mhMean">—</b></div>
+        <div><small>نسبة x &gt; 0</small><b id="d16-mhRight">—</b></div>
+      </div>
+      <div class="btns">
+        <button type="button" class="primary" id="d16-mhRun">شغّل</button>
+        <button type="button" id="d16-mhReset">من الأول (x₀ = 0)</button>
+      </div>
+      <p style="font-size:14px;color:var(--muted)">المتوسط الحقيقي <span class="ltr">0.4·(−3) + 0.6·3 = 0.6</span>، والنسبة الحقيقية على اليمين تقريبًا 0.6.</p>
+    </div>
+  </div>
+
+  <h3>Gibbs Sampling: متغير واحد في المرة</h3>
+  <p>حالة خاصة من الـ MCMC للتوزيعات متعددة الأبعاد. بدل ما تتحرك في كل الأبعاد مرة واحدة، بتحدّث كل متغير من التوزيع الشرطي بتاعه والباقيين ثابتين:</p>
+  <div class="formula">x₁ ~ p(x₁ | x₂, …, x_d)  →  x₂ ~ p(x₂ | x₁, x₃, …)  →  …</div>
+  <p>شرطه إنك تعرف تسحب من كل conditional، وده سهل في Bayesian networks (من شكل الجراف)، والـ Gaussian mixtures (الشرطيات Gaussian)، والـ Ising models (كل spin معتمد على جيرانه بس). نسبة القبول دايمًا 1 لأن السحب من الشرطي المظبوط بيحقق detailed balance تلقائي.</p>
+  <p><b>العيب:</b> لو المتغيرات مرتبطة جامد، الحركة بطيئة لأنك بتمشي «سلالم» أفقي ورأسي ومش قادر تعمل خطوة قطرية كبيرة. في الكود هتشوف ده مع <span class="ltr">ρ = 0.9</span>: كل خطوة <span class="ltr">x ~ N(ρy, √(1−ρ²))</span> صغيرة أوي.</p>
+</section>
+
+<!-- STATION 4 -->
+<section id="d16-llm">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Sampling في الـ LLMs: Temperature و Top-k و Top-p</h2></div>
+  <h3>Temperature</h3>
+  <p>الموديل بيطلّع logits <span class="ltr">z₁…z_V</span>، والـ softmax بتحولها لاحتمالات. الـ temperature بتقسم الـ logits قبل الـ softmax:</p>
+  <div class="formula">pᵢ = exp(zᵢ/T) / Σ exp(zⱼ/T)</div>
+  <div class="tablewrap"><table>
+    <tr><th>T</th><th>اللي بيحصل</th></tr>
+    <tr><td class="ltr">T = 1.0</td><td>الـ softmax العادية (التوزيع الأصلي)</td></tr>
+    <tr><td class="ltr">T → 0</td><td>argmax: دايمًا أعلى logit (deterministic)</td></tr>
+    <tr><td class="ltr">T → ∞</td><td>uniform: كل الـ tokens بنفس الاحتمال</td></tr>
+    <tr><td class="ltr">T &lt; 1</td><td>بتحدّد التوزيع: ثقة أكتر وتنوع أقل</td></tr>
+    <tr><td class="ltr">T &gt; 1</td><td>بتفرطح التوزيع: ثقة أقل وتنوع أكتر</td></tr>
+  </table></div>
+  <p><b>ليه؟</b> القسمة على <span class="ltr">T &lt; 1</span> بتكبّر الفرق بين الـ logits. لو <span class="ltr">z₁ = 2</span> و<span class="ltr">z₂ = 1</span> وقسمت على 0.5 يبقوا 4 و2، الفرق اتضاعف، وبعد الـ softmax الأول بياخد نصيب أكبر بكتير. <b>تشبيه:</b> الـ temperature زي التباين (contrast) في صورة: قلّله والكل يبقى رمادي شبه بعض، زوّده والفاتح يفتح والغامق يغمق.</p>
+  <p>القيم العملية حسب الدرس: <span class="ltr">T = 0</span> greedy للأسئلة الحقائقية، <span class="ltr">0.3–0.7</span> للكود، <span class="ltr">0.7–1.0</span> للمحادثة، <span class="ltr">1.0–1.5</span> للكتابة الإبداعية والـ brainstorming، وفوق 1.5 بيبقى عشوائي ونادرًا مفيد. والأهم: الـ temperature مش بتغير أي tokens <b>ممكنة</b>؛ بتغير توزيع الاحتمال عليها بس.</p>
+
+  <h3>Top-k</h3>
+  <p>رتّب الـ tokens بالاحتمال، خد أعلى k بس، اعمل renormalize <span class="ltr">pᵢ' = pᵢ / Σ_top-k pⱼ</span>، واسحب. <span class="ltr">k = 1</span> = greedy، <span class="ltr">k = V</span> = مفيش فلترة، <span class="ltr">k = 40</span> قيمة شائعة بتشيل الذيل الطويل (أخطاء إملائية وكلام فاضي).</p>
+  <p><b>المشكلة:</b> k ثابت مهما كان السياق. لو الموديل واثق (token واحد عنده 95%)، <span class="ltr">k = 40</span> لسه سايب 39 بديل. ولو مش واثق والاحتمال متوزع على 1000 token، <span class="ltr">k = 40</span> بيقطع اختيارات معقولة.</p>
+
+  <h3>Top-p (Nucleus)</h3>
+  <p>بدل عدد ثابت، خد أصغر مجموعة tokens مجموع احتمالاتها يوصل لـ p أو أكتر، وبعدين renormalize واسحب. <span class="ltr">p = 0.9</span> = تغطي 90% من الاحتمال، <span class="ltr">p = 1.0</span> = مفيش فلترة، <span class="ltr">p = 0.1</span> = تقريبًا greedy.</p>
+  <p>لما الموديل واثق، الـ nucleus بياخد ٢–٣ tokens بس، ولما مش واثق بياخد كتير (ممكن 200). التكيف ده هو السبب إن الـ top-p عمومًا بيطلّع كلام أحسن من الـ top-k. <b>تشبيه:</b> top-k زي إنك دايمًا تعزم ٤٠ واحد على الفرح؛ top-p زي إنك تعزم الناس اللي يكمّلوا ٩٠% من قرايبك، ساعات ٣ وساعات ٢٠٠.</p>
+  <p><b>تركيبات شائعة:</b> <span class="ltr">T 0.7 + top-p 0.9</span> للاستخدام العام، <span class="ltr">T 0</span> للمهام الـ deterministic، و<span class="ltr">T 1.0 + top-k 50</span> إعداد ورقة Fan et al. (2018) الأصلية. وممكن تجمعهم: top-k الأول وبعدين top-p على اللي فاضل.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: لوحة تحكم الـ decoding</h3>
+      <p>دي نفس الـ logits والكلمات اللي في الكود: <span class="ltr">[3.0, 2.0, 1.5, 0.5, -1.0, -2.0]</span> لـ <span class="ltr">the, a, this, one, that, some</span>.</p>
+      <p>الترتيب في الكود: الـ temperature بتتطبق الأول، وبعدين الفلتر (top-k أو top-p) على التوزيع الناتج. الأعمدة الرمادي هي الـ softmax الأصلية (<span class="ltr">T=1</span>)، والزرقا اللي بيتسحب منها فعلًا.</p>
+      <div class="note ai"><strong>جرّب:</strong> ثبّت <span class="ltr">T = 1</span> واعمل top-p = 0.9: هتلاقي ٣ tokens بس فضلوا. علّي الـ T لـ 3 وشوف الـ top-p بقى بياخد tokens أكتر لأن التوزيع اتفرطح. ده الـ adaptive behavior بعينك.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d16-tok" width="480" height="250" aria-label="توزيع احتمالات التوكنز"></canvas>
+      <label style="display:grid;gap:2px">Temperature T = <b class="mono" id="d16-Tv">1.0</b><input type="range" id="d16-T" min="0" max="3" step="0.05" value="1"></label>
+      <label style="display:flex;gap:8px;align-items:center">الفلتر:
+        <select id="d16-filt"><option value="none">بدون</option><option value="k">top-k</option><option value="p">top-p</option></select></label>
+      <label style="display:grid;gap:2px">k = <b class="mono" id="d16-kv">3</b><input type="range" id="d16-k" min="1" max="6" step="1" value="3"></label>
+      <label style="display:grid;gap:2px">p = <b class="mono" id="d16-pv">0.90</b><input type="range" id="d16-p" min="0.05" max="1" step="0.01" value="0.9"></label>
+      <div class="readout">
+        <div><small>tokens فاضلة</small><b id="d16-keep">6</b></div>
+        <div><small>أعلى احتمال</small><b id="d16-top">0.5889</b></div>
+      </div>
+      <div class="btns"><button type="button" class="primary" id="d16-gen">ولّد ١٢ token</button><button type="button" id="d16-gen5">٥ مرات وعدّ المختلف</button></div>
+      <div class="formula" id="d16-out" style="text-align:left;min-height:2.4em"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d16-reparam">
+  <div class="station-head"><span class="tag">05</span><h2>Sampling تقدر تعمله Backprop: Reparameterization و Gumbel-Softmax</h2></div>
+  <h3>الـ Reparameterization Trick (الـ VAEs)</h3>
+  <p>الـ VAE بيحوّل الـ input لتوزيع في الـ latent space، يسحب منه، ويفك العينة تاني. المشكلة: مفيش gradient لعملية سحب. <span class="ltr">d/dμ [sample from N(μ, σ²)]</span> = ؟؟؟ العشوائية بتقفل طريق الـ gradient.</p>
+  <p>الحل: افصل العشوائية عن الـ parameters:</p>
+  <div class="formula">ε ~ N(0, 1)      z = μ + σ·ε      dz/dμ = 1      dz/dσ = ε</div>
+  <p>دلوقتي z دالة deterministic قابلة للاشتقاق في μ وσ، والـ gradient بيعدي. ده صح لأن <span class="ltr">N(μ, σ²)</span> ليها نفس توزيع <span class="ltr">μ + σ·N(0,1)</span>.</p>
+  <p><b>تشبيه:</b> بدل ما تقول «الحظ اختار رقم من التوزيع ده» (مينفعش تسأل «لو μ زادت شوية الرقم هيتغير قد إيه؟»)، بتقول «الحظ اختار ε مرة واحدة، وأنا حسبت z منه بمعادلة». دلوقتي السؤال له إجابة.</p>
+  <p><b>في loop تدريب الـ VAE:</b></p>
+  <ol class="ex">
+    <li>الـ encoder بيطلّع μ و <span class="ltr">log(σ²)</span> لكل input.</li>
+    <li>اسحب <span class="ltr">ε ~ N(0,1)</span>.</li>
+    <li>احسب <span class="ltr">z = μ + σ·ε</span>.</li>
+    <li>اعمل decode لـ z عشان ترجع الـ input.</li>
+    <li>backprop في ٤ ثم ٣ ثم ٢ ثم ١. ممكن لأن خطوة ٣ قابلة للاشتقاق.</li>
+  </ol>
+  <p>من غير الحركة دي الـ VAEs مكانتش هتتدرب بالـ backprop العادي. في الكود، الـ encoder بيطلّع <span class="ltr">log_var</span>، فـ <span class="ltr">σ = exp(0.5·log_var)</span> و<span class="ltr">dz/dlog_var = ε · 0.5σ</span> بالـ chain rule (افتكر يوم ٥).</p>
+
+  <h3>Gumbel-Softmax: نفس الفكرة للـ categorical</h3>
+  <p>الحركة اللي فاتت للـ Gaussian. للتوزيعات الـ discrete بنستخدم Gumbel.</p>
+  <p><b>Gumbel-Max (مظبوط بس مش differentiable):</b> لكل category اسحب <span class="ltr">gᵢ = −log(−log(u))</span>، ورجّع <span class="ltr">argmax(log pᵢ + gᵢ)</span>. ده بيطلّع عينات categorical مظبوطة 100%.</p>
+  <p><b>Gumbel-Softmax (تقريب differentiable):</b> بدّل الـ argmax الحاد بـ softmax ناعمة بحرارة τ:</p>
+  <div class="formula">yᵢ = exp((log pᵢ + gᵢ)/τ) / Σ exp((log pⱼ + gⱼ)/τ)</div>
+  <p><span class="ltr">τ → 0</span> بتقرب من one-hot، <span class="ltr">τ → ∞</span> بتقرب من uniform <span class="ltr">(1/k, …)</span>، و<span class="ltr">τ = 1</span> تقريب ناعم. الناتج vector احتمالات (soft one-hot) والـ gradient بيعدي فيه.</p>
+  <p><b>Straight-through estimator:</b> في الـ forward استخدم الـ argmax الحاد (one-hot حقيقي)، وفي الـ backward استخدم gradients الـ Gumbel-Softmax الناعمة.</p>
+  <p><b>بيُستخدم في:</b> متغيرات latent discrete في الـ VAEs، الـ neural architecture search (اختيار عمليات discrete)، الـ hard attention، والـ RL بأفعال discrete.</p>
+
+  <h3>Stratified Sampling: غطّي المساحة بالعدل</h3>
+  <p>الـ Monte Carlo العادي ممكن بالصدفة يكوّم نقط في حتة ويسيب فجوات في حتة. الـ stratified بيقسم <span class="ltr">[0,1]</span> لـ N شريحة متساوية ويسحب نقطة واحدة من كل شريحة:</p>
+  <div class="formula">xᵢ = (i + uᵢ) / N     uᵢ ~ Uniform(0,1),  i = 0 … N−1</div>
+  <p>الـ variance بتاعته دايمًا أقل من أو تساوي الـ Monte Carlo العادي، والتحسن أكبر لما الدالة ناعمة، وللدوال الـ piecewise-constant بيبقى مظبوط. <b>تشبيه:</b> بدل ما تسأل ١٠٠ واحد عشوائي من مصر كلها (ممكن يطلعوا كلهم من القاهرة)، بتسأل عدد من كل محافظة.</p>
+  <p><b>بيُستخدم في:</b> التكامل الرقمي (quasi-Monte Carlo)، تقسيم الداتا بحيث كل fold فيه نفس توازن الـ classes، الدمج مع الـ importance sampling، والـ NeRF بيستخدمه على أشعة الكاميرا.</p>
+
+  <h3>الربط بالـ Diffusion Models</h3>
+  <p>الـ forward process بيضيف noise Gaussian للصورة على T خطوة لحد ما تبقى noise صافي:</p>
+  <div class="formula">x_t = √α_t · x_{t−1} + √(1 − α_t) · ε     ε ~ N(0, I)     x_T ~ N(0, I)</div>
+  <p>والـ reverse process (المتعلَّم) بيشيل الـ noise خطوة خطوة، وكل خطوة هي خطوة sampling:</p>
+  <div class="formula">x_{t−1} = (1/√α_t)·(x_t − (1 − α_t)/√(1 − ᾱ_t) · ε_θ(x_t, t)) + σ_t·z</div>
+  <p>الربط بالدرس: كل خطوة denoising بتستخدم الـ reparameterization (اسحب noise وطبّق تحويل deterministic)، الـ noise schedule <span class="ltr">{α_t}</span> شكل من أشكال الـ temperature annealing، التدريب بيستخدم Monte Carlo لتقريب الـ ELBO، والـ ancestral sampling سلسلة Markov (كل خطوة معتمدة على الحالية بس). توليد الصورة كله sampling متكرر: ابدأ من noise وكل خطوة اسحب نسخة أنضف شوية.</p>
+</section>
+
+<!-- STATION 6: MINE -->
+<section id="d16-mine">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني: اللي الدرس مش بيقوله صريح</h2></div>
+  <div class="note ai"><strong>temperature = 0 مش دايمًا نفس الناتج:</strong> نظريًا greedy = deterministic. عمليًا في APIs كتير بتلاقي اختلافات بسيطة بين المرات لأسباب في الحساب نفسه (ترتيب عمليات الـ floating point على الـ GPU وتجميع الطلبات مع بعض). يعني لو بتبني eval، متفترضش إن T=0 هيديك نفس الإجابة حرف بحرف كل مرة؛ ثبّت الـ seed لو الـ API بيدعمه وقيس الثبات بنفسك.</div>
+  <div class="note"><strong>غلطة شائعة ١:</strong> تغيّر الـ temperature والـ top-p مع بعض وانت بتجرّب. الاتنين بيأثروا على التنوع، فمش هتعرف مين اللي عمل الفرق. غيّر واحد في المرة.</div>
+  <div class="note"><strong>غلطة شائعة ٢:</strong> في الـ MCMC تنسى الـ burn-in أو تحكم على السلسلة من نسبة القبول بس. السلسلة في المعمل ٢ ممكن يكون القبول بتاعها 90% وهي محبوسة في قمة واحدة. بص على الـ trace دايمًا.</div>
+  <div class="note"><strong>غلطة شائعة ٣:</strong> تحسب <span class="ltr">−log(u)</span> أو <span class="ltr">−log(−log(u))</span> وu ممكن تطلع صفر. الكود بيحمي نفسه: <code>while u == 0</code> في الـ Gumbel و<code>+ 1e-300</code> في الـ MH. ده درس الـ numerical stability بتاع يوم ١٣ شغال.</div>
+  <div class="note ai"><strong>فين في الـ agents:</strong> لما تعمل self-consistency (تسأل الموديل نفس السؤال ٥ مرات وتاخد الإجابة الأكتر تكرارًا)، انت محتاج temperature أعلى من صفر عشان العينات تختلف أصلًا. ولما الـ agent بيطلّع JSON لـ tool call، عادةً عايز temperature واطية عشان الشكل ما يتكسرش. نفس الموديل، إعدادين مختلفين في نفس الـ pipeline.</div>
+</section>
+
+<!-- CODE -->
+<section id="d16-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من جذر الريبو (لو عملت clone يوم ١ اعمل <code>git pull</code> الأول):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/01-math-foundations/16-sampling-methods/code/sampling.py</pre></div>
+  <p>السكريبت مكتوب بالـ stdlib بس (<code>math</code> و<code>random</code>) وبيعمل <code>random.seed(42)</code>. لو عندك <code>matplotlib</code> هيحفظ <code>sampling_methods.png</code> في الفولدر اللي انت واقف فيه؛ لو مش عندك هيكتب إنه هيتخطى الرسم ويكمل.</p>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_sampling.py</code> واكتب الخطوات دي بنفسك. بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: Uniform و Inverse CDF</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import random
+random.seed(42)
+
+def sample_uniform(a, b):
+    return a + (b - a) * random.random()      <span class="c"># مدّ [0,1) على [a,b]</span>
+
+def sample_exponential_inverse_cdf(lam):
+    u = random.random()
+    return -math.log(u) / lam                 <span class="c"># F⁻¹(u) بعد ما بدّلنا 1-u بـ u</span>
+
+for lam in [0.5, 1.0, 2.0]:
+    s = [sample_exponential_inverse_cdf(lam) for _ in range(10000)]
+    print(lam, round(sum(s) / len(s), 4), "expected", 1 / lam)</pre></div>
+  <details><summary>الناتج المتوقع</summary>المتوسط لكل λ لازم يطلع قريب من <span class="ltr">1/λ</span>: يعني حوالي 2 و1 و0.5. الأرقام بعد العلامة العشرية هتختلف شوية حسب الـ seed؛ قارن باللي هيطلعلك.</details>
+
+  <h3>خطوة ٢: Rejection Sampling</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def normal_pdf(x, mu, sigma):
+    return math.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * math.sqrt(2 * math.pi))
+
+def rejection_sample(target_pdf, proposal_sample, proposal_pdf, M):
+    attempts = 0
+    while True:
+        x = proposal_sample()                 <span class="c"># اقترح من q</span>
+        u = random.random()
+        attempts += 1
+        if u &lt; target_pdf(x) / (M * proposal_pdf(x)):   <span class="c"># تحت المنحنى؟ اقبل</span>
+            return x, attempts
+
+<span class="c"># truncated N(0,1) على [-1, 2] بـ proposal uniform</span>
+a, b = -1, 2
+M = max(normal_pdf(a + (b - a) * i / 200, 0, 1) / (1 / (b - a)) for i in range(201))
+target = lambda x: normal_pdf(x, 0, 1) if a &lt;= x &lt;= b else 0.0
+xs, tries = [], 0
+for _ in range(5000):
+    x, t = rejection_sample(target, lambda: sample_uniform(a, b), lambda x: 1 / (b - a), M)
+    xs.append(x); tries += t
+print("mean", round(sum(xs) / len(xs), 4), "acceptance", round(5000 / tries, 4))</pre></div>
+  <details><summary>الناتج المتوقع</summary>المتوسط هيطلع موجب شوية (لأن المدى من -1 لـ 2 مايل يمين)، ونسبة القبول هتبقى <span class="ltr">Z/M</span>، حوالي الثلثين: المساحة تحت N(0,1) بين -1 و2 تقريبًا 0.82، وM تقريبًا <span class="ltr">0.399 × 3 ≈ 1.2</span>. قارن باللي هيطلعلك.</details>
+
+  <h3>خطوة ٣: Importance Sampling (العادي والـ self-normalized)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def importance_sampling_estimate(f, target_pdf, proposal_pdf, proposal_sample, n):
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for _ in range(n):
+        x = proposal_sample()
+        w = target_pdf(x) / proposal_pdf(x)   <span class="c"># الوزن p/q</span>
+        weighted_sum += f(x) * w
+        weight_sum += w
+    return weighted_sum / n, weighted_sum / weight_sum
+
+<span class="c"># E[X^2] تحت N(2,1) بعينات uniform من [-3, 7]</span>
+mu, sigma, a, b = 2.0, 1.0, -3.0, 7.0
+est, est_sn = importance_sampling_estimate(
+    lambda x: x ** 2,
+    lambda x: normal_pdf(x, mu, sigma),
+    lambda x: 1 / (b - a),
+    lambda: sample_uniform(a, b),
+    50000)
+print(round(est, 4), round(est_sn, 4), "theory", mu ** 2 + sigma ** 2)</pre></div>
+  <details><summary>الناتج المتوقع</summary>النظري <span class="ltr">μ² + σ² = 5.0</span> بالظبط. التقديرين هيطلعوا قريبين من 5. قارن باللي هيطلعلك.</details>
+
+  <h3>خطوة ٤: Monte Carlo لـ π وللتكامل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def monte_carlo_pi(n):
+    inside = 0
+    for _ in range(n):
+        x = random.uniform(-1, 1)
+        y = random.uniform(-1, 1)
+        if x * x + y * y &lt;= 1:                <span class="c"># جوه الدايرة؟</span>
+            inside += 1
+    return 4 * inside / n
+
+def monte_carlo_integral(f, a, b, n):
+    total = sum(f(sample_uniform(a, b)) for _ in range(n))
+    return (b - a) * total / n                <span class="c"># الحجم × المتوسط</span>
+
+for n in [1000, 10000, 100000]:
+    print(n, monte_carlo_pi(n), monte_carlo_integral(math.sin, 0, math.pi, n))</pre></div>
+  <details><summary>الناتج المتوقع</summary>تقديرات π حوالين 3.14، وتكامل sin من 0 لـ π حوالين القيمة المظبوطة 2. الخطأ في المتوسط بيقل لما N تكبر، بس مش لازم يقل في كل سطر لأن كل تشغيل عشوائي. قارن باللي هيطلعلك.</details>
+
+  <h3>خطوة ٥: Metropolis-Hastings على التوزيع اللي بقمتين</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def bimodal_log_pdf(x):
+    p1 = 0.4 * normal_pdf(x, -3, 1)
+    p2 = 0.6 * normal_pdf(x, 3, 1)
+    return math.log(p1 + p2 + 1e-300)         <span class="c"># حماية من log(0)</span>
+
+def metropolis_hastings(target_log_pdf, x0, n_samples, burn_in, proposal_std=1.0):
+    samples, x, accepted = [], x0, 0
+    for i in range(n_samples + burn_in):
+        x_new = x + random.gauss(0, proposal_std)          <span class="c"># proposal متماثلة</span>
+        log_alpha = target_log_pdf(x_new) - target_log_pdf(x)
+        if math.log(random.random() + 1e-300) &lt; log_alpha:  <span class="c"># اقبل بـ min(1, α)</span>
+            x = x_new
+            if i &gt;= burn_in:
+                accepted += 1
+        if i &gt;= burn_in:
+            samples.append(x)                 <span class="c"># حتى لو رفضنا، x بتتسجل تاني</span>
+    return samples, accepted / n_samples
+
+for std in [0.5, 1.0, 3.0]:
+    s, acc = metropolis_hastings(bimodal_log_pdf, 0.0, 10000, 2000, std)
+    print(std, round(sum(s) / len(s), 4), round(acc, 4))</pre></div>
+  <details><summary>الناتج المتوقع</summary>نسبة القبول بتقل كل ما الـ std تكبر. المتوسط الحقيقي 0.6؛ الـ std الصغيرة ممكن تطلّع متوسط بعيد عنه لأن السلسلة بتقضي وقت طويل في قمة واحدة. قارن باللي هيطلعلك وبالمعمل ٢.</details>
+  <p>الكود الأصلي فيه كمان <code>metropolis_hastings_2d</code> (نفس الفكرة بخطوة في x وy مع بعض، بيبدأ من <span class="ltr">(5, 5)</span> ويوصل لـ Gaussian حوالين الصفر).</p>
+
+  <h3>خطوة ٦: Gibbs على Gaussian مرتبطة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def gibbs_sampling_2d(rho, n_samples, burn_in):
+    x, y = 0.0, 0.0
+    samples = []
+    for i in range(n_samples + burn_in):
+        x = random.gauss(rho * y, math.sqrt(1 - rho ** 2))   <span class="c"># x بشرط y</span>
+        y = random.gauss(rho * x, math.sqrt(1 - rho ** 2))   <span class="c"># y بشرط x الجديدة</span>
+        if i &gt;= burn_in:
+            samples.append((x, y))
+    return samples
+
+for rho in [0.0, 0.5, 0.9]:
+    s = gibbs_sampling_2d(rho, 10000, 1000)
+    mx = sum(p[0] for p in s) / len(s); my = sum(p[1] for p in s) / len(s)
+    print(rho, round(sum(p[0] * p[1] for p in s) / len(s) - mx * my, 4))</pre></div>
+  <details><summary>الناتج المتوقع</summary>الـ correlation المحسوبة لازم تطلع قريبة من ρ في كل سطر (حوالي 0 و0.5 و0.9). قارن باللي هيطلعلك.</details>
+
+  <h3>خطوة ٧: Temperature و Top-k و Top-p</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def softmax(logits):
+    max_l = max(logits)                       <span class="c"># اطرح الأكبر عشان exp ما يضربش</span>
+    exps = [math.exp(z - max_l) for z in logits]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+def sample_from_probs(probs):                 <span class="c"># inverse CDF الـ discrete</span>
+    r, cumsum = random.random(), 0.0
+    for i, p in enumerate(probs):
+        cumsum += p
+        if r &lt;= cumsum:
+            return i
+    return len(probs) - 1
+
+def temperature_distribution(logits, temperature):
+    if temperature &lt;= 0:                      <span class="c"># T=0 يعني greedy</span>
+        out = [0.0] * len(logits)
+        out[logits.index(max(logits))] = 1.0
+        return out
+    return softmax([z / temperature for z in logits])
+
+def top_k_distribution(logits, k):
+    probs = softmax(logits)
+    order = sorted(range(len(probs)), key=lambda i: -probs[i])[:k]
+    total = sum(probs[i] for i in order)
+    return [probs[i] / total if i in order else 0.0 for i in range(len(probs))]
+
+def top_p_distribution(logits, p):
+    probs = softmax(logits)
+    order = sorted(range(len(probs)), key=lambda i: -probs[i])
+    cumsum, chosen = 0.0, []
+    for i in order:
+        cumsum += probs[i]
+        chosen.append(i)
+        if cumsum &gt;= p:                       <span class="c"># أصغر مجموعة توصل لـ p</span>
+            break
+    total = sum(probs[i] for i in chosen)
+    return [probs[i] / total if i in chosen else 0.0 for i in range(len(probs))]
+
+token_logits = [3.0, 2.0, 1.5, 0.5, -1.0, -2.0]
+for T in [0.1, 0.5, 1.0, 1.5, 3.0]:
+    print("T", T, [f"{x:.4f}" for x in temperature_distribution(token_logits, T)])
+for k in [1, 2, 3, 6]:
+    print("k", k, [f"{x:.4f}" for x in top_k_distribution(token_logits, k)])
+for p in [0.5, 0.8, 0.9, 0.95, 1.0]:
+    print("p", p, [f"{x:.4f}" for x in top_p_distribution(token_logits, p)])</pre></div>
+  <p>الأرقام دي deterministic (مفيش سحب)، فلازم تطلعلك هي هي بالظبط:</p>
+  <details><summary>الناتج المتوقع (مظبوط)</summary><pre class="term">T 0.1 ['1.0000', '0.0000', '0.0000', '0.0000', '0.0000', '0.0000']
+T 0.5 ['0.8388', '0.1135', '0.0418', '0.0057', '0.0003', '0.0000']
+T 1.0 ['0.5889', '0.2166', '0.1314', '0.0483', '0.0108', '0.0040']
+T 1.5 ['0.4597', '0.2360', '0.1691', '0.0868', '0.0319', '0.0164']
+T 3.0 ['0.3115', '0.2232', '0.1889', '0.1354', '0.0821', '0.0588']
+k 1 ['1.0000', '0.0000', '0.0000', '0.0000', '0.0000', '0.0000']
+k 2 ['0.7311', '0.2689', '0.0000', '0.0000', '0.0000', '0.0000']
+k 3 ['0.6285', '0.2312', '0.1402', '0.0000', '0.0000', '0.0000']
+k 6 ['0.5889', '0.2166', '0.1314', '0.0483', '0.0108', '0.0040']
+p 0.5 ['1.0000', '0.0000', '0.0000', '0.0000', '0.0000', '0.0000']
+p 0.8 ['0.7311', '0.2689', '0.0000', '0.0000', '0.0000', '0.0000']
+p 0.9 ['0.6285', '0.2312', '0.1402', '0.0000', '0.0000', '0.0000']
+p 0.95 ['0.5977', '0.2199', '0.1334', '0.0491', '0.0000', '0.0000']
+p 1.0 ['0.5889', '0.2166', '0.1314', '0.0483', '0.0108', '0.0040']</pre>لو أي رقم مختلف، فيه bug في الكود بتاعك. لاحظ إن top-p = 0.9 طلّع نفس توزيع top-k = 3 هنا بالصدفة.</details>
+
+  <h3>خطوة ٨: Reparameterization و Gumbel</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def reparam_sample(mu, sigma):
+    epsilon = random.gauss(0, 1)              <span class="c"># العشوائية برة الـ parameters</span>
+    return mu + sigma * epsilon, epsilon
+
+def vae_forward_demo(mu, log_var):
+    sigma = math.exp(0.5 * log_var)
+    z, eps = reparam_sample(mu, sigma)
+    dz_dmu = 1.0
+    dz_dlogvar = eps * 0.5 * sigma            <span class="c"># chain rule: dz/dσ · dσ/dlog_var</span>
+    return z, eps, dz_dmu, dz_dlogvar
+
+def gumbel_sample():
+    u = random.random()
+    while u == 0:
+        u = random.random()
+    return -math.log(-math.log(u))
+
+def gumbel_softmax_sample(log_probs, temperature):
+    g = [lp + gumbel_sample() for lp in log_probs]
+    return softmax([x / temperature for x in g])
+
+log_probs = [math.log(p) for p in [0.5, 0.3, 0.15, 0.05]]
+for tau in [0.1, 0.5, 1.0, 5.0]:
+    print(tau, [f"{x:.4f}" for x in gumbel_softmax_sample(log_probs, tau)])</pre></div>
+  <details><summary>الناتج المتوقع</summary>مع <span class="ltr">τ = 0.1</span> الـ vector تقريبًا one-hot (خانة قريبة من 1 والباقي قريب من 0)، ومع <span class="ltr">τ = 5</span> كل الخانات قريبة من بعض (حوالين 0.25). أنهي خانة هتكسب بتفرق من تشغيل للتاني. قارن باللي هيطلعلك.</details>
+  <p>السكريبت الكامل فيه كمان: Gumbel-Max verification (عدّ 10,000 عينة ومقارنتها بالاحتمالات الحقيقية)، الـ straight-through، الـ stratified مقابل العادي على <span class="ltr">sin(πx)</span> (التكامل المظبوط <span class="ltr">2/π ≈ 0.636620</span>)، وdemo توليد نص بـ greedy وtemperature وtop-k وtop-p.</p>
+
+  <h3>خطوة ٩: نسخة الإنتاج بـ NumPy و SciPy</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+from scipy import stats
+
+rng = np.random.default_rng(42)
+print(rng.exponential(scale=2.0, size=10000).mean())   <span class="c"># قريب من 2.0</span>
+
+normal = stats.norm(loc=0, scale=1)
+print(f"{normal.cdf(1.96):.4f}")      <span class="c"># CDF</span>
+print(f"{normal.ppf(0.975):.4f}")     <span class="c"># inverse CDF</span>
+
+logits = np.array([2.0, 1.0, 0.5, 0.1, -1.0])
+scaled = logits / 0.7
+probs = np.exp(scaled - scaled.max()) / np.exp(scaled - scaled.max()).sum()
+print(rng.choice(len(logits), p=probs))</pre></div>
+  <details><summary>الناتج المتوقع</summary>السطر التاني <span class="ltr">0.9750</span> والتالت <span class="ltr">1.9600</span> (الاتنين معكوس بعض، ودي أرقام الـ 95% المشهورة). الأول قريب من 2، والأخير index عشوائي من 0 لـ 4. للـ MCMC على نطاق كبير: PyMC (NUTS)، emcee، NumPyro/JAX.</details>
+</section>
+
+<!-- EXERCISES -->
+<section id="d16-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>اعمل ٣ على الأقل النهاردة. ١ و٢ و٥ أهم حاجة.</p>
+  <ol class="ex">
+    <li><b>Cauchy بالـ inverse CDF:</b> <span class="ltr">F(x) = 0.5 + arctan(x)/π</span>. ولّد 10,000 عينة وارسم الـ histogram مع الـ PDF الحقيقية. لاحظ الذيول التقيلة.
+      <details><summary>تلميح</summary>حل <span class="ltr">u = F(x)</span>: <span class="ltr">x = tan(π(u − 0.5))</span>. الـ median لازم يطلع قريب من 0، وحوالي 6% من العينات <span class="ltr">|x| &gt; 10</span>، لأن <span class="ltr">1 − (2/π)·arctan(10) ≈ 0.063</span>. جرب تحسب المتوسط على كذا seed: هتلاقيه بيتنطط ومش مستقر، لأن الـ Cauchy ملهاش متوسط أصلًا.</details></li>
+    <li><b>Beta(2,5) بالـ rejection:</b> proposal = Uniform(0,1). ارسم المقبول مع الـ PDF. نسبة القبول النظرية كام؟
+      <details><summary>الإجابة</summary>الكثافة <span class="ltr">30x(1−x)⁴</span>، أعلى قيمة عند الـ mode <span class="ltr">x = 1/5</span>: <span class="ltr">M = 30 · 0.2 · 0.8⁴ = 2.4576</span>. نسبة القبول <span class="ltr">1/M ≈ 0.407</span>. قارنها بنسبة المقبول فعلًا عندك.</details></li>
+    <li><b>تكامل sin من 0 لـ π</b> بـ 1,000 و10,000 و100,000 عينة. اتأكد إن الخطأ زي <span class="ltr">O(1/√N)</span>.
+      <details><summary>تلميح</summary>القيمة المظبوطة 2. استخدم <code>monte_carlo_integral(math.sin, 0, math.pi, n)</code> وكرر بكذا seed وخد متوسط الخطأ. كل ما N تتضرب في 10، الخطأ يقل حوالي <span class="ltr">√10 ≈ 3.2</span> مرة.</details></li>
+    <li><b>MH في بُعدين</b> على <span class="ltr">p(x,y) ∝ exp(−(x²y² + x² + y² − 8x − 8y)/2)</span>. ارسم العينات والمسار، وجرب proposal std مختلفة.
+      <details><summary>تلميح</summary>الـ log target هو <span class="ltr">−(x²y² + x² + y² − 8x − 8y)/2</span>، ادّيه لـ <code>metropolis_hastings_2d</code>. سجّل نسبة القبول لكل std: صغيرة أوي = قبول شبه كامل وحركة بطيئة، كبيرة أوي = رفض شبه كامل.</details></li>
+    <li><b>Demo توليد نص:</b> ١٠ كلمات بـ logits، ولّد ٢٠ token بـ (a) greedy (b) T=0.7 (c) top-k=3 (d) top-p=0.9. قارن التنوع على ٥ تشغيلات.
+      <details><summary>تلميح</summary>greedy = index أكبر logit كل خطوة، فلازم يطلع نفس التسلسل في الـ ٥ مرات. للتلاتة التانيين استخدم <code>temperature_sample</code> و<code>top_k_sample</code> و<code>top_p_sample</code>، وعدّ عدد التسلسلات المختلفة كمقياس للتنوع. جربها الأول في المعمل ٣.</details></li>
+    <li><b>إضافة مني · اختيار إعدادات decoding لـ pipeline حقيقي:</b> عندك agent بيعمل ٣ حاجات: (أ) يطلّع JSON لـ tool call، (ب) يكتب ٥ عناوين تسويقية مختلفة، (ج) يجاوب سؤال حقائقي من documents (RAG). اختار T وtop-p لكل واحدة واكتب سطر يبرر. بعدين اكتب function صغيرة <code>diversity(samples)</code> بترجع نسبة العينات المختلفة، وجرّبها على مخرجات <code>text_generation_demo</code> بإعدادات مختلفة.
+      <details><summary>إجابة مقترحة</summary>(أ) T = 0 أو قريب منه: الشكل لازم يبقى ثابت والصح واحد. (ب) T حوالي 0.9–1.2 مع top-p 0.9–0.95: عايز تنوع بس من غير كلام فاضي من الذيل. (ج) T واطية (0–0.3): الإجابة لازم تلزق في الـ documents. الأرقام دي نقطة بداية مبنية على جدول الدرس، مش قانون؛ قيسها على الـ eval بتاعك. <code>diversity = len(set(samples)) / len(samples)</code>.</details></li>
+  </ol>
+</section>
+
+<!-- QUIZ -->
+<section id="d16-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d16-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d16-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d16-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح الـ inverse CDF والـ rejection والـ importance sampling ومتى أستخدم كل واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فهمت ليه خطأ الـ Monte Carlo زي 1/√N ومش معتمد على الأبعاد</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> شغّلت معمل الـ MCMC وشفت تأثير الـ proposal_std على القبول والـ trace</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> أقدر أشرح الفرق بين temperature و top-k و top-p وأختار إعدادات لمهمة</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> فهمت الـ reparameterization trick وليه الـ VAE محتاجه</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> كتبت الكود بإيدي وطلعلي جدول temperature/top-k/top-p بالظبط</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> حليت ٣ تمارين على الأقل وجبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Temperature / top-k / top-p</td><td>إعدادات أي LLM API، توليد النص، الـ self-consistency</td></tr>
+    <tr><td>Importance sampling</td><td>الـ PPO و TRPO في الـ RL، ومنها الـ RLHF</td></tr>
+    <tr><td>Monte Carlo</td><td>تقدير الـ expected loss، الـ ELBO، أي تكامل ملوش حل مقفول</td></tr>
+    <tr><td>MCMC / Gibbs</td><td>الـ Bayesian inference (PyMC، emcee، NumPyro)، الـ Ising models</td></tr>
+    <tr><td>Reparameterization</td><td>الـ VAEs، وكل خطوة denoising في الـ diffusion</td></tr>
+    <tr><td>Gumbel-Softmax</td><td>latent discrete، الـ neural architecture search، الـ hard attention</td></tr>
+    <tr><td>Stratified sampling</td><td>الـ NeRF على أشعة الكاميرا، تقسيم الداتا بتوازن الـ classes</td></tr>
+    <tr><td>Mini-batch / dropout</td><td>الـ SGD وكل تدريب neural network</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Linear Systems. هنحل أنظمة معادلات خطية (يعني <span class="ltr">Ax = b</span>) ونرجع للمصفوفات من زاوية جديدة، ونبدأ بتسخين ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F01-math-foundations%2F16-sampling-methods" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/01-math-foundations/16-sampling-methods</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI,css=A.css,f=A.fmt,$=id=>document.getElementById(id);
+const root=$('d16-root');
+const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+// roadmap
+const rm=$('d16-roadmap');
+for(let i=1;i<=22;i++){const s=document.createElement('span');s.textContent=i;if(i===16)s.className='now';rm.appendChild(s)}
+
+// ---------- shared math ----------
+function softmax(z){const m=Math.max(...z),e=z.map(v=>Math.exp(v-m)),s=e.reduce((a,b)=>a+b,0);return e.map(v=>v/s)}
+function gauss(){let u=0;while(u===0)u=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*Math.random())}
+const npdf=(x,m,s)=>Math.exp(-0.5*((x-m)/s)**2)/(s*Math.sqrt(2*Math.PI));
+
+// ---------- Lab 1: Monte Carlo pi ----------
+const pc=$('d16-pi'),pctx=A.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+const ec=$('d16-pierr'),ectx=A.setupCanvas(ec),EW=+ec.dataset.w,EH=+ec.dataset.h;
+let pts=[],inside=0,hist=[],piTimer=null,countN=0;
+function piBase(){
+  pctx.clearRect(0,0,PW,PH);
+  pctx.strokeStyle=css('--line');pctx.lineWidth=1;pctx.strokeRect(10,10,PW-20,PH-20);
+  pctx.strokeStyle=css('--ink');pctx.lineWidth=1.5;pctx.beginPath();pctx.arc(PW/2,PH/2,(PW-20)/2,0,Math.PI*2);pctx.stroke();
+}
+function piDrawAll(){piBase();pts.forEach(p=>piDot(p))}
+function piDot(p){const R=(PW-20)/2;pctx.fillStyle=p[2]?css('--vec-a'):css('--vec-b');pctx.globalAlpha=.75;pctx.fillRect(PW/2+p[0]*R-1,PH/2-p[1]*R-1,2.2,2.2);pctx.globalAlpha=1}
+function piAdd(n){
+  for(let i=0;i<n;i++){const x=Math.random()*2-1,y=Math.random()*2-1,In=x*x+y*y<=1;if(In)inside++;
+    if(pts.length<6000){const p=[x,y,In];pts.push(p);piDot(p)}
+  }
+  const N=countN+n;countN=N;
+  const est=4*inside/N,err=Math.abs(est-Math.PI);
+  hist.push([N,Math.max(err,1e-5)]);
+  $('d16-piN').textContent=N.toLocaleString('en');$('d16-piE').textContent=f(est,4);$('d16-piErr').textContent=f(err,4);$('d16-piAcc').textContent=f(inside/N,3);
+  drawErr();
+}
+function drawErr(){
+  ectx.clearRect(0,0,EW,EH);
+  const L=38,B=EH-22,T=8,Rr=EW-8,xmin=0,xmax=6,ymin=-4,ymax=0;
+  const X=n=>L+(Math.log10(n)-xmin)/(xmax-xmin)*(Rr-L),Y=e=>T+(ymax-Math.log10(e))/(ymax-ymin)*(B-T);
+  ectx.strokeStyle=css('--line');ectx.lineWidth=1;ectx.beginPath();ectx.moveTo(L,T);ectx.lineTo(L,B);ectx.lineTo(Rr,B);ectx.stroke();
+  ectx.fillStyle=css('--muted');ectx.font='11px JetBrains Mono, monospace';
+  [1,2,3,4,5,6].forEach(k=>ectx.fillText('1e'+k,X(10**k)-10,B+14));
+  [0,-1,-2,-3,-4].forEach(k=>ectx.fillText('1e'+k,2,Y(10**k)+4));
+  // 1/sqrt(N) reference (scaled by sqrt(pi(4-pi)) ~ 1.64, the std of the pi estimator)
+  ectx.setLineDash([4,4]);ectx.strokeStyle=css('--muted');ectx.beginPath();
+  for(let k=0;k<=6;k+=0.1){const n=10**k,e=1.64/Math.sqrt(n);const y=Y(Math.min(1,Math.max(1e-4,e)));k?ectx.lineTo(X(n),y):ectx.moveTo(X(n),y)}ectx.stroke();ectx.setLineDash([]);
+  ectx.fillText('~1/√N',Rr-48,Y(1.64/Math.sqrt(1e5))-6);
+  ectx.strokeStyle=css('--vec-a');ectx.lineWidth=1.5;ectx.beginPath();
+  hist.forEach((h,i)=>{const y=Y(Math.max(1e-4,Math.min(1,h[1])));i?ectx.lineTo(X(h[0]),y):ectx.moveTo(X(h[0]),y)});ectx.stroke();
+}
+function piReset(){clearInterval(piTimer);piTimer=null;$('d16-piRun').textContent='شغّل';pts=[];inside=0;hist=[];countN=0;
+  ['d16-piN'].forEach(id=>$(id).textContent='0');['d16-piE','d16-piErr','d16-piAcc'].forEach(id=>$(id).textContent='—');piBase();drawErr()}
+$('d16-piRun').addEventListener('click',()=>{
+  if(piTimer){clearInterval(piTimer);piTimer=null;$('d16-piRun').textContent='شغّل';return}
+  $('d16-piRun').textContent='وقّف';
+  piTimer=setInterval(()=>{if(!document.body.contains(pc)){clearInterval(piTimer);return}
+    const step=Math.max(10,Math.floor(countN*0.06));piAdd(step);if(countN>=1e6){clearInterval(piTimer);piTimer=null;$('d16-piRun').textContent='شغّل'}},60);
+});
+$('d16-pi1k').addEventListener('click',()=>piAdd(1000));
+$('d16-piReset').addEventListener('click',piReset);
+piReset();
+
+// ---------- Lab 2: Metropolis-Hastings ----------
+const mc=$('d16-mh'),mctx=A.setupCanvas(mc),MW=+mc.dataset.w,MH=+mc.dataset.h;
+const tc=$('d16-trace'),tctx=A.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+const target=x=>0.4*npdf(x,-3,1)+0.6*npdf(x,3,1),logT=x=>Math.log(target(x)+1e-300);
+const XMIN=-8,XMAX=8,NB=64;
+let chain=[],xcur=0,acc=0,mhTimer=null,bins=new Array(NB).fill(0);
+const std=()=>+$('d16-std').value;
+function mhStep(){const xn=xcur+std()*gauss();if(Math.log(Math.random()+1e-300)<logT(xn)-logT(xcur)){xcur=xn;acc++}chain.push(xcur);
+  const b=Math.floor((xcur-XMIN)/(XMAX-XMIN)*NB);if(b>=0&&b<NB)bins[b]++}
+function mhDraw(){
+  mctx.clearRect(0,0,MW,MH);
+  const L=10,R=MW-10,T=10,B=MH-22,X=x=>L+(x-XMIN)/(XMAX-XMIN)*(R-L),ymax=0.3,Y=y=>B-(y/ymax)*(B-T);
+  mctx.strokeStyle=css('--line');mctx.beginPath();mctx.moveTo(L,B);mctx.lineTo(R,B);mctx.stroke();
+  mctx.fillStyle=css('--muted');mctx.font='11px JetBrains Mono, monospace';[-6,-3,0,3,6].forEach(v=>mctx.fillText(v,X(v)-4,B+14));
+  const n=chain.length,bw=(XMAX-XMIN)/NB;
+  if(n){mctx.fillStyle=css('--vec-a');mctx.globalAlpha=.55;
+    bins.forEach((c,i)=>{const d=c/(n*bw);const x0=X(XMIN+i*bw),x1=X(XMIN+(i+1)*bw);mctx.fillRect(x0,Y(Math.min(d,ymax)),x1-x0-1,B-Y(Math.min(d,ymax)))});mctx.globalAlpha=1}
+  mctx.strokeStyle=css('--bad');mctx.lineWidth=2;mctx.beginPath();
+  for(let i=0;i<=200;i++){const x=XMIN+(XMAX-XMIN)*i/200;const y=Y(target(x));i?mctx.lineTo(X(x),y):mctx.moveTo(X(x),y)}mctx.stroke();
+  mctx.fillStyle=css('--ink');mctx.beginPath();mctx.arc(X(Math.max(XMIN,Math.min(XMAX,xcur))),B,5,0,7);mctx.fill();
+  // trace
+  tctx.clearRect(0,0,TW,TH);
+  const tY=x=>6+(XMAX-x)/(XMAX-XMIN)*(TH-12);
+  tctx.strokeStyle=css('--line');[-3,3].forEach(v=>{tctx.beginPath();tctx.moveTo(0,tY(v));tctx.lineTo(TW,tY(v));tctx.stroke()});
+  const show=chain.slice(-600);tctx.strokeStyle=css('--vec-b');tctx.lineWidth=1.2;tctx.beginPath();
+  show.forEach((x,i)=>{const px=i/599*(TW-4)+2,py=tY(Math.max(XMIN,Math.min(XMAX,x)));i?tctx.lineTo(px,py):tctx.moveTo(px,py)});tctx.stroke();
+  tctx.fillStyle=css('--muted');tctx.font='11px JetBrains Mono, monospace';tctx.fillText('+3',4,tY(3)-3);tctx.fillText('-3',4,tY(-3)-3);tctx.fillText('trace (last 600 steps)',TW-150,TH-4);
+  $('d16-mhN').textContent=n.toLocaleString('en');
+  $('d16-mhAcc').textContent=n?f(acc/n,3):'—';
+  $('d16-mhMean').textContent=n?f(chain.reduce((a,b)=>a+b,0)/n,3):'—';
+  $('d16-mhRight').textContent=n?f(chain.filter(x=>x>0).length/n,3):'—';
+}
+function mhReset(){chain=[];xcur=0;acc=0;bins=new Array(NB).fill(0);mhDraw()}
+$('d16-std').addEventListener('input',()=>{$('d16-stdv').textContent=f(std(),1);mhReset()});
+$('d16-mhReset').addEventListener('click',mhReset);
+$('d16-mhRun').addEventListener('click',()=>{
+  if(mhTimer){cancelAnimationFrame(mhTimer);mhTimer=null;$('d16-mhRun').textContent='شغّل';return}
+  $('d16-mhRun').textContent='وقّف';
+  const loop=()=>{if(!document.body.contains(mc)){mhTimer=null;return}
+    for(let i=0;i<(reduce?400:25);i++)mhStep();mhDraw();
+    if(chain.length<20000)mhTimer=requestAnimationFrame(loop);else{mhTimer=null;$('d16-mhRun').textContent='شغّل'}};
+  mhTimer=requestAnimationFrame(loop);
+});
+mhReset();
+
+// ---------- Lab 3: decoding ----------
+const LOG=[3.0,2.0,1.5,0.5,-1.0,-2.0],VOC=['the','a','this','one','that','some'];
+const kc=$('d16-tok'),kctx=A.setupCanvas(kc),KW=+kc.dataset.w,KH=+kc.dataset.h;
+function decodeDist(){
+  const T=+$('d16-T').value,mode=$('d16-filt').value;
+  let p;if(T<=0){p=LOG.map(()=>0);p[LOG.indexOf(Math.max(...LOG))]=1}else p=softmax(LOG.map(z=>z/T));
+  const order=p.map((v,i)=>i).sort((a,b)=>p[b]-p[a]);let keep=order;
+  if(mode==='k')keep=order.slice(0,+$('d16-k').value);
+  if(mode==='p'){const P=+$('d16-p').value;let c=0;keep=[];for(const i of order){c+=p[i];keep.push(i);if(c>=P-1e-12)break}}
+  const tot=keep.reduce((a,i)=>a+p[i],0);return p.map((v,i)=>keep.includes(i)?v/tot:0);
+}
+function tokDraw(){
+  const T=+$('d16-T').value;$('d16-Tv').textContent=T<=0?'0 (greedy)':f(T,2).toFixed(2);
+  $('d16-kv').textContent=$('d16-k').value;$('d16-pv').textContent=(+$('d16-p').value).toFixed(2);
+  const mode=$('d16-filt').value;$('d16-k').disabled=mode!=='k';$('d16-p').disabled=mode!=='p';
+  const q=decodeDist(),base=softmax(LOG);
+  kctx.clearRect(0,0,KW,KH);
+  const L=8,R=KW-8,B=KH-26,T0=14,n=LOG.length,w=(R-L)/n;
+  kctx.strokeStyle=css('--line');kctx.beginPath();kctx.moveTo(L,B);kctx.lineTo(R,B);kctx.stroke();
+  for(let i=0;i<n;i++){const x=L+i*w;
+    kctx.fillStyle=css('--muted');kctx.globalAlpha=.3;kctx.fillRect(x+6,B-base[i]*(B-T0),w/2-8,base[i]*(B-T0));kctx.globalAlpha=1;
+    kctx.fillStyle=q[i]>0?css('--vec-a'):css('--line');kctx.fillRect(x+w/2,B-q[i]*(B-T0),w/2-8,Math.max(1,q[i]*(B-T0)));
+    kctx.fillStyle=css('--ink');kctx.font='12px JetBrains Mono, monospace';kctx.textAlign='center';
+    kctx.fillText(VOC[i],x+w/2,B+15);kctx.fillText(q[i].toFixed(3),x+w*0.75,Math.max(12,B-q[i]*(B-T0)-4));}
+  kctx.textAlign='left';
+  $('d16-keep').textContent=q.filter(v=>v>0).length;$('d16-top').textContent=Math.max(...q).toFixed(4);
+}
+function drawTok(q){const r=Math.random();let c=0;for(let i=0;i<q.length;i++){c+=q[i];if(r<=c)return i}return q.length-1}
+function gen(){const q=decodeDist();return Array.from({length:12},()=>VOC[drawTok(q)]).join(' ')}
+$('d16-gen').addEventListener('click',()=>{$('d16-out').textContent=gen()});
+$('d16-gen5').addEventListener('click',()=>{const s=Array.from({length:5},gen);$('d16-out').textContent=s.join('\n')+'\n→ unique: '+new Set(s).size+'/5';$('d16-out').style.whiteSpace='pre-wrap'});
+['d16-T','d16-k','d16-p','d16-filt'].forEach(id=>$(id).addEventListener('input',tokDraw));
+$('d16-filt').addEventListener('change',tokDraw);
+tokDraw();
+
+// ---------- quiz ----------
+A.quiz($('d16-quizBox'),[
+ ['الـ temperature الأقل من 1.0 بتعمل إيه في توزيع مخرجات الموديل؟',['بتشيل كل الـ tokens ما عدا الأولى','ملهاش أي تأثير','بتخلي التوزيع أقرب للـ uniform (عشوائي أكتر)','بتحدّد التوزيع، فالـ token الأعلى احتمالًا يبقى احتماله أكبر'],3,'القسمة على رقم أقل من 1 بتكبّر الفرق بين الـ logits، وبعد الـ softmax الأعلى بياخد نصيب أكبر. ولما T تقرب من صفر بتبقى greedy (argmax).'],
+ ['إيه الفرق الأساسي بين top-k و top-p (nucleus)؟',['top-k أسرع من top-p','top-k بياخد عدد ثابت من الـ tokens، و top-p عدد متغير حسب الاحتمال التراكمي','top-p بيشتغل بس مع temperature = 1.0','top-k بيشتغل على الـ logits و top-p على الاحتمالات'],1,'top-k دايمًا k tokens مهما كان التوزيع. top-p بياخد أصغر مجموعة مجموعها يعدّي p: قليل لما الموديل واثق وكتير لما مش واثق.'],
+ ['ليه مينفعش تعمل backprop في عملية سحب عادية z ~ N(μ, σ²)؟',['لأن السحب مش deterministic وملوش مشتقة واضحة بالنسبة لـ μ و σ','PyTorch مش بيدعم التوزيع الطبيعي','التوزيع الطبيعي ملوش gradients','الـ gradient دايمًا صفر بالظبط'],0,'مينفعش تحسب d(sample)/dμ لسحبة عشوائية. الـ reparameterization بتكتب z = μ + σ·ε مع ε ~ N(0,1)، فـ z تبقى دالة deterministic قابلة للاشتقاق في μ و σ.'],
+ ['في الـ Metropolis-Hastings، إيه اللي بيحصل لو الـ proposal standard deviation كبيرة أوي؟',['السلسلة بتوصل أسرع لأنها بتاخد خطوات أكبر','معظم الاقتراحات بتقع في مناطق احتمالها قليل وبتترفض، فالسلسلة بالكاد بتتحرك','الـ burn-in بيبقى صفر','الـ stationary distribution بتتحول لـ uniform'],1,'النقط المقترحة بعيدة وغالبًا في مناطق احتمالها واطي فبتترفض والسلسلة واقفة. نسبة القبول المثالية حوالي 23% لـ Gaussian proposals في أبعاد عالية. جربها في المعمل ٢ بـ std = 10.'],
+ ['في الـ rejection sampling، نسبة القبول بيحصلها إيه لما عدد أبعاد التوزيع يزيد؟',['بتقع بشكل exponential لأن معظم حجم الـ proposal بيترفض','ثابتة مهما كانت الأبعاد','بتزيد لأن فيه أبعاد أكتر للقبول','بتقرب من 50% دايمًا'],0,'في الأبعاد العالية الجزء من الـ proposal اللي بيتداخل مع الـ target بيصغر بشكل exponential، فـ M بتكبر و 1/M بتقع. ده الـ curse of dimensionality.'],
+ ['(سؤال مني) بتقدّر تكامل بالـ Monte Carlo بـ 10,000 عينة والخطأ 0.02. عايز الخطأ يبقى حوالي 0.002. محتاج كام عينة تقريبًا؟',['100,000','20,000','1,000,000','10,000,000'],2,'الخطأ زي 1/√N. عشان تقلله 10 مرات لازم N تكبر 100 مرة: 10,000 × 100 = 1,000,000.'],
+ ['(سؤال مني) الـ logits [3, 2, 1.5, 0.5, -1, -2] مع top-p = 0.9 (و T = 1). كام token بيفضل؟',['1','3','2','6'],1,'الاحتمالات المترتبة 0.5889 ثم 0.2166 ثم 0.1314: المجموع بعد اتنين 0.8055 (أقل من 0.9) وبعد تلاتة 0.9369. يبقى 3 tokens.']
+]);
+
+// ---------- checklist ----------
+A.checklist(16,root);
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(pc))return false;piDrawAll();drawErr();mhDraw();tokDraw()});
+})();
+</script>

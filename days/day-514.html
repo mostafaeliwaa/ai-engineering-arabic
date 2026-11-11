@@ -1,0 +1,619 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 86 · Constitutional Rules Engine</span>
+  <h1>اليوم ٥١٤: دستور مكتوب في YAML يحكم ردود الموديل</h1>
+  <p class="lede">الـ classifiers بتمسك الحاجات «اللي باينة» زي الشتيمة والـ PII. بس فيه قواعد تانية شكلها <b>عقد</b>: «أي رفض لازم يقترح خطوة جاية»، «أي كود لازم يخلص صح». النهاردة هتبني <b>rules engine</b> بيقرا قواعد من ملف YAML، يقيّم الرد، يطلّع <b>violations</b> مرتبة، و<b>fixer</b> بيصلّح، و<b>diff</b> يوريك إيه اللي اتغير، وبعدين يفحص تاني.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python + YAML</b></span>
+    <span>قبله: <b>Content Classifier Integration</b></span>
+    <span>بعده: <b>End-to-End Safety Gate</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d514-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d514-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت تلات output classifiers ورا router. جاوب الأول وبعدين افتح.</p>
+  <ol class="ex">
+    <li>verdict من الـ toxicity طالع <code>low</code> و verdict من الـ PII طالع <code>medium</code>. الـ router هيعمل إيه؟
+      <details><summary>الإجابة</summary><code>redact</code>. الـ router بياخد أعلى severity (medium)، وبيشغّل الـ redactor بتاع كل classifier اشتغل: يعني الشتيمة والإيميل الاتنين هيتمسحوا.</details></li>
+    <li>ليه <code>1234 5678 9012 3456</code> ما اتمسكش ككارت؟
+      <details><summary>الإجابة</summary>لأنه ما عدّاش Luhn check. الـ regex بيمسك الشكل بس، والـ Luhn بيتأكد إن الـ check digit صح، فبيقلل الـ false positives.</details></li>
+    <li>الـ instruction-leakage classifier بيقارن الرد بإيه وإزاي؟
+      <details><summary>الإجابة</summary>بالـ system prompt المعروف، عن طريق cosine similarity بين عدّادات الـ character trigrams. فوق 0.55 بيبدأ يطلّع severity، وفوق 0.85 = high.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>ليه rules engine؟ وشكل القاعدة</div>
+    <div><b>20 min</b>المعامل: الشجرة، الـ fixer، معدل الإطلاق</div>
+    <div><b>35 min</b>ابني المشروع على ٥ مراحل</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 PROBLEM -->
+<section id="d514-problem">
+  <div class="station-head"><span class="tag">01</span><h2>الـ classifiers للأعطال المعروفة، والقواعد للعقود</h2></div>
+  <p>تخيل عقد شغل: «الموظف لازم يرد على الإيميل خلال يوم»، «أي اعتذار للعميل لازم يكون معاه بديل». دي مش حاجات بتكشفها بـ classifier بيدور على كلمات وحشة. دي <b>شروط</b> على الرد، وعلى المحادثة، وعلى سياسة السيستم.</p>
+  <p>أمثلة من الدرس:</p>
+  <ul class="checklist">
+    <li>• مساعد برمجة: «أي رد فيه كود لازم يخلص بـ block يشتغل أو بافتراض مكتوب (assumption)».</li>
+    <li>• بوت خدمة عملاء: «أي رفض لازم يقترح خطوة جاية».</li>
+  </ul>
+  <p>والقواعد دي لازم يقراها <b>حد مش مهندس</b> (المسؤول القانوني، مدير المنتج). عشان كده الشكل الأمين هو <b>ملف declarative</b>: «دستور» (constitution) في YAML جنب الكود، في version control، وليه مراجعة لوحده. تغيّر قاعدة؟ عدّل الملف، من غير ما تلمس الكود.</p>
+  <div class="note"><strong>الجملة اللي في أول الدرس:</strong> القاعدة = اسم + predicate + شرح. أي حاجة ناقصها واحد من التلاتة دي «إحساس» مش قاعدة.</div>
+  <p><b>النص التاني من الدرس: التصليح.</b> engine بيعمل block بس يبقى نص شغل. الأحسن: الموديل يكتب مسودة، الـ engine يطلّع violations، الـ <b>fixer</b> يطلّع نسخة معدّلة، وبعدين الـ engine يفحص النسخة المعدلة ويتأكد إنها بقت سليمة. ومعاهم <b>diff</b> مترتب (إضافة، حذف، تعديل) عشان مراجع بشري يتابع الـ fixer مع الوقت.</p>
+  <div class="formula">draft → engine → violations → fixer → revised → engine (2nd pass) → accepted / escalated</div>
+</section>
+
+<!-- 02 RULE SHAPE -->
+<section id="d514-shape">
+  <div class="station-head"><span class="tag">02</span><h2>تشريح القاعدة</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>- name: end-with-runnable-or-assumption
+  severity: medium
+  applies_when:                      <span class="c"># القاعدة دي تخصني؟</span>
+    contains_regex: '```python'
+  must:                              <span class="c"># لو تخصني، لازم يتحقق إيه؟</span>
+    any_of:
+      - ends_with_regex: '```\s*$'
+      - contains_regex: '\bassumption:'
+  explanation: "Code responses must end with a closing fence or an explicit assumption."
+  fix:                               <span class="c"># اختياري: إزاي نصلّح</span>
+    append_if_missing: "\n\nAssumption: the example inputs are valid and the module is on the import path."</pre></div>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>المعنى</th></tr>
+    <tr><td class="ltr">name</td><td>اسم فريد بيظهر في الـ violation والـ logs</td></tr>
+    <tr><td class="ltr">severity</td><td><span class="ltr">low / medium / high</span> زي درس ٨٥. البوابة في درس ٨٧ بتعامل violation بـ <code>high</code> زي verdict <code>high</code> من classifier: block</td></tr>
+    <tr><td class="ltr">applies_when</td><td>هل القاعدة في النطاق؟ لو لأ تتسجل <code>not_applicable</code>. لو <code>{}</code> يبقى بتنطبق دايمًا</td></tr>
+    <tr><td class="ltr">must</td><td>الشرط اللي الرد لازم يحققه: يطلع <code>pass</code> أو <code>violation</code></td></tr>
+    <tr><td class="ltr">explanation</td><td>الشرح اللي هيتقري للإنسان</td></tr>
+    <tr><td class="ltr">fix</td><td>عملية تصليح محلية: <code>append_if_missing</code> أو <code>prepend_if_missing</code> أو <code>replace_regex</code></td></tr>
+  </table></div>
+  <h3>الـ predicates: ذرّات وتركيبات</h3>
+  <p><b>الذرّات (atomic):</b> <code>contains_regex</code>، <code>not_contains_regex</code>، <code>starts_with_regex</code>، <code>ends_with_regex</code>، <code>max_words</code>، <code>min_words</code>. كل واحدة دالة من نص لـ true/false.</p>
+  <p><b>التركيبات:</b> <code>all_of</code> (AND)، <code>any_of</code> (OR، وبتقف أول ما واحدة تنجح: short-circuit)، <code>not_</code> (عكس). وبتتداخل جوه بعض recursively. تشبيه: زي قطع الليجو؛ الذرات هي القطع الصغيرة، والتركيبات بتبني منها أي شكل. مثلًا «لو فيه كود، لازم يخلص بـ block يشتغل <b>و</b> ما يذكرش مكتبة داخلية» = <code>all_of</code> جواها <code>any_of</code> و<code>not_contains_regex</code>.</p>
+  <h3>الدستور اللي جاي مع الدرس (٦ قواعد)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>القاعدة</th><th>severity</th><th>بتقول إيه</th><th>الـ fix</th></tr>
+    <tr><td class="ltr">no-empty-refusal</td><td class="ltr">medium</td><td>أي رفض لازم يكون معاه اقتراح أو بديل أو redirect</td><td>append جملة اقتراح</td></tr>
+    <tr><td class="ltr">end-with-runnable-or-assumption</td><td class="ltr">medium</td><td>رد فيه <code>```python</code> لازم يخلص بـ fence مقفول أو فيه <code>assumption:</code></td><td>append افتراض</td></tr>
+    <tr><td class="ltr">no-pii-in-examples</td><td class="ltr">high</td><td>لو فيه «example/sample»، ممنوع إيميل أو تليفون</td><td>replace بـ <code>[example-contact]</code></td></tr>
+    <tr><td class="ltr">cite-when-asserting-fact</td><td class="ltr">low</td><td>سطر بيبدأ بـ «According to / Studies show / Research finds» لازم يكون فيه citation بين قوسين</td><td>append <code>(citation pending)</code></td></tr>
+    <tr><td class="ltr">no-internal-library-leak</td><td class="ltr">high</td><td>ممنوع <code>internal-only</code> و<code>policybot-internal</code> (بتنطبق دايمًا)</td><td>replace بـ <code>[internal]</code></td></tr>
+    <tr><td class="ltr">bounded-length</td><td class="ltr">low</td><td>مايزيدش عن ٨٠٠ كلمة (بتنطبق دايمًا)</td><td>مفيش fix</td></tr>
+  </table></div>
+</section>
+
+<!-- 03 LAB 1 -->
+<section id="d514-lab1">
+  <div class="station-head"><span class="tag">03</span><h2>معمل ١: الـ engine بيقيّم، وانت شايف الشجرة</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>ده نفس الدستور ونفس منطق <code>_eval_predicate</code> متحوّل لـ JavaScript (اتأكدت إن النتايج بتطابق <code>rules_report.json</code> الأصلي). اختار مسودة أو اكتب، وبعدين دوس على أي قاعدة في الجدول عشان تشوف شجرة الـ predicates بتاعتها: الأخضر نجح، الأحمر فشل، والرمادي ما اتقيّمش (short-circuit).</p>
+      <div class="btns" id="d514-presets"></div>
+      <textarea id="d514-txt" rows="6" style="width:100%;font:14px var(--f-mono);direction:ltr;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)" aria-label="مسودة الرد"></textarea>
+      <div class="note ai"><strong>لاحظ:</strong> في مسودة «PII» الكلمة <code>example</code> اللي بتشغّل <code>applies_when</code> ممكن تيجي من الإيميل نفسه (<code>lee@example.com</code>). امسح «Example user:» من الأول وشوف القاعدة لسه منطبقة.</div>
+    </div>
+    <div class="instrument">
+      <div class="tablewrap"><table id="d514-tbl"></table></div>
+      <canvas id="d514-tree" width="520" height="260" aria-label="شجرة الـ predicates"></canvas>
+      <div class="verdict" id="d514-sum"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 LAB 2 -->
+<section id="d514-lab2">
+  <div class="station-head"><span class="tag">04</span><h2>معمل ٢: الـ Fixer والـ Diff والجولة التانية</h2></div>
+  <p>الـ fixer قايمة عمليات declarative مربوطة باسم القاعدة. محدود عن قصد في <b>تعديلات محلية</b>: يزوّد في الآخر، يزوّد في الأول، أو يبدّل regex. إعادة الكتابة الكبيرة مكانها طبقة تانية مش في الدرس ده.</p>
+  <ul class="checklist">
+    <li>• <code>append_if_missing</code>: لو النص (بعد trim) مش موجود، شيل المسافات من آخر الرد وزوّده.</li>
+    <li>• <code>prepend_if_missing</code>: نفس الفكرة في الأول.</li>
+    <li>• <code>replace_regex</code>: بدّل كل match (مع تجاهل حالة الحروف).</li>
+  </ul>
+  <p>والـ diff بيقارن المسودة بالنسخة المعدّلة <b>سطر بسطر</b> (بـ <code>difflib.SequenceMatcher</code>) ويطلّع قايمة <code>Change</code>: <code>add</code>، <code>remove</code>، أو <code>edit-removed</code> + <code>edit-added</code> لما سطر يتبدّل.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>المعمل ده بيشتغل على نفس النص اللي في المعمل ١. دوس «شغّل اللفة» وشوف الـ loop كله بيتحرك من الشمال لليمين: draft ثم engine ثم fixer ثم revised ثم الجولة التانية.</p>
+      <div class="btns"><button type="button" class="primary" id="d514-run">شغّل اللفة</button></div>
+      <div class="note"><strong>جرّب حالة الـ fixer ما يقدرش يصلّحها:</strong> اختار مسودة «طويلة جدًا» من المعمل ١. قاعدة <code>bounded-length</code> مالهاش fix، فالجولة التانية هتفضل فيها violation. ده بالظبط ليه بنعمل جولة تانية: نكشف اللي الـ fixer ما يقدرش يصلّحه محليًا ونصعّده.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d514-loop" width="520" height="150" aria-label="لفة التصليح"></canvas>
+      <div class="readout"><div><small>violations قبل</small><b id="d514-v1">0</b></div><div><small>تغييرات الـ diff</small><b id="d514-dn">0</b></div><div><small>violations بعد</small><b id="d514-v2">0</b></div></div>
+      <div id="d514-diff" style="display:grid;gap:4px;font:13px var(--f-mono);direction:ltr;text-align:left"></div>
+      <div class="verdict" id="d514-loopV"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 05 LAB 3 -->
+<section id="d514-lab3">
+  <div class="station-head"><span class="tag">05</span><h2>معمل ٣: أنهي قاعدة بتضرب كتير؟ (معدل الإطلاق على corpus)</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>ده تمرين ٣ من الدرس على هيئة لعبة: corpus من ١٠ مسودات، ولكل قاعدة بنحسب نسبة الـ violation ونسبة الـ not_applicable. لو قاعدة بتضرب على نص الردود، غالبًا القاعدة نفسها غلط مش الموديل.</p>
+      <label>max_words لقاعدة bounded-length = <b class="mono" id="d514-mwV">800</b><input type="range" id="d514-mw" min="5" max="800" step="5" value="800"></label>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="d514-urgent"> زوّد قاعدة تمرين ١: لو الرد بيتكلم عن safety لازم يقول «If this is urgent»</label>
+      <div class="note ai"><strong>جرّب:</strong> نزّل الـ max_words لـ ٢٠ وشوف القاعدة بقت بتضرب على كل حاجة تقريبًا. ده شكل «قاعدة over-firing» في الداشبورد.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d514-rate" width="520" height="300" aria-label="معدل الـ violations لكل قاعدة"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- 06 PROJECT PLAN -->
+<section id="d514-plan">
+  <div class="station-head"><span class="tag">06</span><h2>خطة المشروع: ٥ مراحل، وكل مرحلة ليها اختبار</h2></div>
+  <ol class="ex">
+    <li><b>M1 · الدستور:</b> اكتب <code>rules.yml</code> بالـ ٦ قواعد، و loader يقبل YAML (لو PyYAML موجودة) وإلا parser صغير.<br><i>الاختبار:</i> <code>Engine()</code> يحمّل ٥ قواعد أو أكتر؛ قاعدة severity بتاعتها <code>critical</code> أو ناقصها <code>must</code> ترفع <code>ValueError</code>.</li>
+    <li><b>M2 · الـ predicates:</b> <code>_eval_predicate</code> recursive، بيرجّع <span class="ltr">(ok, span)</span>.<br><i>الاختبار:</i> «I cannot help with that.» = violation في <code>no-empty-refusal</code>؛ ٨٥٠ كلمة = violation في <code>bounded-length</code>.</li>
+    <li><b>M3 · الـ Engine والتقرير:</b> <code>RuleResult</code> لكل قاعدة بـ status <code>pass/violation/not_applicable</code>، و<code>violations()</code> و<code>max_severity()</code>.<br><i>الاختبار:</i> الهايكو النضيف = مفيش violations، و<code>no-empty-refusal</code> = not_applicable.</li>
+    <li><b>M4 · الـ Fixer:</b> التلات عمليات.<br><i>الاختبار:</i> بعد التصليح «I cannot help with that.» تعدّي الجولة التانية؛ و<code>internal-only</code> تختفي.</li>
+    <li><b>M5 · الـ diff والـ demo:</b> <code>diff()</code> بـ difflib، والـ demo يكتب <code>rules_report.json</code>.<br><i>الاختبار:</i> <span class="ltr">diff("alpha\nbeta", "alpha\nbeta\ngamma")</span> فيه <code>add gamma</code>؛ نصين زي بعض = <code>[]</code>؛ سطر اتبدل = edit-removed + edit-added.</li>
+  </ol>
+</section>
+
+<!-- 07 CODE -->
+<section id="d514-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: الكود خطوة بخطوة</h2></div>
+  <p>شغّل الأصل الأول من الـ root بتاع الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/86-constitutional-rules-engine/code/main.py</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Constitutional rules engine demo
+
+  rules loaded: 6
+
+  case: refusal-without-redirect
+    violations on draft: 1  max severity: medium
+      [medium] no-empty-refusal: Refusals must offer a next step (a suggestion, an alternative, or a redirect).
+    fixer applied 2 change(s)
+
+  case: code-without-assumption
+    violations on draft: 1  max severity: medium
+      [medium] end-with-runnable-or-assumption: Code responses must end with a closing fence or an explicit assumption.
+    fixer applied 2 change(s)
+
+  case: pii-in-example
+    violations on draft: 1  max severity: high
+      [high  ] no-pii-in-examples: Examples must not contain real-looking emails or phone numbers.
+    fixer applied 2 change(s)
+
+  case: internal-library-leak
+    violations on draft: 1  max severity: high
+      [high  ] no-internal-library-leak: Internal library names must not appear in outputs.
+    fixer applied 2 change(s)
+
+  case: clean-response
+    draft passes all applicable rules
+
+  artifact written to .../86-constitutional-rules-engine/outputs/rules_report.json</pre></details>
+  <p>ليه «2 change(s)» في حالة الرفض؟ لأن الـ append بيزوّد <code>"\n\n..."</code>: يعني سطر فاضي + سطر الجملة = إضافتين في الـ diff. وفي حالة الـ PII السطر اتبدّل: edit-removed + edit-added.</p>
+  <p><b>القاعدة:</b> اكتبه بإيدك. الـ YAML انسخه عادي (ده داتا مش منطق)، بس الـ Python اكتبه.</p>
+
+  <h3>خطوة ١ (M1): الـ loader والـ dataclasses</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import re, difflib
+from dataclasses import dataclass, field
+from pathlib import Path
+from yaml_subset import load_yaml          <span class="c"># بيستخدم PyYAML لو موجودة، وإلا parser صغير</span>
+
+SEVERITY_ORDER = ("low", "medium", "high")
+
+@dataclass
+class RuleResult:
+    rule_name: str
+    severity: str
+    status: str                              <span class="c"># pass | violation | not_applicable</span>
+    explanation: str
+    matched_span: str | None = None
+
+@dataclass
+class Violation:
+    rule_name: str
+    severity: str
+    explanation: str
+    matched_span: str | None = None
+
+@dataclass
+class EngineReport:
+    text: str
+    results: list = field(default_factory=list)
+
+    def violations(self):
+        return [Violation(r.rule_name, r.severity, r.explanation, r.matched_span)
+                for r in self.results if r.status == "violation"]
+
+    def max_severity(self):
+        sevs = [v.severity for v in self.violations()]
+        return max(sevs, key=SEVERITY_ORDER.index) if sevs else None</pre></div>
+  <p>ملف <code>yaml_subset.py</code> في الريبو parser صغير بيدعم بس اللي الدستور محتاجه: mappings متداخلة بمسافتين، sequences <code>- key: value</code>، strings بعلامات تنصيص أو من غير، أرقام، و<code>{}</code>، وبيشيل التعليقات. مش بيدعم anchors ولا flow style ولا multi-line blocks، والدستور متصمم من غيرهم. اقراه بس متكتبوش النهاردة.</p>
+
+  <h3>خطوة ٢ (M2): الـ predicates بشكل recursive</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _word_count(text):
+    return len(re.findall(r"\b\w+\b", text))
+
+def _eval_predicate(node, text):
+    if node is None or node == {}:
+        return True, None                                   <span class="c"># شرط فاضي = دايمًا صح</span>
+    if "all_of" in node:
+        spans = []
+        for child in node["all_of"]:
+            ok, span = _eval_predicate(child, text)
+            if not ok:
+                return False, span                          <span class="c"># أول فشل يكفي</span>
+            spans.append(span)
+        return True, next((s for s in spans if s), None)
+    if "any_of" in node:
+        last_span = None
+        for child in node["any_of"]:
+            ok, span = _eval_predicate(child, text)
+            if ok:
+                return True, span                           <span class="c"># short-circuit</span>
+            last_span = span
+        return False, last_span
+    if "not_" in node:
+        ok, span = _eval_predicate(node["not_"], text)
+        return (not ok), span
+    flags = re.IGNORECASE | re.DOTALL
+    if "contains_regex" in node:
+        m = re.search(node["contains_regex"], text, flags=flags)
+        return (m is not None), (m.group(0) if m else None)
+    if "not_contains_regex" in node:
+        m = re.search(node["not_contains_regex"], text, flags=flags)
+        return (m is None), (m.group(0) if m else None)     <span class="c"># الـ span هو اللي اتمسك</span>
+    if "ends_with_regex" in node:
+        m = re.search(node["ends_with_regex"] + r"\Z", text, flags=flags)
+        return (m is not None), (m.group(0) if m else None)
+    if "starts_with_regex" in node:
+        m = re.match(node["starts_with_regex"], text, flags=flags)
+        return (m is not None), (m.group(0) if m else None)
+    if "max_words" in node:
+        wc = _word_count(text)
+        return wc &lt;= int(node["max_words"]), (f"word count {wc}" if wc &gt; int(node["max_words"]) else None)
+    if "min_words" in node:
+        wc = _word_count(text)
+        return wc &gt;= int(node["min_words"]), (f"word count {wc}" if wc &lt; int(node["min_words"]) else None)
+    raise ValueError(f"unknown predicate: {list(node.keys())}")   <span class="c"># ما نسكتش على قاعدة غلط</span></pre></div>
+
+  <h3>خطوة ٣ (M3): الـ Engine</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>DEFAULT_RULES_PATH = Path(__file__).parent / "rules.yml"
+
+class Engine:
+    def __init__(self, rules=None, path=None):
+        if rules is not None:
+            self._rules = rules
+        else:
+            data = load_yaml((path or DEFAULT_RULES_PATH).read_text())
+            if not isinstance(data, dict) or "rules" not in data:
+                raise ValueError("constitution must be a mapping with a 'rules' key")
+            self._rules = data["rules"]
+        for r in self._rules:                                  <span class="c"># validate وقت التحميل، مش وقت التشغيل</span>
+            if r.get("severity") not in SEVERITY_ORDER:
+                raise ValueError(f"rule {r.get('name')} has bad severity {r.get('severity')}")
+            if "name" not in r or "explanation" not in r or "must" not in r:
+                raise ValueError(f"rule {r.get('name')} missing required field")
+
+    def rules(self):
+        return list(self._rules)
+
+    def evaluate(self, text):
+        report = EngineReport(text=text)
+        for rule in self._rules:
+            name, sev, expl = str(rule["name"]), str(rule["severity"]), str(rule["explanation"])
+            applies, _ = _eval_predicate(rule.get("applies_when"), text)
+            if not applies:                                    <span class="c"># بنسجّلها صراحةً</span>
+                report.results.append(RuleResult(name, sev, "not_applicable", expl))
+                continue
+            ok, span = _eval_predicate(rule["must"], text)
+            status = "pass" if ok else "violation"
+            report.results.append(RuleResult(name, sev, status, expl, None if ok else span))
+        return report</pre></div>
+
+  <h3>خطوة ٤ (M4): الـ Fixer</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Fixer:
+    def __init__(self, rules):
+        self._by_name = {str(r["name"]): r for r in rules if "fix" in r}
+
+    def apply(self, text, violations):
+        out = text
+        for v in violations:
+            spec = self._by_name.get(v.rule_name)
+            if not spec or not isinstance(spec.get("fix"), dict):
+                continue                                       <span class="c"># قاعدة مالهاش fix: نسيبها للجولة التانية</span>
+            fix = spec["fix"]
+            if "append_if_missing" in fix:
+                suffix = str(fix["append_if_missing"])
+                if suffix.strip() and suffix.strip() not in out:
+                    out = out.rstrip() + suffix
+            elif "prepend_if_missing" in fix:
+                prefix = str(fix["prepend_if_missing"])
+                if prefix.strip() and prefix.strip() not in out:
+                    out = prefix + out.lstrip()
+            elif "replace_regex" in fix:
+                rr = fix["replace_regex"]
+                out = re.sub(str(rr["pattern"]), str(rr["replacement"]), out, flags=re.IGNORECASE)
+        return out</pre></div>
+
+  <h3>خطوة ٥ (M5): الـ diff والـ loop</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class Change:
+    op: str
+    text: str
+
+def diff(draft, revised):
+    a, b = draft.splitlines(), revised.splitlines()
+    out = []
+    for op, a1, a2, b1, b2 in difflib.SequenceMatcher(a=a, b=b).get_opcodes():
+        if op == "delete":
+            out += [Change("remove", l) for l in a[a1:a2]]
+        elif op == "insert":
+            out += [Change("add", l) for l in b[b1:b2]]
+        elif op == "replace":                                  <span class="c"># سطر اتبدّل = اتشال + اتحط</span>
+            out += [Change("edit-removed", l) for l in a[a1:a2]]
+            out += [Change("edit-added", l) for l in b[b1:b2]]
+    return out
+
+engine = Engine()
+fixer = Fixer(engine.rules())
+draft = "I cannot help with that question."
+report = engine.evaluate(draft)
+revised = fixer.apply(draft, report.violations())
+print([v.rule_name for v in report.violations()])               <span class="c"># الجولة الأولى</span>
+print([v.rule_name for v in engine.evaluate(revised).violations()])  <span class="c"># الجولة التانية</span>
+print([(c.op, c.text[:30]) for c in diff(draft, revised)])</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">['no-empty-refusal']
+[]
+[('add', ''), ('add', 'If this is something I cannot ')]</pre></details>
+
+  <h3>خطوة ٦: الـ tests</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd phases/19-capstone-projects/86-constitutional-rules-engine/code
+python3 -m unittest tests -v</pre></div>
+  <p>بتغطي: الـ YAML subset (mapping، متداخل، sequence of mappings، quoted، تعليقات)، تحميل الدستور ورفض الـ severity الغلط والحقول الناقصة، الـ predicates، الـ fixer، والـ diff.</p>
+</section>
+
+<!-- 08 EXERCISES -->
+<section id="d514-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>قاعدة «If this is urgent»:</b> أي رد لازم يحتوي «If this is urgent» لما الـ prompt يتكلم عن safety. استخدم composition.
+      <details><summary>تلميح</summary>الـ engine الحالي بيشوف الرد بس، فيا إما تمرّر الـ prompt مع النص (مثلًا <code>evaluate(text, context)</code> و predicate جديد <code>prompt_contains_regex</code>)، يا إما كبداية تخلي <code>applies_when</code> = <code>contains_regex: '\bsafety\b'</code> على الرد. والـ must: <code>contains_regex: 'if this is urgent'</code>. جربت النسخة البسيطة في المعمل ٣.</details></li>
+    <li><b>Fixer بقوالب (templating):</b> بدل الـ regex، fixer بياخد slots بأسماء. ورّي قاعدة واحدة متكتبة بالتصميم الجديد.
+      <details><summary>تلميح</summary>مثلًا <code>fix: {template: "{draft}\n\nNext step: {next_step}", slots: {next_step: "contact support"}}</code> وتعمل <code>template.format(draft=out.rstrip(), **slots)</code>. جرّبه على <code>no-empty-refusal</code>.</details></li>
+    <li><b>Metrics endpoint:</b> دالة بتاخد corpus مسودات وترجّع نسبة الـ violation لكل قاعدة عشان الفريق يشوف أنهي قاعدة over-firing.
+      <details><summary>تلميح</summary><code>Counter</code> لكل <code>rule_name</code> على <code>status == "violation"</code> مقسومة على عدد المسودات. احسب كمان نسبة <code>not_applicable</code>: قاعدة دايمًا not_applicable ممكن تكون ميتة. المعمل ٣ بيعمل بالظبط ده.</details></li>
+    <li><b>إضافة مني · تمرين شغل حقيقي:</b> اكتب دستور من ٤ قواعد لمساعد خدمة عملاء لشركة شحن تخيلية: (أ) أي رد فيه رقم شحنة لازم يكون فيه لينك تتبع، (ب) ممنوع وعود بمواعيد «guaranteed»، (ج) أي اعتذار لازم يكون معاه خطوة جاية، (د) مفيش أرقام تليفون شخصية. اعمل ٨ مسودات اختبار واطلع معدل الإطلاق.
+      <details><summary>تلميح</summary>(ب) <code>not_contains_regex: '\bguarantee(d)?\b'</code> مع fix <code>replace_regex</code> لـ «expected». (أ) <code>applies_when: contains_regex: '\b[A-Z]{2}\d{9}[A-Z]{2}\b'</code> و must <code>contains_regex: 'https?://'</code>. اكتب الـ explanation بلغة يفهمها مدير خدمة العملاء.</details></li>
+  </ol>
+</section>
+
+<!-- 09 EXTRA -->
+<section id="d514-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <ul class="checklist">
+    <li><b>النطاق أوسع من المقصود:</b> <code>cite-when-asserting-fact</code> بتدور على سطر بيبدأ بـ «According to»، بس الـ <code>must</code> بيدور على أي قوس <b>في الرد كله</b>. يعني لو فيه قوس في أي حتة تانية القاعدة هتعدّي. والـ fix بيزوّد «(citation pending)» في آخر الرد مش آخر السطر. جرّبها في المعمل ١. الدرس: القاعدة بتتحقق من اللي كتبته، مش من اللي قصدته، فاكتب لكل قاعدة test إيجابي وسلبي.</li>
+    <li><b>كلمة «example» جوه الإيميل نفسه:</b> <code>lee@example.com</code> فيها <code>example</code> بحدود كلمة، فـ <code>no-pii-in-examples</code> بتنطبق على أي إيميل في دومين example.com حتى لو مفيش «مثال». حاجة زي دي بتطلع بس لما تبص على الـ matched span.</li>
+    <li><b>ترتيب الـ fixes مهم:</b> الـ fixer بيمشي على الـ violations بالترتيب. لو fix بيزوّد نص فيه كلمة بتشغّل قاعدة تانية، الجولة التانية هتمسكها. عشان كده الجولة التانية مش رفاهية.</li>
+    <li><b>regex في الـ YAML:</b> في YAML الـ single quotes بتحافظ على الـ <code>\b</code> زي ما هي، بس الـ double quotes بتفسّر الـ escapes. الدستور بيستخدم single quotes للـ regex و double quotes للنصوص اللي فيها <code>\n</code>. غلطة شائعة جدًا.</li>
+    <li><b>فين بيظهر في الـ LLMs؟</b> الاسم جاي من فكرة «Constitutional AI»: إن الموديل يتقيّم ويتصلح حسب مبادئ مكتوبة. الدرس هنا نسخة deterministic وقت التشغيل (runtime) من نفس الفكرة: draft → critique → revise. وفي الـ agents نفس النمط بيتطبق على الـ tool calls: قواعد زي «ممنوع أي <code>DELETE</code> من غير <code>WHERE</code>» قبل ما الـ agent ينفّذ.</li>
+  </ul>
+</section>
+
+<!-- 10 QUIZ -->
+<section id="d514-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d514-quizBox"></div>
+</section>
+
+<!-- 11 WRAP -->
+<section id="d514-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الفرق بين الـ classifier والـ rule</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم applies_when و must و not_applicable</label></li>
+    <li><label><input type="checkbox" data-ck="3"> شفت شجرة any_of/all_of والـ short-circuit في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="4"> بنيت المراحل M1 لـ M5 بإيدي والـ tests عدّت</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Declarative constitution</td><td>policy-as-code، قواعد الـ guardrails اللي فريق غير تقني بيراجعها</td></tr>
+    <tr><td>Composable predicates</td><td>محركات القواعد، فلاتر البحث، policies بتاعة الـ tool calls في الـ agents</td></tr>
+    <tr><td>not_applicable صريح</td><td>الـ audit: تثبت إن القاعدة اتقيّمت فعلًا</td></tr>
+    <tr><td>Fixer + 2nd pass</td><td>draft → critique → revise في الـ LLM pipelines</td></tr>
+    <tr><td>Structured diff</td><td>مراجعة بشرية لسلوك الـ fixer مع الوقت</td></tr>
+    <tr><td>Per-rule violation rate</td><td>داشبوردات الـ safety: قاعدة over-firing ولا الموديل اتغير؟</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> آخر يوم في الكورس: End-to-End Safety Gate. هتجمع الـ detector بتاع درس ٨٣ والـ classifiers بتاعة امبارح والـ engine بتاع النهاردة في بوابة واحدة بتلات checkpoints وtrace لكل request.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F86-constitutional-rules-engine" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/86-constitutional-rules-engine</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=514,LESSON=86,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d514-roadmap').closest('.day');
+const rm=$('d514-roadmap'),LS=[];for(let i=1;i<=87;i++)if(i!==18&&i!==19)LS.push(i);
+LS.forEach(i=>{const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)});
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+// ---- JS port of rules.yml + Engine + Fixer + diff (same patterns, same order) ----
+const RULES=[
+ {name:'no-empty-refusal',severity:'medium',applies_when:{contains_regex:'\\b(i cannot|i will not|i refuse|unable to help)\\b'},
+  must:{any_of:[{contains_regex:'\\b(try|consider|alternative|instead|suggest)\\b'},{contains_regex:'\\bredirect\\b'}]},
+  explanation:'Refusals must offer a next step (a suggestion, an alternative, or a redirect).',
+  fix:{append_if_missing:'\n\nIf this is something I cannot help with, consider rephrasing or reaching out to the relevant team.'}},
+ {name:'end-with-runnable-or-assumption',severity:'medium',applies_when:{contains_regex:'```python'},
+  must:{any_of:[{ends_with_regex:'```\\s*$'},{contains_regex:'\\bassumption:'}]},
+  explanation:'Code responses must end with a closing fence or an explicit assumption.',
+  fix:{append_if_missing:'\n\nAssumption: the example inputs are valid and the module is on the import path.'}},
+ {name:'no-pii-in-examples',severity:'high',applies_when:{contains_regex:'\\b(example|sample)\\b'},
+  must:{all_of:[{not_contains_regex:'\\b[\\w.+-]+@[\\w-]+\\.[\\w.-]+\\b'},{not_contains_regex:'\\b(\\+?\\d{1,3}[ .-]?)?(\\(?\\d{3}\\)?[ .-]?)\\d{3}[ .-]?\\d{4}\\b'}]},
+  explanation:'Examples must not contain real-looking emails or phone numbers.',
+  fix:{replace_regex:{pattern:'\\b([\\w.+-]+@[\\w-]+\\.[\\w.-]+|(\\+?\\d{1,3}[ .-]?)?(\\(?\\d{3}\\)?[ .-]?)\\d{3}[ .-]?\\d{4})\\b',replacement:'[example-contact]'}}},
+ {name:'cite-when-asserting-fact',severity:'low',applies_when:{contains_regex:'(?im)^(according to|studies show|research finds)\\b'},
+  must:{contains_regex:'\\([\\w .,-]+\\)'},explanation:'Factual assertions must include a parenthetical citation.',
+  fix:{append_if_missing:' (citation pending)'}},
+ {name:'no-internal-library-leak',severity:'high',applies_when:{},
+  must:{all_of:[{not_contains_regex:'\\binternal-only\\b'},{not_contains_regex:'\\bpolicybot-internal\\b'}]},
+  explanation:'Internal library names must not appear in outputs.',
+  fix:{replace_regex:{pattern:'\\b(internal-only|policybot-internal)\\b',replacement:'[internal]'}}},
+ {name:'bounded-length',severity:'low',applies_when:{},must:{max_words:800},explanation:'Responses must not exceed 800 words.'}];
+const SEV3=['low','medium','high'];
+// Python flags IGNORECASE|DOTALL -> 'is'; inline (?im) -> add m flag
+function rx(p,extra){let fl='is'+(extra||'');const m=p.match(/^\(\?([a-z]+)\)/);if(m){p=p.slice(m[0].length);if(m[1].includes('m'))fl+='m'}return new RegExp(p,fl)}
+const wc=t=>(t.match(/\b\w+\b/g)||[]).length;
+// returns [ok, span, trace] ; trace = tree for the lab
+function ev(node,t){
+  if(!node||!Object.keys(node).length)return[true,null,{k:'{}',ok:true}];
+  if(node.all_of){const kids=[];let span=null;for(const c of node.all_of){const r=ev(c,t);kids.push(r[2]);if(!r[0])return[false,r[1],{k:'all_of',ok:false,kids}];if(r[1]&&span===null)span=r[1]}return[true,span,{k:'all_of',ok:true,kids}]}
+  if(node.any_of){const kids=[];let last=null;for(const c of node.any_of){const r=ev(c,t);kids.push(r[2]);if(r[0])return[true,r[1],{k:'any_of',ok:true,kids}];last=r[1]}return[false,last,{k:'any_of',ok:false,kids}]}
+  if(node.not_){const r=ev(node.not_,t);return[!r[0],r[1],{k:'not_',ok:!r[0],kids:[r[2]]}]}
+  const K=Object.keys(node)[0],v=node[K];let m,ok,span=null;
+  if(K==='contains_regex'){m=t.match(rx(v));ok=!!m;span=m?m[0]:null}
+  else if(K==='not_contains_regex'){m=t.match(rx(v));ok=!m;span=m?m[0]:null}
+  else if(K==='ends_with_regex'){m=t.match(rx(v+'(?![\\s\\S])'));ok=!!m;span=m?m[0]:null}
+  else if(K==='starts_with_regex'){m=t.match(rx('^(?:'+v+')'));ok=!!m&&m.index===0;span=m?m[0]:null}
+  else if(K==='max_words'){const n=wc(t);ok=n<=+v;span=ok?null:'word count '+n}
+  else if(K==='min_words'){const n=wc(t);ok=n>=+v;span=ok?null:'word count '+n}
+  else throw new Error('unknown predicate: '+K);
+  return[ok,span,{k:K,arg:String(v),ok,span}]}
+function evaluate(t,rules){return rules.map(r=>{const a=ev(r.applies_when,t);
+  if(!a[0])return{rule_name:r.name,severity:r.severity,status:'not_applicable',explanation:r.explanation,matched_span:null,applies:a[2],must:null};
+  const s=ev(r.must,t);return{rule_name:r.name,severity:r.severity,status:s[0]?'pass':'violation',explanation:r.explanation,matched_span:s[0]?null:s[1],applies:a[2],must:s[2]}})}
+const violations=res=>res.filter(r=>r.status==='violation');
+const maxSev=res=>{const v=violations(res);return v.length?v.reduce((a,x)=>SEV3.indexOf(x.severity)>SEV3.indexOf(a)?x.severity:a,'low'):null};
+function applyFix(t,viol,rules){let out=t;const by={};rules.forEach(r=>{if(r.fix)by[r.name]=r});
+  for(const v of viol){const spec=by[v.rule_name];if(!spec)continue;const fx=spec.fix;
+    if('append_if_missing' in fx){const sfx=fx.append_if_missing;if(sfx.trim()&&!out.includes(sfx.trim()))out=out.replace(/\s+$/,'')+sfx}
+    else if('prepend_if_missing' in fx){const pfx=fx.prepend_if_missing;if(pfx.trim()&&!out.includes(pfx.trim()))out=pfx+out.replace(/^\s+/,'')}
+    else if('replace_regex' in fx){out=out.replace(rx(fx.replace_regex.pattern,'g'),fx.replace_regex.replacement)}}
+  return out}
+// line diff via LCS, grouped like difflib opcodes (delete / insert / replace)
+function diff(a,b){const A=a.split(/\r?\n/),B=b.split(/\r?\n/);if(a==='')A.length=0;else if(/\n$/.test(a))A.pop();if(b==='')B.length=0;else if(/\n$/.test(b))B.pop();
+  const n=A.length,m=B.length,L=Array.from({length:n+1},()=>new Array(m+1).fill(0));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)L[i][j]=A[i]===B[j]?L[i+1][j+1]+1:Math.max(L[i+1][j],L[i][j+1]);
+  const out=[];let i=0,j=0,rem=[],add=[];
+  const flush=()=>{if(rem.length&&add.length){rem.forEach(x=>out.push({op:'edit-removed',text:x}));add.forEach(x=>out.push({op:'edit-added',text:x}))}else{rem.forEach(x=>out.push({op:'remove',text:x}));add.forEach(x=>out.push({op:'add',text:x}))}rem=[];add=[]};
+  while(i<n||j<m){if(i<n&&j<m&&A[i]===B[j]){flush();i++;j++}else if(j<m&&(i>=n||L[i][j+1]>=L[i+1][j])){add.push(B[j]);j++}else{rem.push(A[i]);i++}}
+  flush();return out}
+
+
+const stColor=s=>s==='violation'?css('--bad'):s==='pass'?css('--ok'):css('--muted');
+const sevColor=s=>s==='high'?css('--bad'):s==='medium'?css('--vec-b'):s==='low'?css('--vec-a'):css('--muted');
+
+// ---------- Lab 1 ----------
+const DRAFTS=[
+ ['رفض فاضي','I cannot help with that question.'],
+ ['كود من غير افتراض','Here is the code:\n```python\ndef add(a, b):\n    return a + b\n```\nLet me know if this works.'],
+ ['PII في مثال','Example user: lee@example.com. Here is how to look them up.'],
+ ['مكتبة داخلية','Use the internal-only adapter for the database call.'],
+ ['نضيف','Here is a haiku about autumn leaves drifting onto a still pond surface.'],
+ ['حقيقة من غير مصدر','According to recent benchmarks the new model is faster.'],
+ ['حقيقة + قوس في حتة تانية','According to recent benchmarks the new model is faster.\nIt also ships a new tokenizer (v2).'],
+ ['طويلة جدًا',Array(170).fill('This sentence repeats to make the answer long.').join(' ')]];
+const ta=$('d514-txt'),pb=$('d514-presets');let sel=0,lastRes=null;
+DRAFTS.forEach(([l,t])=>{const b=document.createElement('button');b.type='button';b.textContent=l;b.addEventListener('click',()=>{ta.value=t;lab1()});pb.appendChild(b)});
+const tc=$('d514-tree'),tx=AI.setupCanvas(tc),TW=+tc.dataset.w,TH=+tc.dataset.h;
+function leaves(n){return n&&n.kids&&n.kids.length?n.kids.reduce((s,k)=>s+leaves(k),0)+(n.k==='any_of'||n.k==='all_of'?Math.max(0,(RULE_KIDS(n)-n.kids.length)):0):1}
+function RULE_KIDS(n){return n.total||n.kids.length}
+// attach full child lists (incl. skipped ones) so the tree shows short-circuit
+function full(node,trace){if(!node||!Object.keys(node).length)return{k:'{} (always)',ok:true,kids:[]};
+  const K=Object.keys(node)[0];
+  if(K==='all_of'||K==='any_of'){return{k:K,ok:trace?trace.ok:null,kids:node[K].map((c,i)=>full(c,trace&&trace.kids[i]))}}
+  if(K==='not_')return{k:'not_',ok:trace?trace.ok:null,kids:[full(node.not_,trace&&trace.kids[0])]};
+  return{k:K,arg:String(node[K]),ok:trace?trace.ok:null,span:trace?trace.span:null,kids:[]}}
+function cnt(n){return n.kids.length?n.kids.reduce((s,k)=>s+cnt(k),0):1}
+function drawNode(n,x,y0,y1,depth){const y=(y0+y1)/2,w=depth===0?118:Math.max(120,TW-x-8),bw=Math.min(w,n.kids.length?96:TW-x-8);
+  const col=n.ok===null?css('--line'):n.ok?css('--ok'):css('--bad');
+  tx.fillStyle=css('--panel');tx.strokeStyle=col;tx.lineWidth=n.ok===null?1:2;tx.beginPath();tx.rect(x,y-13,bw,26);tx.fill();tx.stroke();
+  tx.fillStyle=n.ok===null?css('--muted'):css('--ink');tx.font='11px JetBrains Mono, monospace';
+  let lab=n.k+(n.arg?': '+n.arg:'');const maxc=Math.floor((bw-8)/6.6);if(lab.length>maxc)lab=lab.slice(0,maxc-1)+'…';tx.fillText(lab,x+4,y+4);
+  if(n.kids.length){const tot=cnt(n);let yy=y0;n.kids.forEach(k=>{const h=(y1-y0)*cnt(k)/tot;const cx=x+bw+22,cy=yy+h/2;
+    tx.strokeStyle=k.ok===null?css('--line'):k.ok?css('--ok'):css('--bad');tx.lineWidth=1.2;tx.beginPath();tx.moveTo(x+bw,y);tx.lineTo(cx,cy);tx.stroke();
+    drawNode(k,cx,yy,yy+h,depth+1);yy+=h})}}
+function drawTree(){tx.clearRect(0,0,TW,TH);if(!lastRes)return;const r=lastRes[sel],rule=RULES[sel];
+  const A=full(rule.applies_when,r.applies),M=r.must?full(rule.must,r.must):full(rule.must,null);
+  tx.font='600 12px JetBrains Mono, monospace';tx.fillStyle=css('--ink');tx.fillText(rule.name,8,16);
+  tx.fillStyle=stColor(r.status);tx.textAlign='right';tx.fillText(r.status+(r.matched_span?'  span: '+String(r.matched_span).slice(0,22):''),TW-8,16);tx.textAlign='left';
+  tx.fillStyle=css('--muted');tx.font='11px JetBrains Mono, monospace';tx.fillText('applies_when',8,40);tx.fillText('must',8,124);
+  drawNode(A,8,44,104,1);drawNode(M,8,128,TH-4,1)}
+function lab1(){lastRes=evaluate(ta.value,RULES);const t=$('d514-tbl');t.innerHTML='<tr><th>rule</th><th>sev</th><th>status</th></tr>';
+  lastRes.forEach((r,i)=>{const tr=document.createElement('tr');tr.style.cursor='pointer';if(i===sel)tr.style.background='var(--soft)';
+    tr.innerHTML='<td class="ltr"></td><td class="ltr"></td><td class="ltr"></td>';tr.children[0].textContent=r.rule_name;tr.children[1].textContent=r.severity;tr.children[1].style.color=sevColor(r.severity);tr.children[2].textContent=r.status;tr.children[2].style.color=stColor(r.status);tr.children[2].style.fontWeight='600';
+    tr.tabIndex=0;const pick=()=>{sel=i;lab1()};tr.addEventListener('click',pick);tr.addEventListener('keydown',e=>{if(e.key==='Enter')pick()});t.appendChild(tr)});
+  const v=violations(lastRes),ms=maxSev(lastRes),s=$('d514-sum');
+  s.textContent=v.length?('عدد الـ violations: '+v.length+' · أعلى severity: '+ms+(ms==='high'?'، يعني البوابة هتعمل block':'')):'المسودة عدّت كل القواعد اللي بتنطبق عليها';s.style.color=v.length?sevColor(ms):css('--ok');
+  drawTree()}
+ta.addEventListener('input',lab1);ta.value=DRAFTS[0][1];lab1();
+
+// ---------- Lab 2: loop ----------
+const lpc=$('d514-loop'),lpx=AI.setupCanvas(lpc),PW=+lpc.dataset.w,PH=+lpc.dataset.h;let stage=5,lpTimer=null,loopData=null;
+function drawLoop(){lpx.clearRect(0,0,PW,PH);const names=['draft','engine','fixer','revised','engine #2'],xs=[8,112,216,320,424],y=50;
+  names.forEach((n,i)=>{const on=i<=stage;const col=on?(i===4&&loopData?(loopData.v2.length?css('--bad'):css('--ok')):css('--vec-a')):css('--line');
+    lpx.fillStyle=css('--panel');lpx.strokeStyle=col;lpx.lineWidth=on?2.5:1;lpx.beginPath();lpx.rect(xs[i],y,88,40);lpx.fill();lpx.stroke();
+    lpx.fillStyle=on?css('--ink'):css('--muted');lpx.font='600 12px JetBrains Mono, monospace';lpx.textAlign='center';lpx.fillText(n,xs[i]+44,y+24);
+    if(i<4)AI.arrow(lpx,xs[i]+88,y+20,xs[i+1]-2,y+20,i<stage?css('--vec-a'):css('--line'),i<stage?2.5:1)});
+  if(loopData){lpx.font='11px JetBrains Mono, monospace';lpx.fillStyle=css('--muted');
+    if(stage>=1)lpx.fillText(loopData.v1.length+' violation(s)',156,y+62);
+    if(stage>=2)lpx.fillText(loopData.d.length+' change(s)',260,y+62);
+    if(stage>=4){lpx.fillStyle=loopData.v2.length?css('--bad'):css('--ok');lpx.fillText(loopData.v2.length?'escalate':'accepted',468,y+62)}
+    lpx.strokeStyle=css('--muted');lpx.setLineDash([4,4]);lpx.beginPath();lpx.moveTo(52,y-4);lpx.quadraticCurveTo(208,4,364,y-4);lpx.stroke();lpx.setLineDash([]);lpx.fillStyle=css('--muted');lpx.fillText('diff',208,18)}
+  lpx.textAlign='left'}
+function runLoop(){const t=ta.value,r=evaluate(t,RULES),v1=violations(r),rev=applyFix(t,v1,RULES),v2=violations(evaluate(rev,RULES)),d=diff(t,rev);loopData={v1,v2,d,rev};
+  $('d514-v1').textContent=v1.length;$('d514-dn').textContent=d.length;$('d514-v2').textContent=v2.length;
+  const box=$('d514-diff');box.innerHTML='';if(!d.length){const p=document.createElement('div');p.textContent='(no changes)';p.style.color=css('--muted');box.appendChild(p)}
+  d.forEach(c=>{const p=document.createElement('div');const add=c.op==='add'||c.op==='edit-added';p.textContent=(add?'+ ':'- ')+c.op.padEnd(13)+' '+(c.text===''?'(empty line)':c.text.slice(0,90));
+    p.style.cssText='padding:2px 8px;border-radius:4px;white-space:pre-wrap;background:color-mix(in srgb,'+(add?'var(--ok)':'var(--bad)')+' 12%,var(--panel))';box.appendChild(p)});
+  const V=$('d514-loopV');V.textContent=v2.length?'الجولة التانية لسه فيها: '+v2.map(x=>x.rule_name).join(', ')+'، فالرد يتصعّد (escalate)':(v1.length?'النسخة المعدّلة عدّت الجولة التانية، والحالة: accepted':'المسودة سليمة من الأول، مفيش حاجة تتصلح');V.style.color=v2.length?css('--bad'):css('--ok');
+  clearInterval(lpTimer);if(matchMedia('(prefers-reduced-motion:reduce)').matches){stage=5;drawLoop();return}
+  stage=0;drawLoop();lpTimer=setInterval(()=>{if(!document.body.contains(lpc)){clearInterval(lpTimer);return}stage++;drawLoop();if(stage>=4)clearInterval(lpTimer)},450)}
+$('d514-run').addEventListener('click',runLoop);runLoop();
+
+// ---------- Lab 3: violation rate ----------
+const CORPUS=DRAFTS.map(d=>d[1]).concat(['I cannot help with that. For safety reasons, please contact a professional.','Safety first: wear gloves when handling the battery. If this is urgent, call the hotline.']);
+const rc=$('d514-rate'),rx2=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+function lab3(){const mw=+$('d514-mw').value;$('d514-mwV').textContent=mw;
+  const rules=RULES.map(r=>r.name==='bounded-length'?Object.assign({},r,{must:{max_words:mw}}):r);
+  if($('d514-urgent').checked)rules.push({name:'urgent-when-safety',severity:'medium',applies_when:{contains_regex:'\\bsafety\\b'},must:{contains_regex:'if this is urgent'},explanation:'Safety responses must include "If this is urgent".'});
+  const stats=rules.map(r=>({name:r.name,v:0,na:0}));
+  CORPUS.forEach(t=>evaluate(t,rules).forEach((x,i)=>{if(x.status==='violation')stats[i].v++;if(x.status==='not_applicable')stats[i].na++}));
+  rx2.clearRect(0,0,RW,RH);const n=CORPUS.length,rowH=Math.min(40,(RH-30)/stats.length),x0=200,bw=RW-x0-50;
+  rx2.font='11px JetBrains Mono, monospace';
+  stats.forEach((s,i)=>{const y=10+i*rowH;rx2.fillStyle=css('--ink');rx2.fillText(s.name.length>27?s.name.slice(0,26)+'…':s.name,6,y+rowH/2);
+    rx2.fillStyle=css('--soft');rx2.fillRect(x0,y+4,bw,rowH-12);
+    rx2.fillStyle=css('--muted');rx2.fillRect(x0,y+rowH-6,bw*s.na/n,3);
+    const rate=s.v/n;rx2.fillStyle=rate>=.5?css('--bad'):css('--vec-b');rx2.fillRect(x0,y+4,bw*rate,rowH-12);
+    rx2.fillStyle=css('--ink');rx2.fillText(Math.round(rate*100)+'%',x0+bw+6,y+rowH/2)});
+  rx2.fillStyle=css('--muted');rx2.fillText('bar = violation rate   thin grey line = not_applicable rate   n='+n,6,RH-6)}
+['d514-mw','d514-urgent'].forEach(id=>$(id).addEventListener('input',lab3));$('d514-urgent').addEventListener('change',lab3);lab3();
+
+// ---------- quiz ----------
+AI.quiz($('d514-quizBox'),[
+ ['ليه نستخدم دستور YAML declarative بدل checks متفرقة في الكود؟',['لأن YAML بيدعم anchors','لأن YAML أسرع في الـ parsing من Python','لأن القواعد في YAML يقدر يراجعها غير المهندسين، وبتعيش في version control، وتتغير من غير تغيير الكود','لأن الـ standard library بتفضّل YAML'],2,'الفكرة إن القاعدة تبقى داتا مقروءة ليها مراجعة لوحدها، مش منطق مستخبي في الكود.'],
+ ['إيه الحقول اللي لازم تكون في أي قاعدة على الأقل؟',['name و regex و fix','id و owner و timestamp','predicate و severity و owner','name و severity و must و explanation'],3,'الـ Engine بيرفض أي قاعدة ناقصها name أو explanation أو must، أو الـ severity بتاعتها مش low/medium/high. الـ fix والـ applies_when اختياريين.'],
+ ['الـ engine بيركّب الـ predicates إزاي؟',['بـ contains_regex واحدة بس لكل قاعدة','بضرب الـ confidence scores','عن طريق neural classifier','بـ all_of و any_of و not_ اللي بيلفّوا الـ predicates الذرية بشكل recursive'],3,'التركيبات بتتداخل، و any_of بتقف أول ما واحدة تنجح.'],
+ ['دور applies_when إيه؟',['بيغيّر الـ severity','بيختار عملية الـ fix','بيحرس الـ must، فالقواعد اللي مش منطبقة تتسجل not_applicable مش violation','دايمًا بيطلع true'],2,'من غيره، قاعدة الكود كانت هتطلع violation على أي رد مفيهوش كود. والتسجيل الصريح بيثبت إن القاعدة اتقيّمت.'],
+ ['الـ Fixer بيعمل إيه؟',['بينادي موديل بعيد يصلّح النص','بيطبّق الـ fix الـ declarative بتاع كل قاعدة (append أو prepend أو replace_regex) ويطلّع نص معدّل','بيعيد كتابة ملف القواعد','بيحسب الـ severity من الـ fix'],1,'تعديلات محلية deterministic. إعادة الكتابة الكبيرة مش شغلته.'],
+ ['ليه الـ demo بيشغّل الـ engine مرة تانية بعد الـ fixer؟',['لأن الجولة الأولى dry run بس','عشان يعيد تحميل الدستور','عشان يكبّر حجم التقرير','عشان يتأكد إن النسخة المعدّلة بتحقق القواعد، ويطلّع أي قاعدة الـ fixer ما يقدرش يصلّحها محليًا'],3,'زي bounded-length اللي مالهاش fix: الجولة التانية بتكشفها فتتصعّد.'],
+ ['(سؤال مني) مسودة: "Here is a haiku about rain." أنهي status هتاخده قاعدة no-empty-refusal؟',['pass','violation','not_applicable','error'],2,'مفيش "i cannot / i will not / i refuse / unable to help"، فالـ applies_when فشل → not_applicable، والـ must ما اتقيّمش أصلًا.'],
+ ['(سؤال مني) any_of فيها [A, B, C]. A فشلت و B نجحت. إيه اللي يحصل لـ C؟',['بتتقيّم عادي','ما بتتقيّمش (short-circuit) والنتيجة pass','بتتقيّم ولو فشلت النتيجة violation','الـ engine يرفع ValueError'],1,'any_of بترجع أول ما تلاقي واحدة صح. نفس الفكرة في all_of بس مع أول فشل.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+AI.onTheme(()=>{if(!document.body.contains(tc))return false;lab1();drawLoop();lab3()});
+})();
+</script>

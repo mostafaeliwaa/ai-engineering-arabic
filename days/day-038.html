@@ -1,0 +1,713 @@
+<div class="day" id="d38-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 16 · Anomaly Detection</span>
+  <h1>اليوم ٣٨: اتعلّم الطبيعي، والغريب هيبان لوحده</h1>
+  <p class="lede">الـ fraud والأعطال والهجمات نادرة جدًا، ومعظم الوقت معندكش labels ليها أصلًا. النهاردة هتقلب المسألة: بدل ما تتعلم شكل «الغلط»، هتتعلم شكل <b>الطبيعي</b> وتعلّم على أي حاجة بعيدة عنه. هتشوف بعينك الـ Z-score بيتخدع إزاي، وتعزل نقطة بشجرة عشوائية خطوة بخطوة، وتقارن ٤ detectors على ٣ أنواع داتا، وبعدين تبني Isolation Forest من الصفر.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Time Series</b></span>
+    <span>بعده: <b>Imbalanced Data</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d38-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d38-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 37) اتعلمنا <b>Time Series</b>. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه الـ random split غلط مع الـ time series؟</summary>لأنه بيحط نقط من المستقبل في التدريب، فالموديل بيستخدم المستقبل عشان يتوقع الماضي والنتيجة بتطلع أحسن من الحقيقة. الصح walk-forward: درّب على الماضي واختبر على اللي بعده.</details>
+  <details><summary>٢. عملت <code>rolling(7).mean()</code> من غير <code>shift(1)</code>. إيه المشكلة؟</summary>الشباك عند t بيشمل القيمة عند t نفسها، اللي هي الـ target. ده leakage زمني. لازم <code>shift(1)</code> الأول.</details>
+  <details><summary>٣. لو عندك series لاستهلاك سيرفر، وعندك rolling mean وrolling std ليها. إزاي تستخدمهم عشان تقول «القيمة دي غريبة»؟</summary>احسب <span class="ltr">(x − rolling_mean) / rolling_std</span>. لو الرقم ده كبير (مثلًا أكبر من 3) يبقى القيمة بعيدة عن الطبيعي <b>في السياق بتاعها</b>. ده Z-score، وده أول detector هنشوفه النهاردة.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ Time Series</div>
+    <div><b>10 min</b>أنواع الـ anomalies وليه بنموذج الطبيعي</div>
+    <div><b>15 min</b>Z-score وIQR + المعمل ١</div>
+    <div><b>15 min</b>Isolation Forest وLOF + المعمل ٢ و٣</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d38-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الحاجة المهمة نادرة ومش ليها labels</h2></div>
+  <p>كارت فيزا اتستخدم في New York الساعة ٢، وبعد ٥ دقايق في Tokyo. حساس في مصنع بيقرا ١٥٠ درجة والطبيعي بين ٨٠ و١٢٠. سيرفر بيستقبل ٥٠ ألف request في الثانية والمتوسط ٢٠٠. دي كلها <b>anomalies</b>، ولقاها بيوفر فلوس كتير: الـ fraud بيكلف مليارات، والأعطال بتوقف الشغل، والاختراقات بتسرّب داتا.</p>
+  <p>المشكلة إن الـ fraud ممكن يبقى <span class="ltr">0.1%</span> بس من المعاملات، والأعطال بتحصل كام مرة في السنة. يعني الـ class بتاعة «غريب» تقريبًا فاضية، ومش هتعرف تدرّب classifier عادي. وحتى لو عندك شوية أمثلة، الـ fraud بتاع بكرة شكله مختلف عن بتاع النهاردة.</p>
+  <div class="note ai"><strong>الفكرة الأساسية:</strong> اقلب المسألة. اتعلّم <b>الطبيعي</b> شكله إيه، وأي حاجة بعيدة عنه تبقى مشكوك فيها. كده مش محتاج labels، وهتلقط أنواع جديدة عمرك ما شفتها، وتقدر تكبّر على داتا ضخمة. زي حارس العمارة: مش حافظ شكل كل الحرامية، بس حافظ السكان، فأي وش غريب بياخد باله منه.</div>
+
+  <h3>٣ أنواع من الـ anomalies</h3>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>يعني إيه</th><th>مثال</th><th>محتاج إيه</th></tr>
+    <tr><td><b>Point</b></td><td>نقطة واحدة غريبة مهما كان السياق</td><td>حرارة 500، أو عملية بـ 50,000$ من حساب بيصرف 50$</td><td>معظم الطرق العادية</td></tr>
+    <tr><td><b>Contextual</b></td><td>القيمة طبيعية في سياق وغريبة في سياق تاني</td><td>90 درجة فهرنهايت طبيعية في الصيف، غريبة في يناير</td><td>features للوقت أو المكان</td></tr>
+    <tr><td><b>Collective</b></td><td>كل نقطة لوحدها عادية، بس المجموعة مع بعض غريبة</td><td>٥ محاولات login فاشلة عادي، ٥٠ ورا بعض = brute-force</td><td>طرق بتفهم التسلسل (sliding windows)</td></tr>
+  </table></div>
+
+  <h3>٣ أوضاع حسب الـ labels اللي معاك</h3>
+  <ol class="ex">
+    <li><b>Fully unsupervised:</b> مفيش labels خالص. بتعمل fit على كل الداتا وبتتمنى إن الـ anomalies قليلة كفاية إنها متبوّظش صورة «الطبيعي».</li>
+    <li><b>Semi-supervised:</b> عندك داتا نضيفة طبيعية بس. تعمل fit عليها وتدّي score لأي حاجة جديدة. ده <b>أقوى وضع</b> لو تقدر توصله.</li>
+    <li><b>Weakly supervised:</b> عندك كام anomaly متعلّم عليهم. استخدمهم في <b>التقييم</b> مش التدريب: درّب unsupervised وقيس precision/recall عليهم.</li>
+  </ol>
+  <p>الفرق الجوهري عن الـ classification: إنت مش بتدوّر على حد فاصل بين class وclass، إنت بتنمذج <b>توزيع الداتا الطبيعية</b> نفسه.</p>
+
+  <h3>Supervised ولا Unsupervised؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Supervised (classifier)</th><th>Unsupervised (نموذج للطبيعي)</th></tr>
+    <tr><td>بيلقط إيه</td><td>الأنواع اللي شافها قبل كده بالظبط، بـ precision أعلى</td><td>أي انحراف عن الطبيعي، حتى الأنواع الجديدة</td></tr>
+    <tr><td>محتاج</td><td>أمثلة anomalies كفاية (غالبًا مش موجودة)</td><td>مش محتاج labels</td></tr>
+    <tr><td>نقطة ضعفه</td><td>بيفوّت الأنواع الجديدة تمامًا، ولازم يتدرّب تاني لما يظهر نوع جديد</td><td>false positives أكتر (مش كل غريب وحش)</td></tr>
+    <tr><td>مع تغير الداتا</td><td>أضعف</td><td>أكثر تحمّلًا للـ distribution shift</td></tr>
+  </table></div>
+  <p>في الواقع أحسن الأنظمة بتجمع التلاتة: unsupervised للتغطية الواسعة، وsupervised للأنواع المعروفة والمهمة، ومراجعة بشرية للحالات المحيّرة.</p>
+</section>
+
+<!-- STATION 2 -->
+<section id="d38-zscore">
+  <div class="station-head"><span class="tag">02</span><h2>Z-score وIQR: أبسط سور حوالين الطبيعي</h2></div>
+  <h3>Z-score</h3>
+  <p>احسب المتوسط والـ std لكل feature، واسأل: النقطة دي بعيدة كام std عن المتوسط؟ لو أكتر من threshold (الافتراضي 3) يبقى مشكوك فيها. ليه 3؟ لأن في التوزيع الـ Gaussian حوالي <span class="ltr">99.7%</span> من الداتا بتقع جوه ٣ std.</p>
+  <div class="formula">z = (x − mean) / std        anomaly لو |z| &gt; threshold</div>
+  <div class="tablewrap"><table>
+    <tr><th>مميزاته</th><th>عيوبه</th></tr>
+    <tr><td>بسيط وسريع، وسهل تشرحه: «القيمة دي بعيدة 4.5 std عن الطبيعي»</td><td>بيفترض إن الداتا Gaussian. بيبوظ مع الداتا اللي ليها أكتر من قمة (multimodal) أو الـ skewed. والأخطر: الـ outliers اللي في التدريب نفسه بتزق المتوسط وبتكبّر الـ std، فبتستخبى (اسمها <b>masking</b>)</td></tr>
+  </table></div>
+  <p><b>بيشتغل كويس في:</b> مراقبة feature واحدة شكلها جرس تقريبًا: زمن رد السيرفر، tolerances في التصنيع، حساسات baseline بتاعها ثابت. <b>بيفشل في:</b> مكتبين كل واحد ليه حرارة طبيعية مختلفة (multimodal)، مبالغ المعاملات (1000$ نادرة بس مش غريبة)، أو داتا تدريب فيها outliers.</p>
+
+  <h3>IQR</h3>
+  <p>بدل المتوسط والـ std، بنستخدم الـ percentiles. الـ <span class="ltr">Q1</span> هو الـ 25th percentile والـ <span class="ltr">Q3</span> هو الـ 75th، والفرق بينهم (IQR) هو عرض النص اللي في النص من الداتا.</p>
+  <div class="formula">IQR = Q3 − Q1     lower = Q1 − 1.5·IQR     upper = Q3 + 1.5·IQR</div>
+  <p>الـ percentiles مش بتتأثر بالقيم المتطرفة، فالـ IQR <b>robust</b>، وبيشتغل مع الداتا الـ skewed، ومفيهوش افتراض إن الداتا Gaussian. الـ factor 1.5 هو نفس «الشنبات» (whiskers) بتاعة الـ box plot. لو خليته 3 هيبقى أهدى: تنبيهات أقل وfalse positives أقل. الرقم الصح بيعتمد على قد إيه تستحمل إنذارات كدابة.</p>
+  <p><b>عيبه:</b> univariate، يعني بيبص على كل feature لوحدها. نقطة ممكن تكون عادية في كل feature منفردة، بس <b>الكومبينيشن</b> بتاعها غريب. الـ IQR مش هيشوفها.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الـ masking بعينك</h3>
+      <p>دي ٢٠٠ قراءة لزمن رد سيرفر (حوالي 100ms)، وفيهم ٥ anomalies حقيقية متعلّم عليهم بدايرة حمرا (قيم زي 150 و160 و50). الصف الأول بيوري الـ Z-score والتاني الـ IQR، واللي اتلوّن هو اللي اتعلّم عليه.</p>
+      <div class="note"><strong>جرب:</strong> شغّل «لوّث الداتا» عشان تضيف ١٥ قيمة ضخمة (300–420). بص على حدود الـ Z-score اتفتحت إزاي، والـ anomalies المتوسطة هربت. الـ IQR بالكاد اتحرك. وكمان دوس على الكانفاس عشان تضيف نقطة بنفسك.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d38-c1" width="520" height="250" aria-label="قراءات على خط مع حدود Z-score وIQR"></canvas>
+      <div class="mrow">
+        <label>Z threshold k = <span id="d38-kv">3</span><input type="range" id="d38-k" min="1" max="5" step="0.5" value="3"></label>
+        <label>IQR factor = <span id="d38-fv">1.5</span><input type="range" id="d38-f" min="0.5" max="3" step="0.5" value="1.5"></label>
+      </div>
+      <div class="btns">
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d38-cont"> لوّث الداتا (+15 قيمة ضخمة)</label>
+        <button type="button" id="d38-reset1">امسح نقطي</button>
+      </div>
+      <div class="readout">
+        <div><small>mean ± std</small><b id="d38-ms">-</b></div>
+        <div><small>Q1 / Q3</small><b id="d38-qq">-</b></div>
+        <div><small>Z: لقط من الـ ٥</small><b id="d38-zr">-</b></div>
+        <div><small>IQR: لقط من الـ ٥</small><b id="d38-ir">-</b></div>
+      </div>
+      <div class="verdict" id="d38-v1"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d38-iforest">
+  <div class="station-head"><span class="tag">03</span><h2>Isolation Forest: الغريب بيتعزل بسرعة</h2></div>
+  <p>الفكرة الذكية هنا: الـ anomalies <b>قليلة ومختلفة</b>. لو قسمت الداتا تقسيمات عشوائية، النقطة الغريبة هتلاقي نفسها لوحدها بعد قطعتين أو تلاتة، أما النقطة الطبيعية اللي في وسط الزحمة فمحتاجة قطعات كتير عشان تنفصل عن جيرانها.</p>
+  <p>تخيل لعبة «٢٠ سؤال» بأسئلة عشوائية: «الطول أكبر من كذا؟». لو بتدوّر على واحد طوله ٢٢٠ سم، سؤال واحد تقريبًا كفاية. لو بتدوّر على واحد طوله ١٧٥ زي نص الناس، هتسأل كتير.</p>
+  <h3>بيشتغل إزاي</h3>
+  <ol class="ex">
+    <li>ابني شجر عشوائي كتير (غابة).</li>
+    <li>في كل node: اختار feature عشوائي، وقيمة قطع عشوائية بين الـ min والـ max بتوع الـ feature ده.</li>
+    <li>كمّل تقطيع لحد ما كل نقطة تبقى لوحدها في leaf.</li>
+    <li>النقط الغريبة متوسط طول المسار (path length) بتاعها عبر كل الشجر <b>قصير</b>.</li>
+  </ol>
+  <p>الـ score بيتحسب من متوسط طول المسار، مقسوم على طول المسار المتوقع في binary search tree عشوائية فيها n نقطة:</p>
+  <div class="formula">score(x) = 2^( −E[h(x)] / c(n) )      c(n) = 2·H(n−1) − 2(n−1)/n ,  H(i) ≈ ln(i) + 0.5772</div>
+  <div class="tablewrap"><table>
+    <tr><th>الـ score</th><th>المعنى</th></tr>
+    <tr><td class="ltr">قريب من 1</td><td>anomaly (اتعزلت بسرعة جدًا)</td></tr>
+    <tr><td class="ltr">حوالي 0.5</td><td>طبيعي</td></tr>
+    <tr><td class="ltr">قريب من 0</td><td>طبيعي جدًا (في قلب cluster كثيف)</td></tr>
+  </table></div>
+  <p>الـ <code>c(n)</code> ده بيخلّي الـ scores ممكن تتقارن بين datasets بأحجام مختلفة. و<span class="ltr">0.5772</span> هو ثابت Euler، والتقريب ده هو نفسه اللي في الورقة الأصلية.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: اعزل نقطة بإيدك</h3>
+      <p>اختار نقطة بالضغط عليها، وبعدين «اعزلها بشجرة». كل خط هو قطعة عشوائية، والمنطقة اللي بتصغر هي المكان اللي النقطة لسه فيه. عدّ القطعات.</p>
+      <div class="note"><strong>قارن:</strong> جرّب نقطة من الحمرا اللي بعيد، وبعدين نقطة من نص الزحمة. شجرة واحدة بتبقى حظ، فدوس «200 شجرة» عشان تشوف المتوسط والـ score. وبعدين «لوّن الكل» عشان تشوف خريطة الـ scores.</div>
+      <p><b>الهايبر باراميترز المهمة:</b></p>
+      <ul class="checklist">
+        <li>• <code>n_estimators</code>: عدد الشجر. 100 غالبًا كفاية. أكتر = scores أثبت بس أبطأ.</li>
+        <li>• <code>max_samples</code>: كل شجرة بتشوف عينة صغيرة (256 في الورقة الأصلية). العينة الصغيرة بتخلّي كل شجرة أضعف بس الغابة أكثر تنوعًا، وهي سر سرعة الطريقة.</li>
+        <li>• <code>contamination</code>: النسبة المتوقعة للـ anomalies. بتستخدم بس عشان تحدد الـ threshold، ومش بتغيّر الـ scores نفسها.</li>
+      </ul>
+    </div>
+    <div class="instrument">
+      <canvas id="d38-c2" width="520" height="420" aria-label="نقط ثنائية الأبعاد وتقطيع عشوائي لعزل نقطة"></canvas>
+      <div class="btns">
+        <button type="button" class="primary" id="d38-iso1">اعزلها بشجرة</button>
+        <button type="button" id="d38-iso200">200 شجرة</button>
+        <button type="button" id="d38-isoAll">لوّن الكل بالـ score</button>
+        <button type="button" id="d38-isoClr">امسح</button>
+      </div>
+      <div class="readout">
+        <div><small>قطعات الشجرة دي</small><b id="d38-cuts">-</b></div>
+        <div><small>متوسط المسار E[h]</small><b id="d38-eh">-</b></div>
+        <div><small>c(n)</small><b id="d38-cn">-</b></div>
+        <div><small>score</small><b id="d38-sc">-</b></div>
+      </div>
+      <div class="verdict" id="d38-v2">اختار نقطة الأول</div>
+    </div>
+  </div>
+  <p><b>مميزاته:</b> مفيش افتراضات عن التوزيع، بيشتغل في أبعاد كتير، سريع (sublinear في حجم الداتا لأن كل شجرة بتاخد subsample)، وبيتعامل مع أنواع features مختلفة. <b>عيوبه:</b> بيتلخبط لو الـ anomalies متجمعة في منطقة كثيفة (masking)، والتقطيع العشوائي بيضعف لو features كتير مالهاش لازمة.</p>
+</section>
+
+<!-- STATION 4 -->
+<section id="d38-lof">
+  <div class="station-head"><span class="tag">04</span><h2>LOF: غريب بالنسبة لجيرانه</h2></div>
+  <p>الـ Local Outlier Factor بيقارن <b>كثافة</b> المكان حوالين النقطة بكثافة الأماكن حوالين جيرانها. نقطة في منطقة فاضية وجيرانها في مناطق زحمة = غريبة.</p>
+  <ol class="ex">
+    <li>لكل نقطة، هات أقرب k جيران.</li>
+    <li>احسب الـ local reachability density: قد إيه الجيرة دي زحمة.</li>
+    <li>قارن كثافة النقطة بكثافة جيرانها.</li>
+    <li>لو كثافتها أقل بكتير من جيرانها، تبقى outlier.</li>
+  </ol>
+  <div class="tablewrap"><table>
+    <tr><th>LOF</th><th>المعنى</th></tr>
+    <tr><td class="ltr">≈ 1.0</td><td>نفس كثافة جيرانها: طبيعية</td></tr>
+    <tr><td class="ltr">&gt; 1.0</td><td>أقل كثافة من جيرانها: ممكن تبقى غريبة</td></tr>
+    <tr><td class="ltr">≥ 2.0 تقريبًا</td><td>أقل بكتير: غالبًا anomaly</td></tr>
+  </table></div>
+  <p>كلمة <b>Local</b> هي السر. تخيل cluster كثيف فيه 1000 نقطة وcluster متفرّق فيه 50. نقطة على طرف الـ cluster المتفرّق مش غريبة على مستوى الداتا كلها (عندها 50 جار)، بس ممكن تبقى غريبة <b>محليًا</b> لو جيرانها المباشرين أزحم منها. والعكس: نقطة قريبة من الـ cluster الكثيف بمسافة صغيرة ممكن تبان «قريبة» بالمسافة المطلقة، بس بالنسبة لجيرانها هي في الفاضي. الطرق الـ global مش بتشوف ده.</p>
+  <p><b>مميزاته:</b> بيلقط الـ local anomalies، وبيشتغل مع clusters كثافتها مختلفة. <b>عيوبه:</b> بطيء على الداتا الكبيرة (<span class="ltr">O(n²)</span> في الـ implementation البسيط)، حساس لاختيار k، وبيضعف في الأبعاد الكتير لأن المسافات بتفقد معناها (curse of dimensionality).</p>
+
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>افتراضات</th><th>السرعة</th><th>أبعاد كتير</th><th>local anomalies</th></tr>
+    <tr><td>Z-score</td><td>توزيع Gaussian</td><td>سريع جدًا</td><td>أيوه (لكل feature)</td><td>لأ</td></tr>
+    <tr><td>IQR</td><td>مفيش (لكل feature)</td><td>سريع جدًا</td><td>أيوه (لكل feature)</td><td>لأ</td></tr>
+    <tr><td>Isolation Forest</td><td>مفيش</td><td>سريع</td><td>أيوه</td><td>جزئيًا</td></tr>
+    <tr><td>LOF</td><td>المسافة ليها معنى</td><td>بطيء</td><td>ضعيف</td><td>أيوه</td></tr>
+  </table></div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: ٤ detectors على ٣ أنواع داتا</h3>
+      <p>اختار الداتا والطريقة. كل طريقة بتدّي score لكل نقطة، وإحنا بنعلّم على أعلى <b>k</b> نقطة (k = عدد الـ anomalies الحقيقية، فالـ precision هنا هي نفسها Precision@k). الدواير الحمرا هي الـ anomalies الحقيقية، والمليانة برتقاني هي اللي الطريقة علّمت عليها.</p>
+      <div class="note"><strong>اللي المفروض تلاحظه:</strong> في «cluster واحد» الكل كويس. في «٣ clusters» الـ Z-score والـ IQR بيقعوا لأن النقط اللي بين الـ clusters عادية لكل feature لوحدها. وفي «كثافات مختلفة» الـ LOF بيكسب لأنه بيلقط النقط اللي جنب الـ cluster الكثيف. غيّر k بتاع LOF وشوف الحساسية.</div>
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">الداتا:
+        <select id="d38-scn"><option value="single">cluster واحد + outliers</option><option value="multi">٣ clusters (multimodal)</option><option value="local">كثافات مختلفة (local)</option></select></label>
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">الطريقة:
+        <select id="d38-meth"><option value="z">Z-score</option><option value="iqr">IQR</option><option value="if" selected>Isolation Forest</option><option value="lof">LOF</option></select></label>
+      <label style="display:grid;gap:2px">LOF k = <b class="mono" id="d38-lkv">20</b><input type="range" id="d38-lk" min="3" max="60" step="1" value="20"></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d38-c3" width="520" height="420" aria-label="مقارنة طرق كشف الشواذ على داتا ثنائية الأبعاد"></canvas>
+      <div class="readout">
+        <div><small>anomalies حقيقية</small><b id="d38-na">-</b></div>
+        <div><small>Precision@k</small><b id="d38-pk">-</b></div>
+        <div><small>Recall@k</small><b id="d38-rk">-</b></div>
+      </div>
+      <small style="color:var(--muted)">Precision@k لكل الطرق على نفس الداتا:</small>
+      <ul class="rank-list" id="d38-allm"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d38-eval">
+  <div class="station-head"><span class="tag">05</span><h2>التقييم والـ Pipeline والـ Production</h2></div>
+  <h3>ليه التقييم صعب؟</h3>
+  <ul class="checklist">
+    <li>• <b>Imbalance شديد:</b> مع <span class="ltr">0.1%</span> anomalies، لو قلت «طبيعي» لكل حاجة هتاخد <span class="ltr">99.9%</span> accuracy. الـ accuracy ملهاش لازمة هنا (ده موضوع بكرة بالتفصيل).</li>
+    <li>• <b>الـ AUROC ممكن يضحك عليك:</b> مع imbalance كبير ممكن يبان حلو وإنت فعليًا بتفوّت معظم الـ anomalies عند أي threshold عملي.</li>
+    <li>• <b>المقاييس الأحسن:</b> <b>Precision@k</b> (من أعلى k نقطة علّمت عليهم، كام واحد حقيقي؟)، و<b>AUPRC</b> (المساحة تحت منحنى precision-recall)، و<b>recall عند false positive rate ثابت</b>.</li>
+  </ul>
+  <p>Precision@k منطقي جدًا في الشغل الحقيقي: عندك فريق يقدر يراجع ٥٠ حالة في اليوم، يبقى السؤال «من الـ ٥٠ اللي هبعتهم، كام واحد يستاهل؟».</p>
+
+  <h3>الـ Pipeline في الواقع (٧ خطوات)</h3>
+  <ol class="ex">
+    <li><b>Baseline:</b> هات فترة متأكد إن مفيهاش (أو فيها قليل جدًا) anomalies.</li>
+    <li><b>Feature engineering:</b> الـ features الخام + مشتقات (rolling statistics، features للوقت، نسب).</li>
+    <li><b>درّب الـ detector</b> على الـ baseline: هو كده اتعلم «الطبيعي».</li>
+    <li><b>Score</b> لكل داتا جديدة.</li>
+    <li><b>اختيار الـ threshold:</b> ده قرار <b>بيزنس</b>: threshold أعلى = إنذارات كدابة أقل بس هتفوّت أكتر.</li>
+    <li><b>Alert وتحقيق:</b> اللي اتعلّم عليه يروح لمراجعة بشرية أو رد فعل أوتوماتيك.</li>
+    <li><b>Feedback:</b> سجّل كل تنبيه طلع حقيقي ولا كداب، واستخدم ده تقيّم بيه الـ detector وتظبط الـ threshold مع الوقت.</li>
+  </ol>
+  <p>الـ pipeline ده عمره ما «بيخلص». التوزيع بيتغير، وأنواع جديدة بتظهر، والـ threshold محتاج يتظبط. اعتبره نظام عايش مش موديل بتدرّبه مرة وتنساه.</p>
+
+  <h3>sklearn والـ contamination</h3>
+  <p>الـ <code>contamination</code> في sklearn بيحدد الـ threshold اللي بيحوّل الـ score لـ «غريب/طبيعي»، <b>ومش بيغيّر الـ scores نفسها</b>. موديل بـ 0.05 وموديل بـ 0.10 ليهم نفس الـ scores، الأول بيعلّم على أعلى 5% والتاني على أعلى 10%. لو مش عارف النسبة الحقيقية (وده الغالب)، خليه <code>"auto"</code> واشتغل على الـ scores الخام، وحط الـ threshold بنفسك حسب تكلفة الغلط.</p>
+  <h3>أدوات تانية لازم تعرفها</h3>
+  <ul class="checklist">
+    <li>• <b>One-Class SVM:</b> بيرسم حدود حوالين الداتا الطبيعية في فضاء أبعاده عالية (بالـ kernel trick، زي Day 27). الـ <code>nu</code> تقريبًا نسبة الـ anomalies. كويس في الداتا الصغيرة والمتوسطة، بس مش بيكبر لأن الـ kernel matrix بتكبر تربيعيًا.</li>
+    <li>• <b>Autoencoder (هنشوفه في Phase 3):</b> شبكة بتضغط الداتا وترجّعها. درّبها على الطبيعي بس، فالحاجة الغريبة هيبقى الـ reconstruction error بتاعها عالي. نفس المبدأ: نمذج الطبيعي وعلّم على اللي بيبعد.</li>
+    <li>• <b>Ensemble:</b> شغّل كذا detector، حوّل كل scores لـ [0,1]، خد المتوسط، وعلّم على اللي فوق الـ threshold. كل طريقة ليها نقطة ضعف مختلفة، فلو التلاتة أو الأربعة متفقين، غالبًا الحالة حقيقية. ونسخة أذكى بتدّي وزن لكل detector حسب قد إيه هو موثوق على validation set فيه anomalies معروفة.</li>
+  </ul>
+  <h3>اختيار الـ threshold قرار بيزنس</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>تكلفة التفويت (FN)</th><th>تكلفة الإنذار الكداب (FP)</th><th>القرار</th></tr>
+    <tr><td>Fraud</td><td>chargebacks وثقة العميل</td><td>٥ دقايق من وقت analyst</td><td>threshold واطي: الْقُط أكتر واستحمل إنذارات</td></tr>
+    <tr><td>صيانة معدات</td><td>تصليح بـ 500,000$</td><td>إيقاف بـ 50,000$ على الفاضي</td><td>وازن بين التكلفتين</td></tr>
+  </table></div>
+  <p>ارسم precision وrecall عند thresholds مختلفة، وحط فوقهم دالة التكلفة، واختار النقطة اللي فيها التكلفة أقل.</p>
+  <h3>نصايح الـ Production</h3>
+  <ol class="ex">
+    <li><b>Threshold drift:</b> الـ threshold الثابت بيقدم مع تغير الداتا. راقب توزيع الـ scores وظبطه كل فترة.</li>
+    <li><b>Alert fatigue:</b> إنذارات كدابة كتير = الناس هتبطل تبص. ابدأ بـ threshold عالي (تنبيهات قليلة وموثوقة) ونزّله لما الثقة تزيد.</li>
+    <li><b>Ensemble:</b> علّم على النقطة بس لو كذا طريقة متفقة، وده بيقلل الـ false positives جامد.</li>
+    <li><b>Feature engineering:</b> الـ features الكويسة أهم من اختيار الـ detector: rolling stats، نسب، الوقت من آخر حدث، features من الـ domain.</li>
+    <li><b>Feedback loop:</b> كل مراجعة بشرية بتديك label. جمّعهم مع الوقت وقيّم وحسّن بيهم.</li>
+    <li><b>Batch training, online scoring:</b> درّب كل يوم أو أسبوع على الداتا الطبيعية الأخيرة، وادّي score لكل حاجة جديدة أول ما توصل.</li>
+    <li><b>الـ features لازم تتحسب بنفس الطريقة:</b> لو دربت بـ rolling stats على 30 يوم، لازم تحتفظ بـ 30 يوم history عشان تحسب features للنقطة الجديدة.</li>
+    <li><b>راقب توزيع الـ scores:</b> لو الـ median بتاع الـ score بيطلع، يا الداتا بتتغير يا الموديل قدم.</li>
+    <li><b>اشرح التنبيه:</b> Z-score: «Feature X أعلى من الطبيعي بـ 4.2 std». Isolation Forest: «النقطة دي اتعزلت في 3.1 قطعة في المتوسط، والطبيعي 8.5».</li>
+  </ol>
+</section>
+
+<!-- CODE -->
+<section id="d38-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: Z-score وIQR وIsolation Forest من الصفر</h2></div>
+  <p>من جوه فولدر الريبو (لو محتاج: <code>pip install numpy scikit-learn</code>):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/16-anomaly-detection/code/anomaly_detection.py</pre></div>
+  <p><b>القاعدة:</b> اكتب بنفسك في <code>my_anomaly.py</code>، وارجع للأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: Z-score detector</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def zscore_detect(X, threshold=3.0):
+    mean = X.mean(axis=0)
+    std = X.std(axis=0)
+    std[std == 0] = 1.0                 <span class="c"># feature ثابت؟ متقسمش على صفر</span>
+    z = np.abs((X - mean) / std)
+    scores = z.max(axis=1)              <span class="c"># أسوأ feature في كل نقطة</span>
+    labels = scores &gt; threshold
+    return labels, scores</pre></div>
+  <p>النقطة بتتعلّم لو <b>أي</b> feature فيها عدّى الـ threshold. والـ score هو أكبر |z| فيها، وده اللي بنرتّب بيه في Precision@k.</p>
+
+  <h3>خطوة ٢: IQR detector</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def iqr_detect(X, factor=1.5):
+    q1 = np.percentile(X, 25, axis=0)
+    q3 = np.percentile(X, 75, axis=0)
+    iqr = q3 - q1
+    iqr[iqr == 0] = 1.0
+    lower = q1 - factor * iqr
+    upper = q3 + factor * iqr
+    below = (X - lower) / iqr           <span class="c"># سالب لو تحت الحد</span>
+    above = (X - upper) / iqr           <span class="c"># موجب لو فوق الحد</span>
+    <span class="c"># الـ score = بعدت قد إيه برّه السور (بوحدات IQR)، وصفر لو جوه</span>
+    scores = np.maximum(-np.minimum(below, 0), np.maximum(above, 0)).max(axis=1)
+    labels = ((X &lt; lower) | (X &gt; upper)).any(axis=1)
+    return labels, scores</pre></div>
+
+  <h3>خطوة ٣: c(n) وشجرة العزل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _c_factor(n):
+    <span class="c"># طول المسار المتوقع في BST عشوائية فيها n نقطة</span>
+    if n &lt;= 1:
+        return 0.0
+    if n == 2:
+        return 1.0
+    h = np.log(n - 1) + 0.5772156649    <span class="c"># H(n-1) تقريبًا</span>
+    return 2.0 * h - (2.0 * (n - 1.0) / n)
+
+
+class IsolationTree:
+    def __init__(self, max_depth=10, rng=None):
+        self.max_depth = max_depth
+        self.rng = rng if rng is not None else np.random.RandomState()
+        self.is_leaf = False
+        self.size = 0
+        self.feature = None
+        self.threshold = None
+        self.left = None
+        self.right = None
+
+    def fit(self, X, depth=0):
+        n, p = X.shape
+        if depth &gt;= self.max_depth or n &lt;= 1:     <span class="c"># وصلنا للعمق أو النقطة لوحدها</span>
+            self.is_leaf = True
+            self.size = n
+            return self
+        self.feature = self.rng.randint(p)          <span class="c"># feature عشوائي</span>
+        x_col = X[:, self.feature]
+        x_min = x_col.min()
+        x_max = x_col.max()
+        if x_min == x_max:                          <span class="c"># مفيش حاجة تتقطع</span>
+            self.is_leaf = True
+            self.size = n
+            return self
+        self.is_leaf = False
+        self.threshold = self.rng.uniform(x_min, x_max)   <span class="c"># قطعة عشوائية</span>
+        left_mask = x_col &lt; self.threshold
+        right_mask = ~left_mask
+        self.left = IsolationTree(self.max_depth, self.rng)
+        self.left.fit(X[left_mask], depth + 1)
+        self.right = IsolationTree(self.max_depth, self.rng)
+        self.right.fit(X[right_mask], depth + 1)
+        return self
+
+    def path_length(self, x, depth=0):
+        if self.is_leaf:
+            <span class="c"># الـ leaf فيها size نقطة لسه متعزلتش: زوّد طول الشجرة المتوقع ليهم</span>
+            return depth + _c_factor(self.size)
+        if x[self.feature] &lt; self.threshold:
+            return self.left.path_length(x, depth + 1)
+        else:
+            return self.right.path_length(x, depth + 1)</pre></div>
+  <p>ليه بنزوّد <code>_c_factor(self.size)</code> في الـ leaf؟ لأننا بنوقف عند <code>max_depth</code> قبل العزل الكامل عشان السرعة، فبنقدّر «لو كمّلنا، كان هياخد كام قطعة كمان».</p>
+
+  <h3>خطوة ٤: الغابة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class IsolationForest:
+    def __init__(self, n_estimators=100, max_samples=256, seed=42):
+        self.n_estimators = n_estimators
+        self.max_samples = max_samples
+        self.seed = seed
+        self.trees = []
+        self.n_train = 0
+
+    def fit(self, X):
+        self.n_train = X.shape[0]
+        rng = np.random.RandomState(self.seed)
+        self.trees = []
+        sample_size = min(self.max_samples, X.shape[0])
+        max_depth = int(np.ceil(np.log2(sample_size)))     <span class="c"># عمق شجرة متوازنة تقريبًا</span>
+        for _ in range(self.n_estimators):
+            idx = rng.choice(X.shape[0], size=sample_size, replace=False)   <span class="c"># subsample</span>
+            tree_rng = np.random.RandomState(rng.randint(0, 2**31))
+            tree = IsolationTree(max_depth=max_depth, rng=tree_rng)
+            tree.fit(X[idx])
+            self.trees.append(tree)
+        return self
+
+    def anomaly_score(self, X):
+        n = X.shape[0]
+        avg_path = np.zeros(n)
+        for tree in self.trees:
+            for i in range(n):
+                avg_path[i] += tree.path_length(X[i])
+        avg_path /= self.n_estimators                      <span class="c"># E[h(x)]</span>
+        sample_size = min(self.max_samples, self.n_train)
+        c = _c_factor(sample_size)
+        scores = 2.0 ** (-avg_path / c) if c &gt; 0 else np.zeros(n)
+        return scores
+
+    def predict(self, X, threshold=0.5):
+        scores = self.anomaly_score(X)
+        return scores &gt; threshold, scores</pre></div>
+
+  <h3>خطوة ٥: المقاييس</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def precision_recall(y_true, y_pred):
+    tp = np.sum((y_true == 1) &amp; (y_pred == 1))
+    fp = np.sum((y_true == 0) &amp; (y_pred == 1))
+    fn = np.sum((y_true == 1) &amp; (y_pred == 0))
+    precision = tp / (tp + fp) if (tp + fp) &gt; 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) &gt; 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) &gt; 0 else 0.0
+    return precision, recall, f1
+
+
+def precision_at_k(y_true, scores, k):
+    top_k_idx = np.argsort(scores)[-k:]       <span class="c"># أعلى k score</span>
+    return np.mean(y_true[top_k_idx] == 1)</pre></div>
+
+  <h3>خطوة ٦: الداتا والـ demos</h3>
+  <p>الملف فيه <code>make_anomaly_data</code> (cluster Gaussian واحد فيه 500 نقطة + 25 anomaly بعيدين عن المركز بأكتر من 3) و<code>make_multimodal_data</code> (٣ clusters كل واحد 200 + 20 anomaly عشوائيين). وبعدين ٥ demos: جدول Z-score لـ thresholds من 2 لـ 4، جدول IQR لـ factors من 1 لـ 3، إحصائيات الـ scores للـ Isolation Forest، مقارنة الطرق بـ Precision@k، والـ multimodal.</p>
+  <details><summary>المفروض تشوف إيه؟</summary>
+    <p>أنا ما شغلتش الملف هنا، فمش هكتبلك أرقام مخترعة. اللي تتوقعه من منطق الكود:</p>
+    <ul class="checklist">
+      <li>• في جدول الـ Z-score: كل ما الـ threshold يعلى، عدد الـ Flagged يقل، والـ precision غالبًا تطلع والـ recall تنزل.</li>
+      <li>• في الـ Isolation Forest: متوسط الـ score للـ anomalies أعلى بوضوح من متوسط النقط الطبيعية.</li>
+      <li>• في الـ multimodal: الكود نفسه بيطبع إن الـ Z-score بيتعب لأن النقط اللي بين الـ clusters شكلها عادي لكل feature لوحدها، وإن الـ Isolation Forest بيتعامل مع الـ clusters المتعددة طبيعي. قارن عمود الـ P@k بنفسك.</li>
+    </ul>
+  </details>
+
+  <h3>خطوة ٧: نفس الكلام بـ sklearn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.ensemble import IsolationForest
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.svm import OneClassSVM
+
+iso = IsolationForest(n_estimators=100, contamination=0.05, random_state=42)
+iso.fit(X_train)
+predictions = iso.predict(X_test)          <span class="c"># 1 = طبيعي، -1 = anomaly</span>
+
+<span class="c"># novelty=True عشان تقدر تعمل predict على داتا جديدة</span>
+lof = LocalOutlierFactor(n_neighbors=20, contamination=0.05, novelty=True)
+lof.fit(X_train)
+predictions = lof.predict(X_test)
+
+oc_svm = OneClassSVM(kernel="rbf", gamma="auto", nu=0.05)
+oc_svm.fit(X_train)
+predictions = oc_svm.predict(X_test)</pre></div>
+  <p>خد بالك: الـ <code>predict</code> في sklearn بيرجّع <code>1</code> للطبيعي و<code>-1</code> للـ anomaly، مش 0 و1. ولو عايز scores استخدم <code>score_samples</code> أو <code>decision_function</code>.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d38-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>اعمل ٣ على الأقل. الباقي كمّله بكرة.</p>
+  <ol class="ex">
+    <li><b>ضبط الـ threshold:</b> شغّل الـ Z-score بـ thresholds من 1.0 لـ 5.0 بخطوة 0.5، وارسم الـ precision والـ recall عند كل واحد. فين النقطة الحلوة؟
+      <details><summary>تلميح</summary><code>np.arange(1.0, 5.01, 0.5)</code> وجوه الـ loop نادي <code>zscore_detect</code> و<code>precision_recall</code>. ارسم الاتنين على نفس الرسمة بـ matplotlib. غالبًا الـ F1 أعلى حاجة في النص، مش في الأطراف. جرّب نفس الفكرة بالـ slider في المعمل ١.</details></li>
+    <li><b>Multivariate anomalies:</b> اعمل داتا 2D كل feature فيها لوحدها شكلها طبيعي، بس الكومبينيشن غريب (نقط بعيدة عن قطر الـ cluster). وريني إن الـ Z-score لكل feature بيفوّتها والـ Isolation Forest بيلقطها.
+      <details><summary>تلميح</summary>اعمل cluster مايل: <code>x = randn(500); y = x + 0.2*randn(500)</code>. الـ anomalies: نقط زي <span class="ltr">(1.5, −1.5)</span> و<span class="ltr">(−1.5, 1.5)</span>. كل قيمة فيهم جوه ±2 std لكل feature، فالـ Z-score مش هيشوفهم، بس هما في منطقة فاضية فالـ IF بيعزلهم بسرعة.</details></li>
+    <li><b>LOF من الصفر:</b> اعمله بالـ k-nearest neighbors وقارنه بـ <code>LocalOutlierFactor</code> بتاع sklearn على نفس الداتا. جرّب <span class="ltr">k=10</span> و<span class="ltr">k=50</span>.
+      <details><summary>تلميح</summary>(١) <code>k_dist[o]</code> = المسافة لأبعد جار من الـ k. (٢) <span class="ltr">reach(p,o) = max(k_dist[o], d(p,o))</span>. (٣) <span class="ltr">lrd(p) = 1 / mean(reach(p,o))</span>. (٤) <span class="ltr">LOF(p) = mean(lrd(o)) / lrd(p)</span>. الـ k الصغير حساس للنويز، والكبير بيخلّي الـ LOF «global» أكتر وممكن يبلع cluster صغير كله. المعمل ٣ فيه نفس الحساب بالـ JavaScript.</details></li>
+    <li><b>Streaming Z-score:</b> خلّي الـ Z-score يشتغل على stream: حدّث الـ mean والـ variance مع كل نقطة جديدة (Welford's algorithm). قارنه بالـ batch على نفس الداتا.
+      <details><summary>تلميح</summary><code>n += 1; d = x - mean; mean += d / n; M2 += d * (x - mean); var = M2 / n</code>. احسب الـ z للنقطة <b>قبل</b> ما تحدّث بيها الإحصائيات، وإلا النقطة الغريبة هتشد الـ mean ناحيتها. في الآخر الـ mean والـ var لازم يطلعوا زي الـ batch بالظبط تقريبًا.</details></li>
+    <li><b>تقييم على داتا حقيقية:</b> خد dataset فيها anomalies معروفة (زي credit card fraud من Kaggle). قيّم الأربع طرق بـ precision@100 وprecision@500 وAUPRC. مين أحسن؟ وليه؟
+      <details><summary>تلميح</summary>الـ AUPRC من <code>sklearn.metrics.average_precision_score(y, scores)</code>. ادرّب على المعاملات الطبيعية بس لو تقدر (semi-supervised). خد بالك إن scores الـ sklearn علامتها معكوسة (الأعلى = أطبع)، فاضرب في −1 قبل ما ترتّب.</details></li>
+    <li><b>إضافة مني · مراقبة agent في الـ production:</b> عندك log لكل request لـ LLM agent فيه: <code>latency_ms</code>، <code>input_tokens</code>، <code>output_tokens</code>، <code>tool_calls</code>، <code>cost_usd</code>. اعمل داتا صناعية لـ 2000 request طبيعي، وحط فيها ٣ أنواع مشاكل: (أ) loop في الـ tools (عدد tool_calls ضخم)، (ب) prompt injection طلّع output tokens كتير جدًا، (ج) request عادي في كل حاجة بس الـ cost لكل token غلط (موديل غالي اتنادى بالغلط). شغّل IQR وIsolation Forest، وقول مين لقط إيه.
+      <details><summary>تلميح</summary>(أ) و(ب) point anomalies واضحة، فالاتنين هيلقطوهم. (ج) أصعب: كل feature لوحدها ممكن تبقى عادية، بس النسبة <span class="ltr">cost / (input+output tokens)</span> غريبة. ضيف النسبة دي كـ feature وشوف الفرق. ده بالظبط معنى «الـ features أهم من الـ detector».</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d38-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس مقالوش صريح</h2></div>
+  <h3>الحدس في جملة</h3>
+  <p>كل detector عبارة عن طريقة مختلفة لتعريف «بعيد». الـ Z-score: بعيد عن المتوسط. الـ IQR: برّه النص الأوسطاني. الـ Isolation Forest: سهل تعزله. الـ LOF: أقل زحمة من جيرانه. اختار التعريف اللي يناسب شكل الطبيعي في داتاك.</p>
+  <h3>أخطاء بتحصل كتير</h3>
+  <ul class="checklist">
+    <li>• <b>Scaling:</b> الـ LOF وأي طريقة بالمسافات بتتلخبط لو feature بالآلاف وfeature بالكسور. اعمل scaling الأول (Day 30). الـ Isolation Forest أقل حساسية لده لأنه بيقطع كل feature لوحدها.</li>
+    <li>• <b>تدريب على داتا ملوّثة:</b> لو الـ baseline فيه anomalies كتير، «الطبيعي» نفسه هيتعلّم غلط (شفته في المعمل ١).</li>
+    <li>• <b>الـ <code>contamination</code> كأنه حقيقة:</b> هو رقم إنت اخترعته عشان تحط threshold. لو غلط، هتعلّم على نسبة غلط مهما كان الموديل كويس.</li>
+    <li>• <b>علامة الـ score:</b> في sklearn الـ <code>score_samples</code> الأعلى معناه <b>أطبع</b>. ناس كتير بترتّب بالعكس.</li>
+    <li>• <b>تنسى الـ context:</b> 90 درجة في يناير. لو مدّيتش الموديل الشهر أو الساعة، مش هيعرف إنها contextual anomaly.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li>• <b>مراقبة الـ agents:</b> latency وتكلفة وعدد tool calls لكل request: نفس الـ pipeline بالظبط (baseline، score، threshold، feedback).</li>
+    <li>• <b>Out-of-distribution inputs:</b> ممكن تحسب embedding لكل سؤال جاي للـ RAG وتقيس بُعده عن الأسئلة اللي النظام اتعمل عشانها. سؤال بعيد جدًا = غالبًا النظام مش هيعرف يجاوبه كويس، فممكن توجهه لمسار تاني.</li>
+    <li>• <b>تنضيف داتا التدريب:</b> قبل الـ fine-tuning بتدوّر على أمثلة غريبة (طولها شاذ، لغة مختلفة، تكرار) بنفس الأفكار دي.</li>
+    <li>• <b>Collective anomalies في الـ agents:</b> agent بينادي نفس الـ tool ٢٠ مرة ورا بعض: كل call لوحده عادي، بس السلسلة كلها loop.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d38-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d38-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d38-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح ليه بننمذج الطبيعي بدل ما نعمل classifier للـ anomalies</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> أفرّق بين point وcontextual وcollective، وبين الـ unsupervised والـ semi والـ weakly supervised</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> شفت الـ masking في المعمل ١ وفاهم ليه الـ IQR أثبت</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> عزلت نقطة بإيدي وفاهم الـ score <span class="ltr">2^(−E[h]/c(n))</span></label></li>
+    <li><label><input type="checkbox" data-ck="c5"> فاهم الـ LOF ولقيت السيناريو اللي بيكسب فيه</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> كتبت zscore_detect وiqr_detect وIsolationForest بإيدي وشغّلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c8" id="d38-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Z-score / IQR</td><td>alerts على المتركس، dashboards المراقبة، تنضيف الداتا</td></tr>
+    <tr><td>Isolation Forest</td><td>كشف الـ fraud، أمن الشبكات، الداتا الكبيرة متعددة الأبعاد</td></tr>
+    <tr><td>LOF</td><td>داتا فيها clusters كثافتها مختلفة، اكتشاف حالات محلية غريبة</td></tr>
+    <tr><td>Precision@k / AUPRC</td><td>تقييم أي نظام بيرتّب حالات لمراجعة بشرية</td></tr>
+    <tr><td>Threshold كقرار بيزنس</td><td>موازنة الإنذارات الكدابة مع التفويت، alert fatigue</td></tr>
+    <tr><td>نمذجة الطبيعي</td><td>autoencoders، كشف الـ OOD في الـ RAG، مراقبة الـ agents</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Handling Imbalanced Data. لما يبقى عندك labels فعلًا بس الـ class المهمة نادرة: ليه الـ accuracy كدابة، والـ SMOTE، والـ class weights، وضبط الـ threshold. وهنبدأ بتسخين ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F16-anomaly-detection" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/16-anomaly-detection</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d38-root');
+
+const rm=$('d38-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===16)s.className='now';rm.appendChild(s)}
+
+function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const mean=a=>a.reduce((s,v)=>s+v,0)/a.length;
+const std=a=>{const m=mean(a);return Math.sqrt(a.reduce((s,v)=>s+(v-m)**2,0)/a.length)};
+function pct(a,p){const s=a.slice().sort((x,y)=>x-y),i=(s.length-1)*p/100,lo=Math.floor(i),hi=Math.ceil(i);return s[lo]+(s[hi]-s[lo])*(i-lo)}
+function cfac(n){if(n<=1)return 0;if(n===2)return 1;return 2*(Math.log(n-1)+0.5772156649)-2*(n-1)/n}
+
+// ================= Lab 1: Z vs IQR masking =================
+const c1=$('d38-c1'),x1=AI.setupCanvas(c1),W1=+c1.dataset.w,H1=+c1.dataset.h;
+const r1=rng(38);
+const base=[];for(let i=0;i<200;i++)base.push({v:100+10*gauss(r1),a:0,j:r1()});
+[150,158,165,52,46].forEach(v=>base.push({v,a:1,j:r1()}));
+const contam=[];for(let i=0;i<15;i++)contam.push({v:300+120*r1(),a:2,j:r1()});
+let mine=[];
+const X0=0,X1=450,px=v=>20+(Math.min(X1,Math.max(X0,v))-X0)/(X1-X0)*(W1-40);
+function draw1(){
+  const k=+$('d38-k').value,fa=+$('d38-f').value;
+  $('d38-kv').textContent=k;$('d38-fv').textContent=fa;
+  const pts=base.concat($('d38-cont').checked?contam:[],mine),vals=pts.map(p=>p.v);
+  const m=mean(vals),s=std(vals)||1,q1=pct(vals,25),q3=pct(vals,75),iq=(q3-q1)||1;
+  const zl=m-k*s,zh=m+k*s,il=q1-fa*iq,ih=q3+fa*iq;
+  x1.clearRect(0,0,W1,H1);
+  const lanes=[[25,95,'Z-score',zl,zh,css('--vec-a')],[120,190,'IQR',il,ih,css('--vec-b')]];
+  let caught=[0,0];
+  lanes.forEach(([y0,y1,name,lo,hi,col],li)=>{
+    x1.fillStyle=css('--soft');x1.fillRect(px(lo),y0,Math.max(1,px(hi)-px(lo)),y1-y0);
+    x1.strokeStyle=col;x1.lineWidth=2;x1.setLineDash([5,4]);
+    [lo,hi].forEach(b=>{if(b>=X0&&b<=X1){x1.beginPath();x1.moveTo(px(b),y0-6);x1.lineTo(px(b),y1+6);x1.stroke()}});x1.setLineDash([]);
+    x1.fillStyle=css('--ink');x1.font='12px JetBrains Mono, monospace';x1.textAlign='left';x1.fillText(name,24,y0+12);
+    pts.forEach(p=>{const fl=p.v<lo||p.v>hi,X=px(p.v),Y=y0+10+p.j*(y1-y0-20);
+      if(p.a===1&&fl)caught[li]++;
+      x1.globalAlpha=fl?1:.45;x1.fillStyle=fl?col:css('--muted');x1.beginPath();x1.arc(X,Y,fl?3.6:2.6,0,7);x1.fill();x1.globalAlpha=1;
+      if(p.a===1){x1.strokeStyle=css('--bad');x1.lineWidth=1.6;x1.beginPath();x1.arc(X,Y,7,0,7);x1.stroke()}
+      if(p.a===3){x1.strokeStyle=css('--ink');x1.lineWidth=1.4;x1.strokeRect(X-5,Y-5,10,10)}
+    });
+  });
+  // axis
+  x1.strokeStyle=css('--muted');x1.lineWidth=1;x1.beginPath();x1.moveTo(20,215);x1.lineTo(W1-20,215);x1.stroke();
+  x1.fillStyle=css('--muted');x1.font='11px JetBrains Mono, monospace';x1.textAlign='center';
+  for(let v=0;v<=450;v+=50){x1.beginPath();x1.moveTo(px(v),212);x1.lineTo(px(v),218);x1.stroke();x1.fillText(v,px(v),232)}
+  x1.fillText('ms',W1-16,246);x1.textAlign='left';
+  $('d38-ms').textContent=f(m,1)+' ± '+f(s,1);$('d38-qq').textContent=f(q1,1)+' / '+f(q3,1);
+  $('d38-zr').textContent=caught[0]+' / 5';$('d38-ir').textContent=caught[1]+' / 5';
+  const v=$('d38-v1');
+  if($('d38-cont').checked&&caught[0]<caught[1]){v.textContent='الـ outliers الضخمة نفخت الـ std، فالـ Z-score فوّت anomalies حقيقية (masking). الـ IQR ثابت.';v.style.color=css('--bad')}
+  else if(caught[0]===5&&caught[1]===5){v.textContent='الاتنين لقطوا الـ ٥. بص كام نقطة طبيعية اتعلّم عليها كمان (false positives).';v.style.color=css('--ok')}
+  else{v.textContent='غيّر الـ k أو الـ factor وشوف الحدود بتتحرك إزاي.';v.style.color=css('--ink')}
+}
+c1.addEventListener('pointerdown',e=>{const [x]=AI.evPos(c1,e);const v=X0+(x-20)/(W1-40)*(X1-X0);mine.push({v,a:3,j:Math.random()});draw1()});
+['d38-k','d38-f'].forEach(id=>$(id).addEventListener('input',draw1));
+$('d38-cont').addEventListener('change',draw1);
+$('d38-reset1').addEventListener('click',()=>{mine=[];draw1()});
+draw1();
+
+// ================= Lab 2: isolate a point =================
+const c2=$('d38-c2'),x2=AI.setupCanvas(c2),W2=+c2.dataset.w,H2=+c2.dataset.h;
+const r2=rng(16),P2=[];
+for(let i=0;i<120;i++)P2.push([gauss(r2)*0.9,gauss(r2)*0.9,0]);
+[[3.6,3.2],[-3.9,1.4],[2.4,-3.8],[-2.6,-3.4],[4.3,-0.6],[0.4,4.4]].forEach(p=>P2.push([p[0],p[1],1]));
+const L2=-5,R2=5,tx=x=>20+(x-L2)/(R2-L2)*(W2-40),ty=y=>H2-20-(y-L2)/(R2-L2)*(H2-40);
+let sel=null,cuts=[],box=null,heat=null,animT=null;
+function draw2(){
+  x2.clearRect(0,0,W2,H2);
+  x2.strokeStyle=css('--line');x2.lineWidth=1;x2.strokeRect(tx(L2),ty(R2),tx(R2)-tx(L2),ty(L2)-ty(R2));
+  if(box){x2.fillStyle=css('--vec-a');x2.globalAlpha=.12;x2.fillRect(tx(box[0]),ty(box[3]),tx(box[1])-tx(box[0]),ty(box[2])-ty(box[3]));x2.globalAlpha=1}
+  cuts.forEach((c,i)=>{x2.strokeStyle=css('--vec-b');x2.lineWidth=i===cuts.length-1?2.5:1.3;x2.beginPath();
+    if(c.f===0){x2.moveTo(tx(c.t),ty(c.b[2]));x2.lineTo(tx(c.t),ty(c.b[3]))}else{x2.moveTo(tx(c.b[0]),ty(c.t));x2.lineTo(tx(c.b[1]),ty(c.t))}x2.stroke()});
+  P2.forEach((p,i)=>{let col=p[2]?css('--bad'):css('--muted');
+    if(heat){const s=heat[i],t=Math.max(0,Math.min(1,(s-0.35)/0.4));col=t>0.5?css('--bad'):t>0.25?css('--vec-b'):css('--vec-a');x2.globalAlpha=0.35+0.65*t}
+    x2.fillStyle=col;x2.beginPath();x2.arc(tx(p[0]),ty(p[1]),i===sel?6:3.4,0,7);x2.fill();x2.globalAlpha=1;
+    if(i===sel){x2.strokeStyle=css('--ink');x2.lineWidth=2;x2.beginPath();x2.arc(tx(p[0]),ty(p[1]),10,0,7);x2.stroke()}});
+  if(heat){x2.fillStyle=css('--ink');x2.font='12px JetBrains Mono, monospace';x2.fillText('blue=normal  orange=borderline  red=anomaly',24,18)}
+}
+c2.addEventListener('pointerdown',e=>{const [x,y]=AI.evPos(c2,e);let b=-1,bd=1e9;P2.forEach((p,i)=>{const d=Math.hypot(tx(p[0])-x,ty(p[1])-y);if(d<bd){bd=d;b=i}});
+  if(bd<30){sel=b;cuts=[];box=null;clearTimeout(animT);$('d38-cuts').textContent='-';$('d38-eh').textContent='-';$('d38-sc').textContent='-';
+    $('d38-v2').textContent=P2[b][2]?'اخترت نقطة من البعيدين. اعزلها.':'اخترت نقطة عادية. اعزلها وقارن.';$('d38-v2').style.color=css('--ink');draw2()}});
+function isolateOnce(target,r,full){ // returns list of cuts until isolated (full isolation)
+  let idx=P2.map((_,i)=>i),b=[L2,R2,L2,R2],out=[],depth=0;
+  while(idx.length>1&&depth<60){
+    const ft=r()<.5?0:1;let mn=Infinity,mx=-Infinity;idx.forEach(i=>{const v=P2[i][ft];if(v<mn)mn=v;if(v>mx)mx=v});
+    if(mn===mx){depth++;continue}
+    const t=mn+(mx-mn)*r();out.push({f:ft,t,b:b.slice()});
+    const left=P2[target][ft]<t;idx=idx.filter(i=>(P2[i][ft]<t)===left);
+    if(ft===0){if(left)b[1]=t;else b[0]=t}else{if(left)b[3]=t;else b[2]=t}
+    out[out.length-1].after=b.slice();depth++;
+  }
+  return out;
+}
+let rr=rng(7);
+$('d38-iso1').addEventListener('click',()=>{if(sel===null){$('d38-v2').textContent='اضغط على نقطة الأول';return}
+  heat=null;const seq=isolateOnce(sel,rr);cuts=[];box=[L2,R2,L2,R2];clearTimeout(animT);
+  const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  let i=0;const step=()=>{if(!document.body.contains(c2))return;cuts.push(seq[i]);box=seq[i].after;$('d38-cuts').textContent=i+1;draw2();i++;if(i<seq.length)animT=setTimeout(step,reduce?0:320);else{$('d38-v2').textContent='اتعزلت بعد '+seq.length+' قطعة في الشجرة دي.';$('d38-v2').style.color=seq.length<=5?css('--bad'):css('--ok')}};
+  if(seq.length)step();});
+// forest scoring with max_depth like the lesson code
+function buildTree(idx,depth,maxD,r){
+  if(depth>=maxD||idx.length<=1)return{leaf:1,size:idx.length};
+  const ft=r()<.5?0:1;let mn=Infinity,mx=-Infinity;idx.forEach(i=>{const v=P2[i][ft];if(v<mn)mn=v;if(v>mx)mx=v});
+  if(mn===mx)return{leaf:1,size:idx.length};
+  const t=mn+(mx-mn)*r(),L=[],R=[];idx.forEach(i=>(P2[i][ft]<t?L:R).push(i));
+  return{f:ft,t,l:buildTree(L,depth+1,maxD,r),r:buildTree(R,depth+1,maxD,r)};
+}
+function pathLen(node,p,d){return node.leaf?d+cfac(node.size):pathLen(p[node.f]<node.t?node.l:node.r,p,d+1)}
+function forest(nT,seed){const r=rng(seed),n=P2.length,maxD=Math.ceil(Math.log2(n)),all=P2.map((_,i)=>i),T=[];for(let i=0;i<nT;i++)T.push(buildTree(all,0,maxD,r));return T}
+let T200=null;
+$('d38-iso200').addEventListener('click',()=>{if(sel===null){$('d38-v2').textContent='اضغط على نقطة الأول';return}
+  T200=T200||forest(200,99);const eh=T200.reduce((s,t)=>s+pathLen(t,P2[sel],0),0)/T200.length,c=cfac(P2.length),sc=Math.pow(2,-eh/c);
+  $('d38-eh').textContent=f(eh,2);$('d38-cn').textContent=f(c,2);$('d38-sc').textContent=f(sc,3);
+  const v=$('d38-v2');if(sc>0.6){v.textContent='score عالي: النقطة بتتعزل بسرعة = anomaly';v.style.color=css('--bad')}else if(sc<0.5){v.textContent='score واطي: النقطة في قلب الزحمة = طبيعية';v.style.color=css('--ok')}else{v.textContent='على الحدود: ممكن تبقى طرف الـ cluster';v.style.color=css('--vec-b')}});
+$('d38-isoAll').addEventListener('click',()=>{T200=T200||forest(200,99);const c=cfac(P2.length);heat=P2.map(p=>Math.pow(2,-T200.reduce((s,t)=>s+pathLen(t,p,0),0)/T200.length/c));cuts=[];box=null;$('d38-cn').textContent=f(c,2);draw2()});
+$('d38-isoClr').addEventListener('click',()=>{heat=null;cuts=[];box=null;sel=null;clearTimeout(animT);['d38-cuts','d38-eh','d38-sc'].forEach(id=>$(id).textContent='-');$('d38-v2').textContent='اختار نقطة الأول';$('d38-v2').style.color=css('--ink');draw2()});
+draw2();
+
+// ================= Lab 3: detector comparison =================
+const c3=$('d38-c3'),x3=AI.setupCanvas(c3),W3=+c3.dataset.w,H3=+c3.dataset.h;
+function scenario(name){const r=rng(name==='single'?1:name==='multi'?2:3),X=[],y=[];
+  const blob=(n,cx,cy,s)=>{for(let i=0;i<n;i++){X.push([cx+s*gauss(r),cy+s*gauss(r)]);y.push(0)}};
+  if(name==='single'){blob(300,0,0,0.75);let c=0;while(c<15){const p=[-5+10*r(),-5+10*r()];if(Math.hypot(p[0],p[1])>3){X.push(p);y.push(1);c++}}}
+  else if(name==='multi'){blob(150,0,0,0.55);blob(150,5,5,0.7);blob(150,-3,4,0.63);
+    let c=0;while(c<20){const p=[-6+14*r(),-6+14*r()];const d=Math.min(Math.hypot(p[0],p[1])/0.55,Math.hypot(p[0]-5,p[1]-5)/0.7,Math.hypot(p[0]+3,p[1]-4)/0.63);if(d>3.2){X.push(p);y.push(1);c++}}}
+  else{blob(300,0,0,0.3);blob(60,5,5,1.5);
+    for(let i=0;i<8;i++){const a=i/8*2*Math.PI+0.3,rad=1.25+0.3*r();X.push([rad*Math.cos(a),rad*Math.sin(a)]);y.push(1)}
+    [[-4,5],[9,0],[-3,-3]].forEach(p=>{X.push(p);y.push(1)})}
+  return{X,y};}
+const D={};['single','multi','local'].forEach(s=>D[s]=scenario(s));
+function zScores(X){const m=[0,1].map(j=>mean(X.map(p=>p[j]))),s=[0,1].map(j=>std(X.map(p=>p[j]))||1);return X.map(p=>Math.max(Math.abs((p[0]-m[0])/s[0]),Math.abs((p[1]-m[1])/s[1])))}
+function iqrScores(X){const q=[0,1].map(j=>{const c=X.map(p=>p[j]),a=pct(c,25),b=pct(c,75);return[a,b,(b-a)||1]});
+  return X.map(p=>Math.max(...[0,1].map(j=>{const[a,b,iq]=q[j],lo=a-1.5*iq,hi=b+1.5*iq;return Math.max((lo-p[j])/iq,(p[j]-hi)/iq,0)+0.001*Math.abs((p[j]-(a+b)/2)/iq)})))}
+function ifScores(X){const r=rng(42),n=X.length,ss=Math.min(256,n),maxD=Math.ceil(Math.log2(ss)),T=[];
+  const bt=(idx,d)=>{if(d>=maxD||idx.length<=1)return{leaf:1,size:idx.length};const ft=r()<.5?0:1;let mn=Infinity,mx=-Infinity;idx.forEach(i=>{const v=X[i][ft];if(v<mn)mn=v;if(v>mx)mx=v});if(mn===mx)return{leaf:1,size:idx.length};const t=mn+(mx-mn)*r(),L=[],R=[];idx.forEach(i=>(X[i][ft]<t?L:R).push(i));return{f:ft,t,l:bt(L,d+1),r:bt(R,d+1)}};
+  for(let k=0;k<100;k++){const pool=X.map((_,i)=>i);for(let i=pool.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]]}T.push(bt(pool.slice(0,ss),0))}
+  const c=cfac(ss),pl=(nd,p,d)=>nd.leaf?d+cfac(nd.size):pl(p[nd.f]<nd.t?nd.l:nd.r,p,d+1);
+  return X.map(p=>Math.pow(2,-T.reduce((s,t)=>s+pl(t,p,0),0)/T.length/c))}
+function lofScores(X,k){const n=X.length,nb=[],kd=new Float64Array(n);
+  for(let i=0;i<n;i++){const d=[];for(let j=0;j<n;j++)if(j!==i)d.push([Math.hypot(X[i][0]-X[j][0],X[i][1]-X[j][1]),j]);d.sort((a,b)=>a[0]-b[0]);nb.push(d.slice(0,k));kd[i]=d[k-1][0]}
+  const lrd=nb.map((ns,i)=>1/(ns.reduce((s,[d,j])=>s+Math.max(kd[j],d),0)/k+1e-12));
+  return nb.map((ns,i)=>ns.reduce((s,[,j])=>s+lrd[j],0)/k/lrd[i])}
+const cache={};
+function scoresFor(s,m,k){const key=s+m+(m==='lof'?k:'');if(!cache[key]){const X=D[s].X;cache[key]=m==='z'?zScores(X):m==='iqr'?iqrScores(X):m==='if'?ifScores(X):lofScores(X,k)}return cache[key]}
+function topK(sc,k){return sc.map((v,i)=>[v,i]).sort((a,b)=>b[0]-a[0]).slice(0,k).map(a=>a[1])}
+function draw3(){
+  const s=$('d38-scn').value,m=$('d38-meth').value,k=+$('d38-lk').value;$('d38-lkv').textContent=k;
+  const {X,y}=D[s],nA=y.reduce((a,b)=>a+b,0),sc=scoresFor(s,m,k),flag=new Set(topK(sc,nA));
+  let tp=0;flag.forEach(i=>tp+=y[i]);
+  let mnx=Infinity,mxx=-Infinity,mny=Infinity,mxy=-Infinity;X.forEach(p=>{mnx=Math.min(mnx,p[0]);mxx=Math.max(mxx,p[0]);mny=Math.min(mny,p[1]);mxy=Math.max(mxy,p[1])});
+  const span=Math.max(mxx-mnx,mxy-mny)*1.08,cx=(mnx+mxx)/2,cy=(mny+mxy)/2;
+  const X3=v=>W3/2+(v-cx)/span*(Math.min(W3,H3)-30),Y3=v=>H3/2-(v-cy)/span*(Math.min(W3,H3)-30);
+  x3.clearRect(0,0,W3,H3);
+  X.forEach((p,i)=>{const fl=flag.has(i);x3.globalAlpha=fl?1:.45;x3.fillStyle=fl?css('--vec-b'):css('--muted');x3.beginPath();x3.arc(X3(p[0]),Y3(p[1]),fl?4.2:2.4,0,7);x3.fill();x3.globalAlpha=1;
+    if(y[i]){x3.strokeStyle=css('--bad');x3.lineWidth=1.6;x3.beginPath();x3.arc(X3(p[0]),Y3(p[1]),7.5,0,7);x3.stroke()}});
+  $('d38-na').textContent=nA;$('d38-pk').textContent=f(tp/nA,2);$('d38-rk').textContent=f(tp/nA,2);
+  const ul=$('d38-allm');ul.innerHTML='';
+  [['z','Z-score'],['iqr','IQR'],['if','IsoForest'],['lof','LOF k='+k]].forEach(([mm,nm])=>{const ss=scoresFor(s,mm,k);let t=0;topK(ss,nA).forEach(i=>t+=y[i]);const p=t/nA;
+    const li=document.createElement('li');li.innerHTML='<span class="mono">'+nm+'</span><span style="display:block;height:10px;border-radius:5px;background:var(--soft);overflow:hidden"><i style="display:block;height:100%;background:var(--vec-a);width:'+(p*100)+'%;'+(mm===m?'':'opacity:.5')+'"></i></span><span class="num">'+f(p,2)+'</span>';ul.appendChild(li)});
+}
+['d38-scn','d38-meth'].forEach(id=>$(id).addEventListener('change',draw3));
+$('d38-lk').addEventListener('input',draw3);
+draw3();
+
+// ================= Quiz =================
+const Q=[
+ ['ليه الـ anomaly detection غالبًا بيتعامل كمشكلة unsupervised مش classification؟',['الـ supervised classification دايمًا أقل دقة','الـ anomalies المتعلّم عليها نادرة جدًا، والأنواع الجديدة بتبقى مختلفة عن اللي شفناه قبل كده','الـ anomaly detection بيشتغل على time series بس','الـ anomaly detection مش محتاج داتا خالص'],1,'الـ anomalies نادرة (غالبًا أقل من 0.1%)، فمفيش أمثلة كفاية تدرّب classifier. وكمان الأنواع الجاية ممكن تكون جديدة تمامًا. نمذجة الطبيعي والتعليم على الانحراف بيحل المشكلتين.'],
+ ['حرارة 90 فهرنهايت طبيعية في الصيف بس غريبة في الشتا. ده نوع إيه؟',['Point anomaly','Contextual anomaly','Statistical anomaly','Collective anomaly'],1,'الـ contextual anomaly قيمة غريبة بالنسبة للسياق بتاعها (وقت، مكان)، وممكن تبقى طبيعية في سياق تاني.'],
+ ['الـ Z-score بيعلّم على النقط اللي بعيدة أكتر من 3 std عن المتوسط. إمتى بيفشل؟',['لما يبقى فيه 3 anomalies بالظبط','لما الداتا Gaussian تمامًا','لما الـ features تبقى standardized','لما الداتا multimodal أو skewed، أو لما الـ outliers اللي في التدريب تنفخ المتوسط والـ std'],3,'الـ Z-score بيفترض توزيع Gaussian واحد. بيفشل مع الـ clusters المتعددة والتوزيعات المايلة، ولما outliers التدريب يزقوا المتوسط ويكبروا الـ std فتستخبى الـ anomalies الحقيقية.'],
+ ['الـ Isolation Forest بيختلف إزاي عن الطرق اللي بتعتمد على المسافة؟',['بيعزل النقط بتقطيعات عشوائية، والـ anomalies محتاجة قطعات أقل لأنها قليلة ومختلفة','بيشتغل على النص بس','بيستخدم neural networks بدل الشجر','بيحسب المسافة لكل نقطة تانية في الداتا'],0,'بيقسم الداتا عشوائيًا بالشجر. الـ anomalies بتتعزل في leaf لوحدها بقطعات أقل. متوسط مسار قصير = anomaly أكتر.'],
+ ['عملت unsupervised anomaly detector وكمان supervised fraud classifier. إمتى تفضّل الـ unsupervised؟',['لما تحتاج تلقط أنماط fraud جديدة مختلفة عن الأمثلة التاريخية المتعلّم عليها','لما يبقى عندك ملايين أمثلة fraud متعلّم عليها','لما تهتم بالـ precision بس مش الـ recall','دايمًا، الـ unsupervised أحسن دايمًا'],0,'الـ classifier بيلقط الأنواع اللي اتدرّب عليها بس. الـ unsupervised بيعلّم على أي انحراف عن الطبيعي فبيلقط الأنواع الجديدة، والتمن false positives أكتر.'],
+ ['(سؤال مني) غيّرت contamination في IsolationForest بتاع sklearn من 0.05 لـ 0.10 من غير ما تغيّر حاجة تانية. إيه اللي بيتغير؟',['الـ scores كلها بتتضاعف','الشجر بيتبني بطريقة مختلفة','الـ threshold بس: هيعلّم على أعلى 10% بدل 5%، والـ scores زي ما هي','عدد الشجر بيزيد'],2,'الـ contamination بيستخدم بس عشان يحوّل الـ score لقرار. الـ scores نفسها ثابتة.'],
+ ['(سؤال مني) فريقك يقدر يراجع 100 تنبيه في اليوم بس. أنسب مقياس تختار بيه بين detectors؟',['Accuracy','Precision@100','عدد الـ features','الـ AUROC لوحده'],1,'السؤال الحقيقي: من الـ 100 اللي هبعتهم، كام واحد يستاهل المراجعة؟ ده بالظبط Precision@k. الـ accuracy ملهاش معنى مع الـ imbalance، والـ AUROC ممكن يبان حلو وهو بيفوّت كتير عند الـ threshold العملي.']
+];
+AI.quiz($('d38-quizBox'),Q,5,()=>{const c=$('d38-ckq');if(!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(38,root);
+
+AI.onTheme(()=>{if(!document.body.contains(c1))return false;draw1();draw2();draw3()});
+})();
+</script>

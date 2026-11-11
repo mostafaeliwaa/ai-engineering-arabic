@@ -1,0 +1,789 @@
+<div class="day" id="d35-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 13 · ML Pipelines</span>
+  <h1>اليوم ٣٥: الموديل مش منتج، الـ Pipeline هو المنتج</h1>
+  <p class="lede">النهاردة هنقفل أخطر باب في الـ ML: الـ <b>data leakage</b> والـ <b>training/serving skew</b>. هتشوف بعينك إزاي داتا عشوائية تمامًا ممكن تديك accuracy «حلوة» لو عملت preprocessing غلط، وهتشغّل pipeline خطوة بخطوة وتفهم الفرق بين <code>fit</code> و<code>transform</code>، وبعدين تبني pipeline كامل من الصفر وبـ sklearn.</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Hyperparameter Tuning</b></span>
+    <span>بعده: <b>Naive Bayes</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d35-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d35-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 34) اتعلمنا نظبط الـ <b>hyperparameters</b>. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. ليه الـ random search غالبًا بيكسب الـ grid search بنفس عدد التجارب؟</summary>عشان معظم المشاكل ليها <b>low effective dimensionality</b>: واحد أو اتنين بس من الـ hyperparameters هما اللي فارقين. الـ grid بيكرر نفس القيم القليلة للمهم، والـ random بيدي قيمة جديدة لكل hyperparameter في كل تجربة.</details>
+  <details><summary>٢. ظبطت الـ hyperparameters وانت بتبص على الـ test set. إيه المشكلة؟</summary>عملت overfitting على الـ test set نفسه، والرقم اللي هتكتبه متفائل. الضبط يبقى على validation set (أو CV)، والـ test للتقييم النهائي مرة واحدة بس.</details>
+  <details><summary>٣. في الـ CV امبارح، كنا بنعمل إيه في كل fold؟ وإيه اللي ممكن «يتسرّب» لو مش واخدين بالنا؟</summary>بندرّب على جزء ونقيّم على الجزء الباقي. لو عملنا scaling أو imputation على الداتا كلها <b>قبل</b> التقسيم، الإحصائيات بتاعة الـ validation بتدخل في التدريب. ده بالظبط اللي الـ Pipeline بيمنعه النهاردة.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ tuning</div>
+    <div><b>25 min</b>الـ leakage والـ Pipeline والـ ColumnTransformer</div>
+    <div><b>20 min</b>المعامل التفاعلية الثلاثة</div>
+    <div><b>15 min</b>Tracking وVersioning والـ reproducibility</div>
+    <div><b>35 min</b>اكتب الـ pipeline من الصفر وشغّله</div>
+    <div><b>20 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d35-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: نوتبوك شغال… لحد ما يتشحن</h2></div>
+  <p>عندك notebook بيحمّل الداتا، يملا الـ missing values بالـ median، يعمل scaling، يدرّب موديل ويطبع accuracy. شغال، وشحنته. بعد شهر حد عمل retrain وطلعت نتايج مختلفة. ليه؟ أربع حاجات حصلت مع بعض:</p>
+  <ol class="ex">
+    <li>الـ median اتحسب على الداتا <b>كلها</b> ومعاها الـ test (ده <b>data leakage</b>).</li>
+    <li>بارامترات الـ scaling (المتوسط والانحراف) ما اتحفظتش، فوقت الـ inference اتحسبت بإحصائيات تانية.</li>
+    <li>كود الـ feature engineering اتنسخ بين التدريب والـ serving، والنسختين بعدوا عن بعض مع الوقت.</li>
+    <li>عمود categorical ظهرت فيه قيمة جديدة في الـ production الـ encoder عمره ما شافها.</li>
+  </ol>
+  <p>دي مش أمثلة نظرية، دي أشهر أسباب فشل أنظمة الـ ML في الـ production. والحل لكلهم واحد: تحط كل خطوات التحويل في <b>object واحد مرتب وقابل للتكرار</b>.</p>
+
+  <h3>يعني إيه Pipeline؟</h3>
+  <p>تخيل مطبخ مطعم. الـ notebook زي شيف بيطبخ من دماغه كل مرة. الـ pipeline زي <b>كارت الوصفة</b>: نفس المقادير، نفس الترتيب، ونفس المعايير بالظبط كل مرة، سواء في المطبخ الرئيسي (التدريب) أو في الفرع (الـ production).</p>
+  <p>بالتعريف: سلسلة مرتبة من تحويلات الداتا وفي آخرها موديل. كل خطوة بتاخد ناتج اللي قبلها. الـ pipeline كله بيتعمله fit <b>مرة واحدة على الـ training data</b>، ووقت الـ inference نفس الـ pipeline المتدرّب بيحوّل الداتا الجديدة ويطلّع predictions.</p>
+  <div class="formula">Raw Data → Impute → Scale → Encode → Model → Prediction</div>
+  <p>الـ Pipeline بيضمنلك أربع حاجات:</p>
+  <ul class="checklist">
+    <li>• التحويلات بتتعمل fit على الـ training data بس (مفيش leakage).</li>
+    <li>• نفس التحويلات بالظبط بتتطبق وقت الـ inference.</li>
+    <li>• الـ object كله بيتحفظ (serialize) ويتشحن كـ artifact واحد.</li>
+    <li>• الـ cross-validation بتطبّق الـ pipeline جوه كل fold لوحده، فبتقفل أنواع leakage خفية.</li>
+  </ul>
+</section>
+
+<!-- STATION 2: leakage -->
+<section id="d35-leak">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Data Leakage: القاتل الصامت</h2></div>
+  <p>الـ leakage معناه إن معلومة من الـ test set (أو من المستقبل) دخلت في التدريب. زي طالب شاف ورقة الامتحان قبلها: درجته عالية، بس مش عشان فاهم.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>الطريقة الغلط (leaky)</h3>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>X = df.drop("target", axis=1)
+y = df["target"]
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)     <span class="c"># شاف الداتا كلها، ومعاها الـ test!</span>
+
+X_train, X_test = X_scaled[:800], X_scaled[800:]
+y_train, y_test = y[:800], y[800:]</pre></div>
+      <p>الـ mean والـ std فيهم عينات الـ test، وده بينفخ الـ accuracy المتوقعة.</p>
+      <h3>الطريقة الصح</h3>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>X_train, X_test = X[:800], X[800:]      <span class="c"># قسّم الأول</span>
+
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)   <span class="c"># اتعلم من الـ train بس</span>
+X_test_scaled = scaler.transform(X_test)         <span class="c"># طبّق اللي اتعلمته</span></pre></div>
+      <p>مع الـ pipeline مش محتاج تفكر في ده خالص، هو بيعمله لوحده.</p>
+      <div class="note"><strong>ملحوظة صريحة من الكود:</strong> في حالة الـ scaler البسيط الفرق ممكن يطلع صغير. الكود نفسه بيقول إن مع حاجات زي الـ <b>target encoding</b> أو الـ <b>feature selection</b> الـ leakage ممكن ينفخ الـ accuracy بـ 10–30%. المعمل اللي جنبك بيوريك الحالة التانية دي.</div>
+    </div>
+    <div class="instrument">
+      <h3>معمل ١: داتا عشوائية بـ accuracy «حلوة»</h3>
+      <p style="font-size:15px">الداتا هنا <b>noise صافي</b>: الـ features عشوائية والـ labels عشوائية، يعني الحقيقة إن مفيش أي موديل يقدر يعدّي 50%. هنختار أحسن <span class="ltr">k</span> features بالـ correlation مع الـ label، وبعدين نصنّف بـ nearest centroid. الفرق الوحيد: اخترنا الـ features بالنظر للداتا <b>كلها</b> (leaky) ولا للـ train بس (clean)؟</p>
+      <canvas id="d35-c1" width="520" height="230" aria-label="مقارنة accuracy بين leaky و clean على داتا عشوائية"></canvas>
+      <label style="display:grid;gap:2px">عدد الـ features = <b class="mono" id="d35-pv">1000</b><input type="range" id="d35-p" min="100" max="2000" step="100" value="1000"></label>
+      <label style="display:grid;gap:2px">عدد العينات = <b class="mono" id="d35-nv">80</b><input type="range" id="d35-n" min="40" max="200" step="20" value="80"></label>
+      <label style="display:grid;gap:2px">الـ features المختارة k = <b class="mono" id="d35-kv">20</b><input type="range" id="d35-k" min="2" max="60" step="1" value="20"></label>
+      <div class="readout">
+        <div><small>Leaky (متوسط ٢٠ تجربة)</small><b id="d35-la">-</b></div>
+        <div><small>Clean (متوسط ٢٠ تجربة)</small><b id="d35-ca">-</b></div>
+        <div><small>الحقيقة</small><b>0.50</b></div>
+      </div>
+      <div class="verdict" id="d35-v1"></div>
+      <div class="btns"><button type="button" id="d35-run1" class="primary">شغّل ٢٠ تجربة جديدة</button></div>
+    </div>
+  </div>
+  <div class="note ai"><strong>اللي يتعلم من المعمل:</strong> كل ما الـ features تكتر والعينات تقل، الـ leaky بيطلع أحلى وهو كذب. ده بالظبط وضع داتا زي الـ genomics أو النصوص: features كتير جدًا وداتا قليلة. الحل مش «خلي بالك»؛ الحل إن الـ feature selection يبقى <b>خطوة جوه الـ pipeline</b> فتتعمل fit جوه كل fold.</div>
+</section>
+
+<!-- STATION 3: fit vs transform -->
+<section id="d35-fit">
+  <div class="station-head"><span class="tag">03</span><h2>sklearn Pipeline: <span class="ltr">fit</span> ولا <span class="ltr">transform</span>؟</h2></div>
+  <p>الـ <code>Pipeline</code> في sklearn بيربط transformers وفي الآخر estimator، ويديك <code>.fit()</code> و<code>.predict()</code> و<code>.score()</code> بيمشوا على الخطوات بالترتيب.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+
+pipe = Pipeline([
+    ("scaler", StandardScaler()),
+    ("model", LogisticRegression()),
+])
+
+pipe.fit(X_train, y_train)          <span class="c"># scaler: fit_transform ← model: fit</span>
+predictions = pipe.predict(X_test)  <span class="c"># scaler: transform بس ← model: predict</span></pre></div>
+  <div class="tablewrap"><table>
+    <tr><th>لما تنادي</th><th>كل transformer بيعمل</th><th>الموديل في الآخر بيعمل</th></tr>
+    <tr><td class="ltr">pipe.fit(X_train, y_train)</td><td><code>fit_transform</code>: يتعلم الإحصائيات ويطبقها</td><td><code>fit</code> على الداتا المتحوّلة</td></tr>
+    <tr><td class="ltr">pipe.predict(X_test)</td><td><code>transform</code> بس: يطبق اللي اتعلمه، من غير ما يتعلم تاني</td><td><code>predict</code></td></tr>
+  </table></div>
+  <p>تشبيه: <code>fit</code> = إنك تقيس مقاسات الزبون وتكتبها في كشكول. <code>transform</code> = إنك تفصّل بالمقاسات اللي في الكشكول. على الـ test انت بتفصّل بس، عمرك ما تقيس تاني. الـ scaler عمره ما بيشوف الـ test وقت الـ fit، وده كل الفكرة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: شغّل الـ pipeline خطوة بخطوة</h3>
+      <p>عندك ٦ صفوف train فيها <span class="ltr">age</span> (فيه قيمة ناقصة)، <span class="ltr">income</span>، و<span class="ltr">city</span>. دوس <b>fit</b> وشوف كل خطوة بتتعلم إيه وبتحفظه. بعدين اختار صف جديد ودوس <b>predict</b>: لاحظ إن كل خطوة بتستخدم المحفوظ، مش بتحسب من الصف الجديد.</p>
+      <div class="tablewrap"><table id="d35-train"></table></div>
+      <div class="note"><strong>جرّب:</strong> (١) دوس predict قبل fit. (٢) اختار مدينة جديدة <span class="ltr">seattle</span> واقفل <span class="ltr">handle_unknown</span>. (٣) اختار صف فيه <span class="ltr">age</span> ناقص.</div>
+    </div>
+    <div class="instrument">
+      <div class="plan" id="d35-steps"></div>
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">الصف الجديد:
+        <select id="d35-row">
+          <option value="0">age=30, income=52k, city=cairo</option>
+          <option value="1">age=NaN, income=90k, city=alex</option>
+          <option value="2">age=45, income=40k, city=seattle</option>
+        </select></label>
+      <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d35-hu" checked> <span class="ltr">OneHotEncoder(handle_unknown="ignore")</span></label>
+      <div class="btns">
+        <button type="button" id="d35-fitb" class="primary">pipe.fit(train)</button>
+        <button type="button" id="d35-predb">pipe.predict(row)</button>
+        <button type="button" id="d35-resetb">ابدأ من الأول</button>
+      </div>
+      <pre class="term" id="d35-log" style="min-height:120px;white-space:pre-wrap"></pre>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 4: ColumnTransformer -->
+<section id="d35-ct">
+  <div class="station-head"><span class="tag">04</span><h2>ColumnTransformer: كل نوع عمود ليه معاملة</h2></div>
+  <p>الداتا الحقيقية فيها أعمدة رقمية (محتاجة imputation بالـ median وscaling) وأعمدة categorical (محتاجة imputation بالأكثر تكرارًا وone-hot encoding). الـ <code>ColumnTransformer</code> زي موظف فرز في مكتب بريد: كل جواب يروح للشباك بتاعه، وفي الآخر النتايج بتتلزق جنب بعض في مصفوفة واحدة.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+
+numeric_pipe = Pipeline([
+    ("impute", SimpleImputer(strategy="median")),
+    ("scale", StandardScaler()),
+])
+
+categorical_pipe = Pipeline([
+    ("impute", SimpleImputer(strategy="most_frequent")),
+    ("encode", OneHotEncoder(handle_unknown="ignore")),   <span class="c"># مهم جدًا للـ production</span>
+])
+
+preprocessor = ColumnTransformer([
+    ("num", numeric_pipe, ["age", "income", "score"]),
+    ("cat", categorical_pipe, ["city", "gender", "plan"]),
+])
+
+full_pipeline = Pipeline([
+    ("preprocess", preprocessor),
+    ("model", GradientBoostingClassifier()),
+])</pre></div>
+  <p><code>handle_unknown="ignore"</code> هو اللي بيخلّي الـ encoder لما يشوف مدينة عمره ما شافها يطلّع <b>vector كله أصفار</b> بدل ما يعمل crash. جربتها في المعمل ٢.</p>
+  <div class="note"><strong>من الكويز:</strong> الحلول المعتادة للقيمة الجديدة هي «bucket» اسمه unknown في الـ one-hot، أو في الـ target encoding ترجع للـ global mean. المهم إن الـ pipeline يكون متوقعها، مش إن السطر يتشال أو تعيد تدريب الموديل.</div>
+</section>
+
+<!-- STATION 5: CV -->
+<section id="d35-cv">
+  <div class="station-head"><span class="tag">05</span><h2>Cross-Validation جوه الـ Pipeline</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>لما تدّي الـ pipeline لـ <code>cross_val_score</code>، كل fold بيعمل نسخة جديدة من الـ pipeline، ويعمل fit للـ preprocessing على الـ train بتاع الـ fold ده بس. الـ validation fold بيفضل «غريب» عن كل الخطوات، زي الـ production بالظبط.</p>
+      <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.model_selection import cross_val_score
+scores = cross_val_score(full_pipeline, df, y, cv=5)   <span class="c"># الـ preprocessing جوه كل fold</span></pre></div>
+      <p>لو عملت <code>scaler.fit_transform(X)</code> الأول وبعدين CV على الناتج، الـ scaler شاف الـ validation في كل الـ folds. الجدول تحت بيقول الإصلاح: «Use Pipeline with cross_val_score».</p>
+      <div class="note"><strong>جرّب:</strong> بدّل بين الوضعين وامشي على الـ folds. المربعات اللي عليها إطار أحمر = عينات validation الـ scaler اتعلم منها.</div>
+    </div>
+    <div class="instrument">
+      <h3>معمل ٣: الـ scaler اتعلم من مين؟</h3>
+      <canvas id="d35-c3" width="520" height="280" aria-label="folds الـ cross validation وأماكن الـ fit"></canvas>
+      <div class="btns">
+        <button type="button" id="d35-mPipe" class="primary">Pipeline جوه CV</button>
+        <button type="button" id="d35-mLeak">Scale قبل الـ CV</button>
+        <button type="button" id="d35-stepf">الـ fold اللي بعده</button>
+        <button type="button" id="d35-playf">شغّل كله</button>
+      </div>
+      <div class="readout">
+        <div><small>الـ fold</small><b id="d35-fold">1 / 5</b></div>
+        <div><small>عينات val شافها الـ scaler</small><b id="d35-seen">0</b></div>
+      </div>
+      <div class="verdict" id="d35-v3"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 6: tracking -->
+<section id="d35-track">
+  <div class="station-head"><span class="tag">06</span><h2>Experiment Tracking و Model Registry و DVC</h2></div>
+  <p>الـ pipeline بيخلّي التدريب الواحد قابل للتكرار. بس انت بتعمل عشرات التجارب: أنهي hyperparameters؟ أنهي نسخة داتا؟ الـ metrics كانت كام؟ أنهي كود كان شغال؟ لازم تسجّل. تشبيه: كشكول المعمل بتاع الكيميائي، أي تجربة مش مكتوبة كأنها ما حصلتش.</p>
+  <h3>MLflow (الأشهر open-source)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import mlflow
+
+with mlflow.start_run():
+    mlflow.log_param("max_depth", 5)          <span class="c"># سجّل الإعدادات</span>
+    mlflow.log_param("n_estimators", 100)
+    mlflow.log_param("learning_rate", 0.1)
+
+    pipe.fit(X_train, y_train)
+    accuracy = pipe.score(X_test, y_test)
+
+    mlflow.log_metric("accuracy", accuracy)   <span class="c"># سجّل النتيجة</span>
+    mlflow.sklearn.log_model(pipe, "model")   <span class="c"># واحفظ الـ pipeline كله</span></pre></div>
+  <p>كل run بيتسجل بالـ params والـ metrics والـ artifacts والموديل كامل. تقدر تقارن الـ runs، تعيد أي تجربة، وتعمل deploy لأي نسخة.</p>
+  <h3>Weights &amp; Biases (wandb)</h3>
+  <p>نفس الوظيفة بس معاها dashboard مستضاف:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import wandb
+
+wandb.init(project="my-pipeline")
+wandb.config.update({"max_depth": 5, "n_estimators": 100})
+
+pipe.fit(X_train, y_train)
+accuracy = pipe.score(X_test, y_test)
+
+wandb.log({"accuracy": accuracy})</pre></div>
+
+  <h3>Model Versioning: الـ Model Registry</h3>
+  <p>بعد التتبع محتاج تعرف: أنهي موديل في الـ production؟ أنهي في الـ staging؟ أنهي بتاع الأسبوع اللي فات؟ الـ Model Registry في MLflow بيديك:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الميزة</th><th>معناها</th></tr>
+    <tr><td>Version tracking</td><td>كل موديل محفوظ بياخد رقم نسخة</td></tr>
+    <tr><td>Stage transitions</td><td>Staging و Production و Archived</td></tr>
+    <tr><td>Approval workflow</td><td>الموديل لازم «يترقّى» للـ production بقرار صريح</td></tr>
+    <tr><td>Rollback</td><td>ترجع لنسخة قديمة فورًا</td></tr>
+  </table></div>
+
+  <h3>Data Versioning بـ DVC</h3>
+  <p>الكود متسجل في git، بس git مش بيستحمل الملفات الكبيرة. الـ <b>DVC</b> («git للداتا») بيحط الداتا نفسها في remote storage (S3، GCS، Azure) ويسيب في git ملف صغير <code>.dvc</code> فيه الـ hash.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>dvc init
+dvc add data/training.csv
+git add data/training.csv.dvc data/.gitignore
+git commit -m "Track training data"
+dvc push</pre></div>
+  <p>لما تعمل checkout لأي commit، <code>dvc checkout</code> بيرجّعلك نفس الداتا اللي اتدرّب عليها بالظبط. يعني كل commit بيثبّت الكود <b>والداتا</b> مع بعض.</p>
+
+  <h3>Reproducible Experiments: الأربع حاجات</h3>
+  <ol class="ex">
+    <li><b>Seeds ثابتة</b> لـ numpy و random والـ framework (torch، sklearn).</li>
+    <li><b>Dependencies متثبتة</b>: <code>requirements.txt</code> أو <code>poetry.lock</code> بنسخ محددة.</li>
+    <li><b>داتا متنسّخة</b>: DVC أو حاجة شبهه.</li>
+    <li><b>Config files</b>: كل الـ hyperparameters في config، مش مكتوبة جوه الكود.</li>
+  </ol>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+import random
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import torch
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True   <span class="c"># نتايج GPU ثابتة</span>
+    except ImportError:
+        pass</pre></div>
+</section>
+
+<!-- STATION 7: notebook to prod -->
+<section id="d35-prod">
+  <div class="station-head"><span class="tag">07</span><h2>من الـ Notebook للـ Production</h2></div>
+  <div class="plan">
+    <div><b>1</b>Notebook: تجارب سريعة ورسومات وأفكار features</div>
+    <div><b>2</b>Extract functions: الـ preprocessing والتقييم في modules</div>
+    <div><b>3</b>Build Pipeline: sklearn Pipeline أو كلاس بتاعك</div>
+    <div><b>4</b>Config: كل الـ hyperparameters في YAML/JSON</div>
+    <div><b>5</b>Tracking: MLflow أو wandb</div>
+    <div><b>6</b>Data validation: الـ schema والتوزيعات والـ missing قبل التدريب</div>
+    <div><b>7</b>Tests: unit للـ transformers وintegration للـ pipeline كله</div>
+    <div><b>8</b>Deploy: serialize، API (FastAPI/Flask)، container</div>
+  </div>
+  <h3>الأخطاء المشهورة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الغلطة</th><th>ليه وحشة</th><th>الحل</th></tr>
+    <tr><td>Fit على الداتا كلها قبل التقسيم</td><td>Data leakage</td><td>Pipeline مع <code>cross_val_score</code></td></tr>
+    <tr><td>Feature engineering برّه الـ pipeline</td><td>تحويلات مختلفة بين التدريب والـ serving</td><td>حط كل التحويلات في الـ Pipeline</td></tr>
+    <tr><td>مش متعامل مع categories جديدة</td><td>crash في الـ production</td><td><code>OneHotEncoder(handle_unknown="ignore")</code></td></tr>
+    <tr><td>أسماء أعمدة hardcoded</td><td>بتبوظ لما الـ schema يتغير</td><td>قوايم الأعمدة من الـ config</td></tr>
+    <tr><td>مفيش data validation</td><td>predictions غلط بهدوء على داتا بايظة</td><td>schema checks قبل الـ prediction</td></tr>
+    <tr><td>Training/serving skew</td><td>الموديل بيشوف features مختلفة في الـ prod</td><td>Pipeline object واحد للاتنين</td></tr>
+  </table></div>
+</section>
+
+<!-- CODE -->
+<section id="d35-code">
+  <div class="station-head"><span class="tag">08</span><h2>طبّق بإيدك: pipeline كامل من الصفر</h2></div>
+  <p>من جوه فولدر الريبو شغّل الملف الأصلي الأول عشان تشوف كل الـ demos:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/13-ml-pipelines/code/pipeline.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> متعملش copy-paste. افتح <code>my_pipeline.py</code> واكتب الخطوات بإيدك. الملف محتاج <code>numpy</code> بس؛ و<code>sklearn</code> و<code>pandas</code> اختياري للـ demo الأخير (لو مش متسطبين هيطبع إنه عدّاه).</p>
+
+  <h3>خطوة ١: داتا مختلطة فيها missing</h3>
+  <p>٥٠٠ عميل: <span class="ltr">age</span> و<span class="ltr">income</span> و<span class="ltr">score</span> رقمي، و<span class="ltr">city</span> و<span class="ltr">plan</span> categorical. حوالي 5% من الـ age و3% من الـ income متشالين (NaN). الـ target بيعتمد على خليط منهم مع noise.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def make_mixed_data(n_samples=500, seed=42):
+    rng = np.random.RandomState(seed)
+    age = rng.normal(35, 12, n_samples).clip(18, 80)
+    income = rng.lognormal(10.5, 0.8, n_samples)
+    score = rng.uniform(300, 850, n_samples)
+    city = rng.choice(np.array(["new_york", "chicago", "la", "houston", "phoenix"]), n_samples)
+    plan = rng.choice(np.array(["free", "basic", "premium"]), n_samples, p=[0.5, 0.3, 0.2])
+
+    age_m = age.copy();    age_m[rng.random(n_samples) &lt; 0.05] = np.nan     <span class="c"># 5% ناقص</span>
+    inc_m = income.copy(); inc_m[rng.random(n_samples) &lt; 0.03] = np.nan     <span class="c"># 3% ناقص</span>
+
+    boundary = (0.01 * (age - 35) + 0.00001 * (income - 40000)
+                + 0.002 * (score - 600)
+                + 0.5 * (plan == "premium") - 0.3 * (plan == "free")
+                + rng.normal(0, 0.5, n_samples))
+    target = (boundary &gt; 0).astype(int)
+    return {"age": age_m, "income": inc_m, "score": score,
+            "city": city, "plan": plan, "target": target}</pre></div>
+  <p class="note">الداتا راجعة كـ dict أعمدة (زي DataFrame بسيط). الأصل بيكتب الـ boundary بـ <code>.astype(float)</code> على شروط الـ plan؛ أنا اختصرتها، والمعنى واحد.</p>
+
+  <h3>خطوة ٢: الـ transformers (كل واحد fit / transform)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MedianImputer:
+    def fit(self, X):
+        self.medians = np.nanmedian(X, axis=0)     <span class="c"># اتعلم الـ median من غير الـ NaN</span>
+        return self
+    def transform(self, X):
+        X_out = X.copy()
+        for col in range(X.shape[1]):
+            mask = np.isnan(X_out[:, col])
+            X_out[mask, col] = self.medians[col]   <span class="c"># املا بالمحفوظ</span>
+        return X_out
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
+
+class StandardScaler:
+    def fit(self, X):
+        self.means = np.nanmean(X, axis=0)
+        self.stds = np.nanstd(X, axis=0)
+        self.stds[self.stds == 0] = 1.0            <span class="c"># متقسمش على صفر</span>
+        return self
+    def transform(self, X):
+        return (X - self.means) / self.stds
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
+
+class OneHotEncoder:
+    def __init__(self, handle_unknown="ignore"):
+        self.handle_unknown = handle_unknown
+    def fit(self, X):
+        self.categories = [sorted(set(X[:, c])) for c in range(X.shape[1])]
+        return self
+    def transform(self, X):
+        cols = []
+        for c in range(X.shape[1]):
+            for cat in self.categories[c]:           <span class="c"># بس الـ categories المحفوظة</span>
+                cols.append((X[:, c] == cat).astype(float))
+        return np.column_stack(cols) if cols else np.zeros((X.shape[0], 0))
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)</pre></div>
+  <p>لاحظ إن الـ encoder بتاعنا بيقارن بالـ categories اللي اتحفظت بس، فالقيمة الجديدة بتطلع أصفار تلقائيًا. (الـ <code>__init__</code> في الأصل بيعرّف الـ attributes بـ <code>None</code> الأول؛ أنا شلتها للاختصار.)</p>
+
+  <h3>خطوة ٣: PipelineFromScratch</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class PipelineFromScratch:
+    def __init__(self, steps):
+        self.steps = steps                           <span class="c"># [(name, step), ...] والآخر موديل</span>
+
+    def fit(self, X, y=None):
+        X_current = X.copy() if isinstance(X, np.ndarray) else X
+        for name, step in self.steps[:-1]:
+            X_current = step.fit_transform(X_current)   <span class="c"># اتعلم وحوّل</span>
+        name, model = self.steps[-1]
+        model.fit(X_current, y)
+        return self
+
+    def predict(self, X):
+        X_current = X.copy() if isinstance(X, np.ndarray) else X
+        for name, step in self.steps[:-1]:
+            X_current = step.transform(X_current)       <span class="c"># حوّل بس</span>
+        name, model = self.steps[-1]
+        return model.predict(X_current)
+
+    def score(self, X, y):
+        return np.mean(self.predict(X) == y)</pre></div>
+
+  <h3>خطوة ٤: ColumnTransformer و FullPipeline</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class TransformerPipeline:                           <span class="c"># سلسلة transformers من غير موديل</span>
+    def __init__(self, steps):
+        self.steps = steps
+    def fit(self, X):
+        for name, step in self.steps:
+            X = step.fit_transform(X)
+        return self
+    def transform(self, X):
+        for name, step in self.steps:
+            X = step.transform(X)
+        return X
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
+
+class ColumnTransformerScratch:
+    def __init__(self, transformers):
+        self.transformers = transformers             <span class="c"># [(name, pipeline, columns), ...]</span>
+    def fit(self, data):
+        for name, pipe, cols in self.transformers:
+            pipe.fit(np.column_stack([data[c] for c in cols]))
+        return self
+    def transform(self, data):
+        out = [pipe.transform(np.column_stack([data[c] for c in cols]))
+               for name, pipe, cols in self.transformers]
+        return np.hstack(out)                        <span class="c"># الزق النتايج جنب بعض</span>
+    def fit_transform(self, data):
+        return self.fit(data).transform(data)
+
+class FullPipeline:
+    def __init__(self, model, numeric_cols, categorical_cols):
+        self.model = model
+        self.numeric_cols, self.categorical_cols = numeric_cols, categorical_cols
+        self.num_pipeline = TransformerPipeline([
+            ("impute", MedianImputer()), ("scale", StandardScaler())])
+        self.cat_encoder = OneHotEncoder(handle_unknown="ignore")
+
+    def _X(self, data, fit):
+        X_num = np.column_stack([data[c] for c in self.numeric_cols])
+        X_cat = np.column_stack([data[c] for c in self.categorical_cols])
+        if fit:
+            return np.hstack([self.num_pipeline.fit_transform(X_num),
+                              self.cat_encoder.fit_transform(X_cat)])
+        return np.hstack([self.num_pipeline.transform(X_num),
+                          self.cat_encoder.transform(X_cat)])
+
+    def fit(self, data):
+        self.model.fit(self._X(data, fit=True), data["target"])
+        return self
+    def predict(self, data):
+        return self.model.predict(self._X(data, fit=False))
+    def score(self, data):
+        return np.mean(self.predict(data) == data["target"])</pre></div>
+  <p class="note">الأصل كاتب <code>fit</code> و<code>predict</code> في <code>FullPipeline</code> كل واحدة لوحدها بالتفصيل؛ أنا جمعت الجزء المشترك في <code>_X</code> عشان تشوف الفرق الوحيد: <code>fit_transform</code> ولا <code>transform</code>. الأصل فيه كمان <code>LogisticRegressionSimple</code> (gradient descent) و<code>DecisionTreeSimple</code> (Gini، thresholds من الـ percentiles) زي اللي بنيتهم في Day 25 وDay 26، وهما اللي بيتحطوا مكان <code>model</code>.</p>
+
+  <h3>خطوة ٥: CV من غير leakage</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def cross_validate_pipeline(pipeline_factory, data, n_folds=5, seed=42):
+    rng = np.random.RandomState(seed)
+    n = len(data["target"])
+    idx = rng.permutation(n)
+    fold_size = n // n_folds
+    scores = []
+    for fold in range(n_folds):
+        val_start = fold * fold_size
+        val_end = val_start + fold_size if fold &lt; n_folds - 1 else n
+        val_idx = idx[val_start:val_end]
+        train_idx = np.concatenate([idx[:val_start], idx[val_end:]])
+        train_data = {k: v[train_idx] for k, v in data.items()}
+        val_data = {k: v[val_idx] for k, v in data.items()}
+
+        pipe = pipeline_factory()          <span class="c"># pipeline جديد في كل fold!</span>
+        pipe.fit(train_data)               <span class="c"># الـ preprocessing بيتعلم من train الـ fold بس</span>
+        scores.append(pipe.score(val_data))
+    return scores</pre></div>
+  <p>ليه <code>pipeline_factory</code> مش pipeline جاهز؟ عشان كل fold يبدأ نضيف من غير إحصائيات fold قبله.</p>
+
+  <h3>خطوة ٦: الـ demos اللي في الملف</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الـ demo</th><th>بيوريك إيه</th></tr>
+    <tr><td class="ltr">demo_data_leakage</td><td>scaler على الداتا كلها ضد train بس، ويطبع الفرق</td></tr>
+    <tr><td class="ltr">demo_pipeline_from_scratch</td><td>scaler + logistic regression، train وtest accuracy</td></tr>
+    <tr><td class="ltr">demo_full_pipeline</td><td>impute + scale + encode + tree على الداتا المختلطة</td></tr>
+    <tr><td class="ltr">demo_cross_validation</td><td>5-fold CV والمتوسط ± الانحراف</td></tr>
+    <tr><td class="ltr">demo_unknown_categories</td><td>مدينة جديدة بتطلع zero vector</td></tr>
+    <tr><td class="ltr">demo_model_comparison</td><td>logistic وأشجار بأعماق 3 و5 و10 بنفس الـ pipeline</td></tr>
+    <tr><td class="ltr">demo_sklearn_pipeline</td><td>نفس الكلام بـ sklearn و GradientBoosting</td></tr>
+    <tr><td class="ltr">demo_experiment_tracking</td><td>log يدوي لـ ٥ configs واختيار الأحسن</td></tr>
+    <tr><td class="ltr">demo_reproducibility</td><td>نفس الـ seed = نفس النتايج</td></tr>
+  </table></div>
+  <details><summary>الناتج المتوقع لجزء الـ unknown categories (محسوب من الكود)</summary><pre class="term">  Known categories: ['chicago', 'houston', 'la', 'new_york']
+  'new_york' encoded: [0. 0. 0. 1.]
+  'seattle' (unknown) encoded: [0. 0. 0. 0.]
+  Unknown category produces zero vector (no crash).</pre>
+  <p>الـ categories مترتبة أبجديًا عشان <code>sorted</code>. وفي جزء الـ reproducibility لازم تشوف <code>Run 1 == Run 2: True</code>. باقي الأرقام (الـ accuracies) سجّلها بنفسك من عندك.</p></details>
+
+  <h3>خطوة ٧: نفس الكلام بـ sklearn (اللي هتستخدمه فعلًا)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import pandas as pd
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.model_selection import cross_val_score
+
+data = make_mixed_data(500)
+df = pd.DataFrame({k: data[k] for k in ["age", "income", "score", "city", "plan"]})
+y = data["target"]
+
+pre = ColumnTransformer([
+    ("num", Pipeline([("impute", SimpleImputer(strategy="median")),
+                      ("scale", StandardScaler())]), ["age", "income", "score"]),
+    ("cat", Pipeline([("impute", SimpleImputer(strategy="most_frequent")),
+                      ("encode", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]),
+     ["city", "plan"]),
+])
+full_pipe = Pipeline([("preprocess", pre),
+                      ("model", GradientBoostingClassifier(n_estimators=100, max_depth=3))])
+
+scores = cross_val_score(full_pipe, df, y, cv=5, scoring="accuracy")
+print(f"5-fold CV: {scores.mean():.3f} +/- {scores.std():.3f}")
+
+import joblib                                     <span class="c"># احفظ الـ artifact كله</span>
+full_pipe.fit(df, y)
+joblib.dump(full_pipe, "pipe.joblib")
+same = joblib.load("pipe.joblib")
+print((same.predict(df) == full_pipe.predict(df)).all())   <span class="c"># True</span></pre></div>
+  <p class="note"><code>sparse_output</code> اسمه كده في نسخ sklearn الحديثة (1.2 وبعدها)؛ في النسخ الأقدم كان اسمه <code>sparse</code>. لو طلعلك error في الاسم، ده السبب.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d35-exercises">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>ColumnTransformer كامل:</b> داتا فيها ٣ أعمدة رقمية و٢ categorical. median + scaling للرقمي، most-frequent + one-hot للـ categorical، ودرّب بـ 5-fold CV.
+      <details><summary>تلميح</summary>استخدم <code>make_mixed_data</code> ومعاها عمود <code>score</code> كعمود رقمي تالت. الكود في خطوة ٧ هو تقريبًا الحل؛ اكتبه من دماغك وقارن.</details></li>
+    <li><b>اعمل leakage بإيدك:</b> fit للـ scaler على الداتا كلها قبل التقسيم، وقارن الـ CV score (leaky) بالـ pipeline (clean). الفرق قد إيه؟
+      <details><summary>تلميح</summary>مع scaler بس غالبًا الفرق صغير، وده طبيعي. عشان تشوف فرق كبير، زوّد خطوة feature selection (زي <code>SelectKBest</code>) على features عشوائية كتير، زي المعمل ١. الفكرة إنك تقيس، مش تفترض.</details></li>
+    <li><b>Serialization:</b> احفظ الـ pipeline بـ <code>joblib.dump</code>، وحمّله في script تاني، واتأكد إن الـ predictions متطابقة.
+      <details><summary>تلميح</summary><code>np.array_equal(p1, p2)</code>. لازم الـ script التاني يقدر يعمل import لأي كلاس custom استخدمته (لأن joblib بيحفظ reference للكلاس مش الكود بتاعه).</details></li>
+    <li><b>Polynomial features:</b> ضيف transformer custom يعمل polynomial features (degree 2) لأهم عمودين رقميين. يتحط فين في الـ pipeline؟
+      <details><summary>الإجابة</summary>جوه فرع الأعمدة الرقمية: <b>بعد</b> الـ imputation (عشان الـ NaN ميتضربش) و<b>قبل</b> أو بعد الـ scaling حسب الموديل؛ الشائع بعد الـ impute وقبل الـ scale عشان الـ features الجديدة نفسها تتعمل لها scaling. المهم إنها جوه الـ pipeline مش برّاه.</details></li>
+    <li><b>MLflow:</b> سجّل ٥ تجارب بـ hyperparameters مختلفة، وافتح <code>mlflow ui</code> وقارن واختار الأحسن.
+      <details><summary>تلميح</summary><code>pip install mlflow</code>، وبعدين loop على ٥ configs كل واحدة في <code>with mlflow.start_run():</code>. الـ UI بيفتح على localhost.</details></li>
+    <li><b>إضافة مني · endpoint آمن:</b> اكتب <code>predict_one(payload: dict)</code> بتحمّل <code>pipe.joblib</code> مرة واحدة، وتتأكد من الـ schema (الأعمدة موجودة، الأنواع صح، age بين 0 و120 أو None)، وبعدين ترجع prediction. اختبرها بـ ٣ payloads: سليم، ناقصه <code>plan</code>، وفيه <code>city="seattle"</code>. ده نفس شكل الـ endpoint اللي هتحطه ورا FastAPI.
+      <details><summary>تلميح</summary>الـ validation يرجّع error واضح لو عمود ناقص (متسيبش الموديل يتلخبط بهدوء). المدينة الجديدة لازم تعدّي عادي بفضل <code>handle_unknown</code>. حوّل الـ dict لـ <code>pd.DataFrame([payload])</code> قبل <code>predict</code>.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d35-extra">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس مقالوش صريح</h2></div>
+  <h3>القاعدة الذهبية في سطر</h3>
+  <p>أي حاجة بتتعلم رقم من الداتا (median، mean، vocabulary، الـ categories، اختيار features، target encoding) هي <b>جزء من الموديل</b>، ولازم تتعمل fit جوه التدريب بس. لو بتسأل «هل الخطوة دي محتاجة fit؟» والإجابة أيوه، يبقى مكانها جوه الـ pipeline.</p>
+  <h3>أخطاء بتحصل كتير</h3>
+  <ul class="checklist">
+    <li>• <code>fit_transform</code> على الـ test بالغلط بدل <code>transform</code>. الكود بيشتغل من غير أي error، وده اللي يخليها خطيرة.</li>
+    <li>• Target encoding محسوب على الداتا كلها قبل الـ CV: من أقوى أنواع الـ leakage لأنه بيستخدم الـ target نفسه.</li>
+    <li>• Feature من المستقبل: زي «عدد المرات اللي العميل اشتكى» محسوب لحد النهاردة وانت بتتوقع churn من شهر فات. ده leakage زمني، والـ pipeline لوحده مش هيلقطه (هنرجعله في Day 37).</li>
+    <li>• التقسيم بعد تكرار الصفوف: لو نفس العميل موجود في train وtest، الموديل «حافظه». قسّم بالـ <code>GroupKFold</code> على الـ user id.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li>• <b>الـ tokenizer والـ chat template</b> هما الـ «preprocessing» بتاع الـ LLM. لو عملت fine-tuning بـ template وعملت serving بـ template تاني، ده training/serving skew بالظبط، والموديل بيبوظ بهدوء.</li>
+    <li>• <b>الـ RAG ingestion pipeline</b>: الـ chunking والـ embedding model لازم يبقوا نفسهم وقت الفهرسة ووقت السؤال. لو غيّرت الـ embedding model لازم تعيد فهرسة كل الـ documents.</li>
+    <li>• <b>Benchmark contamination</b>: لو أسئلة الـ eval دخلت في داتا التدريب، الدرجة متنفخة. ده الـ data leakage في نسخته الكبيرة.</li>
+    <li>• <b>Experiment tracking للـ prompts</b>: نفس منطق MLflow: سجّل نسخة الـ prompt والموديل والـ temperature ونتيجة الـ eval لكل تجربة، وإلا مش هتعرف أنهي تغيير حسّن إيه.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d35-quiz">
+  <div class="station-head"><span class="tag">11</span><h2>كويز</h2></div>
+  <div class="quiz" id="d35-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d35-done">
+  <div class="station-head"><span class="tag">12</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح الـ data leakage بمثال، وشفت داتا عشوائية بتطلع accuracy كذابة في المعمل ١</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> فاهم الفرق بين <code>fit_transform</code> و<code>transform</code> ومين بيتنادي إمتى</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> أقدر أكتب ColumnTransformer وعارف ليه <code>handle_unknown="ignore"</code></label></li>
+    <li><label><input type="checkbox" data-ck="c4"> عارف الأربع حاجات بتاعة الـ reproducibility ودور MLflow وDVC والـ registry</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> كتبت PipelineFromScratch وFullPipeline بإيدي وشغّلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c7" id="d35-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Pipeline</td><td>أي موديل tabular في الـ production، الـ artifact اللي بيتشحن</td></tr>
+    <tr><td>Data leakage</td><td>نتايج CV متنفخة، benchmark contamination في الـ LLMs</td></tr>
+    <tr><td>ColumnTransformer</td><td>أي داتا فيها أرقام وcategories مع بعض</td></tr>
+    <tr><td>Experiment tracking</td><td>MLflow وwandb، ومقارنة نسخ الـ prompts والموديلات</td></tr>
+    <tr><td>DVC / Model registry</td><td>رجوع لنسخة قديمة، audits، rollback</td></tr>
+    <tr><td>Training/serving skew</td><td>الـ chat templates والـ tokenizers وembedding models في الـ RAG</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Naive Bayes. أبسط classifier احتمالي، فرضيته «غلط» ومع ذلك بيكسب في تصنيف النصوص. وهتشوفه بيتحط جوه <code>Pipeline</code> مع <code>CountVectorizer</code>، يعني اللي اتعلمته النهاردة هيتستخدم على طول.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F13-ml-pipelines" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/13-ml-pipelines</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d35-root');
+
+// roadmap
+const rm=$('d35-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===13)s.className='now';rm.appendChild(s)}
+
+function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+
+// ================= Lab 1: feature-selection leakage on pure noise =================
+const c1=$('d35-c1'),x1=AI.setupCanvas(c1),W1=+c1.dataset.w,H1=+c1.dataset.h;
+let res1=null,baseSeed=11;
+function trial(seed,n,p,k){
+  const r=rng(seed);
+  const X=new Float64Array(n*p);for(let i=0;i<n*p;i++)X[i]=gauss(r);
+  const y=new Int8Array(n);for(let i=0;i<n;i++)y[i]=i%2;
+  // shuffle labels
+  for(let i=n-1;i>0;i--){const j=Math.floor(r()*(i+1));const t=y[i];y[i]=y[j];y[j]=t}
+  const nTr=Math.floor(n*0.6);
+  function topK(rows){
+    const sc=new Float64Array(p);
+    let my=0;rows.forEach(i=>my+=y[i]);my/=rows.length;
+    for(let j=0;j<p;j++){let mx=0;rows.forEach(i=>mx+=X[i*p+j]);mx/=rows.length;
+      let sxy=0,sxx=0;rows.forEach(i=>{const dx=X[i*p+j]-mx;sxy+=dx*(y[i]-my);sxx+=dx*dx});
+      sc[j]=Math.abs(sxy)/Math.sqrt(sxx+1e-12)}
+    return Array.from(sc.keys()).sort((a,b)=>sc[b]-sc[a]).slice(0,k);
+  }
+  const all=[...Array(n).keys()],tr=all.slice(0,nTr),te=all.slice(nTr);
+  function acc(feats){
+    const c=[new Float64Array(k),new Float64Array(k)],cnt=[0,0];
+    tr.forEach(i=>{cnt[y[i]]++;feats.forEach((j,q)=>c[y[i]][q]+=X[i*p+j])});
+    for(let q=0;q<k;q++){c[0][q]/=cnt[0]||1;c[1][q]/=cnt[1]||1}
+    let ok=0;te.forEach(i=>{let d0=0,d1=0;feats.forEach((j,q)=>{const v=X[i*p+j];d0+=(v-c[0][q])**2;d1+=(v-c[1][q])**2});if((d1<d0?1:0)===y[i])ok++});
+    return ok/te.length;
+  }
+  return [acc(topK(all)),acc(topK(tr))];
+}
+function run1(){
+  const p=+$('d35-p').value,n=+$('d35-n').value,k=+$('d35-k').value;
+  $('d35-pv').textContent=p;$('d35-nv').textContent=n+' (60% train)';$('d35-kv').textContent=k;
+  const L=[],C=[];for(let s=0;s<20;s++){const [a,b]=trial(baseSeed*1000+s,n,p,k);L.push(a);C.push(b)}
+  res1={L,C};draw1();
+}
+function draw1(){
+  if(!res1)return;const {L,C}=res1;
+  x1.clearRect(0,0,W1,H1);
+  const PL=70,PR=16,xp=v=>PL+v*(W1-PL-PR);
+  x1.strokeStyle=css('--grid');x1.lineWidth=1;
+  for(let v=0;v<=1.0001;v+=0.1){x1.beginPath();x1.moveTo(xp(v),10);x1.lineTo(xp(v),H1-30);x1.stroke()}
+  x1.fillStyle=css('--muted');x1.font='12px JetBrains Mono, monospace';x1.textAlign='center';
+  for(let v=0;v<=1.0001;v+=0.2)x1.fillText(v.toFixed(1),xp(v),H1-12);
+  x1.strokeStyle=css('--ink');x1.setLineDash([5,4]);x1.lineWidth=1.5;x1.beginPath();x1.moveTo(xp(.5),6);x1.lineTo(xp(.5),H1-30);x1.stroke();x1.setLineDash([]);
+  x1.fillStyle=css('--ink');x1.fillText('chance',xp(.5),20);
+  const rows=[['leaky',L,css('--bad'),70],['clean',C,css('--ok'),150]];
+  rows.forEach(([lab,arr,col,yy])=>{
+    x1.textAlign='left';x1.fillStyle=col;x1.font='bold 13px JetBrains Mono, monospace';x1.fillText(lab,6,yy+4);
+    const r=rng(5);arr.forEach(v=>{x1.globalAlpha=.75;x1.beginPath();x1.arc(xp(v),yy+(r()-.5)*30,5,0,7);x1.fill()});x1.globalAlpha=1;
+    const m=arr.reduce((a,b)=>a+b,0)/arr.length;x1.strokeStyle=col;x1.lineWidth=3;x1.beginPath();x1.moveTo(xp(m),yy-24);x1.lineTo(xp(m),yy+24);x1.stroke();
+  });
+  x1.textAlign='left';
+  const ml=L.reduce((a,b)=>a+b,0)/L.length,mc=C.reduce((a,b)=>a+b,0)/C.length;
+  $('d35-la').textContent=f(ml);$('d35-ca').textContent=f(mc);
+  const v=$('d35-v1');
+  if(ml-mc>0.12){v.textContent='الـ leaky بيقول '+Math.round(ml*100)+'% على داتا مفيهاش أي إشارة. ده كله leakage.';v.style.color=css('--bad')}
+  else{v.textContent='الفرق صغير هنا. زوّد عدد الـ features أو قلل العينات وشوف الكذبة بتكبر.';v.style.color=css('--muted')}
+}
+['d35-p','d35-n','d35-k'].forEach(id=>$(id).addEventListener('change',run1));
+['d35-p','d35-n','d35-k'].forEach(id=>$(id).addEventListener('input',()=>{$('d35-pv').textContent=$('d35-p').value;$('d35-nv').textContent=$('d35-n').value+' (60% train)';$('d35-kv').textContent=$('d35-k').value}));
+$('d35-run1').addEventListener('click',()=>{baseSeed++;run1()});
+run1();
+
+// ================= Lab 2: pipeline stepper =================
+const TR=[[25,30,'cairo',0],[null,48,'alex',1],[41,75,'cairo',1],[33,38,'giza',0],[52,90,'alex',1],[29,35,'giza',0]];
+const NEW=[[30,52,'cairo'],[null,90,'alex'],[45,40,'seattle']];
+const tb=$('d35-train');
+tb.innerHTML='<tr><th>age</th><th>income (k)</th><th>city</th><th>target</th></tr>'+TR.map(r=>'<tr><td class="ltr">'+(r[0]===null?'NaN':r[0])+'</td><td class="ltr">'+r[1]+'</td><td class="ltr">'+r[2]+'</td><td class="ltr">'+r[3]+'</td></tr>').join('');
+const STEPS=['impute','scale','encode','model'];
+const stepsBox=$('d35-steps');
+STEPS.forEach((s,i)=>{const d=document.createElement('div');d.id='d35-st'+i;d.innerHTML='<b>'+(i+1)+'. '+s+'</b><span id="d35-sv'+i+'">لسه ما اتعملش fit</span>';stepsBox.appendChild(d)});
+let ST=null,busy=false;
+const logEl=$('d35-log');
+function log(t,col){const s=document.createElement('span');s.textContent=t+'\n';if(col)s.style.color=col;logEl.appendChild(s)}
+function hl(i,col){STEPS.forEach((_,j)=>{const d=$('d35-st'+j);d.style.borderColor=j===i?col:'';d.style.borderWidth=j===i?'2px':''})}
+const median=a=>{const s=a.slice().sort((x,y)=>x-y),m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2};
+const sleep=ms=>new Promise(r=>setTimeout(r,matchMedia('(prefers-reduced-motion:reduce)').matches?0:ms));
+async function doFit(){
+  if(busy)return;busy=true;logEl.textContent='';log('pipe.fit(train)  # 6 rows');
+  const ages=TR.map(r=>r[0]).filter(v=>v!==null),inc=TR.map(r=>r[1]);
+  const med=[median(ages),median(inc)];
+  hl(0,css('--vec-a'));$('d35-sv0').textContent='median age='+med[0]+'، income='+med[1];log('impute.fit_transform → medians = ['+med+']');await sleep(600);
+  const filled=TR.map(r=>[r[0]===null?med[0]:r[0],r[1]]);
+  const mean=[0,1].map(j=>filled.reduce((a,r)=>a+r[j],0)/filled.length);
+  const std=[0,1].map(j=>Math.sqrt(filled.reduce((a,r)=>a+(r[j]-mean[j])**2,0)/filled.length));
+  hl(1,css('--vec-a'));$('d35-sv1').textContent='mean=['+mean.map(v=>f(v,1))+'] std=['+std.map(v=>f(v,1))+']';log('scale.fit_transform  → mean=['+mean.map(v=>f(v,2))+'], std=['+std.map(v=>f(v,2))+']');await sleep(600);
+  const cats=[...new Set(TR.map(r=>r[2]))].sort();
+  hl(2,css('--vec-a'));$('d35-sv2').textContent='categories=['+cats.join(', ')+']';log('encode.fit_transform → categories = '+JSON.stringify(cats));await sleep(600);
+  const feat=r=>{const a=r[0]===null?med[0]:r[0];return[(a-mean[0])/std[0],(r[1]-mean[1])/std[1]].concat(cats.map(c=>c===r[2]?1:0))};
+  const Z=TR.map(feat),cen=[0,1].map(c=>{const rows=Z.filter((_,i)=>TR[i][3]===c);return rows[0].map((_,q)=>rows.reduce((a,r)=>a+r[q],0)/rows.length)});
+  hl(3,css('--vec-a'));$('d35-sv3').textContent='nearest centroid: 2 centroids';log('model.fit            → centroids لكل class (nearest centroid)');await sleep(500);
+  hl(-1);ST={med,mean,std,cats,cen};log('✓ fitted. كل الأرقام دي اتحفظت جوه الـ pipeline.',css('--ok'));busy=false;
+}
+async function doPred(){
+  if(busy)return;busy=true;const row=NEW[+$('d35-row').value];logEl.textContent='';
+  log('pipe.predict(['+(row[0]===null?'NaN':row[0])+', '+row[1]+', "'+row[2]+'"])');
+  if(!ST){log('NotFittedError: لازم تعمل fit الأول. الـ pipeline لسه معندوش median ولا mean.',css('--bad'));busy=false;return}
+  hl(0,css('--vec-b'));const a=row[0]===null?ST.med[0]:row[0];log('impute.transform → age='+a+(row[0]===null?'  (من الـ median المحفوظ، مش من الصف ده)':''));await sleep(600);
+  hl(1,css('--vec-b'));const z=[(a-ST.mean[0])/ST.std[0],(row[1]-ST.mean[1])/ST.std[1]];log('scale.transform  → ['+z.map(v=>f(v,2))+']  (بالـ mean/std بتوع التدريب)');await sleep(600);
+  hl(2,css('--vec-b'));
+  if(!ST.cats.includes(row[2])&&!$('d35-hu').checked){log('ValueError: Found unknown categories [\''+row[2]+'\'] during transform',css('--bad'));log('الـ production وقع. فعّل handle_unknown="ignore".',css('--bad'));hl(2,css('--bad'));busy=false;return}
+  const oh=ST.cats.map(c=>c===row[2]?1:0);log('encode.transform → '+JSON.stringify(oh)+(ST.cats.includes(row[2])?'':'  ← zero vector، مدينة جديدة'));await sleep(600);
+  hl(3,css('--vec-b'));const v=z.concat(oh);const d=ST.cen.map(c=>c.reduce((s,ci,q)=>s+(v[q]-ci)**2,0));const p=d[1]<d[0]?1:0;
+  log('model.predict    → class '+p+'   (distances: '+d.map(x=>f(x,2)).join(' / ')+')',css('--ok'));await sleep(400);hl(-1);busy=false;
+}
+$('d35-fitb').addEventListener('click',doFit);
+$('d35-predb').addEventListener('click',doPred);
+$('d35-resetb').addEventListener('click',()=>{if(busy)return;ST=null;logEl.textContent='';hl(-1);STEPS.forEach((_,i)=>$('d35-sv'+i).textContent='لسه ما اتعملش fit')});
+
+// ================= Lab 3: CV folds =================
+const c3=$('d35-c3'),x3=AI.setupCanvas(c3),W3=+c3.dataset.w,H3=+c3.dataset.h;
+let mode3='pipe',fold=0,playT=null;const N3=20,K3=5;
+function draw3(){
+  x3.clearRect(0,0,W3,H3);
+  const PL=64,cw=(W3-PL-10)/N3,rh=34,top=30;
+  x3.font='12px JetBrains Mono, monospace';x3.fillStyle=css('--muted');x3.textAlign='left';
+  x3.fillText('samples 1..20',PL,16);
+  let seenTotal=0;
+  for(let k=0;k<K3;k++){
+    const y=top+k*(rh+12),cur=k===fold;
+    x3.fillStyle=cur?css('--ink'):css('--muted');x3.font=(cur?'bold ':'')+'12px JetBrains Mono, monospace';x3.fillText('fold '+(k+1),4,y+rh/2+4);
+    for(let i=0;i<N3;i++){
+      const isVal=Math.floor(i/(N3/K3))===k,x=PL+i*cw;
+      x3.globalAlpha=cur?1:.35;
+      x3.fillStyle=isVal?css('--vec-b'):css('--vec-a');x3.fillRect(x+1,y,cw-2,rh);
+      const scalerSaw=mode3==='leak'||!isVal;
+      if(isVal&&scalerSaw){x3.strokeStyle=css('--bad');x3.lineWidth=3;x3.strokeRect(x+2.5,y+1.5,cw-5,rh-3);if(k<=fold)seenTotal++}
+      x3.globalAlpha=1;
+    }
+    if(cur){
+      x3.strokeStyle=css('--ink');x3.lineWidth=1.5;x3.setLineDash([4,3]);
+      if(mode3==='leak'){x3.strokeRect(PL-2,y-4,N3*cw+4,rh+8)}
+      else{const a=k*(N3/K3),b=a+N3/K3;if(a>0)x3.strokeRect(PL-2,y-4,a*cw+4,rh+8);if(b<N3)x3.strokeRect(PL+b*cw-2,y-4,(N3-b)*cw+4,rh+8)}
+      x3.setLineDash([]);
+    }
+  }
+  x3.fillStyle=css('--muted');x3.font='12px "IBM Plex Sans Arabic", sans-serif';x3.textAlign='right';
+  x3.fillText('أزرق = train · برتقالي = validation · الإطار المتقطع = اللي الـ scaler عمل عليه fit',W3-6,H3-6);x3.textAlign='left';
+  $('d35-fold').textContent=(fold+1)+' / '+K3;$('d35-seen').textContent=seenTotal;
+  const v=$('d35-v3');
+  if(mode3==='leak'){v.textContent='الـ scaler اتعمله fit مرة واحدة على الـ ٢٠ عينة، فكل fold validation فيه «شاف» نفسه وقت الـ fit.';v.style.color=css('--bad')}
+  else{v.textContent='كل fold بيعمل fit جديد على الـ train بتاعه بس. الـ validation فاضل غريب، زي الـ production.';v.style.color=css('--ok')}
+}
+function setMode3(m){mode3=m;$('d35-mPipe').classList.toggle('primary',m==='pipe');$('d35-mLeak').classList.toggle('primary',m==='leak');draw3()}
+$('d35-mPipe').addEventListener('click',()=>setMode3('pipe'));
+$('d35-mLeak').addEventListener('click',()=>setMode3('leak'));
+$('d35-stepf').addEventListener('click',()=>{fold=(fold+1)%K3;draw3()});
+$('d35-playf').addEventListener('click',()=>{clearInterval(playT);fold=0;draw3();playT=setInterval(()=>{if(!document.body.contains(c3)){clearInterval(playT);return}fold++;if(fold>=K3){fold=K3-1;clearInterval(playT)}draw3()},matchMedia('(prefers-reduced-motion:reduce)').matches?10:900)});
+draw3();
+
+// ================= Quiz =================
+const Q=[
+ ['يعني إيه data leakage في الـ ML pipelines؟',['features بتقع وقت الـ encoding','الموديل بطيء جدًا في معالجة الداتا','معلومات من الـ test set أو من المستقبل بتدخل في عملية التدريب','داتا بتتمسح بالغلط وقت الـ preprocessing'],2,'الـ leakage هو استخدام معلومة مش هتبقى متاحة وقت الـ prediction. مثال: حساب mean/std للـ scaler على الداتا كلها ومعاها الـ test.'],
+ ['ليه عمل fit للـ scaler على الداتا كلها قبل التقسيم يعتبر leaky؟',['إحصائيات الـ scaler (mean، std) فيها داتا الـ test، فالموديل بيشوف معلومة من الـ test بشكل غير مباشر','الـ scaling بيغير توزيع الداتا','الـ scaling المفروض يتعمل على الـ test بس','الـ fit بياخد وقت طويل على الداتا الكبيرة'],0,'لما الـ scaler يتعلم من كل الداتا، المتوسط والانحراف بيبقى فيهم معلومات من عينات الـ test، والتدريب بيتحرك بإحصائيات الـ test.'],
+ ['في sklearn، إيه الفرق بين fit_transform و transform على خطوة في الـ pipeline؟',['هما نفس الحاجة، الاتنين بيعملوا fit وtransform','fit_transform بيتعلم البارامترات من الداتا ويطبق التحويل؛ transform بيطبق البارامترات اللي اتعلمت قبل كده بس','transform للـ train و fit_transform للـ test','fit_transform أبطأ بس أدق'],1,'fit_transform بيحسب الإحصائيات ويحوّل. transform بيطبق المحفوظ من غير ما يحسب تاني. على الـ test لازم transform عشان متعملش leakage.'],
+ ['ليه الـ ColumnTransformer ضروري للداتا الحقيقية؟',['بيخلي الـ pipeline يشتغل parallel على كذا CPU','بيحوّل كل الأعمدة لنفس النوع','بيطبق preprocessing مختلف على الأعمدة الرقمية والـ categorical جوه نفس الـ pipeline','بيشيل الأعمدة اللي فيها missing تلقائيًا'],2,'الداتا الحقيقية فيها أنواع مختلطة: الرقمي محتاج scaling والـ categorical محتاج encoding، والـ ColumnTransformer بيوجّه كل مجموعة أعمدة للتحويل المناسب.'],
+ ['موديل في الـ production جاله قيمة categorical عمره ما شافها (new_category). الـ pipeline المفروض يعمل إيه؟',['يحوّل القيمة المجهولة لرقم صفر','يتعامل معاها بهدوء، مثلًا bucket اسمه unknown أو الـ global mean في الـ target encoding','يتجاهل الصف ومايرجعش prediction','يعيد تدريب الموديل كله من الأول'],1,'الـ pipelines القوية بتتوقع categories جديدة في الـ production: fallback للـ unknown في الـ one-hot، أو الـ global mean في الـ target encoding.'],
+ ['(سؤال مني) اخترت أحسن 20 feature بالـ correlation مع الـ target على الداتا كلها، وبعدين عملت 5-fold CV على الـ features دي. النتيجة؟',['النتيجة سليمة لأن الـ CV بيحمي','النتيجة متفائلة لأن اختيار الـ features شاف الـ validation folds','النتيجة متشائمة','مفيش فرق لأن الـ selection مش بيتعلم حاجة'],1,'اختيار الـ features بيتعلم من الداتا، فلازم يتعمل جوه كل fold. في المعمل ١ شفت داتا عشوائية بتطلع فوق 50% بالطريقة دي.'],
+ ['(سؤال مني) عملت fine-tuning لـ LLM بـ chat template معين، وفي الـ serving الفريق استخدم template تاني. ده اسمه إيه؟',['Overfitting','Data leakage','Training/serving skew','Class imbalance'],2,'نفس الموديل بيشوف input متجهّز بطريقة مختلفة عن التدريب. الحل نفس فكرة النهاردة: خطوة preprocessing واحدة (الـ tokenizer والـ template) متشحنة مع الموديل.']
+];
+AI.quiz($('d35-quizBox'),Q,5,()=>{const c=$('d35-ckq');if(!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(35,root);
+
+AI.onTheme(()=>{if(!document.body.contains(c1))return false;draw1();draw3()});
+})();
+</script>

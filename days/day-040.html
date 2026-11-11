@@ -1,0 +1,648 @@
+<div class="day" id="d40-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 18 · Feature Selection</span>
+  <h1>اليوم ٤٠: features أكتر مش معناها موديل أحسن</h1>
+  <p class="lede">عندك 500 feature، والموديل بطيء وبيعمل overfitting ومحدش فاهم اتعلم إيه. بتزوّد features وهو يسوء. النهاردة هتشوف بعينك الـ <b>curse of dimensionality</b> بيبوّظ المسافات إزاي، وتكتشف ليه الـ <b>mutual information</b> بيشوف علاقات الـ correlation عامي عنها، وتشغّل L1 وRFE وpermutation importance على داتا إنت عارف الحقيقة بتاعتها، وبعدين تكتب الخمس طرق من الصفر.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Imbalanced Data</b></span>
+    <span>بعده: <b>ML System Design</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d40-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d40-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 39) اتعلمنا <b>Imbalanced Data</b>. جاوب في دماغك الأول.</p>
+  <details><summary>١. الـ SMOTE بيعمل النقطة الجديدة إزاي؟</summary>بيختار نقطة minority وجار ليها من أقرب k جيران من الـ minority، ويحط نقطة على الخط بينهم: <span class="ltr">x + t·(neighbor − x)</span> و<span class="ltr">t</span> عشوائي بين 0 و1.</details>
+  <details><summary>٢. ليه منظبطش الـ threshold على الـ test set؟</summary>لأن كده الـ test بقى جزء من التدريب، والرقم اللي هتطلّعه متفائل. بنظبطه على validation من التدريب، والـ test نسيبه للآخر.</details>
+  <details><summary>٣. امبارح قلنا «SMOTE قبل الـ split = leakage». تفتكر لو اخترت أحسن 10 features من 1000 على الداتا كلها وبعدين قسمت، ده نفس المشكلة؟</summary>أيوه. الاختيار نفسه «شاف» الـ test، فهتختار features بالصدفة متماشية مع الـ test، والنتيجة هتبان أحسن من الحقيقة. الـ feature selection جزء من التدريب ولازم يتعمل جوه التدريب أو جوه كل fold. هنرجع للنقطة دي في الإضافة.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>تسخين على الـ Imbalanced Data</div>
+    <div><b>10 min</b>الـ curse of dimensionality + المعمل ١</div>
+    <div><b>15 min</b>Filter methods: variance وMI + المعمل ٢</div>
+    <div><b>15 min</b>Wrapper وEmbedded وPermutation + المعمل ٣</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d40-curse">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: لعنة الأبعاد</h2></div>
+  <p>كل ما تزوّد features، حجم الفضاء بيكبر <b>بشكل أُسّي</b>. النقط بتبقى متفرقة، والمسافات بين النقط بتقرّب من بعض (أقرب جار وأبعد جار تقريبًا نفس المسافة)، والموديل بيحتاج داتا أكتر بكتير عشان يلاقي أنماط حقيقية. الـ features اللي هي noise بتغرّق الـ features المفيدة، والـ overfitting بيبقى هو الطبيعي.</p>
+  <p>تخيّل بتدوّر على صاحبك في شارع (بُعد واحد): سهل. في ميدان (بُعدين): أصعب. في عمارة ١٠٠ دور (٣ أبعاد): أصعب كتير. ومع 500 بُعد، كل الناس «بعيدين» عن بعض بنفس الدرجة تقريبًا.</p>
+  <p>الـ feature selection هو العلاج: شيل الـ noise، شيل التكرار، وخلّي الـ features اللي فيها معلومة فعلًا عن الـ target. النتيجة: تدريب أسرع، generalization أحسن، وموديل تقدر تشرحه. الهدف مش إنك تستخدم كل المعلومات المتاحة، الهدف إنك تستخدم <b>المعلومات الصح</b>.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: المسافات بتفقد معناها</h3>
+      <p>عندنا 300 نقطة عشوائية في مكعب <span class="ltr">[0,1]^d</span> ونقطة سؤال. الرسمة بتوري توزيع المسافات من نقطة السؤال لكل النقط، مقسومة على أبعد مسافة.</p>
+      <div class="note"><strong>جرب:</strong> في بُعد واحد أو اتنين المسافات متفرقة من 0 لـ 1: فيه «قريب» وفيه «بعيد». زوّد الأبعاد لـ 100 و1000 وشوف كل المسافات بتتلم في عمود واحد قريب من 1. الـ contrast (الفرق بين أبعد وأقرب نسبةً لأقرب) بيقع. الـ k-NN والـ LOF (Day 28 وامبارح التاني) بيعتمدوا على «مين أقرب»، فلما الفرق ده يختفي بيضعفوا.</div>
+      <label style="display:grid;gap:2px">عدد الأبعاد d = <b class="mono" id="d40-dv">2</b><input type="range" id="d40-d" min="0" max="9" step="1" value="1"></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d40-c1" width="520" height="260" aria-label="هستوجرام المسافات حسب عدد الأبعاد"></canvas>
+      <div class="readout">
+        <div><small>أقرب / أبعد</small><b id="d40-mm">-</b></div>
+        <div><small>contrast (max−min)/min</small><b id="d40-ct">-</b></div>
+      </div>
+      <div class="verdict" id="d40-v1"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d40-filter">
+  <div class="station-head"><span class="tag">02</span><h2>٣ عائلات، وأولهم الـ Filter</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>العيلة</th><th>بتعمل إيه</th><th>أمثلة</th><th>الميزة / العيب</th></tr>
+    <tr><td><b>Filter</b></td><td>بتدّي score لكل feature لوحدها بمقياس إحصائي، من غير موديل</td><td>Variance threshold، Mutual information، Chi-squared، Correlation filtering</td><td>سريعة جدًا / مش بتشوف التفاعل بين الـ features</td></tr>
+    <tr><td><b>Wrapper</b></td><td>بتدرّب موديل عشان تقيّم مجموعات features، والـ score هو أداء الموديل</td><td>RFE، Forward selection، Backward elimination</td><td>نتايج أحسن / غالية لأنها بتدرّب مرات كتير</td></tr>
+    <tr><td><b>Embedded</b></td><td>الاختيار بيحصل جوه التدريب نفسه</td><td>L1 / Lasso، أهمية الشجر، Elastic Net</td><td>تدريب واحد / مربوطة بنوع الموديل</td></tr>
+  </table></div>
+  <p>تشبيه: إنت بتختار لاعيبة لفريق. الـ <b>Filter</b>: تقيس سرعة كل لاعب لوحده بساعة. الـ <b>Wrapper</b>: تلعّب تشكيلات مختلفة ماتشات كاملة وتشوف مين بيكسب. الـ <b>Embedded</b>: المدرب بيختار وهو بيدرّب، اللي مش بيلعب بيقعد على الدكة لوحده.</p>
+
+  <h3>Variance Threshold</h3>
+  <p>أبسط filter. لو feature تقريبًا مش بتتغير بين العينات، يبقى مفيهاش معلومة. feature قيمتها 0.0 في 999 من 1000 عينة؟ الـ variance بتاعها قريبة من الصفر، ومفيش موديل هيقدر يفرّق بيها بين الـ classes. شيلها.</p>
+  <div class="formula">variance(x) = mean( (x − mean(x))² )      drop لو variance &lt; threshold (مثلًا 0.01)</div>
+  <p>مش بتبص على الـ target خالص. استخدمها كخطوة preprocessing قبل أي حاجة: بتشيل الـ features الميتة ببلاش تقريبًا. <b>بس خد بالك:</b> feature ممكن الـ variance بتاعها عالية وهي noise صافي. يعني الـ variance threshold <b>ضروري بس مش كفاية</b>. (هتشوف ده في المعمل ٣.)</p>
+
+  <h3>Mutual Information</h3>
+  <p>بيقيس: لو عرفت قيمة الـ feature X، الشك بتاعك في الـ target Y هيقل قد إيه؟</p>
+  <div class="formula">I(X; Y) = Σₓ Σᵧ p(x, y) · log[ p(x, y) / (p(x) · p(y)) ]</div>
+  <p>لو X وY مستقلين، <span class="ltr">p(x,y) = p(x)·p(y)</span>، فالـ log بيبقى صفر والـ MI = 0. وكل ما X بتقول عن Y أكتر، الـ MI بيكبر.</p>
+  <p><b>الميزة الكبيرة على الـ correlation:</b> بيلقط العلاقات الـ <b>nonlinear</b>. feature ممكن الـ correlation بتاعها مع الـ target صفر، والـ MI عالي، لأن العلاقة تربيعية أو دورية. الـ correlation زي واحد بيدوّر على «خط مستقيم» بس. الـ MI بيسأل: «فيه أي نمط؟».</p>
+  <p>للـ features المتصلة، بنقسمها لـ bins الأول (histogram). عدد الـ bins بيأثر: قليل = بتضيّع معلومات، كتير = بتزوّد noise. اختيارات مشهورة: <span class="ltr">√n</span> bins أو قاعدة Sturges <span class="ltr">(1 + log₂ n)</span>.</p>
+  <p>الخطوات: قسّم X لـ bins ← احسب الـ joint distribution <span class="ltr">p(x,y)</span> ← احسب الـ MI ← رتّب الـ features ← خد أحسن K.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: الـ correlation عامي، والـ MI شايف</h3>
+      <p>اختار شكل العلاقة بين X وY. الشمال scatter، واليمين نفس الداتا بعد ما اتقسمت لـ bins (كل مربع لونه = عدد النقط فيه، يعني <span class="ltr">p(x,y)</span>). الـ Pearson r والـ MI بيتحسبوا live على 600 نقطة.</p>
+      <div class="note"><strong>جرب:</strong> «linear»: الاتنين عاليين. «quadratic» و«periodic»: الـ r قريب من صفر والـ MI عالي. «noise»: الاتنين قريبين من صفر، بس زوّد الـ bins لـ 30 وشوف الـ MI بيطلع شوية <b>من غير أي علاقة</b>: ده الـ noise بتاع التقدير لما الـ bins تبقى كتير.</div>
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">العلاقة:
+        <select id="d40-rel"><option value="lin">linear: y = x</option><option value="quad" selected>quadratic: y = x²</option><option value="sin">periodic: y = sin(3x)</option><option value="noise">noise: مفيش علاقة</option></select></label>
+      <label style="display:grid;gap:2px">الـ noise = <b class="mono" id="d40-nzv">0.2</b><input type="range" id="d40-nz" min="0" max="1.5" step="0.05" value="0.2"></label>
+      <label style="display:grid;gap:2px">عدد الـ bins = <b class="mono" id="d40-bv">10</b><input type="range" id="d40-b" min="2" max="30" step="1" value="10"></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d40-c2" width="520" height="260" aria-label="scatter وهيت ماب للـ bins"></canvas>
+      <div class="readout">
+        <div><small>Pearson r</small><b id="d40-r">-</b></div>
+        <div><small>MI (nats)</small><b id="d40-mi">-</b></div>
+      </div>
+      <div class="verdict" id="d40-v2"></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d40-wrap">
+  <div class="station-head"><span class="tag">03</span><h2>RFE وL1 وأهمية الشجر والـ Permutation</h2></div>
+  <h3>Recursive Feature Elimination (RFE)</h3>
+  <p>Wrapper بيستخدم أهمية الـ features في الموديل نفسه عشان يقلّم تدريجيًا:</p>
+  <ol class="ex">
+    <li>درّب الموديل على كل الـ features.</li>
+    <li>رتّبهم بالأهمية (الـ coefficients في الموديلات الـ linear، أو تقليل الـ impurity في الشجر).</li>
+    <li>شيل الأضعف (واحدة أو أكتر).</li>
+    <li>كرّر لحد ما يفضل العدد اللي عايزه.</li>
+  </ol>
+  <p>الـ RFE بيشوف التفاعل بين الـ features لأن الموديل بيشوف الباقيين مع بعض. لما تشيل feature، أهمية الباقيين بتتغير (لو شلت واحدة من اتنين متشابهين، التانية أهميتها بتطلع). عشان كده هو أدق من الـ filter. <b>التمن:</b> بتدرّب <span class="ltr">N − target</span> مرة. 500 feature وعايز 10 = 490 تدريب. تقدر تسرّعه بإنك تشيل أكتر من واحدة كل لفة (مثلًا أضعف 10%).</p>
+
+  <h3>L1 (Lasso) Regularization</h3>
+  <div class="formula">loss = prediction_error + α · Σ |wᵢ|</div>
+  <p>الـ α بيتحكم في قد إيه بنقلّم: α أكبر = أوزان أكتر بتبقى <b>صفر بالظبط</b>. ليه صفر بالظبط؟ قيد الـ L1 شكله معيّن (diamond) في فضاء الأوزان، والحل الأمثل غالبًا بيقع على ركن من أركانه، والأركان دي فيها وزن أو أكتر = صفر. أما الـ L2 (ridge) فقيده دايرة، الأوزان بتصغر بس نادرًا ما بتوصل صفر.</p>
+  <p>ده embedded selection: الموديل بيتعلم وهو بيتدرب يتجاهل أنهي features. <b>مميزاته:</b> تدريب واحد، ولو فيه features متشابهة بيختار واحدة ويصفّر الباقي، وموجود في معظم الموديلات الـ linear. <b>عيبه:</b> linear بس، مش بيشوف أهمية nonlinear.</p>
+  <p>في الكود هتلاقي الـ L1 متطبق بـ <code>soft_threshold</code>: بعد كل خطوة gradient، أي وزن أصغر من <span class="ltr">lr·α</span> بيتصفّر، والأكبر بيتزق ناحية الصفر بالمقدار ده.</p>
+
+  <h3>Tree-Based Importance</h3>
+  <p>الشجر بيرتّب الـ features طبيعي: كل split بيقلل الـ impurity (Gini أو entropy للـ classification، variance للـ regression)، والـ features اللي بتعمل تقليل أكبر أهم.</p>
+  <div class="formula">importance(feature_j) = (1/T) · Σ_trees Σ_nodes splitting on j  (n_samples · impurity_decrease)</div>
+  <p>بيلقط العلاقات الـ nonlinear والتفاعلات لوحده. <b>تحذير:</b> متحيّز للـ features اللي فيها قيم unique كتير (high cardinality). عمود ID عشوائي هيبان مهم لأنه بيقسم كل عينة لوحدها تمام. استخدم الـ permutation importance كـ sanity check.</p>
+
+  <h3>Permutation Importance</h3>
+  <ol class="ex">
+    <li>درّب الموديل وسجّل الأداء على validation.</li>
+    <li>لكل feature: اخلط قيمها عشوائيًا (shuffle)، وقيس الأداء نزل قد إيه.</li>
+    <li>النزول الأكبر = الـ feature أهم.</li>
+  </ol>
+  <p>تشبيه: عايز تعرف لاعب مهم قد إيه؟ خلّيه يلعب وعينه مغمّضة وشوف الفريق اتأثر قد إيه. لو مفرقش، الفريق مش معتمد عليه. بيشتغل مع أي موديل ومش متحيز للـ cardinality، بس بطيء: تقييم كامل لكل feature، ومتكرر كذا مرة عشان الثبات.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: داتا إنت عارف حقيقتها</h3>
+      <p>زي داتا الدرس: 20 feature. <b>5 info</b> (الـ target معمول من أول ٣ بس، و<span class="ltr">info_3</span> و<span class="ltr">info_4</span> نسخ قريبة من <span class="ltr">info_0</span> و<span class="ltr">info_1</span>)، و<b>5 corr</b> مرتبطين بالـ info، و<b>10 noise</b>. اختار الطريقة وشوف مين بيطلع فوق.</p>
+      <div class="note"><strong>اللي هتلاحظه:</strong> «Variance» مش بتفرق بين الـ noise وغيره (كلهم فوق 0.01). الـ L1: زوّد α وشوف الـ noise بيتصفّر الأول، وواحدة من كل زوج متشابه بتتصفّر. الـ RFE بيطلّع ترتيب الحذف. والـ permutation: الـ features المتشابهة أهميتها بتطلع قليلة لأن «توأمها» بيغطي مكانها.</div>
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">الطريقة:
+        <select id="d40-m"><option value="var">Variance (filter)</option><option value="mi">Mutual information (filter)</option><option value="l1" selected>L1 weights (embedded)</option><option value="rfe">RFE ranks (wrapper)</option><option value="perm">Permutation importance</option></select></label>
+      <label style="display:grid;gap:2px">L1 α = <b class="mono" id="d40-av">0.05</b><input type="range" id="d40-a" min="0" max="0.4" step="0.01" value="0.05"></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d40-c3" width="520" height="380" aria-label="أهمية كل feature حسب الطريقة"></canvas>
+      <div class="readout">
+        <div><small>features مختارة</small><b id="d40-ns">-</b></div>
+        <div><small>test accuracy بيهم</small><b id="d40-acc">-</b></div>
+        <div><small>test accuracy بالـ 20</small><b id="d40-acc20">-</b></div>
+      </div>
+      <div class="verdict" id="d40-v3"></div>
+    </div>
+  </div>
+
+  <h3>مقارنة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الطريقة</th><th>النوع</th><th>السرعة</th><th>Nonlinear</th><th>التفاعلات</th></tr>
+    <tr><td>Variance threshold</td><td>Filter</td><td>سريع جدًا</td><td>لأ</td><td>لأ</td></tr>
+    <tr><td>Mutual information</td><td>Filter</td><td>سريع</td><td>أيوه</td><td>لأ</td></tr>
+    <tr><td>Correlation filter</td><td>Filter</td><td>سريع</td><td>لأ</td><td>لأ</td></tr>
+    <tr><td>RFE</td><td>Wrapper</td><td>بطيء</td><td>حسب الموديل</td><td>أيوه</td></tr>
+    <tr><td>L1 / Lasso</td><td>Embedded</td><td>سريع</td><td>لأ (linear)</td><td>لأ</td></tr>
+    <tr><td>Tree importance</td><td>Embedded</td><td>متوسط</td><td>أيوه</td><td>أيوه</td></tr>
+    <tr><td>Permutation importance</td><td>Model-agnostic</td><td>بطيء</td><td>أيوه</td><td>أيوه</td></tr>
+  </table></div>
+
+  <h3>تختار إيه؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>عدد الـ features</th><th>ابدأ بـ</th></tr>
+    <tr><td>أقل من 50</td><td>variance threshold + mutual information</td></tr>
+    <tr><td>50 لـ 500</td><td>variance threshold، وبعدين L1 أو أهمية الشجر</td></tr>
+    <tr><td>أكتر من 500</td><td>variance threshold، وبعدين MI filter، وبعدين RFE على اللي فضلوا</td></tr>
+  </table></div>
+  <p>وبعدين حسب الموديل: <b>linear</b> ← L1 للاختيار النهائي. <b>شجر</b> ← tree importance + permutation importance. <b>غيره</b> ← RFE بالموديل بتاعك. وفي الآخر لازم <b>تتحقق</b>: قارن الـ features المختارة بكل الـ features على داتا مخبّية. لو الأداء اتحسن، ship. لو لأ، جرّب طريقة تانية أو خلّي كل الـ features.</p>
+</section>
+
+<!-- CODE -->
+<section id="d40-code">
+  <div class="station-head"><span class="tag">04</span><h2>طبّق بإيدك: ٥ طرق من الصفر</h2></div>
+  <p>من جوه فولدر الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/02-ml-fundamentals/18-feature-selection/code/feature_selection.py</pre></div>
+  <p><b>القاعدة:</b> اكتب بنفسك في <code>my_feature_selection.py</code>.</p>
+
+  <h3>خطوة ١: داتا الحقيقة بتاعتها معروفة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def make_feature_selection_data(n_samples=500, seed=42):
+    rng = np.random.RandomState(seed)
+    x1 = rng.randn(n_samples)
+    x2 = rng.randn(n_samples)
+    x3 = rng.randn(n_samples)
+    x4 = x1 + 0.1 * rng.randn(n_samples)          <span class="c"># نسخة قريبة من x1</span>
+    x5 = x2 + 0.1 * rng.randn(n_samples)          <span class="c"># نسخة قريبة من x2</span>
+    informative = np.column_stack([x1, x2, x3, x4, x5])
+
+    correlated = np.column_stack([                <span class="c"># مخلوطين من الـ info + noise</span>
+        x1 * 0.9 + 0.1 * rng.randn(n_samples),
+        x2 * 0.8 + 0.2 * rng.randn(n_samples),
+        x3 * 0.7 + 0.3 * rng.randn(n_samples),
+        x1 * 0.5 + x2 * 0.5 + 0.1 * rng.randn(n_samples),
+        x2 * 0.6 + x3 * 0.4 + 0.1 * rng.randn(n_samples),
+    ])
+
+    noise = rng.randn(n_samples, 10) * 0.5        <span class="c"># 10 features ملهاش أي علاقة</span>
+
+    X = np.hstack([informative, correlated, noise])
+    <span class="c"># الـ target معمول من x1 وx2 وx3 بس</span>
+    y = (2 * x1 - 1.5 * x2 + x3 + 0.5 * rng.randn(n_samples) &gt; 0).astype(int)
+
+    feature_names = (
+        [f"info_{i}" for i in range(5)]
+        + [f"corr_{i}" for i in range(5)]
+        + [f"noise_{i}" for i in range(10)]
+    )
+    return X, y, feature_names</pre></div>
+  <p>إحنا عارفين الحقيقة: 0–4 info (و3 و4 نسخ من 0 و1)، 5–9 مرتبطين بالـ info، 10–19 noise صافي. الطريقة الكويسة المفروض تطلّع 0–4 فوق و10–19 تحت.</p>
+
+  <h3>خطوة ٢: Variance threshold</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def variance_threshold(X, threshold=0.01):
+    variances = np.var(X, axis=0)
+    mask = variances &gt; threshold      <span class="c"># True = الـ feature فضلت</span>
+    return mask, variances</pre></div>
+
+  <h3>خطوة ٣: Mutual information بالـ bins</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def discretize(x, n_bins=10):
+    min_val, max_val = x.min(), x.max()
+    if max_val == min_val:
+        return np.zeros_like(x, dtype=int)
+    bin_edges = np.linspace(min_val, max_val, n_bins + 1)
+    binned = np.digitize(x, bin_edges[1:-1])     <span class="c"># رقم الـ bin لكل قيمة</span>
+    return binned
+
+
+def mutual_information(X, y, n_bins=10):
+    n_samples, n_features = X.shape
+    mi_scores = np.zeros(n_features)
+    y_vals, y_counts = np.unique(y, return_counts=True)
+    p_y = y_counts / n_samples                     <span class="c"># p(y)</span>
+    for f in range(n_features):
+        x_binned = discretize(X[:, f], n_bins)
+        x_vals, x_counts = np.unique(x_binned, return_counts=True)
+        p_x = dict(zip(x_vals, x_counts / n_samples))   <span class="c"># p(x)</span>
+        mi = 0.0
+        for xv in x_vals:
+            for yi, yv in enumerate(y_vals):
+                joint_mask = (x_binned == xv) &amp; (y == yv)
+                p_xy = np.sum(joint_mask) / n_samples   <span class="c"># p(x, y)</span>
+                if p_xy &gt; 0:
+                    mi += p_xy * np.log(p_xy / (p_x[xv] * p_y[yi]))
+        mi_scores[f] = mi
+    return mi_scores</pre></div>
+
+  <h3>خطوة ٤: RFE</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def simple_logistic_importance(X, y, lr=0.1, epochs=100):
+    n_samples, n_features = X.shape
+    w = np.zeros(n_features)
+    b = 0.0
+    for _ in range(epochs):
+        z = X @ w + b
+        pred = 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
+        error = pred - y
+        w -= lr * (X.T @ error) / n_samples
+        b -= lr * np.mean(error)
+    return w, b
+
+
+def rfe(X, y, n_features_to_select=5, lr=0.1, epochs=100):
+    n_total = X.shape[1]
+    remaining = list(range(n_total))
+    rankings = np.ones(n_total, dtype=int)
+    rank = n_total
+    while len(remaining) &gt; n_features_to_select:
+        X_subset = X[:, remaining]
+        w, _ = simple_logistic_importance(X_subset, y, lr, epochs)   <span class="c"># درّب على اللي فاضل</span>
+        importances = np.abs(w)
+        least_idx = np.argmin(importances)                           <span class="c"># الأضعف</span>
+        original_idx = remaining[least_idx]
+        rankings[original_idx] = rank          <span class="c"># اللي بيتشال الأول بياخد أسوأ rank</span>
+        rank -= 1
+        remaining.pop(least_idx)
+    for idx in remaining:
+        rankings[idx] = 1
+    selected_mask = rankings == 1
+    return selected_mask, rankings</pre></div>
+  <p>ملحوظة: الـ <code>|w|</code> كمقياس أهمية بيبقى له معنى بس لو الـ features متعملها <b>scaling</b>، وعشان كده الملف بيعمل standardization قبل الـ RFE والـ L1.</p>
+
+  <h3>خطوة ٥: L1 بالـ soft-thresholding</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def soft_threshold(w, alpha):
+    <span class="c"># زقّ ناحية الصفر بمقدار alpha، واللي أصغر منه يبقى صفر بالظبط</span>
+    return np.sign(w) * np.maximum(np.abs(w) - alpha, 0)
+
+
+def l1_feature_selection(X, y, alpha=0.1, lr=0.01, epochs=500):
+    n_samples, n_features = X.shape
+    w = np.zeros(n_features)
+    b = 0.0
+    for _ in range(epochs):
+        z = X @ w + b
+        pred = 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
+        error = pred - y
+        gradient_w = (X.T @ error) / n_samples
+        gradient_b = np.mean(error)
+        w -= lr * gradient_w                 <span class="c"># خطوة gradient عادية</span>
+        w = soft_threshold(w, lr * alpha)    <span class="c"># وبعدين عقوبة الـ L1</span>
+        b -= lr * gradient_b                 <span class="c"># الـ bias مش بيتعاقب</span>
+    selected_mask = np.abs(w) &gt; 1e-6
+    return selected_mask, w</pre></div>
+
+  <h3>خطوة ٦: أهمية الشجر</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def gini_impurity(y):
+    if len(y) == 0:
+        return 0.0
+    classes, counts = np.unique(y, return_counts=True)
+    probs = counts / len(y)
+    return 1.0 - np.sum(probs ** 2)
+
+
+def best_split(X, y, feature_idx):
+    values = np.unique(X[:, feature_idx])
+    if len(values) &lt;= 1:
+        return None, -1.0
+    best_threshold = None
+    best_gain = -1.0
+    parent_gini = gini_impurity(y)
+    n = len(y)
+    for i in range(len(values) - 1):
+        threshold = (values[i] + values[i + 1]) / 2.0
+        left_mask = X[:, feature_idx] &lt;= threshold
+        right_mask = ~left_mask
+        n_left = np.sum(left_mask)
+        n_right = np.sum(right_mask)
+        if n_left == 0 or n_right == 0:
+            continue
+        gain = (parent_gini
+                - (n_left / n) * gini_impurity(y[left_mask])
+                - (n_right / n) * gini_impurity(y[right_mask]))
+        if gain &gt; best_gain:
+            best_gain = gain
+            best_threshold = threshold
+    return best_threshold, best_gain
+
+
+def _build_tree_importance(X, y, feature_subset, max_depth, depth=0):
+    n_features = X.shape[1]
+    importances = np.zeros(n_features)
+    if depth &gt;= max_depth or len(np.unique(y)) &lt;= 1 or len(y) &lt; 4:
+        return importances
+    best_feature, best_threshold, best_gain = None, None, -1.0
+    for f in feature_subset:
+        threshold, gain = best_split(X, y, f)
+        if gain &gt; best_gain:
+            best_gain, best_feature, best_threshold = gain, f, threshold
+    if best_feature is None or best_gain &lt;= 0:
+        return importances
+    importances[best_feature] += best_gain * len(y)       <span class="c"># gain × عدد العينات</span>
+    left_mask = X[:, best_feature] &lt;= best_threshold
+    right_mask = ~left_mask
+    importances += _build_tree_importance(X[left_mask], y[left_mask], feature_subset, max_depth, depth + 1)
+    importances += _build_tree_importance(X[right_mask], y[right_mask], feature_subset, max_depth, depth + 1)
+    return importances
+
+
+def tree_importance(X, y, n_trees=50, max_depth=5, seed=42):
+    rng = np.random.RandomState(seed)
+    n_samples, n_features = X.shape
+    importances = np.zeros(n_features)
+    for _ in range(n_trees):
+        sample_idx = rng.choice(n_samples, size=n_samples, replace=True)    <span class="c"># bootstrap</span>
+        feature_subset = rng.choice(n_features, size=max(1, int(np.sqrt(n_features))), replace=False)
+        importances += _build_tree_importance(X[sample_idx], y[sample_idx], feature_subset, max_depth)
+    total = importances.sum()
+    if total &gt; 0:
+        importances /= total             <span class="c"># مجموعهم = 1</span>
+    return importances</pre></div>
+  <p>لاحظ إن كل شجرة بتختار <span class="ltr">√20 ≈ 4</span> features عشوائية تقسم عليهم، زي الـ random forest في Day 26.</p>
+
+  <h3>خطوة ٧: شغّل وقارن</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def evaluate_accuracy(X, y, selected_mask, lr=0.1, epochs=200):
+    X_selected = X[:, selected_mask]
+    split = int(0.8 * len(y))
+    X_train, X_test = X_selected[:split], X_selected[split:]
+    y_train, y_test = y[:split], y[split:]
+    w, b = simple_logistic_importance(X_train, y_train, lr, epochs)
+    z = X_test @ w + b
+    preds = (1.0 / (1.0 + np.exp(-np.clip(z, -500, 500))) &gt;= 0.5).astype(int)
+    return np.mean(preds == y_test)
+
+X, y, names = make_feature_selection_data(500, seed=42)
+split = int(0.8 * len(y))
+X_train, y_train = X[:split], y[:split]
+mean, std = X_train.mean(axis=0), X_train.std(axis=0)    <span class="c"># الإحصائيات من التدريب بس</span>
+X_scaled_train = (X_train - mean) / std
+
+mi = mutual_information(X_train, y_train)
+rfe_mask, ranks = rfe(X_scaled_train, y_train, n_features_to_select=5, epochs=200)
+l1_mask, w = l1_feature_selection(X_scaled_train, y_train, alpha=0.05, lr=0.01, epochs=1000)
+imp = tree_importance(X_train, y_train, n_trees=100, max_depth=6)
+print([names[i] for i in np.argsort(mi)[-5:]], [names[i] for i in np.where(rfe_mask)[0]])</pre></div>
+  <details><summary>المفروض تشوف إيه؟</summary>
+    <p>أول سطور محسوبة من الكود:</p>
+    <pre class="term">Dataset: 500 samples, 20 features
+Feature groups: 5 informative, 5 correlated, 10 noise</pre>
+    <p>وفي قسم الـ variance threshold هتلاقي <span class="ltr">surviving: 20 / 20</span>، لأن حتى الـ noise الـ variance بتاعه حوالي 0.25 وده أكبر من 0.01. ده بالظبط معنى «ضروري بس مش كفاية». الباقي (ترتيب الـ MI والـ RFE والـ L1 والشجر، وجدول «METHOD AGREEMENT» اللي بيوري كل feature اتختارت من كام طريقة، وجدول الـ accuracy) أنا ما شغلتوش هنا، فشغّله وقارن: هل الـ noise اتختار في أي طريقة؟ وهل «Info only (5)» قريب من «All 20 features»؟</p>
+  </details>
+
+  <h3>نفس الكلام بـ sklearn</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.feature_selection import VarianceThreshold, mutual_info_classif, RFE, SelectFromModel
+from sklearn.linear_model import Lasso, LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+
+vt = VarianceThreshold(threshold=0.01)
+X_filtered = vt.fit_transform(X)
+
+mi_scores = mutual_info_classif(X, y)          <span class="c"># بيقدّر بالـ k-NN مش بالـ bins</span>
+top_k = np.argsort(mi_scores)[-10:]
+
+rfe_selector = RFE(LogisticRegression(), n_features_to_select=10)
+rfe_selector.fit(X, y)
+X_rfe = rfe_selector.transform(X)
+
+lasso_selector = SelectFromModel(Lasso(alpha=0.01))
+lasso_selector.fit(X, y)
+X_lasso = lasso_selector.transform(X)
+
+rf = RandomForestClassifier(n_estimators=100)
+rf.fit(X, y)
+importances = rf.feature_importances_</pre></div>
+  <p>نسخ sklearn أقوى (الـ <code>mutual_info_classif</code> بيستخدم k-NN density estimation بدل الـ bins)، وأسرع (C)، وبتدخل في الـ Pipeline. وفيها كمان <code>sklearn.inspection.permutation_importance</code> للـ permutation.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d40-ex">
+  <div class="station-head"><span class="tag">05</span><h2>التمارين</h2></div>
+  <p>اعمل ٣ على الأقل.</p>
+  <ol class="ex">
+    <li><b>Forward selection:</b> عكس الـ RFE. ابدأ من صفر features، وكل خطوة ضيف الـ feature اللي بتحسّن الأداء أكتر حاجة، ووقف لما الإضافة متفرقش. قارن باللي اختاره الـ RFE. مين أسرع؟ ومين أحسن؟
+      <details><summary>تلميح</summary>loop خارجي على عدد الخطوات، وجوه loop على كل feature مش مختارة: درّب بالمختارين + هي وقيس على validation. خد الأحسن. وقف لو التحسن أقل من 0.005 مثلًا. هنا محتاج تدريبات كتير في الأول وقليلة في الآخر لو هتختار عدد صغير، فغالبًا أسرع من RFE لما الـ target صغير.</details></li>
+    <li><b>Stability selection:</b> شغّل L1 خمسين مرة، كل مرة على 80% عشوائية من الداتا وبـ α مختلفة شوية. عدّ كل feature اتختارت كام مرة. اللي اتختار في أكتر من 80% من المرات «stable». قارن بتشغيل L1 مرة واحدة. أنهي أوثق؟
+      <details><summary>تلميح</summary><code>alpha = 0.05 * rng.uniform(0.5, 1.5)</code> و<code>idx = rng.choice(n, int(0.8*n), replace=False)</code>. خزّن <code>counts += mask</code>. غالبًا الـ noise اللي اتختار بالصدفة في تشغيلة واحدة هيختفي، والـ features المتشابهة هتبان بنسب متوسطة (مرة دي ومرة دي).</details></li>
+    <li><b>Multicollinearity:</b> احسب الـ correlation matrix. اعمل دالة تاخد threshold (مثلًا 0.9) وتشيل واحدة من كل زوج correlation بتاعه عالي، وتسيب اللي الـ MI بتاعها مع الـ target أعلى. جرّبها واتأكد إنها بتشيل المكرر.
+      <details><summary>تلميح</summary><code>C = np.corrcoef(X, rowvar=False)</code>. لف على <span class="ltr">i &lt; j</span> ولو <span class="ltr">|C[i,j]| &gt; 0.9</span> شيل اللي الـ MI بتاعه أقل. المفروض <span class="ltr">info_3/info_0</span> و<span class="ltr">info_4/info_1</span> يطلعوا، وغالبًا <span class="ltr">corr_0</span> مع <span class="ltr">info_0</span>.</details></li>
+    <li><b>Pipeline:</b> اربط variance threshold ← خلّي أعلى 50% بالـ MI ← RFE على اللي فضلوا. قارن بالـ RFE لوحده على كل الـ features. أسرع؟ نفس الدقة؟
+      <details><summary>تلميح</summary>بعد الـ variance (20) والـ MI (10)، الـ RFE هيعمل 5 تدريبات بدل 15. قيس بـ <code>time.perf_counter()</code>. لو الـ MI شال feature مهمة بس تفاعلها مع غيرها هو المهم، الـ pipeline ممكن يخسر شوية دقة.</details></li>
+    <li><b>Permutation importance من الصفر:</b> لكل feature، اخلطها 10 مرات وقيس متوسط النزول في الـ F1. قارن الترتيب بأهمية الشجر. لاقي حالات بيختلفوا فيها واشرح ليه (تلميح الدرس: الـ features المتشابهة).
+      <details><summary>تلميح</summary>اخلط عمود واحد في نسخة من الـ validation: <code>Xp[:, j] = rng.permutation(Xp[:, j])</code>. الـ features المتشابهة: لو خلطت <span class="ltr">info_0</span> والموديل عنده <span class="ltr">info_3</span>، النزول بيبقى صغير، فالاتنين يبانوا «مش مهمين». الشجر ممكن يقسم الأهمية بينهم بس يديهم الاتنين أهمية. شفت ده في المعمل ٣.</details></li>
+    <li><b>إضافة مني · features لـ LLM router:</b> عندك نظام بيقرر لكل request يبعته لموديل رخيص ولا غالي. سجّلت 40 feature لكل request (طول الـ prompt، فيه code ولا لأ، عدد الأسئلة، لغة، عدد الـ tools المطلوبة، و30 feature تانية أغلبها noise)، والـ label هو «الموديل الرخيص كان كفاية؟». اعمل داتا صناعية بالشكل ده، وطبّق variance ← MI ← L1، وقارن الدقة بـ 40 feature وبالمختارين. وفكّر: كل feature ليها تمن حساب وقت الـ request، فأنهي features تستاهل؟
+      <details><summary>تلميح</summary>خلّي الـ label معتمد على 4 features بس (مثلًا طول + فيه code + عدد tools + تفاعل بين الطول والـ code). الـ L1 مش هيشوف التفاعل لو مضفتهوش كـ feature، بس الـ MI أو الشجر ممكن. الحساب في الـ production جزء من القرار: feature بتحتاج call لموديل تاني عشان تتحسب غالية حتى لو مفيدة شوية.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d40-extra">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني: اللي الدرس مقالوش صريح</h2></div>
+  <h3>الحدس في جملة</h3>
+  <p>كل feature زيادة هي «فرصة» للموديل يلاقي نمط بالصدفة في داتا التدريب. مع 10 features noise، احتمال إن واحدة منهم «تبان» مفيدة في 400 عينة مش صغير. الـ feature selection بيقلل الفرص دي.</p>
+  <h3>أخطاء بتحصل كتير</h3>
+  <ul class="checklist">
+    <li>• <b>Selection على الداتا كلها قبل الـ CV:</b> مع features كتير noise، هتلاقي features «بتتنبأ» بالـ test بالصدفة، والـ CV score هيطلع متفائل جدًا. حط الـ selection جوه الـ Pipeline (Day 35) عشان يتعمل جوه كل fold.</li>
+    <li>• <b>مقارنة <code>|w|</code> من غير scaling:</b> feature بالآلاف هياخد وزن صغير حتى لو مهم. اعمل standardization الأول (الملف بيعمل كده).</li>
+    <li>• <b>«الـ feature وزنها صفر في الـ L1، يبقى ملهاش علاقة»:</b> مش لازم. ممكن تكون مرتبطة بـ feature تانية خدت الوزن مكانها. نفس الكلام في الـ permutation importance.</li>
+    <li>• <b>الثقة في أهمية الشجر لعمود ID أو timestamp:</b> high cardinality = أهمية مزيفة. ومن Day 37: الـ timestamp كمان ممكن يبقى leakage.</li>
+    <li>• <b>الـ MI بـ bins كتير على داتا قليلة:</b> بيدّي قيم موجبة للـ noise (شفته في المعمل ٢). قارن دايمًا بـ baseline: الـ MI بتاع نفس الـ feature بعد ما تخلط الـ target.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ Agents؟</h3>
+  <ul class="checklist">
+    <li>• <b>اختيار الـ context:</b> في الـ RAG، حشو الـ prompt بـ chunks كتير مش مرتبطة ممكن يشتّت الموديل زي ما الـ noise features بتشتّت الـ classifier. ترتيب الـ chunks واختيار أحسن k (reranking) فكرته قريبة من الـ filter methods.</li>
+    <li>• <b>اختيار الـ tools للـ agent:</b> agent عنده 100 tool في الـ prompt بيصرف tokens ويحتار أكتر. أنظمة كتير بتعمل «tool retrieval» تختار الأقرب للطلب بس قبل ما تبعت للموديل.</li>
+    <li>• <b>تقليل الأبعاد في الـ embeddings:</b> المسافات في الأبعاد العالية (المعمل ١) سبب إن البحث بالـ embeddings بيستخدم cosine similarity وطرق ANN مخصوصة بدل المسافة العادية بس. هنشوف ده في الـ RAG.</li>
+    <li>• <b>الـ L1 والـ sparsity:</b> نفس فكرة «عقوبة تخلّي أغلب الأرقام صفر» بتتستخدم في الـ interpretability لما الباحثين بيحاولوا يلاقوا features قليلة جوه الـ activations بتاعة الموديل.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d40-quiz">
+  <div class="station-head"><span class="tag">07</span><h2>كويز</h2></div>
+  <div class="quiz" id="d40-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d40-done">
+  <div class="station-head"><span class="tag">08</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح الـ curse of dimensionality وشفت المسافات بتتلم في المعمل ١</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> أفرّق بين filter وwrapper وembedded وأدي مثال لكل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> فاهم ليه الـ MI بيلقط علاقات nonlinear والـ correlation لأ</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> فاهم ليه الـ L1 بيوصّل أوزان لصفر بالظبط والـ L2 لأ</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> أعرف عيب أهمية الشجر (cardinality) وإزاي الـ permutation بيتحقق منه</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> كتبت mutual_information وrfe وl1_feature_selection بإيدي وشغّلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="c7"> حليت ٣ تمارين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="c8" id="d40-ckq"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Curse of dimensionality</td><td>k-NN، LOF، البحث بالـ embeddings</td></tr>
+    <tr><td>Variance threshold</td><td>أول خطوة في أي pipeline لتنضيف الـ features الميتة</td></tr>
+    <tr><td>Mutual information</td><td>ترتيب الـ features، كشف علاقات nonlinear</td></tr>
+    <tr><td>RFE / forward selection</td><td>داتا جدولية features كتير وموديل رخيص التدريب</td></tr>
+    <tr><td>L1 / Lasso</td><td>موديلات sparse وسهلة الشرح، الـ sparsity في الـ interpretability</td></tr>
+    <tr><td>Tree / permutation importance</td><td>شرح موديلات الـ gradient boosting، debugging للـ leakage</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> ML System Design. هنجمع كل اللي فات: من المشكلة لحد موديل شغال في الـ production. وهنبدأ بتسخين ٥ دقايق على النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F18-feature-selection" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/18-feature-selection</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d40-root');
+
+const rm=$('d40-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===18)s.className='now';rm.appendChild(s)}
+
+function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const mean=a=>a.reduce((s,v)=>s+v,0)/a.length;
+
+// ================= Lab 1: distance concentration =================
+const DIMS=[1,2,3,5,10,20,50,100,300,1000];
+const c1=$('d40-c1'),x1=AI.setupCanvas(c1),W1=+c1.dataset.w,H1=+c1.dataset.h;
+const cache1={};
+function dists(d){if(cache1[d])return cache1[d];const r=rng(1000+d),q=[];for(let j=0;j<d;j++)q.push(r());const out=[];
+  for(let i=0;i<300;i++){let s=0;for(let j=0;j<d;j++){const v=r()-q[j];s+=v*v}out.push(Math.sqrt(s))}return cache1[d]=out}
+function draw1(){
+  const d=DIMS[+$('d40-d').value];$('d40-dv').textContent=d;
+  const D=dists(d),mx=Math.max(...D),mn=Math.min(...D),bins=new Array(30).fill(0);
+  D.forEach(v=>{bins[Math.min(29,Math.floor(v/mx*30))]++});
+  const top=Math.max(...bins),L=30,R=W1-14,B=H1-30,T=14,bw=(R-L)/30;
+  x1.clearRect(0,0,W1,H1);
+  bins.forEach((c,i)=>{const h=c/top*(B-T);x1.fillStyle=css('--vec-a');x1.globalAlpha=.8;x1.fillRect(L+i*bw+1,B-h,bw-2,h)});x1.globalAlpha=1;
+  x1.strokeStyle=css('--muted');x1.lineWidth=1;x1.beginPath();x1.moveTo(L,B);x1.lineTo(R,B);x1.stroke();
+  x1.fillStyle=css('--muted');x1.font='11px JetBrains Mono, monospace';x1.textAlign='center';[0,0.25,0.5,0.75,1].forEach(v=>x1.fillText(v,L+v*(R-L),B+14));
+  x1.fillText('distance / max distance',(L+R)/2,H1-4);x1.textAlign='left';x1.fillStyle=css('--ink');x1.fillText('d = '+d,L+4,T+4);
+  x1.strokeStyle=css('--vec-b');x1.lineWidth=2;x1.setLineDash([4,3]);x1.beginPath();x1.moveTo(L+mn/mx*(R-L),T);x1.lineTo(L+mn/mx*(R-L),B);x1.stroke();x1.setLineDash([]);
+  const ct=(mx-mn)/mn;$('d40-mm').textContent=f(mn,2)+' / '+f(mx,2);$('d40-ct').textContent=ct>99?'>99':f(ct,2);
+  const v=$('d40-v1');if(ct>3){v.textContent='فيه فرق واضح بين قريب وبعيد: «أقرب جار» ليه معنى.';v.style.color=css('--ok')}else if(ct>0.6){v.textContent='المسافات ابتدت تتلم. الفرق بين قريب وبعيد بيصغر.';v.style.color=css('--vec-b')}else{v.textContent='كله تقريبًا على نفس المسافة. «الأقرب» مبقاش يفرق كتير.';v.style.color=css('--bad')}
+}
+$('d40-d').addEventListener('input',draw1);draw1();
+
+// ================= Lab 2: MI vs correlation =================
+const c2=$('d40-c2'),x2=AI.setupCanvas(c2),W2=+c2.dataset.w,H2=+c2.dataset.h;
+function draw2(){
+  const rel=$('d40-rel').value,nz=+$('d40-nz').value,nb=+$('d40-b').value;$('d40-nzv').textContent=nz;$('d40-bv').textContent=nb;
+  const r=rng(77),X=[],Y=[];
+  for(let i=0;i<600;i++){const x=-1+2*r();let y=rel==='lin'?x:rel==='quad'?x*x*2-0.66:rel==='sin'?Math.sin(3*x):gauss(r)*0.6;y+=nz*0.5*gauss(r);X.push(x);Y.push(y)}
+  const mx=mean(X),my=mean(Y);let sxy=0,sxx=0,syy=0;X.forEach((x,i)=>{sxy+=(x-mx)*(Y[i]-my);sxx+=(x-mx)**2;syy+=(Y[i]-my)**2});const pr=sxy/Math.sqrt(sxx*syy);
+  const ymin=Math.min(...Y),ymax=Math.max(...Y),bx=x=>Math.min(nb-1,Math.floor((x+1)/2*nb)),by=y=>Math.min(nb-1,Math.floor((y-ymin)/(ymax-ymin||1)*nb));
+  const J=[];for(let i=0;i<nb;i++)J.push(new Array(nb).fill(0));const px=new Array(nb).fill(0),py=new Array(nb).fill(0);
+  X.forEach((x,i)=>{const a=bx(x),b=by(Y[i]);J[a][b]++;px[a]++;py[b]++});
+  let mi=0;const n=X.length;for(let a=0;a<nb;a++)for(let b=0;b<nb;b++){const p=J[a][b]/n;if(p>0)mi+=p*Math.log(p/(px[a]/n*py[b]/n))}
+  x2.clearRect(0,0,W2,H2);const S=240,o1=[10,10],o2=[W2-S-10,10];
+  x2.strokeStyle=css('--line');x2.strokeRect(o1[0],o1[1],S,S);x2.strokeRect(o2[0],o2[1],S,S);
+  x2.fillStyle=css('--vec-a');X.forEach((x,i)=>{x2.globalAlpha=.55;x2.beginPath();x2.arc(o1[0]+(x+1)/2*S,o1[1]+S-(Y[i]-ymin)/(ymax-ymin||1)*S,2,0,7);x2.fill()});x2.globalAlpha=1;
+  let jm=0;J.forEach(row=>row.forEach(v=>{if(v>jm)jm=v}));const cs=S/nb;
+  for(let a=0;a<nb;a++)for(let b=0;b<nb;b++){if(!J[a][b])continue;x2.fillStyle=css('--vec-b');x2.globalAlpha=0.1+0.9*J[a][b]/jm;x2.fillRect(o2[0]+a*cs,o2[1]+S-(b+1)*cs,cs,cs)}x2.globalAlpha=1;
+  x2.fillStyle=css('--muted');x2.font='11px JetBrains Mono, monospace';x2.fillText('scatter',o1[0]+4,o1[1]+S+0-4);x2.fillText('binned p(x,y)',o2[0]+4,o2[1]+S-4);
+  $('d40-r').textContent=f(pr,3);$('d40-mi').textContent=f(mi,3);
+  const v=$('d40-v2');if(Math.abs(pr)<0.15&&mi>0.3){v.textContent='الـ correlation بيقول «مفيش علاقة»، والـ MI بيقول «فيه علاقة قوية». الـ MI صح.';v.style.color=css('--ok')}
+  else if(Math.abs(pr)>0.5){v.textContent='علاقة خطية: الاتنين شايفينها.';v.style.color=css('--ink')}
+  else if(rel==='noise'){v.textContent=mi>0.15?'مفيش علاقة أصلًا، والـ MI طالع موجب بسبب كتر الـ bins. ده bias في التقدير.':'مفيش علاقة، والاتنين قريبين من صفر.';v.style.color=mi>0.15?css('--bad'):css('--ink')}
+  else{v.textContent='الـ noise عالي: العلاقة بتضعف في الاتنين.';v.style.color=css('--muted')}
+}
+['d40-nz','d40-b'].forEach(id=>$(id).addEventListener('input',draw2));$('d40-rel').addEventListener('change',draw2);draw2();
+
+// ================= Lab 3: methods on known data =================
+const c3=$('d40-c3'),x3=AI.setupCanvas(c3),W3=+c3.dataset.w,H3=+c3.dataset.h;
+const NAMES=[];for(let i=0;i<5;i++)NAMES.push('info_'+i);for(let i=0;i<5;i++)NAMES.push('corr_'+i);for(let i=0;i<10;i++)NAMES.push('noise_'+i);
+const grp=i=>i<5?0:i<10?1:2;
+const DS=(function(){const r=rng(42),n=500,Xr=[],y=[];
+  for(let i=0;i<n;i++){const a=gauss(r),b=gauss(r),c=gauss(r),row=[a,b,c,a+0.1*gauss(r),b+0.1*gauss(r),a*0.9+0.1*gauss(r),b*0.8+0.2*gauss(r),c*0.7+0.3*gauss(r),a*0.5+b*0.5+0.1*gauss(r),b*0.6+c*0.4+0.1*gauss(r)];
+    for(let k=0;k<10;k++)row.push(gauss(r)*0.5);Xr.push(row);y.push(2*a-1.5*b+c+0.5*gauss(r)>0?1:0)}
+  const split=400,mu=[],sd=[];for(let j=0;j<20;j++){const col=Xr.slice(0,split).map(rw=>rw[j]),m=mean(col);mu.push(m);sd.push(Math.sqrt(mean(col.map(v=>(v-m)**2)))||1)}
+  const Xs=Xr.map(rw=>rw.map((v,j)=>(v-mu[j])/sd[j]));
+  return{Xr,Xs,y,split,vars:sd.map(s=>s*s)}})();
+const TR=DS.Xs.slice(0,DS.split),TE=DS.Xs.slice(DS.split),yTR=DS.y.slice(0,DS.split),yTE=DS.y.slice(DS.split);
+const sig=z=>1/(1+Math.exp(-Math.max(-500,Math.min(500,z))));
+function train(X,y,cols,alpha,epochs,lr){const n=X.length,p=cols.length,w=new Float64Array(p);let b=0;const g=new Float64Array(p);
+  for(let e=0;e<epochs;e++){g.fill(0);let gb=0;for(let i=0;i<n;i++){const row=X[i];let z=b;for(let k=0;k<p;k++)z+=w[k]*row[cols[k]];const err=sig(z)-y[i];gb+=err;for(let k=0;k<p;k++)g[k]+=err*row[cols[k]]}
+    for(let k=0;k<p;k++){let v=w[k]-lr*g[k]/n;if(alpha>0){const t=lr*alpha;v=Math.sign(v)*Math.max(Math.abs(v)-t,0)}w[k]=v}b-=lr*gb/n}
+  return{w:Array.from(w),b}}
+function acc(model,cols,X,y){let c=0;for(let i=0;i<X.length;i++){let z=model.b;cols.forEach((j,k)=>z+=model.w[k]*X[i][j]);c+=((sig(z)>=0.5?1:0)===y[i])?1:0}return c/X.length}
+const ALL=[...Array(20).keys()];
+const full=train(TR,yTR,ALL,0,300,0.1),acc20=acc(full,ALL,TE,yTE);
+const memo={};
+function miScores(){if(memo.mi)return memo.mi;const nb=10,n=DS.split,out=[];
+  for(let j=0;j<20;j++){const col=DS.Xr.slice(0,n).map(r=>r[j]),mn=Math.min(...col),mx=Math.max(...col),cnt={},cx={},cy=[0,0];
+    col.forEach((v,i)=>{const b=Math.min(nb-1,Math.floor((v-mn)/(mx-mn)*nb)),k=b+'_'+yTR[i];cnt[k]=(cnt[k]||0)+1;cx[b]=(cx[b]||0)+1;cy[yTR[i]]++});
+    let mi=0;for(const k in cnt){const [b,yy]=k.split('_'),p=cnt[k]/n;mi+=p*Math.log(p/((cx[b]/n)*(cy[yy]/n)))}out.push(mi)}
+  return memo.mi=out}
+function rfeRanks(){if(memo.rfe)return memo.rfe;let rem=ALL.slice();const rank=new Array(20).fill(1);let r=20;
+  while(rem.length>5){const m=train(TR,yTR,rem,0,200,0.1);let li=0;m.w.forEach((v,k)=>{if(Math.abs(v)<Math.abs(m.w[li]))li=k});rank[rem[li]]=r--;rem.splice(li,1)}
+  return memo.rfe=rank}
+function permImp(){if(memo.perm)return memo.perm;const r=rng(9),base=acc(full,ALL,TE,yTE),out=[];
+  for(let j=0;j<20;j++){let drop=0;for(let rep=0;rep<5;rep++){const col=TE.map(rw=>rw[j]);for(let i=col.length-1;i>0;i--){const k=Math.floor(r()*(i+1));[col[i],col[k]]=[col[k],col[i]]}
+    const Xp=TE.map((rw,i)=>{const c=rw.slice();c[j]=col[i];return c});drop+=base-acc(full,ALL,Xp,yTE)}out.push(drop/5)}
+  return memo.perm=out}
+function draw3(){
+  const m=$('d40-m').value,alpha=+$('d40-a').value;$('d40-av').textContent=f(alpha,2);
+  let vals,sel,label;
+  if(m==='var'){vals=DS.vars;sel=ALL.filter(j=>vals[j]>0.01);label='variance (raw)'}
+  else if(m==='mi'){vals=miScores();sel=vals.map((v,j)=>[v,j]).sort((a,b)=>b[0]-a[0]).slice(0,5).map(a=>a[1]);label='MI (10 bins), top-5 selected'}
+  else if(m==='l1'){memo['l1'+alpha]=memo['l1'+alpha]||train(TR,yTR,ALL,alpha,600,0.1);vals=memo['l1'+alpha].w.map(Math.abs);sel=ALL.filter(j=>vals[j]>1e-6);label='|w| with L1, α = '+f(alpha,2)}
+  else if(m==='rfe'){const rk=rfeRanks();vals=rk.map(v=>21-v);sel=ALL.filter(j=>rk[j]===1);label='RFE: taller = survived longer (rank 1 = selected)'}
+  else{vals=permImp();sel=vals.map((v,j)=>[v,j]).sort((a,b)=>b[0]-a[0]).slice(0,5).map(a=>a[1]);label='accuracy drop when shuffled, top-5 selected'}
+  const mxv=Math.max(...vals,1e-9),L=86,R=W3-12,T=22,rowH=(H3-T-8)/20,cols=[css('--vec-a'),css('--vec-b'),css('--muted')];
+  x3.clearRect(0,0,W3,H3);x3.fillStyle=css('--ink');x3.font='12px JetBrains Mono, monospace';x3.textAlign='left';x3.fillText(label,8,14);
+  const ss=new Set(sel);
+  vals.forEach((v,j)=>{const y=T+j*rowH,w=Math.max(0,v)/mxv*(R-L);x3.fillStyle=cols[grp(j)];x3.globalAlpha=ss.has(j)?1:.35;x3.fillRect(L,y+2,Math.max(w,v>0?1:0),rowH-5);x3.globalAlpha=1;
+    x3.fillStyle=ss.has(j)?css('--ink'):css('--muted');x3.textAlign='right';x3.font=(ss.has(j)?'bold ':'')+'11px JetBrains Mono, monospace';x3.fillText(NAMES[j],L-6,y+rowH-6)});
+  x3.textAlign='left';
+  $('d40-ns').textContent=sel.length+' / 20';$('d40-acc20').textContent=f(acc20,3);
+  if(sel.length){const mm=train(TR,yTR,sel,0,300,0.1);$('d40-acc').textContent=f(acc(mm,sel,TE,yTE),3)}else $('d40-acc').textContent='N/A';
+  const nNoise=sel.filter(j=>grp(j)===2).length,v=$('d40-v3');
+  if(m==='var'){v.textContent='الـ 20 كلهم فاتوا الـ threshold. الـ noise الـ variance بتاعه حوالي 0.25، يعني الطريقة دي لوحدها مش كفاية.';v.style.color=css('--bad')}
+  else if(!sel.length){v.textContent='α كبير لدرجة إنه صفّر كل الأوزان. نزّله.';v.style.color=css('--bad')}
+  else if(nNoise){v.textContent=nNoise+' من الـ noise لسه مختارين. '+(m==='l1'?'زوّد α شوية.':'');v.style.color=css('--vec-b')}
+  else{v.textContent='مفيش ولا noise اتختار. لاحظ أنهي info/corr فضلوا.';v.style.color=css('--ok')}
+}
+$('d40-m').addEventListener('change',draw3);$('d40-a').addEventListener('input',()=>{if($('d40-m').value!=='l1')$('d40-m').value='l1';draw3()});
+draw3();
+
+// ================= Quiz =================
+const Q=[
+ ['ليه زيادة features ممكن تخلّي الموديل أسوأ؟',['الموديلات ليها حد أقصى لعدد الـ features','features أكتر دايمًا بتحسّن الدقة','features أكتر بتخلّي الذاكرة تخلص','الـ features اللي ملهاش علاقة بتزوّد noise وخطر الـ overfitting وبتضعّف إشارة الـ features المفيدة'],3,'الـ features اللي ملهاش علاقة بتدّي الموديل فرص يعمل overfitting على noise في التدريب، وبتزوّد الأبعاد فالداتا بتبقى متفرقة والمسافات بتفقد معناها.'],
+ ['إيه الفرق الأساسي بين الـ filter والـ wrapper؟',['الـ filter بيدّي scores بالإحصاء من غير موديل، والـ wrapper بيدرّب موديل عشان يقيّم مجموعات features','الـ filter دايمًا أدق','الـ wrapper بيختار feature واحدة بس كل مرة','الـ filter بيستخدم موديل والـ wrapper بيستخدم إحصاء'],0,'الـ filter (variance، MI، correlation) بيستخدم مقاييس إحصائية. الـ wrapper (RFE، forward selection) بيدرّب موديلات كتير عشان يقيّم مجموعات مختلفة.'],
+ ['الـ mutual information بيلقط علاقات الـ Pearson correlation مش بيلقطها. أنهي نوع؟',['علاقات محتاجة أكتر من 1000 نقطة','علاقات nonlinear زي التربيعية أو الدورية','علاقات linear بين features متصلة','علاقات بين features categorical بس'],1,'الـ Pearson بيقيس العلاقة الخطية بس. y = x² ليها correlation صفر بس MI عالي. الـ MI بيلقط أي اعتماد إحصائي. شفته في المعمل ٢.'],
+ ['الـ L1 (Lasso) بيعمل feature selection وهو بيتدرب. إزاي؟',['بيشيل الـ features اللي الـ variance بتاعها قليلة قبل التدريب','بيرتّب الـ features بالـ correlation مع الـ target','بيوصّل أوزان الـ features اللي ملهاش لازمة لصفر بالظبط، فبتتشال فعليًا','بيدرّب موديل لكل feature'],2,'عقوبة |w| شكل قيدها diamond، فالحل غالبًا بيقع على ركن فيه أوزان = صفر بالظبط، والموديل بيطلع sparse.'],
+ ['الـ RFE بيشيل أضعف feature ويدرّب تاني. ليه ده أحسن من إنك تشيل كل الضعاف مرة واحدة؟',['مش أحسن، الشيل مرة واحدة دايمًا أفضل','لأن الأهمية بتتغير لما features تتشال، فالشيل التدريجي بيحسب حساب التفاعلات','لأنه ضروري مع الـ neural networks بس','لأن الـ RFE بيستخدم مقياس أهمية مختلف'],1,'الأهمية نسبية. لما تشيل feature من زوج متشابه، أهمية التانية ممكن تطلع. الشيل التدريجي بيخلّي الموديل يعيد التقييم كل خطوة.'],
+ ['(سؤال مني) عندك 5000 feature و200 عينة. اخترت أحسن 20 بالـ MI على الداتا كلها، وبعدين عملت 5-fold CV وطلع 95%. إيه المشكلة؟',['مفيش مشكلة','الـ selection شاف الـ folds كلها، فاختار features متماشية مع الـ test بالصدفة، والـ CV متفائل. لازم الـ selection جوه كل fold','لازم 10-fold بدل 5','الـ MI مينفعش مع 5000 feature'],1,'مع features كتير وعينات قليلة، فيه features كتير هتبان مرتبطة بالـ target بالصدفة. اختيارهم قبل الـ CV = leakage. حطه جوه الـ Pipeline.'],
+ ['(سؤال مني) في random forest، عمود customer_id طالع أهم feature بأهمية الشجر. أول حاجة تعملها؟',['تحتفظ بيه','تتأكد بالـ permutation importance على validation، وغالبًا تشيله لأنه high cardinality وأهميته مزيفة','تزوّد عدد الشجر','تعمله scaling'],1,'الشجر بيحب الـ features اللي فيها قيم unique كتير لأنها بتقسم كويس على التدريب. الـ permutation على validation هيكشف إنه مش بيعمم.']
+];
+AI.quiz($('d40-quizBox'),Q,5,()=>{const c=$('d40-ckq');if(!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(40,root);
+
+AI.onTheme(()=>{if(!document.body.contains(c1))return false;draw1();draw2();draw3()});
+})();
+</script>

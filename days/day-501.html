@@ -1,0 +1,621 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 73 · Perplexity and Calibration</span>
+  <h1>اليوم ٥٠١: الموديل واثق قد إيه؟ وثقته دي في محلها؟</h1>
+  <p class="lede">لحد دلوقتي الـ eval harness بتاعك بيقول «صح ولا غلط». النهاردة هتضيف له ٣ أرقام بتقيس حاجة أعمق: <b>Perplexity</b> (الموديل شايف النص الحقيقي معقول ولا غريب؟)، و <b>ECE</b> (لما يقول «أنا متأكد ٩٠٪» بيطلع صح ٩٠٪ فعلًا؟)، و <b>Brier score</b> (بيمسك أخطاء الثقة اللي الـ ECE بيعدّيها). هتبنيهم بـ numpy وتخليهم مضمونين وبيتكرروا بنفس النتيجة.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> + numpy</span>
+    <span>قبله: <b>Code Exec Metric</b></span>
+    <span>بعده: <b>Leaderboard Aggregation</b></span>
+  </div>
+  <div style="min-width:0">
+    <span class="eyebrow">Phase 19 — Capstone Projects · 85 lessons</span>
+    <div class="roadmap" id="d501-roadmap" dir="ltr" aria-label="دروس فيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d501-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنيت الـ metric بتاع الكود: تطلّع الكود من الإجابة، وتشغّله في subprocess معزول، وتعدّ الـ assertions اللي نجحت. جاوب في دماغك الأول.</p>
+  <ol class="ex">
+    <li>ليه ما نعملش <code>exec</code> للكود جوه نفس الـ process بتاع الـ eval؟
+      <details><summary>الإجابة</summary>لأن <code>while True: pass</code> هيوقف الـ eval كله للأبد، وكود زي <code>shutil.rmtree('/')</code> هيعمل كارثة حقيقية. الحل: interpreter جديد لكل candidate، بـ timeout (افتراضي ٣ ثواني) و output cap (256 KB) و denylist للـ imports الخطيرة.</details></li>
+    <li>عندك n=10 samples و c=3 نجحوا. <span class="ltr">pass@1</span> كام؟ وإمتى <span class="ltr">pass@k = 1</span> على طول؟
+      <details><summary>الإجابة</summary><span class="ltr">pass@1 = c/n = 0.3</span>. والقيمة بتبقى 1 لما <span class="ltr">n − c &lt; k</span>، لأنك مش هتعرف تختار k samples كلهم فاشلين من أقل من k فاشل.</details></li>
+    <li>إيه الـ ٥ نتايج (exit codes) اللي الـ runner بيرجّعها لكل task؟
+      <details><summary>الإجابة</summary><code>pass</code> و <code>assertion_fail</code> و <code>syntax_error</code> و <code>timeout</code> و <code>error</code> (وده بيشمل ضربة الـ denylist و «output overflow»). الـ score نفسه لسه كسر بين 0 و 1، والـ exit code معلومة إضافية.</details></li>
+  </ol>
+  <div class="note ai"><strong>الربط بالنهاردة:</strong> امبارح كان السؤال «الإجابة صح؟». النهاردة السؤال «الموديل كان <b>عارف</b> إنها صح؟». موديل بيغلط وهو متأكد أخطر في الـ production من موديل بيغلط وهو قايلك إنه مش متأكد.</div>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>الـ Perplexity (معمل ١)</div>
+    <div><b>20 min</b>الـ ECE والـ reliability diagram (معمل ٢)</div>
+    <div><b>15 min</b>الـ Brier وليه محتاجينه (معمل ٣)</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- 01 PERPLEXITY -->
+<section id="d501-ppl">
+  <div class="station-head"><span class="tag">01</span><h2>الـ Perplexity: الموديل متفاجئ قد إيه؟</h2></div>
+  <p>الموديل اللغوي بيدّي كل token احتمال. لو النص الحقيقي فيه token والموديل كان مدّيه احتمال <span class="ltr">p</span>، يبقى «المفاجأة» بتاعته هي <span class="ltr">−log p</span> (الـ <b>negative log-likelihood</b> أو NLL). احتمال 1 يعني مفاجأة صفر، واحتمال صغير يعني مفاجأة كبيرة.</p>
+  <div class="formula">perplexity = exp( Σ NLL / Σ tokens )   ·   lower is better</div>
+  <p><b>تشبيه:</b> الـ perplexity هي «الموديل محتار بين كام اختيار في المتوسط». perplexity = 4 كأن الموديل في كل token بيختار بين ٤ كلمات بنفس الاحتمال. عشان كده:</p>
+  <ul>
+    <li><b>perplexity = 1</b>: الموديل مدّي كل token حقيقي احتمال 1. موديل مثالي.</li>
+    <li><b>perplexity = حجم الـ vocabulary</b>: الموديل موزّع الاحتمال بالتساوي على كل الكلمات، يعني ما اتعلمش حاجة.</li>
+    <li>الأرقام الحقيقية في النص. الدرس بيقول إن base model قوي في 2026 على WikiText-103 بيقعد حوالي ٨ لـ ١٢، والضعيف على نفس النص بيعدّي ٥٠.</li>
+  </ul>
+  <h3>مين بيحسب إيه؟</h3>
+  <p>الـ harness <b>مش بيحسب</b> الـ log-probabilities بنفسه. دي شغلة الـ <b>model adapter</b>. الـ harness بياخد لكل sequence مجموع الـ NLL وعدد الـ tokens، ويجمّعهم على الـ corpus كله. لاحظ إننا بنقسم المجموع الكلي على عدد الـ tokens الكلي، مش بنعمل متوسط للـ perplexity بتاعة كل جملة. الجملة الطويلة لازم يبقى ليها وزن أكبر.</p>
+  <h3>العقد (contract) اللي بيحمي الرقم</h3>
+  <p>الـ NLL لازم يبقى <b>مش سالب</b>، لأن <span class="ltr">p ≤ 1</span> يعني <span class="ltr">−log p ≥ 0</span>. أشهر غلطة إن الـ adapter يبعت <span class="ltr">log p</span> وينسى السالب. ساعتها هتطلع perplexity أقل من 1، وده مستحيل. الكود بيرفض أي NLL سالب بـ <code>ValueError</code> فيها جملة «did you forget the negation?». ولو مجموع الـ tokens صفر، بيرجّع <code>NaN</code> من غير ما يقع.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: حسّ بالـ perplexity</h3>
+      <p>الـ canvas بيرسم <span class="ltr">perplexity = exp(avg NLL)</span>. حرّك متوسط الاحتمال اللي الموديل بيديه للـ token الصح، وشوف النقطة بتتحرك على المنحنى. الخط المتقطع هو حجم الـ vocabulary (الموديل اللي ما اتعلمش حاجة).</p>
+      <div class="note"><strong>جرب:</strong> (١) خلّي الاحتمال 0.25 وشوف إن الـ perplexity = 4 بالظبط (محتار بين ٤). (٢) خلّي الاحتمال <span class="ltr">1/V</span> تقريبًا وشوف النقطة بتلمس خط الـ vocab. (٣) شغّل «الـ adapter نسي السالب» وشوف الـ harness بيرفض.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d501-pc" width="520" height="280" aria-label="منحنى الـ perplexity مقابل متوسط الـ NLL"></canvas>
+      <div class="mrow">
+        <label>avg p(token) = <span id="d501-pv">0.25</span><input type="range" id="d501-p" min="1" max="1000" value="250"></label>
+        <label>vocab V = <span id="d501-vv">50</span><input type="range" id="d501-v" min="0" max="4" value="1"></label>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:15px"><input type="checkbox" id="d501-neg"> الـ adapter نسي السالب (بيبعت log p)</label>
+      <div class="readout">
+        <div><small>NLL لكل token</small><b id="d501-nll">1.386</b></div>
+        <div><small>perplexity</small><b id="d501-ppx">4.00</b></div>
+        <div><small>bits لكل token</small><b id="d501-bits">2.00</b></div>
+      </div>
+      <div class="verdict" id="d501-pverdict"></div>
+    </div>
+  </div>
+  <div class="note ai"><strong>ملاحظة صغيرة:</strong> «bits لكل token» هي نفس المعلومة بس بـ log أساسه ٢ (<span class="ltr">log₂ perplexity</span>). هتلاقيها في بعض الأوراق باسم bits-per-token أو bits-per-byte.</div>
+</section>
+
+<!-- 02 ECE -->
+<section id="d501-ece">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Calibration والـ ECE: الثقة في محلها؟</h2></div>
+  <p>الـ <b>calibration</b> معناها إن الموديل لما يقول «ثقتي ٧٠٪» يطلع صح في حوالي ٧٠٪ من الحالات دي. زي الأرصاد: لو قالت «احتمال مطر ٧٠٪» في ١٠٠ يوم، المفروض تمطر في حوالي ٧٠ منهم. لو مطرت في ٣٠ بس، يبقى الأرصاد <b>overconfident</b> (واثقة زيادة). ولو مطرت في ٩٥، تبقى <b>underconfident</b> (خايفة زيادة).</p>
+  <p>الجملة اللي في أول الدرس بتلخّص ده: موديل قال «٩٠٪» على ألف إجابة وطلع صح في ٦٠٠ بس، يبقى مش calibrated.</p>
+  <h3>الـ ECE خطوة بخطوة</h3>
+  <ol>
+    <li>عندك N تنبؤ، كل واحد معاه ثقة <span class="ltr">p</span> (رقم بين 0 و 1) وصح ولا غلط <span class="ltr">y</span> (1 أو 0).</li>
+    <li>قسّم الـ <span class="ltr">[0, 1]</span> لـ M «صندوق» (bin) بنفس العرض. الافتراضي ١٠.</li>
+    <li>حط كل تنبؤ في الصندوق بتاع ثقته.</li>
+    <li>لكل صندوق: احسب متوسط الثقة ومتوسط الصح (الـ accuracy)، والفرق المطلق بينهم (الـ gap).</li>
+    <li>اضرب كل gap في (عدد الصندوق ÷ N) واجمعهم. ده الـ ECE.</li>
+  </ol>
+  <div class="formula">ECE = Σ_b (n_b / N) · | avg_conf_b − avg_acc_b |</div>
+  <p>الكود بيدعم أي عدد صناديق موجب. الـ ١٠ هي عُرف النشر (publishing convention)، والـ ١٥ عُرف المقارنة، فالـ runner يختار من باراميتر <code>bins</code>.</p>
+  <h3>الـ ECE رقم بيكذب أحيانًا</h3>
+  <p>الـ ECE متحيز حسب عدد الصناديق وحجم العينة. بـ ١٠ صناديق و ١٠٠ تنبؤ بس، مش هتقدر تفرّق بين ECE = 0.02 والضوضاء العشوائية. عشان كده الدالة بترجّع مع الـ ECE <b>عدد الصناديق اللي فيها حاجة</b> (<code>populated_bins</code>)، والـ runner يقدر يرفض ينشر رقم واحد لو العينة صغيرة.</p>
+  <h3>الـ Reliability Diagram</h3>
+  <p>ده الرسم اللي بيوريك الكلام ده بعينك: المحور الأفقي متوسط الثقة في كل صندوق، والرأسي الـ accuracy الفعلية. <b>القطر</b> (الخط المايل) هو الـ calibration المثالي. العمود اللي <b>تحت</b> القطر = overconfident، و<b>فوقه</b> = underconfident. الدالة في الدرس بترجّع البيانات بس (٣ arrays: متوسط الثقة، متوسط الصح، العدد لكل صندوق)، والرسم نفسه شغل طبقة تانية. الـ triple ده كمان بيكفي لو حبيت تحسب أنواع تانية من الـ ECE (adaptive ECE مثلًا).</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: ارسم الـ reliability diagram</h3>
+      <p>اختار نوع موديل. الأنواع التلاتة الأولى نفس الوصفات اللي في <code>main.py</code> (اتولّدت هنا في المتصفح بـ random generator تاني، فالأرقام مش هتطابق الـ numpy بالظبط بس الشكل واحد):</p>
+      <ul style="margin:0">
+        <li><b>calibrated:</b> ثقة عشوائية من 0 لـ 1، وبيطلع صح باحتمال = ثقته.</li>
+        <li><b>overconfident:</b> ثقة من 0.7 لـ 1، بس بيطلع صح باحتمال نص ثقته.</li>
+        <li><b>underconfident:</b> ثقة من 0 لـ 0.3، وبيطلع صح باحتمال <span class="ltr">0.5 + الثقة</span>.</li>
+      </ul>
+      <div class="note"><strong>جرب:</strong> (١) قارن ECE للتلاتة. (٢) نزّل N لـ 50 ودوس «عينة جديدة» كذا مرة: الـ ECE للـ calibrated بيتنطط قد إيه؟ ده التحيز اللي الدرس بيحذّر منه. (٣) غيّر عدد الصناديق من 10 لـ 15 وشوف الرقم بيتغير لنفس البيانات.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d501-rc" width="520" height="340" aria-label="reliability diagram"></canvas>
+      <div class="mrow">
+        <label>N = <span id="d501-nv">800</span><input type="range" id="d501-n" min="0" max="4" value="3"></label>
+        <label>bins = <span id="d501-bv">10</span><input type="range" id="d501-b" min="3" max="20" value="10"></label>
+      </div>
+      <div class="btns" id="d501-kinds">
+        <button type="button" data-k="cal" class="primary">calibrated</button>
+        <button type="button" data-k="over">overconfident</button>
+        <button type="button" data-k="under">underconfident</button>
+        <button type="button" id="d501-resample">عينة جديدة</button>
+      </div>
+      <div class="readout">
+        <div><small>ECE</small><b id="d501-ecev">0</b></div>
+        <div><small>Brier</small><b id="d501-briv">0</b></div>
+        <div><small>populated bins</small><b id="d501-popv">0</b></div>
+        <div><small>accuracy</small><b id="d501-accv">0</b></div>
+      </div>
+      <div class="verdict" id="d501-rverdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 BRIER -->
+<section id="d501-brier">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Brier score: اللي الـ ECE ما بيشوفوش</h2></div>
+  <p>الـ ECE بيبص على <b>متوسطات</b> الصناديق بس. صحيح إنه بياخد القيمة المطلقة للـ gap في كل صندوق، فالصناديق المختلفة ما بتلغيش بعض. بس <b>جوه نفس الصندوق</b> ممكن الأخطاء تلغي بعض: شوية تنبؤات واثقة زيادة وشوية خايفة زيادة، فالمتوسطين يتطابقوا والصندوق ما يضيفش حاجة للـ ECE، مع إن كل تنبؤ لوحده ثقته مش في محلها.</p>
+  <p>الـ <b>Brier score</b> بيقيس الخطأ <b>لكل تنبؤ لوحده</b>: مربع الفرق بين الثقة والنتيجة الحقيقية (1 أو 0)، وبعدين متوسط.</p>
+  <div class="formula">Brier = mean( (p_i − y_i)² )   ·   0 = perfect, 0.25 = always says 0.5</div>
+  <h3>التفكيك: reliability − resolution + uncertainty</h3>
+  <p>الـ Brier بيتفكك لـ ٣ أجزاء (الكود بيحسبهم بنفس الصناديق):</p>
+  <div class="tablewrap"><table>
+    <tr><th>الجزء</th><th>المعادلة (لكل صندوق b)</th><th>معناه</th></tr>
+    <tr><td><b>reliability</b></td><td class="ltr">Σ (n_b/N)·(conf_b − acc_b)²</td><td>زي الـ ECE بس بالمربع. أقل = أحسن</td></tr>
+    <tr><td><b>resolution</b></td><td class="ltr">Σ (n_b/N)·(acc_b − ȳ)²</td><td>الموديل بيفرّق بين السهل والصعب؟ أعلى = أحسن، وبيتطرح</td></tr>
+    <tr><td><b>uncertainty</b></td><td class="ltr">ȳ·(1 − ȳ)</td><td>صعوبة البيانات نفسها. ما لكش تحكم فيها</td></tr>
+  </table></div>
+  <p>الـ runner بيطبع الـ Brier كرقم واحد، ويسجّل التفكيك للـ dashboard. خلي بالك إن المجموع <span class="ltr">reliability − resolution + uncertainty</span> بيقرّب للـ Brier ومش بيساويه بالظبط، لأن الصناديق بتجمّع ثقات مختلفة شوية في رقم واحد. عشان كده الـ test بيقارن لـ منزلتين عشريتين بس.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: إلغاء جوه الصندوق</h3>
+      <p>عندنا ١٠٠٠ سؤال: نصهم سهل (احتمال الصح الحقيقي 0.95) ونصهم صعب (0.35)، فالـ accuracy الكلية حوالي 0.65. الموديل بيقول ثقة <span class="ltr">p = 0.65 + s·(q − 0.65)</span>، حيث s هي «الحدّة» (sharpness): عند s=0 بيقول 0.65 للكل، وعند s=1 بيعرف الصعوبة الحقيقية بالظبط.</p>
+      <div class="note"><strong>جرب:</strong> (١) خلي s=0. الـ ECE تقريبًا صفر! لأن الأسئلة السهلة (خايف عليها) والصعبة (واثق زيادة) واقعين في نفس الصندوق وبيلغوا بعض. بس الـ Brier عالي. (٢) زوّد s لـ 1: الـ ECE لسه صغير، بس الـ Brier نزل لأن الـ resolution زاد. (٣) حرّك «الانحياز» لفوق: الاتنين بيزيدوا.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d501-bc" width="520" height="300" aria-label="مقارنة ECE و Brier وتفكيكه"></canvas>
+      <div class="mrow">
+        <label>sharpness s = <span id="d501-sv">0</span><input type="range" id="d501-s" min="0" max="100" value="0"></label>
+        <label>bias = <span id="d501-biv">0</span><input type="range" id="d501-bi" min="-25" max="25" value="0"></label>
+      </div>
+      <div class="readout">
+        <div><small>ECE</small><b id="d501-e3">0</b></div>
+        <div><small>Brier</small><b id="d501-b3">0</b></div>
+        <div><small>rel − res + unc</small><b id="d501-d3">0</b></div>
+      </div>
+      <div class="verdict" id="d501-v3"></div>
+    </div>
+  </div>
+  <h3>الحالات الحدّية (والكود بيختبرها كلها)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>ECE</th><th>Brier</th><th>Perplexity</th></tr>
+    <tr><td>كل التنبؤات غلط</td><td>= متوسط الثقة</td><td>عالي</td><td>اللي الموديل شايفه في النص</td></tr>
+    <tr><td>كله صح وبثقة عالية</td><td>قريب من 0</td><td>قريب من 0</td><td>—</td></tr>
+    <tr><td>موديل بيقول 0.5 دايمًا</td><td class="ltr">|0.5 − accuracy|</td><td>0.25 بالظبط (سواء y=0 أو 1)</td><td>—</td></tr>
+    <tr><td>input فاضي</td><td>0.0</td><td>0.0</td><td>NaN (صفر tokens)</td></tr>
+  </table></div>
+  <p>ولا حالة من دول بتطلّع warning. الـ runner هو اللي بيبص على القيم ويقرر ينشر ولا يتخطى. الموديل الحقيقي على benchmark حقيقي مش هيوصل للحالات دي، بس adapter فيه bug أو عينة صغيرة هيوصلها، والـ runner ما ينفعش يقع.</p>
+</section>
+
+<!-- 04 WIRING -->
+<section id="d501-wire">
+  <div class="station-head"><span class="tag">04</span><h2>الثقة جاية منين؟ وبتتحسب فين؟</h2></div>
+  <p>الـ harness <b>ما بيفترضش</b> إن الثقة جاية من softmax. بياخد أي رقم بين 0 و 1 لكل تنبؤ:</p>
+  <ul>
+    <li><b>أسئلة الاختيار من متعدد:</b> الثقة الطبيعية هي softmax على الـ log-likelihood بتاع كل اختيار.</li>
+    <li><b>النص الحر:</b> احتمال الموديل قاله عن نفسه، أو exp لمتوسط الـ log-likelihood.</li>
+  </ul>
+  <p>الـ eval بيستهلك الرقم وبس. هو جه منين دي مسؤولية الـ adapter.</p>
+  <h3>الـ calibration تقرير للموديل، مش metric للـ task</h3>
+  <p>الـ F1 بيتحسب لكل task. لكن الـ calibration لا: task واحد فيه تنبؤات قليلة جدًا والصناديق هتبقى ضوضاء. فالـ runner بيلمّ أزواج <span class="ltr">(confidence, correct)</span> من الـ eval كله، ويحسب الـ ECE والـ Brier والـ reliability <b>مرة واحدة</b> لكل موديل. والـ perplexity بتتحسب على corpus نص منفصل (held-out)، بعيد عن تقييم الـ tasks.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>report = CalibrationReport.from_predictions(confidences, correct)
+report.ece             <span class="c"># float</span>
+report.brier           <span class="c"># float</span>
+report.reliability     <span class="c"># tuple of three numpy arrays</span>
+report.populated_bins  <span class="c"># int</span>
+
+pp = PerplexityResult.from_token_nll(neg_log_probs, token_counts)
+pp.perplexity, pp.avg_neg_log_likelihood</pre></div>
+  <h3>الدرس ده مش بيعمل إيه</h3>
+  <p>مش بينادي موديل، ومش بيكتب softmax، ومش بيستنتج الثقة من الـ tokens (دي شغلة الـ adapter)، ومش بيعمل <b>temperature scaling</b> ولا <b>Platt scaling</b>. دول إصلاحات بعد التدريب في درس تاني. هدف الدرس إن الـ ٣ أرقام يبقوا مضمونين وبيتكرروا.</p>
+</section>
+
+<!-- 05 CODE -->
+<section id="d501-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: الكود خطوة بخطوة</h2></div>
+  <p>من جذر الريبو (محتاج <code>numpy</code> بس):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python3 phases/19-capstone-projects/73-perplexity-calibration/code/main.py
+python3 phases/19-capstone-projects/73-perplexity-calibration/code/tests/test_calibration.py</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_calibration.py</code> واكتب الخطوات دي بنفسك. الكود مترتب من scalar لـ vector لـ report. بص على الأصل بس لو اتزنقت.</p>
+
+  <h3>خطوة ١: الـ Perplexity مع العقد بتاعها</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math, sys
+from dataclasses import dataclass
+from typing import Sequence
+import numpy as np
+
+@dataclass
+class PerplexityResult:
+    perplexity: float
+    avg_neg_log_likelihood: float
+    total_tokens: int
+
+    @classmethod
+    def from_token_nll(cls, neg_log_probs, token_counts):
+        if len(neg_log_probs) != len(token_counts):
+            raise ValueError("neg_log_probs and token_counts must align")
+        total_nll, total_tokens = 0.0, 0
+        for nll, n in zip(neg_log_probs, token_counts):
+            if nll &lt; 0:   <span class="c"># العقد: لازم -log p مش log p</span>
+                raise ValueError("neg_log_probs must be non-negative (did you forget the negation?)")
+            if n &lt; 0:
+                raise ValueError("token_counts must be non-negative")
+            total_nll += float(nll)
+            total_tokens += int(n)
+        if total_tokens == 0:   <span class="c"># مفيش tokens: NaN من غير ما نقع</span>
+            return cls(perplexity=float("nan"), avg_neg_log_likelihood=0.0, total_tokens=0)
+        avg_nll = total_nll / total_tokens   <span class="c"># مجموع على مجموع، مش متوسط متوسطات</span>
+        return cls(perplexity=math.exp(avg_nll), avg_neg_log_likelihood=avg_nll,
+                   total_tokens=total_tokens)
+
+def perplexity(neg_log_probs, token_counts):
+    return PerplexityResult.from_token_nll(neg_log_probs, token_counts).perplexity</pre></div>
+  <p>الأصل فيه كمان <code>to_dict()</code> بترجّع الـ ٣ حقول في dict (الـ runner بكرة هيستخدمها).</p>
+
+  <h3>خطوة ٢: التحقق والصناديق</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _validate_probs(confidences, correct):
+    if confidences.shape != correct.shape:
+        raise ValueError("confidences and correct must have the same shape")
+    if confidences.ndim != 1:
+        raise ValueError("confidences must be 1-D")
+    if confidences.size == 0:
+        return
+    if float(confidences.min()) &lt; 0.0 or float(confidences.max()) &gt; 1.0:
+        raise ValueError("confidences must lie in [0, 1]")
+    uniq = set(np.unique(correct).tolist())
+    if not uniq.issubset({0, 1, 0.0, 1.0, True, False}):   <span class="c"># correct لازم 0/1</span>
+        raise ValueError("correct must be 0/1 or boolean")
+
+def _bin_indices(confidences, n_bins):
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    idx = np.searchsorted(edges, confidences, side="right") - 1
+    return np.clip(idx, 0, n_bins - 1)   <span class="c"># الثقة 1.0 تقع في آخر صندوق مش برّه</span></pre></div>
+  <p>ركّز على الـ <code>clip</code>: من غيره الثقة 1.0 بالظبط هتطلع رقم صندوق = <code>n_bins</code> وهو مش موجود.</p>
+
+  <h3>خطوة ٣: الـ ECE</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def expected_calibration_error(confidences, correct, bins=10):
+    conf = np.asarray(confidences, dtype=np.float64)
+    corr = np.asarray(correct, dtype=np.float64)
+    _validate_probs(conf, corr)
+    if bins &lt;= 0:
+        raise ValueError("bins must be positive")
+    n = conf.size
+    if n == 0:
+        return (0.0, 0)
+    idx = _bin_indices(conf, bins)
+    total_gap, populated = 0.0, 0
+    for b in range(bins):
+        mask = idx == b
+        size = int(mask.sum())
+        if size == 0:
+            continue            <span class="c"># الصندوق الفاضي ما بيساهمش</span>
+        populated += 1
+        avg_conf = float(conf[mask].mean())
+        avg_acc = float(corr[mask].mean())
+        total_gap += (size / n) * abs(avg_conf - avg_acc)   <span class="c"># gap موزون بحجم الصندوق</span>
+    return (float(total_gap), populated)</pre></div>
+
+  <h3>خطوة ٤: الـ Brier وتفكيكه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def brier_score(confidences, correct):
+    conf = np.asarray(confidences, dtype=np.float64)
+    corr = np.asarray(correct, dtype=np.float64)
+    _validate_probs(conf, corr)
+    if conf.size == 0:
+        return 0.0
+    return float(np.mean((conf - corr) ** 2))   <span class="c"># خطأ لكل تنبؤ لوحده</span>
+
+def brier_decomposition(confidences, correct, bins=10):
+    if bins &lt;= 0:
+        raise ValueError("bins must be positive")
+    conf = np.asarray(confidences, dtype=np.float64)
+    corr = np.asarray(correct, dtype=np.float64)
+    _validate_probs(conf, corr)
+    n = conf.size
+    if n == 0:
+        return {"reliability": 0.0, "resolution": 0.0, "uncertainty": 0.0, "brier": 0.0}
+    overall = float(corr.mean())
+    idx = _bin_indices(conf, bins)
+    reliability = resolution = 0.0
+    for b in range(bins):
+        mask = idx == b
+        size = int(mask.sum())
+        if size == 0:
+            continue
+        avg_conf = float(conf[mask].mean())
+        avg_acc = float(corr[mask].mean())
+        reliability += (size / n) * (avg_conf - avg_acc) ** 2
+        resolution += (size / n) * (avg_acc - overall) ** 2
+    uncertainty = overall * (1.0 - overall)
+    return {"reliability": float(reliability), "resolution": float(resolution),
+            "uncertainty": float(uncertainty),
+            "brier": float(reliability - resolution + uncertainty)}</pre></div>
+
+  <h3>خطوة ٥: بيانات الـ reliability diagram والتقرير</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def reliability_diagram(confidences, correct, bins=10):
+    if bins &lt;= 0:
+        raise ValueError("bins must be positive")
+    conf = np.asarray(confidences, dtype=np.float64)
+    corr = np.asarray(correct, dtype=np.float64)
+    _validate_probs(conf, corr)
+    if conf.size == 0:   <span class="c"># arrays أصفار بنفس الطول</span>
+        return (np.zeros(bins), np.zeros(bins), np.zeros(bins, dtype=np.int64))
+    idx = _bin_indices(conf, bins)
+    bin_conf, bin_acc = np.zeros(bins), np.zeros(bins)
+    bin_count = np.zeros(bins, dtype=np.int64)
+    for b in range(bins):
+        mask = idx == b
+        size = int(mask.sum())
+        bin_count[b] = size
+        if size == 0:
+            continue
+        bin_conf[b] = float(conf[mask].mean())
+        bin_acc[b] = float(corr[mask].mean())
+    return (bin_conf, bin_acc, bin_count)
+
+@dataclass
+class CalibrationReport:
+    ece: float
+    brier: float
+    populated_bins: int
+    reliability: tuple
+    n_samples: int
+
+    @classmethod
+    def from_predictions(cls, confidences, correct, bins=10):
+        ece, populated = expected_calibration_error(confidences, correct, bins=bins)
+        return cls(ece=ece, brier=brier_score(confidences, correct),
+                   populated_bins=populated,
+                   reliability=reliability_diagram(confidences, correct, bins=bins),
+                   n_samples=len(confidences))</pre></div>
+  <p>الأصل فيه <code>to_dict()</code> للتقرير بيحوّل الـ arrays لـ lists عشان تتكتب JSON.</p>
+
+  <h3>خطوة ٦: بيانات صناعية نعرف حقيقتها + الـ demo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def synthetic_calibrated(n, seed=0):
+    rng = np.random.default_rng(seed)
+    confidences = rng.uniform(0.0, 1.0, size=n)
+    correct = (rng.uniform(0.0, 1.0, size=n) &lt; confidences).astype(np.int64)   <span class="c"># صح باحتمال = الثقة</span>
+    return confidences, correct
+
+def synthetic_overconfident(n, seed=1):
+    rng = np.random.default_rng(seed)
+    confidences = rng.uniform(0.7, 1.0, size=n)
+    correct = (rng.uniform(0.0, 1.0, size=n) &lt; confidences * 0.5).astype(np.int64)
+    return confidences, correct
+
+def synthetic_underconfident(n, seed=2):
+    rng = np.random.default_rng(seed)
+    confidences = rng.uniform(0.0, 0.3, size=n)
+    correct = (rng.uniform(0.0, 1.0, size=n) &lt; 0.5 + confidences).astype(np.int64)
+    return confidences, correct
+
+def synthetic_token_nll(seed=0):
+    rng = np.random.default_rng(seed)
+    counts = rng.integers(20, 60, size=12).tolist()   <span class="c"># 12 جملة طولها 20..59</span>
+    nlls = [float(rng.uniform(1.5, 3.0) * n) for n in counts]
+    return nlls, [int(c) for c in counts]
+
+def demo():
+    failures = 0
+    for label, builder in [("calibrated", synthetic_calibrated),
+                           ("overconfident", synthetic_overconfident),
+                           ("underconfident", synthetic_underconfident)]:
+        conf, corr = builder(800)
+        report = CalibrationReport.from_predictions(conf, corr, bins=10)
+        print(f"{label:14s} ece={report.ece:.4f} brier={report.brier:.4f} populated={report.populated_bins}")
+        if label == "calibrated" and report.ece &gt; 0.07:
+            failures += 1
+        if label == "overconfident" and report.ece &lt;= 0.1:
+            failures += 1
+    nlls, counts = synthetic_token_nll(seed=7)
+    pp = PerplexityResult.from_token_nll(nlls, counts)
+    print(f"perplexity     value={pp.perplexity:.3f}  avg_nll={pp.avg_neg_log_likelihood:.3f}  tokens={pp.total_tokens}")
+    if not (3.0 &lt; pp.perplexity &lt; 25.0):
+        failures += 1
+    _, _, bin_count = reliability_diagram(np.array([0.05, 0.15, 0.85, 0.95]),
+                                          np.array([0, 0, 1, 1]), bins=10)
+    print(f"reliability    populated_bins={(bin_count &gt; 0).sum()}")
+    return 0 if failures == 0 else 1
+
+if __name__ == "__main__":
+    sys.exit(demo())</pre></div>
+  <h3>المتوقع لما تشغّل</h3>
+  <p>الأرقام بالظبط بتعتمد على الـ random generator بتاع numpy، فشغّل وشوف بنفسك. اللي تقدر تتأكد منه من الكود:</p>
+  <ul>
+    <li>٣ سطور <code>calibrated / overconfident / underconfident</code> فيهم <code>ece=</code> و <code>brier=</code> و <code>populated=</code>. الـ demo بيشترط إن الـ calibrated ECE ≤ 0.07 والـ overconfident ECE &gt; 0.1. الـ underconfident ثقته كلها تحت 0.3 فهتلاقي <code>populated=3</code>.</li>
+    <li>سطر <code>perplexity</code>: متوسط الـ NLL لكل جملة بين 1.5 و 3، فالـ perplexity لازم تطلع بين <span class="ltr">e^1.5 ≈ 4.5</span> و <span class="ltr">e^3 ≈ 20.1</span>.</li>
+    <li>آخر سطر: <code>reliability    populated_bins=4</code> (الأربع ثقات في صناديق 0 و 1 و 8 و 9).</li>
+    <li>exit code = 0. والـ tests المفروض تعدّي كلها (<code>OK</code>).</li>
+  </ul>
+</section>
+
+<!-- 06 EXERCISES -->
+<section id="d501-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <p>الدرس ما فيهوش قايمة تمارين منفصلة، فالتمارين الأولى مأخوذة من «Going further» وحدود الدرس، والأخير إضافة مني.</p>
+  <ol class="ex">
+    <li><b>Temperature scaling:</b> خد slice للـ validation، دوّر على T واحدة تقسم عليها الـ logits قبل الـ softmax بحيث الـ ECE يقل، وبعدين احسب الـ ECE تاني على الـ test وشوف الـ gap بيصغر.
+      <details><summary>تلميح</summary>لو الثقة جاية من softmax على logits <code>z</code>، الثقة الجديدة <code>softmax(z / T)</code>. T &gt; 1 بتهدّي الموديل الواثق زيادة. ابدأ بـ grid search بسيط على T من 0.5 لـ 5 واختار اللي بيقلل الـ NLL (أو الـ ECE) على الـ validation بس، ما تلمسش الـ test.</details></li>
+    <li><b>ارفض الأرقام الضعيفة:</b> خلي الـ report يرجّع <code>ece=None</code> مع سبب لو <code>n_samples &lt; 200</code> أو <code>populated_bins &lt; 3</code>.
+      <details><summary>تلميح</summary>الدرس قال إن الـ runner هو اللي يقرر، فاعملها في دالة منفصلة <code>publishable(report, min_n, min_bins)</code> بدل ما تغيّر <code>expected_calibration_error</code> نفسها. كده الـ tests القديمة تفضل شغالة.</details></li>
+    <li><b>Adaptive ECE:</b> استخدم صناديق فيها نفس <b>العدد</b> بدل نفس العرض.
+      <details><summary>تلميح</summary>رتّب الثقات، وقسّمها لـ M مجموعة متساوية بـ <code>np.array_split(np.argsort(conf), M)</code>، واحسب نفس الـ gap الموزون. ميزته إن مفيش صندوق شبه فاضي بيعمل ضوضاء.</details></li>
+    <li><b>إضافة مني · ثقة حقيقية لأسئلة MCQ:</b> عندك لكل سؤال الـ log-likelihood بتاع الـ ٤ اختيارات من LLM. اكتب <code>mcq_confidence(option_lls)</code> ترجّع (الاختيار، الثقة) وابعتها للـ <code>CalibrationReport</code>.
+      <details><summary>الحل</summary><code>lls = np.array(option_lls); p = np.exp(lls - lls.max()); p /= p.sum(); k = int(p.argmax()); return k, float(p[k])</code>. طرح الـ max قبل الـ exp بيمنع الـ overflow. الـ correct = <code>k == gold</code>. ده بالظبط «softmax over option log-likelihoods» اللي الدرس بيقول إنه الثقة الطبيعية للـ MCQ.</details></li>
+  </ol>
+</section>
+
+<!-- 07 EXTRA -->
+<section id="d501-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note ai"><strong>الحدس في سطر:</strong> الـ accuracy بتقولك الموديل بيعرف قد إيه. الـ calibration بتقولك الموديل <b>عارف إنه بيعرف</b> قد إيه. والـ perplexity بتقولك النص ده «مألوف» للموديل ولا لأ.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li style="overflow-wrap:anywhere"><b>اسم test مضلل:</b> في الـ tests فيه <code>test_perfect_calibration_yields_zero</code> بس هو بيتوقع <span class="ltr">ECE = 0.05</span> مش صفر! ثقة 0.05 والـ accuracy 0 (فرق 0.05)، وثقة 0.95 والـ accuracy 1 (فرق 0.05). اقرا الـ assertion مش اسم الدالة.</li>
+    <li><b>متوسط الـ perplexity لكل جملة:</b> غلط. لازم تجمع الـ NLL كله وتقسم على كل الـ tokens، وإلا الجملة القصيرة هتاخد وزن الطويلة.</li>
+    <li><b>مقارنة perplexity بين tokenizers مختلفة:</b> موديلين بـ vocab مختلف بيقطّعوا نفس النص لعدد tokens مختلف، فالـ perplexity لكل token مش قابلة للمقارنة مباشرة. عشان كده فيه ناس بتستخدم bits-per-byte.</li>
+    <li><b>ECE صغير = موديل كويس؟</b> لأ. موديل بيقول 0.65 لكل حاجة على بيانات accuracy بتاعتها 0.65 عنده ECE شبه صفر وهو مش مفيد خالص (معمل ٣). لازم تبص على الـ Brier أو الـ resolution كمان.</li>
+    <li><b>ECE على ٥٠ مثال:</b> رقم ضوضاء. الدرس نفسه بيقول ما تنشرش رقم واحد على عينة صغيرة.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs والـ agents</h3>
+  <p>الـ <b>perplexity</b> هي الرقم الأساسي وانت بتدرّب أو بتعمل pretraining، وبتُستخدم كمان كمؤشر إن نص معين «شافه» الموديل قبل كده. والـ <b>calibration</b> مهمة جدًا في الـ agents: لو الـ agent بيقرر «أسأل البني آدم ولا أنفذ لوحدي» بناءً على ثقته، الثقة دي لازم تكون calibrated، وإلا هينفّذ حاجات غلط وهو واثق. نفس الكلام في الـ RAG: «أجاوب ولا أقول مش عارف» قرار مبني على ثقة.</p>
+</section>
+
+<!-- 08 QUIZ -->
+<section id="d501-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d501-quizBox"></div>
+</section>
+
+<!-- 09 DONE -->
+<section id="d501-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الـ perplexity كـ «محتار بين كام اختيار»، وليه NLL سالب = bug</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أحسب الـ ECE بإيدي على ٥ تنبؤات</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ reliability diagram: تحت القطر = overconfident</label></li>
+    <li><label><input type="checkbox" data-ck="4"> شفت في معمل ٣ إزاي الـ ECE بيعدّي الإلغاء جوه الصندوق والـ Brier لأ</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود بإيدي وشغّلت الـ demo والـ tests</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Perplexity</td><td>منحنيات الـ pretraining، ومقارنة checkpoints على held-out text</td></tr>
+    <tr><td>ECE / reliability diagram</td><td>تقارير الموديلات، وقرار «أجاوب ولا أرفض» في الـ RAG</td></tr>
+    <tr><td>Brier score</td><td>الـ forecasting، وأي نظام بيطلّع احتمالات للبني آدمين</td></tr>
+    <tr><td>Calibration per model</td><td>الـ eval runner بكرة الجاي، جنب الـ leaderboard</td></tr>
+    <tr><td>Confidence من الـ adapter</td><td>agents بتقرر تسأل البني آدم إمتى</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Leaderboard Aggregation. هتاخد scores موديلات كتير على tasks كتير، وتطلع ترتيب بـ confidence intervals بالـ bootstrap، وتعرف إمتى الفرق بين موديلين حقيقي وإمتى صدفة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F73-perplexity-calibration" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/73-perplexity-calibration</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N0=501,LESSON=73,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d501-roadmap').closest('.day');
+
+// roadmap
+const rm=$('d501-roadmap');for(let i=1;i<=87;i++){if(i===18||i===19)continue;const s=document.createElement('span');s.textContent=i;if(i===LESSON)s.className='now';rm.appendChild(s)}
+requestAnimationFrame(()=>{const n=rm.querySelector('.now');if(n)rm.scrollLeft+=n.getBoundingClientRect().left-rm.getBoundingClientRect().left-rm.clientWidth/2});
+
+// seeded rng
+function mk(seed){let s=seed>>>0||1;return()=>{s^=s<<13;s>>>=0;s^=s>>>17;s^=s<<5;s>>>=0;return s/4294967296}}
+
+// ---------- Lab 1: perplexity ----------
+const VS=[10,50,1000,32000,128000];
+const pc=$('d501-pc'),px=AI.setupCanvas(pc),PW=+pc.dataset.w,PH=+pc.dataset.h;
+function drawPPL(){
+  const p=+$('d501-p').value/1000,V=VS[+$('d501-v').value],neg=$('d501-neg').checked;
+  $('d501-pv').textContent=f(p,3);$('d501-vv').textContent=V.toLocaleString('en');
+  const nll=-Math.log(p),sent=neg?-nll:nll;
+  const v=$('d501-pverdict');
+  if(neg&&sent<0){$('d501-nll').textContent=f(sent,3);$('d501-ppx').textContent='ValueError';$('d501-bits').textContent='—';
+    v.textContent='الـ harness رفض: NLL سالب. لو كان قبله كانت الـ perplexity هتطلع '+f(Math.exp(sent),3)+' (أقل من 1 = مستحيل)';v.style.color=css('--bad')}
+  else{const pp=Math.exp(nll);$('d501-nll').textContent=f(nll,3);$('d501-ppx').textContent=f(pp,2);$('d501-bits').textContent=f(Math.log2(pp),2);
+    v.style.color='';
+    if(pp<1.05)v.textContent='تقريبًا مثالي: الموديل مدّي الـ token الصح احتمال قريب من 1';
+    else if(pp>=V*0.95)v.textContent='الموديل ده زي اللي بيخمّن عشوائي على '+V.toLocaleString('en')+' كلمة';
+    else v.textContent='كأن الموديل محتار بين ~'+f(pp,1)+' كلمة في كل خطوة'}
+  // draw
+  px.clearRect(0,0,PW,PH);const L=46,R=PW-12,T=12,B=PH-34;
+  const maxN=Math.log(Math.max(V,10))*1.08,maxY=Math.log10(Math.max(V,10))*1.1;
+  const X=n=>L+(n/maxN)*(R-L),Y=pp=>B-(Math.log10(pp)/maxY)*(B-T);
+  px.strokeStyle=css('--line');px.lineWidth=1;px.beginPath();px.moveTo(L,T);px.lineTo(L,B);px.lineTo(R,B);px.stroke();
+  px.fillStyle=css('--muted');px.font='11px JetBrains Mono, monospace';px.textAlign='right';px.textBaseline='middle';
+  for(let k=0;k<=Math.floor(maxY);k++){const y=Y(Math.pow(10,k));px.fillText(String(Math.pow(10,k)),L-4,y);px.strokeStyle=css('--grid');px.beginPath();px.moveTo(L,y);px.lineTo(R,y);px.stroke()}
+  px.textAlign='center';px.textBaseline='top';for(let n=0;n<=maxN;n+=Math.max(1,Math.round(maxN/6))){px.fillText(n,X(n),B+4)}
+  px.fillText('avg NLL per token (nats)',(L+R)/2,B+18);
+  // vocab line
+  px.setLineDash([5,4]);px.strokeStyle=css('--vec-b');px.beginPath();px.moveTo(L,Y(V));px.lineTo(R,Y(V));px.stroke();px.setLineDash([]);
+  px.fillStyle=css('--vec-b');px.textAlign='left';px.textBaseline='bottom';px.fillText('V = '+V.toLocaleString('en')+' (uniform)',L+6,Y(V)-2);
+  // curve
+  px.strokeStyle=css('--vec-a');px.lineWidth=2.5;px.beginPath();for(let i=0;i<=200;i++){const n=maxN*i/200;const y=Y(Math.exp(n));if(i)px.lineTo(X(n),y);else px.moveTo(X(n),y)}px.stroke();
+  // point
+  const ok=!(neg&&sent<0);px.fillStyle=ok?css('--vec-a'):css('--bad');
+  px.beginPath();px.arc(X(Math.min(nll,maxN)),Y(Math.min(Math.exp(nll),Math.pow(10,maxY))),7,0,7);px.fill();
+}
+['d501-p','d501-v','d501-neg'].forEach(id=>$(id).addEventListener('input',drawPPL));
+drawPPL();
+
+// ---------- shared calibration math (JS mirror of the lesson's functions) ----------
+function binIdx(c,M){let i=Math.floor(c*M);if(i>=M)i=M-1;if(i<0)i=0;return i}
+function calib(conf,corr,M){const n=conf.length;const bc=new Array(M).fill(0),ba=new Array(M).fill(0),cnt=new Array(M).fill(0);
+  for(let i=0;i<n;i++){const b=binIdx(conf[i],M);bc[b]+=conf[i];ba[b]+=corr[i];cnt[b]++}
+  let ece=0,pop=0,rel=0,res=0,br=0,acc=0;for(let i=0;i<n;i++){br+=(conf[i]-corr[i])**2;acc+=corr[i]}acc/=n||1;br/=n||1;
+  for(let b=0;b<M;b++){if(!cnt[b])continue;pop++;bc[b]/=cnt[b];ba[b]/=cnt[b];const w=cnt[b]/n;ece+=w*Math.abs(bc[b]-ba[b]);rel+=w*(bc[b]-ba[b])**2;res+=w*(ba[b]-acc)**2}
+  return{ece,pop,brier:br,rel,res,unc:acc*(1-acc),acc,bc,ba,cnt}}
+
+// ---------- Lab 2: reliability diagram ----------
+const NS=[50,100,200,800,3000];let kind='cal',seed2=11;
+const rc=$('d501-rc'),rx=AI.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+function gen(k,n,seed){const r=mk(seed),conf=[],corr=[];for(let i=0;i<n;i++){let c,y;
+  if(k==='cal'){c=r();y=r()<c?1:0}else if(k==='over'){c=0.7+0.3*r();y=r()<c*0.5?1:0}else{c=0.3*r();y=r()<0.5+c?1:0}
+  conf.push(c);corr.push(y)}return[conf,corr]}
+function drawRel(){
+  const n=NS[+$('d501-n').value],M=+$('d501-b').value;$('d501-nv').textContent=n;$('d501-bv').textContent=M;
+  const [conf,corr]=gen(kind,n,seed2),c=calib(conf,corr,M);
+  $('d501-ecev').textContent=f(c.ece,4);$('d501-briv').textContent=f(c.brier,4);$('d501-popv').textContent=c.pop+' / '+M;$('d501-accv').textContent=f(c.acc,3);
+  const v=$('d501-rverdict');
+  v.textContent=kind==='cal'?'الأعمدة ماشية جنب القطر: الثقة في محلها':kind==='over'?'الأعمدة تحت القطر بكتير: بيقول ٩٠٪ وبيطلع صح أقل من النص':'الأعمدة فوق القطر: بيقول ١٥٪ وبيطلع صح أكتر من ٦٠٪';
+  if(n<=100)v.textContent+=' · العينة صغيرة: الرقم ده فيه ضوضاء كتير';
+  rx.clearRect(0,0,RW,RH);const L=44,R=RW-12,T=14,B=RH-60,HB=RH-8;
+  const X=x=>L+x*(R-L),Y=y=>B-y*(B-T);
+  rx.strokeStyle=css('--line');rx.lineWidth=1;rx.beginPath();rx.moveTo(L,T);rx.lineTo(L,B);rx.lineTo(R,B);rx.stroke();
+  rx.fillStyle=css('--muted');rx.font='11px JetBrains Mono, monospace';rx.textAlign='right';rx.textBaseline='middle';
+  for(let k=0;k<=4;k++){rx.fillText(f(k/4,2),L-4,Y(k/4))}
+  rx.save();rx.translate(12,(T+B)/2);rx.rotate(-Math.PI/2);rx.textAlign='center';rx.fillText('accuracy',0,0);rx.restore();
+  const w=(R-L)/M;
+  for(let b=0;b<M;b++){
+    if(c.cnt[b]){const x=X(b/M)+2;rx.fillStyle=css('--vec-a');rx.globalAlpha=.75;rx.fillRect(x,Y(c.ba[b]),w-4,B-Y(c.ba[b]));rx.globalAlpha=1;
+      // gap
+      rx.strokeStyle=css('--bad');rx.lineWidth=2;rx.beginPath();rx.moveTo(x+(w-4)/2,Y(c.ba[b]));rx.lineTo(x+(w-4)/2,Y(c.bc[b]));rx.stroke();
+      rx.fillStyle=css('--vec-b');rx.beginPath();rx.arc(x+(w-4)/2,Y(c.bc[b]),3.5,0,7);rx.fill()}
+    // count strip
+    const mx=Math.max(...c.cnt);rx.fillStyle=css('--muted');rx.globalAlpha=.5;const hh=c.cnt[b]/mx*24;rx.fillRect(X(b/M)+2,HB-hh,w-4,hh);rx.globalAlpha=1}
+  rx.setLineDash([5,4]);rx.strokeStyle=css('--ink');rx.lineWidth=1.3;rx.beginPath();rx.moveTo(X(0),Y(0));rx.lineTo(X(1),Y(1));rx.stroke();rx.setLineDash([]);
+  rx.fillStyle=css('--muted');rx.textAlign='center';rx.textBaseline='top';rx.fillText('confidence →   (bars = accuracy · dot = avg confidence · red = gap · grey = count)',(L+R)/2,B+4);
+}
+$('d501-kinds').querySelectorAll('[data-k]').forEach(b=>b.addEventListener('click',()=>{kind=b.dataset.k;$('d501-kinds').querySelectorAll('[data-k]').forEach(x=>x.classList.toggle('primary',x===b));drawRel()}));
+$('d501-resample').addEventListener('click',()=>{seed2=(seed2*48271+7)%2147483647;drawRel()});
+['d501-n','d501-b'].forEach(id=>$(id).addEventListener('input',drawRel));
+drawRel();
+
+// ---------- Lab 3: ECE vs Brier ----------
+const bc=$('d501-bc'),bx=AI.setupCanvas(bc),BW=+bc.dataset.w,BH=+bc.dataset.h;
+const Q=[],Yv=[];(function(){const r=mk(2026);for(let i=0;i<1000;i++){const q=i<500?0.95:0.35;Q.push(q);Yv.push(r()<q?1:0)}})();
+function drawB(){
+  const s=+$('d501-s').value/100,bias=+$('d501-bi').value/100;$('d501-sv').textContent=f(s,2);$('d501-biv').textContent=(bias>0?'+':'')+f(bias,2);
+  const conf=Q.map(q=>Math.min(1,Math.max(0,0.65+s*(q-0.65)+bias)));
+  const c=calib(conf,Yv,10);
+  $('d501-e3').textContent=f(c.ece,4);$('d501-b3').textContent=f(c.brier,4);$('d501-d3').textContent=f(c.rel-c.res+c.unc,4);
+  const v=$('d501-v3');
+  if(c.ece<0.03&&c.brier>0.2){v.textContent='الـ ECE شبه صفر بس الـ Brier عالي: الأخطاء بتلغي بعض جوه الصندوق';v.style.color=css('--vec-b')}
+  else if(c.ece<0.03){v.textContent='calibrated وحاد: ECE صغير و Brier أقل';v.style.color=css('--ok')}
+  else{v.textContent='فيه انحياز: الاتنين بيزيدوا';v.style.color=css('--bad')}
+  bx.clearRect(0,0,BW,BH);
+  const items=[['ECE',c.ece,css('--vec-b')],['Brier',c.brier,css('--vec-a')],['reliability',c.rel,css('--bad')],['− resolution',c.res,css('--ok')],['uncertainty',c.unc,css('--muted')]];
+  const L=110,R=BW-60,T=20,rowH=(BH-40)/items.length,mx=0.3;
+  bx.font='12px JetBrains Mono, monospace';bx.textBaseline='middle';
+  items.forEach((it,i)=>{const y=T+i*rowH+rowH/2;bx.fillStyle=css('--ink');bx.textAlign='right';bx.fillText(it[0],L-8,y);
+    bx.fillStyle=css('--soft');bx.fillRect(L,y-10,R-L,20);bx.fillStyle=it[2];bx.fillRect(L,y-10,Math.min(1,it[1]/mx)*(R-L),20);
+    bx.fillStyle=css('--ink');bx.textAlign='left';bx.fillText(f(it[1],3),Math.min(R,L+Math.min(1,it[1]/mx)*(R-L))+6,y)});
+  bx.strokeStyle=css('--line');bx.beginPath();bx.moveTo(L,T-6);bx.lineTo(L,BH-14);bx.stroke();
+  bx.fillStyle=css('--muted');bx.textAlign='left';bx.fillText('scale: 0 → 0.3',L,BH-6);
+}
+['d501-s','d501-bi'].forEach(id=>$(id).addEventListener('input',drawB));
+drawB();
+
+// ---------- quiz ----------
+AI.quiz($('d501-quizBox'),[
+ ['الـ perplexity = 1.0 على corpus الاختبار معناها إيه؟',['الموديل بايظ','الموديل مدّي كل token حقيقي احتمال 1، يعني موديل مثالي','الموديل موزّع بالتساوي على الـ vocabulary','الـ corpus فاضي'],1,'الـ perplexity = exp(متوسط الـ NLL). لو كل token احتماله 1 يبقى الـ NLL صفر، و exp(0) = 1.'],
+ ['ليه الـ harness بيشترط إن الـ negative log-probabilities اللي جاية من الـ adapter تكون مش سالبة؟',['numpy بيقع مع السالب','حدود صناديق الـ ECE بتفترض الموجب','الـ perplexity مش معرّفة للسالب','الـ −log p لاحتمال مش سالب بالتعريف؛ لو جه سالب يبقى الـ adapter بعت log p مش −log p'],3,'−log p دايمًا ≥ 0. القيمة السالبة خرق للعقد كان هيطلّع perplexity أقل من 1 في صمت، وده مستحيل.'],
+ ['الـ expected calibration error بيقيس إيه؟',['متوسط الفرق بين ثقة الصندوق والـ accuracy بتاعته، موزون بحجم الصندوق','الـ cross-entropy للتنبؤات','متوسط المسافة المطلقة بين الـ labels المتوقعة والحقيقية','الـ variance بتاع الـ softmax'],0,'الـ ECE بيقسّم التنبؤات لصناديق حسب الثقة، ويقيس الفرق بين متوسط الثقة ومتوسط الصح في كل صندوق، ويوزنه بالحجم.'],
+ ['ليه الكود بيرجّع populated_bins مع قيمة الـ ECE؟',['ده مقام الـ Brier','numpy محتاجه','بيقولك إمتى الصناديق المليانة قليلة لدرجة إن الرقم الواحد مش موثوق','لازم للـ reliability diagram'],2,'لما الصناديق المليانة قليلة الـ ECE بيبقى ضوضاء. العدد ده بيخلي الـ runner يرفض ينشر رقم مضلل.'],
+ ['الـ Brier score بيمسك إيه الـ ECE ما بيمسكوش؟',['مش محتاج labels حقيقية','أسرع في الحساب','بيشتغل على النتايج الثنائية بس','بيعاقب سوء الـ calibration المحلي مباشرة لأنه مربع الخطأ لكل تنبؤ لوحده'],3,'الـ ECE بيبص على متوسطات الصناديق بس. الـ Brier بيربّع الخطأ لكل تنبؤ، فبيمسك الحالة اللي الأخطاء فيها بتلغي بعض جوه صندوق واحد.'],
+ ['ليه الـ calibration تقرير لكل موديل مش metric لكل task؟',['بطيئة لو اتحسبت لكل task','الـ tasks ما فيهاش احتمالات','الـ ECE محتاج يعرف معمارية الموديل','الـ task الواحد فيه تنبؤات قليلة مش كفاية لإحصائيات الصناديق، فالتقرير بيجمّع على الـ eval كله'],3,'الـ calibration لكل task ضوضاء. الـ runner بيلمّ أزواج (confidence, correct) من كل الـ tasks قبل ما يحسب الـ ECE والـ Brier والـ reliability.'],
+ ['(سؤال مني) موديل قال ثقة 0.9 على ٤ إجابات، ٢ منهم صح. الـ ECE بـ ١٠ صناديق كام؟',['0.1','0.4','0.5','0.9'],1,'كلهم في صندوق واحد: متوسط الثقة 0.9 والـ accuracy 0.5، والصندوق واخد الوزن كله (4/4)، فالـ ECE = |0.9 − 0.5| = 0.4.'],
+ ['(سؤال مني) adapter رجّع NLL مجموعها 0 على 10 tokens. الـ perplexity كام وده معناه إيه؟',['0، الموديل ما شافش النص','1، الموديل مدّي كل token احتمال 1 (ودي إشارة تشك فيها: يمكن الـ adapter مش بيحسب صح)','NaN','10'],1,'exp(0/10) = 1. ده الحد الأدنى النظري. لو شفته على نص حقيقي غالبًا الـ adapter بيرجّع أصفار بالغلط، أو النص ده كان في بيانات التدريب.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N0,root);
+AI.onTheme(()=>{if(!document.body.contains(pc))return false;drawPPL();drawRel();drawB()});
+})();
+</script>

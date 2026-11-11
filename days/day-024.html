@@ -1,0 +1,895 @@
+<div class="day" id="d24-root">
+<header class="top">
+  <span class="eyebrow">Phase 2 · Lesson 02 · Linear Regression</span>
+  <h1>اليوم ٢٤: أحسن خط مستقيم، وأول training loop كامل</h1>
+  <p class="lede">النهاردة هتبني أول موديل ML حقيقي من الصفر: <b>Linear Regression</b>. الموضوع مش بس «ارسم خط وسط النقط». هتشوف الدورة اللي كل ML بيمشي عليها: <b>موديل</b>، و<b>cost function</b>، و<b>optimization</b>. هتحرك الخط بإيدك وتشوف الـ error بيتغير، وتشوف الـ gradient descent وهو بينزل في «الطبق»، وتشوف الـ polynomial وهو بيعمل overfitting قدام عينك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Julia)</span>
+    <span>قبله: <b>What Is Machine Learning</b></span>
+    <span>بعده: <b>Logistic Regression</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 2 — 21 lessons</span>
+    <div class="roadmap" id="d24-roadmap" aria-label="دروس الفيز التانية"></div>
+  </div>
+</header>
+
+<!-- WARM-UP -->
+<section id="d24-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كان أول يوم في الـ Machine Learning. جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <details><summary>١. إيه الفرق بين الـ classification والـ regression؟</summary>
+    <p>الـ <b>classification</b> بيتوقع فئة (spam ولا لأ، قطة ولا كلب). الـ <b>regression</b> بيتوقع رقم مستمر (سعر شقة، درجة حرارة). النهاردة إحنا في regression: هنتوقع سعر بيت من مساحته.</p></details>
+  <details><summary>٢. ليه بنقسم الداتا لـ train و validation و test؟</summary>
+    <p>عشان نقيس الموديل على داتا ما شافهاش. الـ train للتعلم، الـ validation لاختيار الإعدادات (hyperparameters)، والـ test للحكم النهائي مرة واحدة في الآخر. لو قست على نفس الداتا اللي اتعلم منها هتضحك على نفسك.</p></details>
+  <details><summary>٣. يعني إيه overfitting و underfitting؟</summary>
+    <p><b>Underfitting</b>: الموديل أبسط من الداتا، فبيغلط في الـ train والـ test. <b>Overfitting</b>: الموديل حفظ الـ train بالضوضاء بتاعته، فبيبقى ممتاز في الـ train ووحش في الـ test. هتشوف الاتنين بعينك في المعمل ٠٣ النهاردة.</p></details>
+  <p>امبارح عملنا nearest centroid classifier. النهاردة أول موديل بـ <b>بارامترز بتتعلم</b> بالـ optimization.</p>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>الموديل والـ MSE والمعمل ٠١</div>
+    <div><b>20 min</b>Gradient descent والمعمل ٠٢</div>
+    <div><b>10 min</b>Normal equation و R²</div>
+    <div><b>10 min</b>Polynomial و Ridge والمعمل ٠٣</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمرين + كويز</div>
+  </div>
+</section>
+
+<!-- PROBLEM -->
+<section id="d24-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: عايز معادلة، مش تخمين بالعين</h2></div>
+  <p>عندك داتا: مساحات بيوت وأسعار بيعها. جالك بيت جديد وعايز تتوقع سعره من مساحته. ممكن تبص على الـ scatter plot وتخمّن، بس انت محتاج <b>معادلة</b>: تحط فيها أي مساحة يطلعلك سعر. يعني محتاج الخط اللي «أحسن ما يمكن» يمشي وسط النقط.</p>
+  <p>الأهم من الخط نفسه إن الدرس ده بيعرّفك على <b>الـ training loop</b> كله:</p>
+  <ol class="ex">
+    <li><b>عرّف موديل</b>: شكل المعادلة اللي بتتوقع بيها.</li>
+    <li><b>عرّف cost function</b>: رقم واحد بيقول الموديل غلطان قد إيه.</li>
+    <li><b>اعمل optimization</b>: غيّر البارامترز لحد ما الـ cost يقل.</li>
+  </ol>
+  <p>كل خوارزميات الـ ML، لحد الـ LLMs، ماشية على نفس الـ ٣ خطوات دي. اتعلمها هنا في أبسط حالة، وهتعرفها في كل حتة بعد كده.</p>
+  <div class="note"><strong>مش لعب عيال:</strong> الـ linear regression مستخدم في production في توقع الطلب (demand forecasting)، وتحليل الـ A/B tests، والنماذج المالية، وكـ <b>baseline</b> لأي مسألة regression. أي موديل معقد لازم يغلبه الأول.</div>
+</section>
+
+<!-- MODEL + MSE + LAB 1 -->
+<section id="d24-model">
+  <div class="station-head"><span class="tag">02</span><h2>الموديل والـ MSE: إزاي نقيس «الخط ده وحش قد إيه»</h2></div>
+  <p>الموديل بيفترض إن العلاقة بين الدخل <span class="ltr">x</span> والخرج <span class="ltr">y</span> خط مستقيم:</p>
+  <div class="formula">ŷ = w·x + b</div>
+  <ul class="ex">
+    <li><b>w</b> (الـ weight أو الميل / slope): y بتزيد قد إيه لما x تزيد ١. لو w = 3، كل متر زيادة = ٣ وحدات سعر زيادة.</li>
+    <li><b>b</b> (الـ bias أو الـ intercept): قيمة y لما x = 0. يعني فين الخط بيقطع المحور الرأسي.</li>
+  </ul>
+  <p>لو عندك أكتر من feature (مساحة، عدد أوض، عمر البيت) المعادلة بتكبر بس الفكرة واحدة:</p>
+  <div class="formula">ŷ = w₁x₁ + w₂x₂ + … + wₙxₙ + b   =   wᵀx + b</div>
+  <p>وده بالظبط الـ dot product اللي اتعلمناه في Phase 1. الهدف: نلاقي <span class="ltr">w</span> و<span class="ltr">b</span> اللي يخلّوا التوقع قريب من الحقيقة في كل أمثلة التدريب.</p>
+
+  <h3>الـ Cost Function: Mean Squared Error</h3>
+  <p>«قريب» يعني إيه بالأرقام؟ محتاجين رقم واحد يلخص الغلط كله. الأشهر هو الـ <b>MSE</b>: لكل نقطة، خد الفرق بين التوقع والحقيقة (اسمه <b>residual</b>)، ربّعه، وخد المتوسط.</p>
+  <div class="formula">MSE = (1/n) · Σ (ŷᵢ − yᵢ)²</div>
+  <p><b>ليه نربّع؟</b> لسببين:</p>
+  <ol class="ex">
+    <li>التربيع بيعاقب الغلط الكبير أكتر بكتير: غلطة حجمها 10 وحشة <b>100 مرة</b> قد غلطة حجمها 1، مش 10 مرات بس.</li>
+    <li>دالة التربيع ناعمة (smooth) وليها derivative في كل حتة، فالـ optimization بيبقى سهل.</li>
+  </ol>
+  <div class="note"><strong>التشبيه:</strong> تخيل كل نقطة مربوطة في الخط بـ «زمبلك». الزمبلك طوله الـ residual، وطاقته بتكبر مع مربع الطول. الخط الأحسن هو اللي بيرتاح عنده مجموع طاقة الزمبلكات. ده اللي هتشوفه في المعمل: كل مربع مساحته = residual².</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠١: حرّك الخط بإيدك</h3>
+      <p>حرّك الـ sliders بتوع <span class="ltr">w</span> و<span class="ltr">b</span> وحاول توصّل الـ MSE لأقل رقم. المربعات البرتقاني هي الـ residuals متربعة: عايز مجموع مساحتهم يبقى أصغر حاجة.</p>
+      <p>تقدر كمان <b>تسحب أي نقطة</b> بإيدك. جرب زرار «ضيف outlier» وشوف نقطة واحدة بعيدة بتشد الخط الأحسن قد إيه، عشان مربعها ضخم.</p>
+      <div class="note ai"><strong>لاحظ:</strong> زرار «أحسن خط» بيحسب الحل المباشر (normal equation) اللي هنشرحه في المحطة ٠٤. قارن رقمك برقمه.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d24-fit" width="520" height="380" aria-label="نقط وخط بتتحكم فيه"></canvas>
+      <div class="mrow">
+        <label>w = <span id="d24-wv">1.0</span><input type="range" id="d24-w" min="-2" max="6" step="0.05" value="1"></label>
+        <label>b = <span id="d24-bv">10.0</span><input type="range" id="d24-b" min="-10" max="25" step="0.1" value="10"></label>
+      </div>
+      <div class="readout">
+        <div><small>MSE بتاعك</small><b id="d24-mse">0</b></div>
+        <div><small>أحسن MSE ممكن</small><b id="d24-mseb">0</b></div>
+        <div><small>R²</small><b id="d24-r2">0</b></div>
+        <div><small>أحسن خط</small><b id="d24-best">-</b></div>
+      </div>
+      <div class="verdict" id="d24-v1"></div>
+      <div class="btns">
+        <button type="button" class="primary" id="d24-snap">أحسن خط</button>
+        <button type="button" id="d24-out">ضيف outlier</button>
+        <button type="button" id="d24-reset1">رجّع الداتا</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d24-sq" checked> ورّيني المربعات</label>
+      </div>
+    </div>
+  </div>
+  <p>الـ MSE بالنسبة لـ <span class="ltr">w</span> و<span class="ltr">b</span> بيعمل سطح شكله <b>طبق</b> (convex paraboloid). قاع الطبق هو أقل MSE. التدريب كله = إنك تلاقي القاع ده. ده اللي المعمل الجاي بيرسمه.</p>
+</section>
+
+<!-- GD + LAB 2 -->
+<section id="d24-gd">
+  <div class="station-head"><span class="tag">03</span><h2>Gradient Descent: انزل الطبق خطوة خطوة</h2></div>
+  <p>انت واقف على جبل في الضباب وعايز توصل للوادي. مش شايف حاجة، بس حاسس بالميل تحت رجلك. فبتاخد خطوة في اتجاه النزول، وتعيد. ده الـ gradient descent.</p>
+  <ol class="ex">
+    <li>ابدأ بـ <span class="ltr">w</span> و<span class="ltr">b</span> أي قيم (الكود بيبدأ بأصفار).</li>
+    <li>احسب التوقعات <span class="ltr">ŷ = wx + b</span>.</li>
+    <li>احسب الـ cost (الـ MSE).</li>
+    <li>احسب الـ gradients: <span class="ltr">∂MSE/∂w</span> و<span class="ltr">∂MSE/∂b</span>.</li>
+    <li>حدّث البارامترز في عكس اتجاه الـ gradient.</li>
+    <li>الـ cost قليل كفاية؟ لو لأ ارجع لخطوة ٢.</li>
+  </ol>
+  <p>الـ gradient بيقولك حاجتين: كل بارامتر يتحرك في أنهي اتجاه، ويتحرك قد إيه. بالـ chain rule (اللي عملناها في Phase 1):</p>
+  <div class="formula">∂MSE/∂w = (2/n) · Σ (ŷᵢ − yᵢ) · xᵢ<br>∂MSE/∂b = (2/n) · Σ (ŷᵢ − yᵢ)</div>
+  <div class="formula">w ← w − learning_rate · ∂MSE/∂w<br>b ← b − learning_rate · ∂MSE/∂b</div>
+  <p>لاحظ معنى الـ gradient بتاع <span class="ltr">b</span>: هو متوسط الغلط. لو الموديل بيتوقع أعلى من الحقيقة في المتوسط، الـ gradient موجب، فـ <span class="ltr">b</span> بتقل. منطقي جدًا.</p>
+  <p><b>الـ learning rate</b> هو حجم الخطوة. كبير زيادة: هتنط فوق القاع وتبعد (diverge). صغير زيادة: التدريب هياخد عمر. قيم بداية شائعة: <span class="ltr">0.01</span> و<span class="ltr">0.001</span> و<span class="ltr">0.0001</span>.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: شوف الطبق من فوق</h3>
+      <p>الشمال: خريطة الـ MSE لكل قيم <span class="ltr">(w, b)</span>. كل ما اللون أغمق، الـ MSE أقل. النجمة هي القاع. النقط البرتقاني هي مسار الـ gradient descent.</p>
+      <ol class="ex">
+        <li>دوس «شغّل» بالـ learning rate الافتراضي وشوف المسار.</li>
+        <li>كبّر الـ learning rate لحد ما المسار يبدأ يتزجزج، وبعدين لحد ما ينفجر (diverge).</li>
+        <li>فعّل «standardize x» وشوف الطبق بقى مدوّر، والـ learning rate المسموح بقى أكبر بكتير، والوصول بقى أسرع.</li>
+      </ol>
+      <div class="note"><strong>ليه الـ standardize بيفرق؟</strong> لما x مش متمركزة حوالين الصفر، تغيير <span class="ltr">w</span> وتغيير <span class="ltr">b</span> بيأثروا على بعض، والطبق بيبقى «وادي طويل ضيق». الـ gradient بيشاور على جوانب الوادي مش على قاعه، فبتتزجزج. ده نفس الكلام اللي الدرس بيقوله على الـ feature scaling في الـ multiple regression.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d24-bowl" width="520" height="360" aria-label="خريطة الـ MSE ومسار الـ gradient descent"></canvas>
+      <label style="display:grid;gap:2px">learning rate = <b class="mono" id="d24-lrv">0.01</b><input type="range" id="d24-lr" min="0" max="100" step="1" value="37"></label>
+      <div class="readout">
+        <div><small>epoch</small><b id="d24-ep">0</b></div>
+        <div><small>MSE</small><b id="d24-gmse">-</b></div>
+        <div><small>w</small><b id="d24-gw">0</b></div>
+        <div><small>b</small><b id="d24-gb">0</b></div>
+      </div>
+      <div class="verdict" id="d24-v2"></div>
+      <div class="btns">
+        <button type="button" class="primary" id="d24-run">شغّل</button>
+        <button type="button" id="d24-step">خطوة واحدة</button>
+        <button type="button" id="d24-reset2">ابدأ من الصفر</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:14px"><input type="checkbox" id="d24-std"> standardize x</label>
+      </div>
+      <canvas id="d24-curve" width="520" height="110" aria-label="منحنى الـ cost مع الـ epochs"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- NORMAL EQUATION + R2 + MULTI -->
+<section id="d24-normal">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Normal Equation و R² و Multiple Regression</h2></div>
+  <h3>الحل المباشر (Closed-Form)</h3>
+  <p>في الـ linear regression بالذات فيه معادلة بتديك الأوزان المثالية <b>مرة واحدة</b> من غير ولا خطوة iteration:</p>
+  <div class="formula">w = (XᵀX)⁻¹ Xᵀy</div>
+  <p>بتعمل inverse لمصفوفة وخلاص. ممتازة للداتا الصغيرة. بس لو عندك آلاف الـ features، الـ matrix inversion تكلفته <span class="ltr">O(n³)</span> في عدد الـ features، وده بيبقى بطيء جدًا، فبنرجع للـ gradient descent.</p>
+  <p>في حالة feature واحدة المعادلة بتتبسط للي في الكود (Step 3):</p>
+  <div class="formula">w = Σ(xᵢ − x̄)(yᵢ − ȳ) / Σ(xᵢ − x̄)²      b = ȳ − w·x̄</div>
+  <p>يعني الميل = (إزاي x و y بيتغيروا مع بعض) ÷ (x بيتغير قد إيه لوحده). ولاحظ إن الخط الأحسن دايمًا بيعدي بنقطة المتوسطات <span class="ltr">(x̄, ȳ)</span>.</p>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>Gradient Descent</th><th>Normal Equation</th></tr>
+    <tr><td>بيوصل إزاي</td><td>خطوات كتير</td><td>خطوة واحدة</td></tr>
+    <tr><td>محتاج learning rate؟</td><td>أيوه</td><td>لأ</td></tr>
+    <tr><td>محتاج feature scaling؟</td><td>أيوه، بيفرق جامد</td><td>لأ</td></tr>
+    <tr><td>عدد features كبير جدًا</td><td>كويس</td><td>بطيء (<span class="ltr">O(n³)</span>)</td></tr>
+    <tr><td>بيشتغل مع موديلات تانية؟</td><td>أيوه، ده اللي بيدرب الـ neural networks</td><td>خاص بالـ linear regression</td></tr>
+  </table></div>
+
+  <h3>Multiple Linear Regression</h3>
+  <p>مع كذا feature (مساحة، أوض، عمر)، كل حاجة زي ما هي: نفس الـ MSE، والـ gradient descent بيحدث كل الأوزان مع بعض في نفس الخطوة. الفرق الوحيد إنك بتفيت <b>hyperplane</b> بدل خط.</p>
+  <p><b>الـ Feature scaling هنا ضروري:</b> لو feature من 0 لـ 1 وواحدة تانية من 0 لـ 1,000,000، سطح الـ cost بيبقى ممطوط جدًا والـ gradient descent بيعاني. الحل: <b>standardize</b> كل feature (اطرح المتوسط واقسم على الـ standard deviation). في الكود، المساحة من 500 لـ 3000 والأوض من 1 لـ 5: من غير scaling الأوزان مستحيل تتعلم بنفس الـ learning rate.</p>
+  <div class="note"><strong>تفسير الأوزان:</strong> بعد الـ standardize، كل weight معناه «y بتتغير قد إيه لما الـ feature دي تزيد standard deviation واحد». فتقدر تقارن الأوزان ببعض وتعرف مين أهم. في داتا الكود الحقيقية، السعر = <span class="ltr">50·size + 10000·bedrooms − 1000·age + …</span>، فالمفروض وزن الـ age يطلع سالب.</div>
+
+  <h3>R-Squared: الموديل ده كويس ولا لأ؟</h3>
+  <p>الـ MSE بيقولك انت غلطان قد إيه، بس الرقم بيعتمد على وحدة y (MSE بالجنيه غير بالألف جنيه). الـ <b>R²</b> مقياس من غير وحدة:</p>
+  <div class="formula">R² = 1 − SS_res / SS_tot = 1 − Σ(yᵢ − ŷᵢ)² / Σ(yᵢ − ȳ)²</div>
+  <p>المقام هو غلط أغبى موديل ممكن: «توقع المتوسط دايمًا». فالـ R² بيقارنك بيه:</p>
+  <ul class="ex">
+    <li><span class="ltr">R² = 1.0</span>: توقعات مثالية.</li>
+    <li><span class="ltr">R² = 0.0</span>: مش أحسن من إنك تقول المتوسط كل مرة.</li>
+    <li><span class="ltr">R² &lt; 0</span>: أوحش من المتوسط. ده بيحصل فعلًا، خصوصًا على الـ test set. جربه في المعمل ٠١: حط w سالب.</li>
+  </ul>
+</section>
+
+<!-- POLY + RIDGE + LAB 3 -->
+<section id="d24-poly">
+  <div class="station-head"><span class="tag">05</span><h2>Polynomial Regression و Ridge: منحنيات بنفس الرياضة</h2></div>
+  <p>طب لو العلاقة مش خط؟ تقدر تستخدم نفس الـ linear regression بس تعمل features جديدة من x:</p>
+  <div class="formula">ŷ = w₁x + w₂x² + w₃x³ + b</div>
+  <p>ده لسه اسمه <b>linear</b> regression! ليه؟ عشان الموديل خطي في الأوزان <span class="ltr">w₁, w₂, w₃</span>. انت بس بتديله features غير خطية من x. بالنسبة للموديل، <span class="ltr">x²</span> ده مجرد عمود زيادة في الجدول.</p>
+  <p>الـ degree الأعلى بيفيت منحنيات أعقد، بس بيخاطر بالـ <b>overfitting</b>: polynomial من degree 9 يقدر يعدي بالظبط على 10 نقط، بس يتوقع وحش على أي داتا جديدة.</p>
+
+  <h3>Ridge Regression (L2 Regularization): لمحة</h3>
+  <p>لما يبقى عندك features كتير، الموديل ممكن يعمل overfitting بإنه يدي أوزان ضخمة. الـ Ridge بتضيف عقوبة على حجم الأوزان:</p>
+  <div class="formula">Cost = MSE + λ · Σ wᵢ²</div>
+  <p>العقوبة دي بتكره الأوزان الكبيرة. الـ <span class="ltr">λ</span> (في الكود اسمه <code>alpha</code>) بيتحكم في الموازنة: λ أكبر = أوزان أصغر و regularization أكتر. في الـ gradient ده بيضيف <span class="ltr">2·λ·w</span> لكل وزن، فكأن كل خطوة بتشد الوزن شوية ناحية الصفر. الدرس بيقول إن ده هيتشرح بالتفصيل في درس جاي، دلوقتي اعرف إنه موجود وبيساعد ليه.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: Overfitting قدام عينك</h3>
+      <p>النقط المليانة (train) والنقط المفرغة (test) جايين من نفس المنحنى الحقيقي (المتقطع) ومعاهم ضوضاء. الموديل بيتدرب على الـ train بس.</p>
+      <ol class="ex">
+        <li>ابدأ من degree 1: خط مش قادر يمسك المنحنى، underfitting.</li>
+        <li>ارفع لـ degree 3 (المنحنى الحقيقي هنا cubic): قريب من الحقيقة، والـ test R² عالي وقريب من الـ train.</li>
+        <li>ارفع لـ 9 أو أكتر: الـ train R² بيقرب من 1، والمنحنى بيتلوى بشكل مجنون، والـ test R² بيقع.</li>
+        <li>وانت على degree عالي، زوّد الـ λ (Ridge) وشوف المنحنى بيهدى والـ test بيتحسن.</li>
+      </ol>
+    </div>
+    <div class="instrument">
+      <canvas id="d24-pc" width="520" height="340" aria-label="Polynomial fit بدرجات مختلفة"></canvas>
+      <div class="mrow">
+        <label>degree = <span id="d24-dv">1</span><input type="range" id="d24-deg" min="1" max="12" step="1" value="1"></label>
+        <label>λ (Ridge) = <span id="d24-lv">0</span><input type="range" id="d24-lam" min="0" max="60" step="1" value="0"></label>
+      </div>
+      <div class="readout">
+        <div><small>train R²</small><b id="d24-tr">-</b></div>
+        <div><small>test R²</small><b id="d24-te">-</b></div>
+        <div><small>أكبر |w|</small><b id="d24-wmax">-</b></div>
+      </div>
+      <div class="verdict" id="d24-v3"></div>
+      <div class="btns"><button type="button" id="d24-newdata">داتا جديدة</button></div>
+      <canvas id="d24-r2c" width="520" height="120" aria-label="train و test R² لكل degree"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- CODE -->
+<section id="d24-code">
+  <div class="station-head"><span class="tag">06</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من فولدر الريبو (اللي عملتله clone في يوم ١)، شغّل الملف الأصلي الأول عشان تشوف الصورة كاملة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/02-ml-fundamentals/02-linear-regression/code/linear_regression.py</pre></div>
+  <p>الملف Python عادي من غير أي مكتبات، ما عدا آخر جزء (مقارنة scikit-learn) اللي لو المكتبة مش متسطبة بيطبع رسالة تقولك تسطبها بـ <code>pip install scikit-learn</code> وبيكمل عادي.</p>
+  <p><b>القاعدة:</b> متعملش copy-paste. افتح ملف جديد <code>my_linreg.py</code> واكتب الخطوات دي بإيدك واحدة واحدة، وشغّل بعد كل خطوة.</p>
+
+  <h3>خطوة ١: اعمل داتا بنفسك (وانت عارف الإجابة)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+import math
+
+random.seed(42)
+
+TRUE_W = 3.0       <span class="c"># الميل الحقيقي اللي عايزين الموديل يكتشفه</span>
+TRUE_B = 7.0       <span class="c"># الـ intercept الحقيقي</span>
+N_SAMPLES = 100
+
+X = [random.uniform(0, 10) for _ in range(N_SAMPLES)]
+y = [TRUE_W * x + TRUE_B + random.gauss(0, 2.0) for x in X]   <span class="c"># خط + ضوضاء</span>
+
+print(f"Generated {N_SAMPLES} samples")
+print(f"True relationship: y = {TRUE_W}x + {TRUE_B} (+ noise)")
+print(f"First 5 points: {[(round(X[i], 2), round(y[i], 2)) for i in range(5)]}")</pre></div>
+  <p>الفكرة الحلوة: انت عارف الإجابة الصح (3 و 7)، فتقدر تتأكد إن الموديل اتعلم صح.</p>
+
+  <h3>خطوة ٢: Linear Regression بالـ gradient descent</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class LinearRegression:
+    def __init__(self, learning_rate=0.01):
+        self.w = 0.0                   <span class="c"># بنبدأ من الصفر</span>
+        self.b = 0.0
+        self.lr = learning_rate
+        self.cost_history = []
+
+    def predict(self, X):              <span class="c"># الموديل: ŷ = wx + b</span>
+        return [self.w * x + self.b for x in X]
+
+    def compute_cost(self, X, y):      <span class="c"># الـ MSE</span>
+        predictions = self.predict(X)
+        n = len(y)
+        cost = sum((pred - actual) ** 2 for pred, actual in zip(predictions, y)) / n
+        return cost
+
+    def compute_gradients(self, X, y): <span class="c"># المعادلتين بتوع المحطة ٠٣</span>
+        predictions = self.predict(X)
+        n = len(y)
+        dw = (2 / n) * sum((pred - actual) * x for pred, actual, x in zip(predictions, y, X))
+        db = (2 / n) * sum(pred - actual for pred, actual in zip(predictions, y))
+        return dw, db
+
+    def fit(self, X, y, epochs=1000, print_every=200):
+        for epoch in range(epochs):
+            dw, db = self.compute_gradients(X, y)
+            self.w -= self.lr * dw     <span class="c"># خطوة عكس الـ gradient</span>
+            self.b -= self.lr * db
+            cost = self.compute_cost(X, y)
+            self.cost_history.append(cost)
+            if epoch % print_every == 0:
+                print(f"  Epoch {epoch:4d} | Cost: {cost:.4f} | w: {self.w:.4f} | b: {self.b:.4f}")
+        return self
+
+    def r_squared(self, X, y):         <span class="c"># 1 - SS_res / SS_tot</span>
+        predictions = self.predict(X)
+        y_mean = sum(y) / len(y)
+        ss_res = sum((actual - pred) ** 2 for actual, pred in zip(y, predictions))
+        ss_tot = sum((actual - y_mean) ** 2 for actual in y)
+        return 1 - (ss_res / ss_tot)
+
+
+print("=== Training Linear Regression (Gradient Descent) ===")
+model = LinearRegression(learning_rate=0.005)
+model.fit(X, y, epochs=1000, print_every=200)
+print(f"\nLearned: y = {model.w:.4f}x + {model.b:.4f}")
+print(f"True:    y = {TRUE_W}x + {TRUE_B}")
+print(f"R-squared: {model.r_squared(X, y):.4f}")</pre></div>
+  <details><summary>المفروض تشوف إيه؟</summary>
+    <p>الـ Cost بيقل مع كل سطر بيتطبع. الـ <span class="ltr">w</span> بيقرب من 3 بسرعة نسبيًا، والـ <span class="ltr">b</span> بيتحرك ناحية 7 أبطأ بكتير (ده نفس «الوادي الضيق» اللي شفته في المعمل ٠٢ لما x مش standardized). شغّل وشوف الأرقام عندك بنفسك، وجرب تغير الـ <code>learning_rate</code> لـ 0.05 وشوف هيحصل إيه.</p></details>
+
+  <h3>خطوة ٣: الـ Normal Equation (من غير iteration)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class LinearRegressionNormal:
+    def __init__(self):
+        self.w = 0.0
+        self.b = 0.0
+
+    def fit(self, X, y):
+        n = len(X)
+        x_mean = sum(X) / n
+        y_mean = sum(y) / n
+        <span class="c"># الميل = التغير المشترك ÷ تغير x لوحده</span>
+        numerator = sum((X[i] - x_mean) * (y[i] - y_mean) for i in range(n))
+        denominator = sum((X[i] - x_mean) ** 2 for i in range(n))
+        self.w = numerator / denominator
+        self.b = y_mean - self.w * x_mean   <span class="c"># الخط بيعدي بنقطة المتوسطات</span>
+        return self
+
+    def predict(self, X):
+        return [self.w * x + self.b for x in X]
+
+    def r_squared(self, X, y):
+        predictions = self.predict(X)
+        y_mean = sum(y) / len(y)
+        ss_res = sum((actual - pred) ** 2 for actual, pred in zip(y, predictions))
+        ss_tot = sum((actual - y_mean) ** 2 for actual in y)
+        return 1 - (ss_res / ss_tot)
+
+
+print("\n=== Normal Equation (Closed-Form) ===")
+model_normal = LinearRegressionNormal()
+model_normal.fit(X, y)
+print(f"Learned: y = {model_normal.w:.4f}x + {model_normal.b:.4f}")
+print(f"R-squared: {model_normal.r_squared(X, y):.4f}")</pre></div>
+  <p>قارن بخطوة ٢: لو الـ gradient descent ما وصلش لنفس الأرقام بالظبط بعد 1000 epoch، ده معناه إنه لسه ما وصلش للقاع (غالبًا في الـ <span class="ltr">b</span>). زوّد الـ epochs وشوف.</p>
+
+  <h3>خطوة ٤: Multiple Regression مع standardize</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MultipleLinearRegression:
+    def __init__(self, n_features, learning_rate=0.01):
+        self.weights = [0.0] * n_features   <span class="c"># وزن لكل feature</span>
+        self.bias = 0.0
+        self.lr = learning_rate
+        self.cost_history = []
+
+    def predict_single(self, x):            <span class="c"># wᵀx + b</span>
+        return sum(w * xi for w, xi in zip(self.weights, x)) + self.bias
+
+    def predict(self, X):
+        return [self.predict_single(x) for x in X]
+
+    def compute_cost(self, X, y):
+        predictions = self.predict(X)
+        n = len(y)
+        return sum((pred - actual) ** 2 for pred, actual in zip(predictions, y)) / n
+
+    def fit(self, X, y, epochs=1000, print_every=200):
+        n = len(y)
+        n_features = len(X[0])
+        for epoch in range(epochs):
+            predictions = self.predict(X)
+            errors = [pred - actual for pred, actual in zip(predictions, y)]
+            for j in range(n_features):     <span class="c"># كل الأوزان في نفس الخطوة</span>
+                grad = (2 / n) * sum(errors[i] * X[i][j] for i in range(n))
+                self.weights[j] -= self.lr * grad
+            grad_b = (2 / n) * sum(errors)
+            self.bias -= self.lr * grad_b
+            cost = self.compute_cost(X, y)
+            self.cost_history.append(cost)
+            if epoch % print_every == 0:
+                print(f"  Epoch {epoch:4d} | Cost: {cost:.4f}")
+        return self
+
+    def r_squared(self, X, y):
+        predictions = self.predict(X)
+        y_mean = sum(y) / len(y)
+        ss_res = sum((actual - pred) ** 2 for actual, pred in zip(y, predictions))
+        ss_tot = sum((actual - y_mean) ** 2 for actual in y)
+        return 1 - (ss_res / ss_tot)
+
+
+def standardize(X):                         <span class="c"># (x - mean) / std لكل عمود</span>
+    n_features = len(X[0])
+    n_samples = len(X)
+    means = [sum(X[i][j] for i in range(n_samples)) / n_samples for j in range(n_features)]
+    stds = []
+    for j in range(n_features):
+        variance = sum((X[i][j] - means[j]) ** 2 for i in range(n_samples)) / n_samples
+        stds.append(variance ** 0.5)
+    X_scaled = []
+    for i in range(n_samples):
+        row = [(X[i][j] - means[j]) / stds[j] if stds[j] > 0 else 0 for j in range(n_features)]
+        X_scaled.append(row)
+    return X_scaled, means, stds
+
+
+random.seed(42)
+N = 100
+X_multi = []
+y_multi = []
+for _ in range(N):
+    size = random.uniform(500, 3000)
+    bedrooms = random.randint(1, 5)
+    age = random.uniform(0, 50)
+    <span class="c"># العلاقة الحقيقية: المساحة والأوض بيرفعوا السعر، والعمر بينزّله</span>
+    price = 50 * size + 10000 * bedrooms - 1000 * age + 50000 + random.gauss(0, 20000)
+    X_multi.append([size, bedrooms, age])
+    y_multi.append(price)
+
+<span class="c"># بنعمل standardize للـ y كمان</span>
+y_mean_val = sum(y_multi) / len(y_multi)
+y_std_val = (sum((yi - y_mean_val) ** 2 for yi in y_multi) / len(y_multi)) ** 0.5
+y_scaled = [(yi - y_mean_val) / y_std_val for yi in y_multi]
+
+X_scaled, x_means, x_stds = standardize(X_multi)
+
+print("\n=== Multiple Linear Regression (3 features) ===")
+print("Features: house size, bedrooms, age")
+multi_model = MultipleLinearRegression(n_features=3, learning_rate=0.01)
+multi_model.fit(X_scaled, y_scaled, epochs=1000, print_every=200)
+
+print(f"\nWeights (standardized): {[round(w, 4) for w in multi_model.weights]}")
+print(f"Bias (standardized): {multi_model.bias:.4f}")
+print(f"R-squared: {multi_model.r_squared(X_scaled, y_scaled):.4f}")</pre></div>
+  <details><summary>اقرا النتيجة إزاي؟</summary>
+    <p>بص على إشارة الأوزان: الأول (size) والتاني (bedrooms) المفروض موجبين، والتالت (age) سالب، زي المعادلة اللي عملنا بيها الداتا. وبما إن كل حاجة standardized، الـ bias المفروض يطلع قريب من الصفر. الأوزان هنا مش 50 و 10000 و −1000، لأنها بوحدات «standard deviations» مش بالوحدات الأصلية.</p></details>
+
+  <h3>خطوة ٥: Polynomial Regression (degree 2 ضد 5)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class PolynomialRegression:
+    def __init__(self, degree, learning_rate=0.01):
+        self.degree = degree
+        self.weights = [0.0] * degree
+        self.bias = 0.0
+        self.lr = learning_rate
+
+    def make_features(self, X):        <span class="c"># x → [x, x², x³, ...]</span>
+        return [[x ** (d + 1) for d in range(self.degree)] for x in X]
+
+    def predict(self, X):
+        features = self.make_features(X)
+        return [sum(w * f for w, f in zip(self.weights, row)) + self.bias for row in features]
+
+    def fit(self, X, y, epochs=1000, print_every=200):
+        features = self.make_features(X)
+        n = len(y)
+        for epoch in range(epochs):
+            predictions = [sum(w * f for w, f in zip(self.weights, row)) + self.bias for row in features]
+            errors = [pred - actual for pred, actual in zip(predictions, y)]
+            for j in range(self.degree):   <span class="c"># نفس gradient الـ multiple regression بالظبط</span>
+                grad = (2 / n) * sum(errors[i] * features[i][j] for i in range(n))
+                self.weights[j] -= self.lr * grad
+            grad_b = (2 / n) * sum(errors)
+            self.bias -= self.lr * grad_b
+            if epoch % print_every == 0:
+                cost = sum(e ** 2 for e in errors) / n
+                print(f"  Epoch {epoch:4d} | Cost: {cost:.6f}")
+        return self
+
+    def r_squared(self, X, y):
+        predictions = self.predict(X)
+        y_mean = sum(y) / len(y)
+        ss_res = sum((actual - pred) ** 2 for actual, pred in zip(y, predictions))
+        ss_tot = sum((actual - y_mean) ** 2 for actual in y)
+        return 1 - (ss_res / ss_tot)
+
+
+random.seed(42)
+X_poly = [x / 10.0 for x in range(0, 50)]
+y_poly = [0.5 * x ** 2 - 2 * x + 3 + random.gauss(0, 1.0) for x in X_poly]
+
+<span class="c"># normalize: x على [0,1] و y standardized، وإلا x⁵ هتنفجر</span>
+x_max = max(abs(x) for x in X_poly)
+X_poly_norm = [x / x_max for x in X_poly]
+y_poly_mean = sum(y_poly) / len(y_poly)
+y_poly_std = (sum((yi - y_poly_mean) ** 2 for yi in y_poly) / len(y_poly)) ** 0.5
+y_poly_norm = [(yi - y_poly_mean) / y_poly_std for yi in y_poly]
+
+print("\n=== Polynomial Regression ===")
+print("True relationship: y = 0.5x^2 - 2x + 3")
+
+print("\nDegree 2:")
+poly2 = PolynomialRegression(degree=2, learning_rate=0.1)
+poly2.fit(X_poly_norm, y_poly_norm, epochs=2000, print_every=500)
+print(f"  R-squared: {poly2.r_squared(X_poly_norm, y_poly_norm):.4f}")
+
+print("\nDegree 5:")
+poly5 = PolynomialRegression(degree=5, learning_rate=0.1)
+poly5.fit(X_poly_norm, y_poly_norm, epochs=2000, print_every=500)
+print(f"  R-squared: {poly5.r_squared(X_poly_norm, y_poly_norm):.4f}")</pre></div>
+  <p>الدرس بيعلّق: degree 2 بيفيت المنحنى الحقيقي كويس، و degree 5 ممكن يفيت الـ training data أحسن شوية بس بيخاطر بالـ overfitting على داتا جديدة. لاحظ إن الاتنين هنا بيتقاسوا على الـ train بس، فالـ R² الأعلى مش معناه موديل أحسن.</p>
+
+  <h3>خطوة ٦: Ridge (L2)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class RidgeRegression:
+    def __init__(self, n_features, learning_rate=0.01, alpha=1.0):
+        self.weights = [0.0] * n_features
+        self.bias = 0.0
+        self.lr = learning_rate
+        self.alpha = alpha                  <span class="c"># ده الـ λ</span>
+
+    def predict_single(self, x):
+        return sum(w * xi for w, xi in zip(self.weights, x)) + self.bias
+
+    def predict(self, X):
+        return [self.predict_single(x) for x in X]
+
+    def fit(self, X, y, epochs=1000, print_every=200):
+        n = len(y)
+        n_features = len(X[0])
+        for epoch in range(epochs):
+            predictions = self.predict(X)
+            errors = [pred - actual for pred, actual in zip(predictions, y)]
+            mse = sum(e ** 2 for e in errors) / n
+            reg_term = self.alpha * sum(w ** 2 for w in self.weights)
+            cost = mse + reg_term           <span class="c"># MSE + λ·Σw²</span>
+            for j in range(n_features):
+                grad = (2 / n) * sum(errors[i] * X[i][j] for i in range(n))
+                grad += 2 * self.alpha * self.weights[j]   <span class="c"># شدّة ناحية الصفر</span>
+                self.weights[j] -= self.lr * grad
+            grad_b = (2 / n) * sum(errors)  <span class="c"># الـ bias مش بيتعاقب</span>
+            self.bias -= self.lr * grad_b
+            if epoch % print_every == 0:
+                print(f"  Epoch {epoch:4d} | Cost: {cost:.4f} | L2 penalty: {reg_term:.4f}")
+        return self
+
+
+print("\n=== Ridge Regression (L2 Regularization) ===")
+print("Same data as multiple regression, alpha=0.1")
+ridge = RidgeRegression(n_features=3, learning_rate=0.01, alpha=0.1)
+ridge.fit(X_scaled, y_scaled, epochs=1000, print_every=200)
+print(f"\nRidge weights: {[round(w, 4) for w in ridge.weights]}")
+print(f"Plain weights: {[round(w, 4) for w in multi_model.weights]}")
+print("Ridge weights are smaller due to the L2 penalty.")</pre></div>
+
+  <h3>خطوة ٧: Train/Test split (موجودة في ملف الكود)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>print("\n=== Train/Test Split Comparison ===")
+split_idx = int(0.8 * len(X))              <span class="c"># 80% تدريب، 20% اختبار</span>
+X_train, X_test = X[:split_idx], X[split_idx:]
+y_train, y_test = y[:split_idx], y[split_idx:]
+
+model_split = LinearRegression(learning_rate=0.005)
+model_split.fit(X_train, y_train, epochs=1000, print_every=500)
+print(f"\nTrain R-squared: {model_split.r_squared(X_train, y_train):.4f}")
+print(f"Test R-squared:  {model_split.r_squared(X_test, y_test):.4f}")
+print(f"Learned: y = {model_split.w:.4f}x + {model_split.b:.4f}")
+print(f"True:    y = {TRUE_W}x + {TRUE_B}")</pre></div>
+  <p>الداتا هنا عشوائية أصلًا، فالقسمة بالترتيب (أول 80) مقبولة. في داتا حقيقية مترتبة (مثلًا بالتاريخ) لازم تبقى واعي إن القسمة بالترتيب غير الـ shuffle.</p>
+
+  <h3>خطوة ٨: نفس الكلام بـ scikit-learn (اللي هتستخدمه في الشغل)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from sklearn.linear_model import LinearRegression as SklearnLR
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+import numpy as np
+
+np.random.seed(42)
+X_sk = np.random.uniform(0, 10, (100, 1))
+y_sk = 3.0 * X_sk.squeeze() + 7.0 + np.random.normal(0, 2.0, 100)
+
+X_train, X_test, y_train, y_test = train_test_split(X_sk, y_sk, test_size=0.2, random_state=42)
+
+lr = SklearnLR()                           <span class="c"># بيحلها closed-form</span>
+lr.fit(X_train, y_train)
+y_pred = lr.predict(X_test)
+
+print("=== Scikit-learn Linear Regression ===")
+print(f"Coefficient (w): {lr.coef_[0]:.4f}")
+print(f"Intercept (b): {lr.intercept_:.4f}")
+print(f"R-squared (test): {r2_score(y_test, y_pred):.4f}")
+print(f"MSE (test): {mean_squared_error(y_test, y_pred):.4f}")
+
+poly = PolynomialFeatures(degree=2, include_bias=False)   <span class="c"># [x, x²]</span>
+X_poly_sk = poly.fit_transform(X_train)
+X_poly_test = poly.transform(X_test)
+
+lr_poly = SklearnLR()
+lr_poly.fit(X_poly_sk, y_train)
+print(f"\nPolynomial degree 2 R-squared: {r2_score(y_test, lr_poly.predict(X_poly_test)):.4f}")
+
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)   <span class="c"># fit على الـ train بس</span>
+X_test_scaled = scaler.transform(X_test)         <span class="c"># transform بس على الـ test</span>
+
+ridge = Ridge(alpha=1.0)
+ridge.fit(X_train_scaled, y_train)
+print(f"Ridge R-squared: {r2_score(y_test, ridge.predict(X_test_scaled)):.4f}")
+print(f"Ridge coefficient: {ridge.coef_[0]:.4f}")</pre></div>
+  <p>الدرس بيقول إن نسختك من الصفر و scikit-learn بيطلعوا نفس النتايج تقريبًا. الفرق إن المكتبة بتتعامل مع الـ edge cases والـ numerical stability والأداء. استخدم المكتبة في الـ production، واستخدم نسختك عشان تفهم إيه اللي بيحصل.</p>
+
+  <h3>بونص: نسخة Julia</h3>
+  <p>في نفس الفولدر فيه <code>main.jl</code>: نفس الأفكار (gradient descent، normal equation، multiple regression، ridge، train/test split) بالـ standard library بتاعة Julia. لو عندك Julia متسطبة:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>julia phases/02-ml-fundamentals/02-linear-regression/code/main.jl</pre></div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d24-exercises">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <p>التلاتة الأولانيين من الدرس، والرابع إضافة مني. اعمل على الأقل واحد من الدرس + الرابع.</p>
+  <ol class="ex">
+    <li><b>Batch و SGD و Mini-batch:</b> اعمل التلات أنواع من الـ gradient descent وقارن سرعة الوصول على نفس الداتا. مين أسرع؟ مين منحنى الـ cost بتاعه أنعم؟
+      <details><summary>تلميح</summary><p><b>Batch</b>: الـ gradient من كل الداتا في كل خطوة (ده اللي في الكود). <b>SGD</b>: نقطة واحدة عشوائية لكل خطوة. <b>Mini-batch</b>: مجموعة صغيرة (مثلًا 16). اعمل <code>random.shuffle</code> على الـ indices في أول كل epoch وامشي عليها. ارسم أو اطبع الـ cost على الداتا كلها بعد كل update. هتلاقي الـ SGD بيعمل updates أكتر بكتير في الـ epoch الواحد بس منحنى الـ cost بتاعه مزجزج، والـ batch أنعم حاجة بس update واحد في الـ epoch، والـ mini-batch في النص. وصغّر الـ learning rate في الـ SGD.</p></details></li>
+    <li><b>داتا cubic:</b> اعمل داتا من <span class="ltr">y = ax³ + bx² + cx + d + noise</span>. فيت polynomials من degree 1 و 3 و 10. قارن الـ R² على الـ train والـ test. إمتى الـ overfitting بيبان بوضوح؟
+      <details><summary>تلميح</summary><p>اعمل نقط قليلة نسبيًا (مثلًا 20 train) عشان الـ overfitting يبان. اعمل normalize لـ x على <span class="ltr">[-1, 1]</span> قبل ما تعمل الـ powers، وإلا <span class="ltr">x¹⁰</span> هتبوظ الـ gradient descent. لو الـ gradient descent بطيء على degree 10، استخدم <code>np.polyfit</code> أو <code>PolynomialFeatures</code> + <code>LinearRegression</code> عشان تقارن بسرعة. المتوقع: degree 1 underfitting (الاتنين واطيين)، degree 3 الاتنين عاليين، degree 10 الـ train أعلى والـ test بيقع. جرب ده الأول في المعمل ٠٣.</p></details></li>
+    <li><b>Lasso (L1):</b> اعمل Lasso: العقوبة <span class="ltr">α · Σ|wᵢ|</span>. دربه على داتا البيوت (3 features). قارن مين من الأوزان بيروح للصفر مقارنة بالـ Ridge. ليه الـ L1 بيعمل حلول sparse والـ L2 لأ؟
+      <details><summary>تلميح والإجابة</summary><p>الـ gradient بتاع <span class="ltr">|w|</span> هو <span class="ltr">α·sign(w)</span>: شدّة <b>ثابتة</b> ناحية الصفر مهما الوزن صغر. فالوزن الصغير بيتشد لحد ما يبقى صفر فعلًا. الـ L2 الـ gradient بتاعه <span class="ltr">2αw</span>: الشدّة بتصغر كل ما الوزن يصغر، فالوزن بيقرب من الصفر بس نادرًا يوصله. عشان تخلي الوزن يوصل للصفر بالظبط في الكود، اعمل «soft thresholding» بعد كل خطوة: لو <span class="ltr">|w| &lt; lr·α</span> خليه صفر. ولو عايز تشوف الـ sparsity بوضوح، ضيف feature عشوائية ملهاش علاقة بالسعر وشوف الـ Lasso بيصفّرها.</p></details></li>
+    <li><b>إضافة مني · فيت latency الـ LLM:</b> انت شغال على تطبيق بيكلم LLM API، وعايز تتوقع الوقت الكلي للرد من عدد الـ output tokens. اعمل (أو اجمع من لوجاتك الحقيقية لو عندك) جدول <span class="ltr">(output_tokens, latency_ms)</span> لـ 30 request على الأقل، وفيت عليه linear regression بكودك.
+      <details><summary>تلميح</summary><p>هنا الـ <span class="ltr">w</span> معناه تقريبًا «كام ms لكل token»، والـ <span class="ltr">b</span> هو overhead ثابت (الشبكة + وقت ما قبل أول token). احسب R²: لو واطي، يبقى فيه عوامل تانية مؤثرة (طول الـ prompt، الضغط على السيرفر) جرب تضيفها كـ feature تانية واعمل multiple regression مع standardize. وبص على الـ residuals الكبيرة: غالبًا هي الـ requests اللي حصل فيها retry أو بطء غريب، ودي حاجة تستاهل monitoring.</p></details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d24-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: اللي الدرس ما قالهوش صريح</h2></div>
+  <h3>ليه MSE بالذات؟ إحساس احتمالي</h3>
+  <p>لو افترضت إن الضوضاء حوالين الخط <b>Gaussian</b> (زي <code>random.gauss</code> في الكود)، فتقليل الـ MSE هو نفسه رياضيًا إنك تدور على الـ w و b اللي بيخلّوا الداتا اللي شفتها «أكتر احتمالًا» (maximum likelihood). ده بيربط اللي عملناه في الـ probability في Phase 1 بالـ loss function. ولما نوصل لـ logistic regression بكرة هتشوف نفس الفكرة بتطلّع loss تاني خالص (cross-entropy).</p>
+  <h3>أخطاء شائعة</h3>
+  <ol class="ex">
+    <li><b>Data leakage في الـ standardize:</b> لو حسبت الـ mean والـ std من الداتا كلها (train + test) قبل القسمة، الـ test «سرّب» معلومات للتدريب. الصح: <code>fit</code> على الـ train بس و<code>transform</code> على الاتنين، زي خطوة ٨.</li>
+    <li><b>نسيان الـ scaling مع الـ gradient descent:</b> الـ loss بيقل ببطء شديد أو بينفجر، فتفتكر الكود غلط. افتكر المعمل ٠٢.</li>
+    <li><b>الـ extrapolation:</b> الموديل اتعلم على بيوت من 500 لـ 3000 متر. توقعه لبيت 20,000 متر مجرد مد للخط، مفيش أي ضمان إنه صح. وأخطر في الـ polynomial: برّه مدى الداتا المنحنى بيطير.</li>
+    <li><b>تفسير الأوزان مع features مترابطة:</b> لو اتنين features شبه بعض (مساحة بالمتر ومساحة بالقدم)، الأوزان ممكن تتوزع بينهم بأي شكل والإشارات تبقى غريبة. ده الـ multicollinearity اللي اتكلمنا عنه في يوم ١. الـ Ridge بيساعد هنا.</li>
+    <li><b>الحكم بالـ R² على الـ train:</b> أي feature زيادة عمرها ما بتقلل الـ train R². الحكم الحقيقي على الـ test.</li>
+  </ol>
+  <h3>فين ده في الـ LLMs والـ Agents؟</h3>
+  <ul class="ex">
+    <li>كل <span class="ltr">nn.Linear</span> في أي transformer هو حرفيًا <span class="ltr">y = Wx + b</span>، نفس موديل النهاردة بس متكرر ومتراكب ومعاه non-linearity بينهم.</li>
+    <li>الـ <b>linear probe</b>: تثبّت الـ embeddings بتاعة موديل كبير وتدرب فوقها linear model صغير عشان تختبر الـ embeddings فيها معلومة معينة ولا لأ.</li>
+    <li>الـ <b>scaling laws</b> اللي بتتوقع الـ loss من حجم الموديل أو الداتا بتبقى power laws، والـ power law بيبقى خط مستقيم لو رسمته log-log، فبيتفيت بـ linear regression على الـ logs.</li>
+    <li>الـ <b>weight decay</b> اللي بتشوفه في إعدادات أي optimizer للـ LLMs قريب جدًا من فكرة الـ Ridge: شدّة صغيرة للأوزان ناحية الصفر كل خطوة.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d24-quizSec">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d24-quiz"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d24-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d24-checklist">
+    <li><label><input type="checkbox" data-ck="loop"> أقدر أشرح الـ training loop: موديل + cost function + optimization</label></li>
+    <li><label><input type="checkbox" data-ck="mse"> أقدر أكتب الـ MSE وأشرح ليه بنربّع</label></li>
+    <li><label><input type="checkbox" data-ck="grad"> أقدر أشتق الـ gradients بتوع w و b وأكتب الـ update rule من دماغي</label></li>
+    <li><label><input type="checkbox" data-ck="lab"> خليت الـ gradient descent ينفجر في المعمل ٠٢ وفهمت الـ standardize بيعمل إيه</label></li>
+    <li><label><input type="checkbox" data-ck="r2"> فاهم R² = 0 و R² سالب معناهم إيه</label></li>
+    <li><label><input type="checkbox" data-ck="poly"> شفت الـ overfitting في المعمل ٠٣ والـ Ridge وهو بيصلحه</label></li>
+    <li><label><input type="checkbox" data-ck="code"> كتبت الخطوات بإيدي وشغّلت <code>linear_regression.py</code></label></li>
+    <li><label><input type="checkbox" data-ck="ex"> حليت تمرين من الدرس + تمرين الـ latency</label></li>
+    <li><label><input type="checkbox" data-ck="quiz"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Model + loss + optimizer</td><td>تدريب أي حاجة، من الـ regression لحد الـ LLM pretraining</td></tr>
+    <tr><td>MSE</td><td>regression، الـ reward models أحيانًا، الـ diffusion models (توقع الضوضاء)</td></tr>
+    <tr><td>Gradient descent و learning rate</td><td>كل الـ deep learning (SGD، Adam، الـ LR schedules)</td></tr>
+    <tr><td>Normal equation</td><td>الـ linear models الصغيرة، الـ solvers في المكتبات</td></tr>
+    <tr><td>Feature scaling / standardize</td><td>الـ preprocessing في أي pipeline، وفكرتها جوه LayerNorm و BatchNorm</td></tr>
+    <tr><td>R²</td><td>تقييم أي regression، baselines، تحليل الـ A/B tests</td></tr>
+    <tr><td>Polynomial features</td><td>الـ feature engineering، وفكرة إن features غير خطية + موديل خطي = منحنى</td></tr>
+    <tr><td>Ridge / L2</td><td>الـ weight decay في AdamW، منع الـ overfitting</td></tr>
+    <tr><td><span class="ltr">y = Wx + b</span></td><td>كل linear layer في الـ transformers، الـ linear probes على الـ embeddings</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Logistic Regression. هناخد نفس الـ <span class="ltr">wx + b</span> ونعديه على sigmoid عشان يطلّع احتمال بين 0 و 1، ونستخدمه في classification بدل regression.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F02-ml-fundamentals%2F02-linear-regression" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/02-ml-fundamentals/02-linear-regression</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const A=window.AI, css=A.css, fmt=A.fmt;
+const $=id=>document.getElementById(id);
+const root=$('d24-root');
+
+// roadmap
+const rm=$('d24-roadmap');
+for(let i=1;i<=21;i++){const s=document.createElement('span');s.textContent=i;if(i===2)s.className='now';rm.appendChild(s)}
+
+// seeded RNG
+function rng(seed){let a=seed>>>0;return function(){a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296}}
+function gauss(r){let u=0,v=0;while(u===0)u=r();v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function ols(xs,ys){const n=xs.length,mx=xs.reduce((a,b)=>a+b,0)/n,my=ys.reduce((a,b)=>a+b,0)/n;let nu=0,de=0;for(let i=0;i<n;i++){nu+=(xs[i]-mx)*(ys[i]-my);de+=(xs[i]-mx)**2}const w=de?nu/de:0;return[w,my-w*mx]}
+function mseOf(xs,ys,w,b){let s=0;for(let i=0;i<xs.length;i++)s+=(w*xs[i]+b-ys[i])**2;return s/xs.length}
+function r2Of(ys,preds){const n=ys.length,my=ys.reduce((a,b)=>a+b,0)/n;let r=0,t=0;for(let i=0;i<n;i++){r+=(ys[i]-preds[i])**2;t+=(ys[i]-my)**2}return t?1-r/t:0}
+
+// ---------- Lab 1: manual fit ----------
+const fc=$('d24-fit'),fx=A.setupCanvas(fc),FW=+fc.dataset.w,FH=+fc.dataset.h;
+const PL=36,PR=FW-12,PT=12,PB=FH-28,XM=10,YM=45,YMIN=-5;
+const sx=x=>PL+x/XM*(PR-PL),sy=y=>PB-(y-YMIN)/(YM-YMIN)*(PB-PT);
+const ux=px=>(px-PL)/(PR-PL)*XM,uy=py=>YMIN+(PB-py)/(PB-PT)*(YM-YMIN);
+let pts=[];
+function baseData(){const r=rng(7);pts=[];for(let i=0;i<14;i++){const x=0.5+r()*9;pts.push([x,3*x+7+gauss(r)*2.5])}}
+baseData();
+let W1=1,B1=10,anim1=null,drag1=-1;
+function drawFit(){
+  fx.clearRect(0,0,FW,FH);
+  fx.strokeStyle=css('--grid');fx.lineWidth=1;
+  for(let x=0;x<=XM;x+=2){fx.beginPath();fx.moveTo(sx(x),PT);fx.lineTo(sx(x),PB);fx.stroke()}
+  for(let y=0;y<=YM;y+=10){fx.beginPath();fx.moveTo(PL,sy(y));fx.lineTo(PR,sy(y));fx.stroke()}
+  fx.strokeStyle=css('--muted');fx.beginPath();fx.moveTo(PL,sy(0));fx.lineTo(PR,sy(0));fx.moveTo(PL,PT);fx.lineTo(PL,PB);fx.stroke();
+  fx.fillStyle=css('--muted');fx.font='11px JetBrains Mono, monospace';fx.textAlign='center';
+  for(let x=0;x<=XM;x+=2)fx.fillText(x,sx(x),PB+14);
+  fx.textAlign='right';for(let y=0;y<=YM;y+=10)fx.fillText(y,PL-4,sy(y)+4);fx.textAlign='left';
+  fx.fillText('x = size',PR-60,PB+24);
+  const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]),[bw,bb]=ols(xs,ys);
+  // best line ghost
+  fx.setLineDash([5,5]);fx.strokeStyle=css('--muted');fx.lineWidth=1.5;fx.beginPath();fx.moveTo(sx(0),sy(bb));fx.lineTo(sx(XM),sy(bw*XM+bb));fx.stroke();fx.setLineDash([]);
+  // squares
+  const showSq=$('d24-sq').checked;
+  pts.forEach(([x,y])=>{const yh=W1*x+B1,px=sx(x),py=sy(y),ph=sy(yh),s=Math.abs(py-ph);
+    if(showSq&&s>0.5){fx.fillStyle=css('--vec-b');fx.globalAlpha=.18;const dir=(x>XM/2)?-1:1;fx.fillRect(dir>0?px:px-s,Math.min(py,ph),s,s);fx.globalAlpha=1}
+    fx.strokeStyle=css('--vec-b');fx.lineWidth=1.5;fx.beginPath();fx.moveTo(px,py);fx.lineTo(px,ph);fx.stroke()});
+  // user line
+  fx.save();fx.beginPath();fx.rect(PL,PT,PR-PL,PB-PT);fx.clip();
+  fx.strokeStyle=css('--vec-a');fx.lineWidth=3;fx.beginPath();fx.moveTo(sx(0),sy(B1));fx.lineTo(sx(XM),sy(W1*XM+B1));fx.stroke();fx.restore();
+  pts.forEach(([x,y],i)=>{fx.fillStyle=i===drag1?css('--vec-b'):css('--ink');fx.beginPath();fx.arc(sx(x),sy(y),6,0,7);fx.fill()});
+  const m=mseOf(xs,ys,W1,B1),mb=mseOf(xs,ys,bw,bb),r2=r2Of(ys,xs.map(x=>W1*x+B1));
+  $('d24-mse').textContent=fmt(m,2);$('d24-mseb').textContent=fmt(mb,2);$('d24-r2').textContent=fmt(r2,3);
+  $('d24-best').textContent='w='+fmt(bw,2)+' b='+fmt(bb,2);
+  $('d24-r2').style.color=r2<0?css('--bad'):'';
+  const v=$('d24-v1'),ratio=m/mb;
+  if(ratio<1.02){v.textContent='ممتاز: انت عند قاع الطبق تقريبًا';v.style.color=css('--ok')}
+  else if(r2<0){v.textContent='R² سالب: الخط ده أوحش من إنك تقول المتوسط دايمًا';v.style.color=css('--bad')}
+  else{v.textContent='الـ MSE بتاعك أكبر من الأحسن بـ '+fmt(ratio,1)+' مرة';v.style.color=css('--muted')}
+  $('d24-wv').textContent=fmt(W1,2);$('d24-bv').textContent=fmt(B1,1);
+}
+$('d24-w').addEventListener('input',e=>{W1=+e.target.value;drawFit()});
+$('d24-b').addEventListener('input',e=>{B1=+e.target.value;drawFit()});
+$('d24-sq').addEventListener('change',drawFit);
+function syncSl(){$('d24-w').value=W1;$('d24-b').value=B1}
+$('d24-snap').addEventListener('click',()=>{const [bw,bb]=ols(pts.map(p=>p[0]),pts.map(p=>p[1]));const w0=W1,b0=B1,t0=performance.now(),dur=matchMedia('(prefers-reduced-motion:reduce)').matches?0:600;cancelAnimationFrame(anim1);
+  const st=t=>{const k=dur?Math.min(1,(t-t0)/dur):1,e=k<.5?2*k*k:1-Math.pow(-2*k+2,2)/2;W1=w0+(bw-w0)*e;B1=b0+(bb-b0)*e;syncSl();drawFit();if(k<1)anim1=requestAnimationFrame(st)};anim1=requestAnimationFrame(st)});
+$('d24-out').addEventListener('click',()=>{pts.push([8.5+Math.random(),2+Math.random()*3]);drawFit()});
+$('d24-reset1').addEventListener('click',()=>{baseData();drawFit()});
+fc.addEventListener('pointerdown',e=>{const [x,y]=A.evPos(fc,e);let bi=-1,bd=18;pts.forEach((p,i)=>{const d=Math.hypot(sx(p[0])-x,sy(p[1])-y);if(d<bd){bd=d;bi=i}});drag1=bi;if(bi>=0){fc.setPointerCapture(e.pointerId);drawFit()}});
+fc.addEventListener('pointermove',e=>{if(drag1<0)return;const [x,y]=A.evPos(fc,e);pts[drag1]=[Math.max(0,Math.min(XM,ux(x))),Math.max(YMIN,Math.min(YM,uy(y)))];drawFit()});
+const end1=()=>{if(drag1>=0){drag1=-1;drawFit()}};
+fc.addEventListener('pointerup',end1);fc.addEventListener('pointercancel',end1);
+drawFit();
+
+// ---------- Lab 2: gradient descent bowl ----------
+const gc=$('d24-bowl'),gx=A.setupCanvas(gc),GW=+gc.dataset.w,GH=+gc.dataset.h;
+const cc=$('d24-curve'),cx=A.setupCanvas(cc),CW=+cc.dataset.w,CH=+cc.dataset.h;
+const gr=rng(42),GX=[],GY=[];for(let i=0;i<30;i++){const x=gr()*10;GX.push(x);GY.push(3*x+7+gauss(gr)*2)}
+const gmx=GX.reduce((a,b)=>a+b,0)/GX.length,gsd=Math.sqrt(GX.reduce((a,b)=>a+(b-gmx)**2,0)/GX.length);
+let stdMode=false,gw=0,gb=0,path=[],hist=[],ep=0,running=false,raf2=null,diverged=false,heat=null;
+const xsCur=()=>stdMode?GX.map(x=>(x-gmx)/gsd):GX;
+const dom=()=>stdMode?{w0:-5,w1:15,b0:-5,b1:35}:{w0:-2,w1:8,b0:-5,b1:20};
+const lrv=()=>{const t=+$('d24-lr').value/100;return Math.pow(10,-3.3+t*3.5)}; // 0.0005 .. ~1.6
+const pxW=w=>{const d=dom();return 30+(w-d.w0)/(d.w1-d.w0)*(GW-40)};
+const pxB=b=>{const d=dom();return GH-26-(b-d.b0)/(d.b1-d.b0)*(GH-36)};
+function buildHeat(){
+  const d=dom(),xs=xsCur(),N=64,cells=[];let mn=Infinity,mxv=-Infinity;
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){const w=d.w0+(i+.5)/N*(d.w1-d.w0),b=d.b0+(j+.5)/N*(d.b1-d.b0),m=Math.log(mseOf(xs,GY,w,b)+1e-9);cells.push([i,j,m]);mn=Math.min(mn,m);mxv=Math.max(mxv,m)}
+  heat={N,cells,mn,mxv,best:ols(xs,GY)};
+}
+function drawBowl(){
+  gx.clearRect(0,0,GW,GH);
+  const {N,cells,mn,mxv,best}=heat,cw=(GW-40)/N,ch=(GH-36)/N;
+  gx.fillStyle=css('--vec-a');
+  cells.forEach(([i,j,m])=>{gx.globalAlpha=Math.pow(1-(m-mn)/(mxv-mn),2.2)*.85;gx.fillRect(30+i*cw,GH-26-(j+1)*ch,cw+.6,ch+.6)});gx.globalAlpha=1;
+  gx.strokeStyle=css('--line');gx.strokeRect(30,10,GW-40,GH-36);
+  const d=dom();gx.fillStyle=css('--muted');gx.font='11px JetBrains Mono, monospace';
+  gx.textAlign='center';for(let k=0;k<=4;k++){const w=d.w0+k*(d.w1-d.w0)/4;gx.fillText(fmt(w,1),pxW(w),GH-12)}gx.fillText('w →',GW-24,GH-2);
+  gx.textAlign='right';for(let k=0;k<=4;k++){const b=d.b0+k*(d.b1-d.b0)/4;gx.fillText(fmt(b,0),26,pxB(b)+4)}gx.textAlign='left';gx.fillText('b',4,14);
+  // star
+  const [bw,bb]=best;gx.fillStyle=css('--ink');gx.font='18px sans-serif';gx.textAlign='center';gx.fillText('★',pxW(bw),pxB(bb)+6);gx.textAlign='left';
+  // path
+  gx.save();gx.beginPath();gx.rect(30,10,GW-40,GH-36);gx.clip();
+  gx.strokeStyle=css('--vec-b');gx.lineWidth=1.5;gx.beginPath();path.forEach((p,i)=>{const X=pxW(p[0]),Y=pxB(p[1]);i?gx.lineTo(X,Y):gx.moveTo(X,Y)});gx.stroke();
+  gx.fillStyle=css('--vec-b');path.forEach((p,i)=>{if(i%Math.max(1,Math.floor(path.length/80))===0||i===path.length-1){gx.beginPath();gx.arc(pxW(p[0]),pxB(p[1]),i===path.length-1?5:2.5,0,7);gx.fill()}});
+  gx.restore();
+  // curve
+  cx.clearRect(0,0,CW,CH);cx.strokeStyle=css('--line');cx.strokeRect(0.5,0.5,CW-1,CH-1);
+  if(hist.length>1){const lg=hist.map(h=>Math.log10(Math.max(h,1e-6))),lo=Math.min(...lg),hi=Math.max(...lg)+1e-9;
+    cx.strokeStyle=css('--vec-a');cx.lineWidth=2;cx.beginPath();lg.forEach((v,i)=>{const X=6+i/(lg.length-1)*(CW-12),Y=CH-10-(v-lo)/(hi-lo)*(CH-24);i?cx.lineTo(X,Y):cx.moveTo(X,Y)});cx.stroke()}
+  cx.fillStyle=css('--muted');cx.font='11px JetBrains Mono, monospace';cx.fillText('log MSE vs epoch',8,14);
+  const m=hist.length?hist[hist.length-1]:mseOf(xsCur(),GY,gw,gb);
+  $('d24-ep').textContent=ep;$('d24-gmse').textContent=isFinite(m)?(m>1e5?m.toExponential(2):fmt(m,3)):'∞';
+  $('d24-gw').textContent=isFinite(gw)?(Math.abs(gw)>1e4?gw.toExponential(1):fmt(gw,3)):'∞';$('d24-gb').textContent=isFinite(gb)?(Math.abs(gb)>1e4?gb.toExponential(1):fmt(gb,3)):'∞';
+  const v=$('d24-v2'),mb=mseOf(xsCur(),GY,bw,bb);
+  if(diverged){v.textContent='انفجر! الـ learning rate كبير، كل خطوة بتنط أبعد من اللي قبلها';v.style.color=css('--bad')}
+  else if(ep>0&&m<mb*1.01){v.textContent='وصل للقاع (في حدود 1%) بعد '+ep+' epoch';v.style.color=css('--ok')}
+  else{v.textContent=ep?'لسه نازل…':'جاهز. دوس شغّل';v.style.color=css('--muted')}
+}
+function gdStep(){
+  if(diverged)return;
+  const xs=xsCur(),n=xs.length,lr=lrv();let dw=0,db=0;
+  for(let i=0;i<n;i++){const e=gw*xs[i]+gb-GY[i];dw+=e*xs[i];db+=e}
+  dw*=2/n;db*=2/n;gw-=lr*dw;gb-=lr*db;ep++;
+  const m=mseOf(xs,GY,gw,gb);hist.push(m);path.push([gw,gb]);
+  if(!isFinite(m)||m>1e9){diverged=true;running=false}
+}
+function reset2(){$('d24-lrv').textContent=fmt(lrv(),4);running=false;cancelAnimationFrame(raf2);gw=0;gb=0;ep=0;diverged=false;path=[[0,0]];hist=[];$('d24-run').textContent='شغّل';drawBowl()}
+function loop(){if(!running||!document.body.contains(gc))return;const per=Math.max(1,Math.round(ep/60));for(let k=0;k<per&&running;k++)gdStep();drawBowl();
+  const [bw,bb]=heat.best,mb=mseOf(xsCur(),GY,bw,bb);if(ep>=3000||(hist.length&&hist[hist.length-1]<mb*1.0005)){running=false;$('d24-run').textContent='شغّل'}
+  if(running)raf2=requestAnimationFrame(loop)}
+$('d24-run').addEventListener('click',()=>{if(running){running=false;$('d24-run').textContent='شغّل';return}if(diverged||ep>=3000)reset2();running=true;$('d24-run').textContent='وقّف';raf2=requestAnimationFrame(loop)});
+$('d24-step').addEventListener('click',()=>{running=false;$('d24-run').textContent='شغّل';gdStep();drawBowl()});
+$('d24-reset2').addEventListener('click',reset2);
+$('d24-lr').addEventListener('input',()=>{$('d24-lrv').textContent=fmt(lrv(),4);});
+$('d24-lr').addEventListener('change',reset2);
+$('d24-std').addEventListener('change',e=>{stdMode=e.target.checked;buildHeat();reset2()});
+$('d24-lrv').textContent=fmt(lrv(),4);
+buildHeat();reset2();
+
+// ---------- Lab 3: polynomial + ridge ----------
+const pc=$('d24-pc'),px=A.setupCanvas(pc),QW=+pc.dataset.w,QH=+pc.dataset.h;
+const rc=$('d24-r2c'),rx=A.setupCanvas(rc),RW=+rc.dataset.w,RH=+rc.dataset.h;
+const truth=x=>2.4*x*x*x-0.8*x*x-1.7*x+0.5;
+let TR=[],TE=[],pseed=4;
+function polyData(){const r=rng(pseed);TR=[];TE=[];for(let i=0;i<12;i++){const x=-0.95+1.9*(i+r())/12;TR.push([x,truth(x)+gauss(r)*0.12])}for(let i=0;i<40;i++){const x=-0.95+1.9*r();TE.push([x,truth(x)+gauss(r)*0.12])}}
+function solve(M,v){const n=v.length,a=M.map((r,i)=>r.concat([v[i]]));for(let c=0;c<n;c++){let p=c;for(let r=c+1;r<n;r++)if(Math.abs(a[r][c])>Math.abs(a[p][c]))p=r;[a[c],a[p]]=[a[p],a[c]];const d=a[c][c]||1e-12;for(let r=0;r<n;r++){if(r===c)continue;const f=a[r][c]/d;for(let k=c;k<=n;k++)a[r][k]-=f*a[c][k]}}return a.map((r,i)=>r[n]/(r[i]||1e-12))}
+function fitPoly(deg,lam){
+  // features x..x^deg, plus bias (not penalized). center y.
+  const n=TR.length,F=TR.map(([x])=>{const r=[1];for(let d=1;d<=deg;d++)r.push(Math.pow(x,d));return r});
+  const p=deg+1,M=[],v=[];
+  for(let i=0;i<p;i++){M.push(new Array(p).fill(0));v.push(0)}
+  for(let k=0;k<n;k++)for(let i=0;i<p;i++){v[i]+=F[k][i]*TR[k][1];for(let j=0;j<p;j++)M[i][j]+=F[k][i]*F[k][j]}
+  for(let i=1;i<p;i++)M[i][i]+=lam+1e-9;
+  return solve(M,v);
+}
+const evalP=(c,x)=>{let s=0,t=1;for(let i=0;i<c.length;i++){s+=c[i]*t;t*=x}return s};
+const lamv=()=>{const t=+$('d24-lam').value;return t?Math.pow(10,-4+t/60*5):0};
+function scores(deg,lam){const c=fitPoly(deg,lam);return[r2Of(TR.map(p=>p[1]),TR.map(p=>evalP(c,p[0]))),r2Of(TE.map(p=>p[1]),TE.map(p=>evalP(c,p[0]))),c]}
+function drawPoly(){
+  const deg=+$('d24-deg').value,lam=lamv();$('d24-dv').textContent=deg;$('d24-lv').textContent=lam?lam.toExponential(1):'0';
+  const [tr,te,c]=scores(deg,lam);
+  px.clearRect(0,0,QW,QH);
+  const X=x=>14+(x+1)/2*(QW-28),Y=y=>QH/2-y*(QH-30)/4.4;
+  px.strokeStyle=css('--grid');px.beginPath();px.moveTo(14,Y(0));px.lineTo(QW-14,Y(0));px.moveTo(X(0),6);px.lineTo(X(0),QH-6);px.stroke();
+  px.setLineDash([5,5]);px.strokeStyle=css('--muted');px.lineWidth=1.5;px.beginPath();for(let k=0;k<=200;k++){const x=-1+k/100;k?px.lineTo(X(x),Y(truth(x))):px.moveTo(X(x),Y(truth(x)))}px.stroke();px.setLineDash([]);
+  px.save();px.beginPath();px.rect(0,0,QW,QH);px.clip();
+  px.strokeStyle=css('--vec-a');px.lineWidth=3;px.beginPath();for(let k=0;k<=400;k++){const x=-1+k/200;const y=Math.max(-10,Math.min(10,evalP(c,x)));k?px.lineTo(X(x),Y(y)):px.moveTo(X(x),Y(y))}px.stroke();px.restore();
+  px.strokeStyle=css('--vec-b');px.lineWidth=1.5;TE.forEach(([x,y])=>{px.beginPath();px.arc(X(x),Y(y),3.5,0,7);px.stroke()});
+  px.fillStyle=css('--ink');TR.forEach(([x,y])=>{px.beginPath();px.arc(X(x),Y(y),5,0,7);px.fill()});
+  px.font='11px JetBrains Mono, monospace';px.fillStyle=css('--muted');px.fillText('● train   ○ test   - - true curve',18,16);
+  $('d24-tr').textContent=fmt(tr,3);$('d24-te').textContent=fmt(te,3);$('d24-te').style.color=te<0?css('--bad'):'';
+  const wm=Math.max(...c.slice(1).map(Math.abs));$('d24-wmax').textContent=wm>1e4?wm.toExponential(1):fmt(wm,2);
+  const v=$('d24-v3');
+  if(tr<0.8){v.textContent='Underfitting: الموديل أبسط من الداتا';v.style.color=css('--muted')}
+  else if(tr-te>0.1){v.textContent='Overfitting: ممتاز في الـ train، ووحش في الـ test';v.style.color=css('--bad')}
+  else{v.textContent='توازن كويس: الـ train والـ test قريبين';v.style.color=css('--ok')}
+  // r2 per degree chart
+  rx.clearRect(0,0,RW,RH);const bw=(RW-20)/12;
+  const yr=r=>RH-16-Math.max(0,Math.min(1,r))*(RH-30);
+  rx.strokeStyle=css('--line');rx.strokeRect(10.5,10.5,RW-21,RH-26);
+  ['--ink','--vec-b'].forEach((col,si)=>{rx.strokeStyle=css(col);rx.lineWidth=2;rx.beginPath();for(let d=1;d<=12;d++){const s=scores(d,lam)[si],xx=10+(d-.5)*bw;d>1?rx.lineTo(xx,yr(s)):rx.moveTo(xx,yr(s))}rx.stroke()});
+  rx.fillStyle=css('--vec-a');rx.globalAlpha=.2;rx.fillRect(10+(deg-1)*bw,10,bw,RH-26);rx.globalAlpha=1;
+  rx.fillStyle=css('--muted');rx.font='10px JetBrains Mono, monospace';rx.textAlign='center';for(let d=1;d<=12;d++)rx.fillText(d,10+(d-.5)*bw,RH-3);rx.textAlign='left';
+  rx.fillStyle=css('--ink');rx.fillText('train R²',16,22);rx.fillStyle=css('--vec-b');rx.fillText('test R² (clipped at 0)',80,22);
+}
+$('d24-deg').addEventListener('input',drawPoly);$('d24-lam').addEventListener('input',drawPoly);
+$('d24-newdata').addEventListener('click',()=>{pseed++;polyData();drawPoly()});
+polyData();drawPoly();
+
+// ---------- quiz ----------
+const Q=[
+ ['الـ learning rate بيتحكم في إيه في الـ gradient descent؟',['عدد الـ features اللي الموديل بيستخدمها','حجم كل خطوة تحديث للبارامترز','نسبة الـ train للـ test','عدد الـ epochs اللي الموديل بيتدربها'],1,'الـ learning rate رقم بيحدد الأوزان بتتغير قد إيه في كل خطوة. كبير زيادة = diverge، صغير زيادة = بطء.'],
+ ['R² = 0 معناها إيه لموديل regression؟',['الموديل غلطه سالب','الموديل لسه ما اتدربش','الموديل مش أحسن من إنه يتوقع متوسط الـ target دايمًا','الموديل توقعاته مثالية'],2,'R² = 0 يعني الموديل مش بيفسر أي جزء من الـ variance، أداؤه زي إنك تقول المتوسط كل مرة بالظبط.'],
+ ['ليه الـ feature scaling مهم للـ gradient descent في الـ multiple linear regression؟',['بيضمن إن الموديل يلاقي الـ global minimum','بيقلل عدد الـ features المطلوبة','بيمنع سطح الـ cost إنه يبقى ممطوط، فالوصول بيبقى أسرع','بيخلي الموديل أسهل في التفسير'],2,'لما الـ features مقاييسها مختلفة جدًا، سطح الـ cost بيبقى ممطوط والـ gradient descent بياخد خطوات أكتر بكتير. الـ standardize بيخليه مدوّر أكتر (افتكر المعمل ٠٢).'],
+ ['الـ normal equation بتديك الأوزان المثالية على طول. ليه ممكن تفضّل الـ gradient descent؟',['الـ gradient descent محتاج memory أقل من تخزين الداتا','الـ gradient descent دايمًا أدق','الـ normal equation مش بتشتغل مع الـ linear regression','الـ matrix inversion في الـ normal equation تكلفتها O(n³) في عدد الـ features، وده بطيء جدًا مع آلاف الـ features'],3,'الـ normal equation محتاجة inverse لـ XᵀX، ودي O(n³) في عدد الـ features. مع features كتير الـ gradient descent أكفأ.'],
+ ['موديل polynomial من degree 10 فيت الـ train بالظبط (R² = 1.0) بس على الـ test R² = 0.3. تعمل إيه؟',['ترفع الـ degree لـ 20 عشان الـ train يبقى أحسن','تجمع داتا تدريب أقل عشان الموديل ما يحفظش','تقلل تعقيد الموديل (degree أقل) أو تضيف regularization (Ridge) عشان تمنع الـ overfitting','تشيل الـ test set وتبلّغ بالـ train R² بس'],2,'fit مثالي على الـ train مع test وحش = overfitting. الحل: تقلل التعقيد أو تضيف regularization تعاقب الأوزان الكبيرة. ده بالظبط اللي عملته في المعمل ٠٣.'],
+ ['(سؤال مني) ليه ŷ = w₁x + w₂x² + b لسه اسمه «linear» regression؟',['عشان x² تقريبًا خطي للأرقام الصغيرة','عشان الموديل خطي في الأوزان w، و x² مجرد feature زيادة','عشان الـ MSE دالة خطية','غلط، اسمه nonlinear regression'],1,'الخطية المقصودة في البارامترز. الـ gradients والـ normal equation شغالين زي ما هم، كأنك ضفت عمود x² للجدول.'],
+ ['(سؤال مني) الـ gradient بتاع الـ b طلع موجب في خطوة معينة. ده معناه إيه؟',['الموديل في المتوسط بيتوقع أعلى من الحقيقة، فـ b هتقل','الموديل في المتوسط بيتوقع أقل من الحقيقة، فـ b هتزيد','الـ learning rate كبير','الموديل وصل للقاع'],0,'∂MSE/∂b = (2/n)·Σ(ŷ − y) يعني ضعف متوسط الغلط. موجب = التوقعات عالية في المتوسط، والـ update بيطرح، فـ b بتنزل.']
+];
+A.quiz($('d24-quiz'),Q,5,()=>{const c=root.querySelector('[data-ck="quiz"]');if(c){c.checked=true;A.store.set('aiefs-d24-quiz','1')}});
+
+// ---------- checklist ----------
+A.checklist(24,root);
+
+// ---------- theme ----------
+A.onTheme(()=>{if(!document.body.contains(fc))return false;drawFit();drawBowl();drawPoly()});
+})();
+</script>

@@ -1,0 +1,543 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 3 · Lesson 02 · Multi-Layer Networks and Forward Pass</span>
+  <h1>اليوم ٤٥: نيورون واحد بيرسم خط، كذا layer بيرسموا أي حاجة</h1>
+  <p class="lede">امبارح الـ perceptron وقف عاجز قدام <b>XOR</b>. النهاردة هنحط النيورونات في <b>layers</b> فوق بعض، ونبني الـ <b>forward pass</b> بإيدنا: الداتا بتدخل، تتضرب في weights، يتزود عليها bias، تعدي على activation، وتطلع للـ layer اللي بعدها. هتتتبع الـ <b>shapes</b> بتاعة المصفوفات، وتشوف بعينك ليه الـ hidden layer هي اللي بتعمل المنحنيات.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (من غير numpy)</b></span>
+    <span>بعده: <b>Backpropagation from Scratch</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 3 — 13 lessons</span>
+    <div class="roadmap" id="d45-roadmap" aria-label="دروس الفيز التالتة"></div>
+  </div>
+</header>
+
+<section id="d45-warmup">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح (Day 44) بنينا الـ perceptron. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <details><summary>١. الـ perceptron بيعمل إيه بالظبط في خطوة واحدة؟</summary>بيضرب كل input في weight، يجمعهم ويزود الـ bias، وبعدين يعدّي الناتج على <b>step function</b>: لو <span class="ltr">z ≥ 0</span> يطلع 1، غير كده يطلع 0. يعني هو classifier خطي بيقسم الفضاء بخط واحد.</details>
+  <details><summary>٢. قاعدة التعلم بتاعته كانت إيه؟</summary><span class="ltr">error = y_true − y_pred</span>، وبعدين <span class="ltr">w_i += lr · error · x_i</span> و <span class="ltr">bias += lr · error</span>. لو التوقع صح، الـ error صفر ومفيش حاجة بتتغير.</details>
+  <details><summary>٣. ليه perceptron واحد مش بيعرف يحل XOR، وحليناها إزاي؟</summary>لأن نقط XOR مش linearly separable: مفيش خط واحد يفصل <span class="ltr">[0,1],[1,0]</span> عن <span class="ltr">[0,0],[1,1]</span>. حليناها بإننا ركّبنا OR و NAND في layer أولى، وبعدين AND عليهم. النهاردة هنعمل نفس الحكاية بس بكلاسات <code>Layer</code> و <code>Network</code> عامة.</details>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>10 min</b>الـ layers الثلاثة والنيورون</div>
+    <div><b>15 min</b>معمل ٠١: XOR والـ decision boundary</div>
+    <div><b>15 min</b>الـ forward pass والـ shapes + معمل ٠٢</div>
+    <div><b>10 min</b>Universal approximation + معمل ٠٣</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>التمارين والكويز</div>
+  </div>
+</section>
+
+<!-- PROBLEM + LAYERS -->
+<section id="d45-layers">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الخط الواحد مش كفاية</h2></div>
+  <p>النيورون الواحد «رسّام خطوط» وبس: بيحط خط مستقيم واحد في الداتا. وكل مشكلة حقيقية في الـ AI (صور، لغة، لعب Go) محتاجة <b>منحنيات</b>. الطريقة اللي بنجيب بيها المنحنيات: نرص النيورونات في layers.</p>
+  <p>سنة 1969، Minsky و Papert أثبتوا إن شبكة من layer واحدة <b>مستحيل</b> تتعلم XOR، مش «بتتعب»، لأ مستحيل رياضيًا. الإثبات ده وقّف تمويل الـ neural networks أكتر من عشر سنين. الحل كان واضح بعد ما حصل: متستخدمش layer واحدة. خلي الـ layer الأولى تقطّع فضاء المدخلات لـ <b>features جديدة</b>، والتانية تجمع الـ features دي في قرار مفيش خط واحد يقدر يعمله.</p>
+
+  <h3>أنواع الـ layers التلاتة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الـ Layer</th><th>بتعمل إيه</th><th>تشبيه</th></tr>
+    <tr><td><b>Input</b></td><td>مش layer حقيقية. شايلة الداتا الخام. featureين = نودين. مفيش حسابات هنا.</td><td>الورق اللي داخل المصنع</td></tr>
+    <tr><td><b>Hidden</b></td><td>هنا الشغل كله. كل نيورون بياخد <b>كل</b> مخرجات الـ layer اللي قبله، يطبق weights و bias، ويعدّي على activation. اسمها «hidden» لأنك عمرك ما بتشوف قيمها في الداتا.</td><td>العمال جوه المصنع، محدش بيشوفهم بس هما اللي بيشكلوا المنتج</td></tr>
+    <tr><td><b>Output</b></td><td>الإجابة النهائية. binary classification: نيورون واحد بـ sigmoid. multi-class: نيورون لكل class.</td><td>المنتج النهائي على الرف</td></tr>
+  </table></div>
+  <p>الشبكة اللي في الدرس اسمها <b>2-3-1</b>: اتنين inputs، تلاتة hidden، واحد output. كل وصلة عليها weight، وكل نيورون (ما عدا الـ input) عليه bias.</p>
+  <div class="note ai"><strong>الـ hidden state:</strong> كل layer بتطلّع متجه أرقام اسمه hidden state. في النصوص بنكبّر الأبعاد (الكلمة تبقى 768 رقم عشان نمسك معناها)، وفي الصور بنصغّرها (ملايين البيكسلز تتضغط لتمثيل صغير). الـ hidden state هو المكان اللي «التعلم» عايش فيه.</div>
+
+  <h3>النيورون: ٣ خطوات</h3>
+  <ol class="ex">
+    <li>اضرب كل input في الـ weight بتاعه.</li>
+    <li>اجمع كل النواتج وزوّد الـ bias.</li>
+    <li>عدّي المجموع على activation function.</li>
+  </ol>
+  <p>الـ activation النهاردة هي <b>sigmoid</b>:</p>
+  <div class="formula">sigmoid(z) = 1 / (1 + e^(−z))</div>
+  <p>الـ sigmoid بتعصر أي رقم لما بين 0 و 1. الأرقام الموجبة الكبيرة تقرب من 1، والسالبة الكبيرة تقرب من 0، والصفر يبقى 0.5. تخيلها <b>dimmer</b> للنور بدل مفتاح on/off: الـ step بتاعة الـ perceptron كانت مفتاح، والـ sigmoid بتنوّر بالتدريج. النعومة دي هي اللي بتخلي التعلم ممكن، لأن ليها <b>gradient</b> في كل حتة، عكس الـ step اللي الـ gradient بتاعها صفر تقريبًا في كل مكان.</p>
+</section>
+
+<!-- LAB 1 -->
+<section id="d45-lab1">
+  <div class="station-head"><span class="tag">02</span><h2>معمل ٠١: شوف الـ hidden layer وهي بتحل XOR</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>دي شبكة 2-2-1 بالأوزان اللي في الدرس بالظبط: النيورون المخفي الأول تقريبًا <b>OR</b>، والتاني تقريبًا <b>NAND</b>، والـ output بيعمل <b>AND</b> عليهم، والنتيجة XOR.</p>
+      <p>اللون هو مخرج الشبكة عند كل نقطة: أزرق = قريب من 1، برتقالي = قريب من 0. الخطين المتقطعين هما المكان اللي كل نيورون مخفي بيقلب عنده (<span class="ltr">z = 0</span>).</p>
+      <div class="note"><strong>جرب بإيدك:</strong> قلّل «حدة الأوزان» من 20 لـ 1. الأوزان الكبيرة بتخلي الـ sigmoid تتصرف زي step. لما تصغرها، الحدود بتسيح والشبكة بتبطل تبقى متأكدة. وبعدين اختار «الدايرة» وشوف شبكة 2-8-1 بأوزان عشوائية، ودوس «أوزان جديدة» كذا مرة.</div>
+    </div>
+    <div class="instrument">
+      <canvas id="d45-xorCanvas" width="420" height="420" aria-label="خريطة مخرج الشبكة على فضاء المدخلات"></canvas>
+      <div class="btns">
+        <button type="button" id="d45-modeXor" class="primary">XOR (2-2-1)</button>
+        <button type="button" id="d45-modeCircle">الدايرة (2-8-1 عشوائي)</button>
+        <button type="button" id="d45-reroll">أوزان جديدة</button>
+      </div>
+      <label style="display:grid;gap:2px">حدة الأوزان (scale) = <b class="mono" id="d45-kv">20</b><input type="range" id="d45-k" min="0.5" max="30" step="0.5" value="20"></label>
+      <div class="readout">
+        <div><small>Accuracy</small><b id="d45-acc">4/4</b></div>
+        <div><small>Parameters</small><b id="d45-params">9</b></div>
+        <div><small>out([0,1])</small><b id="d45-o01">1.00</b></div>
+        <div><small>out([1,1])</small><b id="d45-o11">0.00</b></div>
+      </div>
+      <div class="verdict" id="d45-verdict"></div>
+    </div>
+  </div>
+</section>
+
+<!-- FORWARD PASS -->
+<section id="d45-forward">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Forward Pass: الداتا ماشية في خط إنتاج</h2></div>
+  <p>الـ forward pass بيزق الداتا من الـ input لحد الـ output، layer ورا layer. <b>مفيش أي تعلم بيحصل هنا</b>، ده حساب بس: اضرب، زوّد، فعّل، وكرر. تخيله خط إنتاج: كل محطة بتاخد اللي طالع من المحطة اللي قبلها، تشتغل عليه، وتسلمه للي بعدها.</p>
+  <div class="formula">z = W · input + b      (linear transformation)<br>a = sigmoid(z)        (activation)</div>
+  <p>الـ <span class="ltr">a</span> بتاعة الـ layer دي هي الـ input بتاع اللي بعدها. هو ده الـ forward pass كله.</p>
+
+  <h3>الـ Shapes: أهم مهارة debugging في الـ deep learning</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الخطوة</th><th>العملية</th><th>الأبعاد</th><th>الناتج</th></tr>
+    <tr><td>Input</td><td class="ltr">x</td><td>—</td><td class="ltr">(2,)</td></tr>
+    <tr><td>Hidden linear</td><td class="ltr">W₁x + b₁</td><td class="ltr">W₁: (3, 2), b₁: (3,)</td><td class="ltr">(3,)</td></tr>
+    <tr><td>Hidden activation</td><td class="ltr">sigmoid(z₁)</td><td>—</td><td class="ltr">(3,)</td></tr>
+    <tr><td>Output linear</td><td class="ltr">W₂h + b₂</td><td class="ltr">W₂: (1, 3), b₂: (1,)</td><td class="ltr">(1,)</td></tr>
+    <tr><td>Output activation</td><td class="ltr">sigmoid(z₂)</td><td>—</td><td class="ltr">(1,)</td></tr>
+  </table></div>
+  <div class="note"><strong>القاعدة:</strong> الـ weight matrix بتاعة layer رقم k شكلها <span class="ltr">(neurons_in_layer_k, neurons_in_layer_k−1)</span>. الـ <b>rows</b> = نيورونات الـ layer الحالية، والـ <b>columns</b> = نيورونات اللي قبلها. كل صف هو weights نيورون واحد. لو الـ shapes مش راكبة على بعض، يبقى عندك bug.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٢: تتبّع الأرقام والـ shapes</h3>
+      <p>اكتب أي architecture (مثلًا <code>2-3-1</code> أو <code>2-4-2-1</code> أو <code>3-4-4-2</code>). حرّك الـ inputs، ودوس «layer ورا layer» عشان تشوف الحساب ماشي محطة محطة. لون النيورون = قيمته بعد الـ sigmoid، وسُمك الوصلة = حجم الـ weight (أزرق موجب، برتقالي سالب).</p>
+      <label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">الـ architecture: <input type="text" id="d45-arch" value="2-3-1" class="ltr" style="font:inherit;font-family:var(--f-mono);width:150px;padding:4px 8px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink)" aria-label="الـ architecture"></label>
+      <div class="mrow" id="d45-inputs"></div>
+      <div class="btns">
+        <button type="button" id="d45-step" class="primary">layer ورا layer</button>
+        <button type="button" id="d45-all">الكل مرة واحدة</button>
+        <button type="button" id="d45-rand">أوزان عشوائية</button>
+      </div>
+    </div>
+    <div class="instrument">
+      <canvas id="d45-netCanvas" width="520" height="340" aria-label="رسم الشبكة والقيم الماشية فيها"></canvas>
+      <div class="tablewrap"><table id="d45-shapeTable"></table></div>
+      <div class="readout">
+        <div><small>إجمالي الـ parameters</small><b id="d45-pcount">13</b></div>
+        <div><small>Output</small><b id="d45-out">—</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- UAT -->
+<section id="d45-uat">
+  <div class="station-head"><span class="tag">04</span><h2>Universal Approximation و Composability</h2></div>
+  <p>سنة 1989، George Cybenko أثبت حاجة مدهشة: شبكة فيها <b>hidden layer واحدة</b> وفيها نيورونات كفاية تقدر تقرّب <b>أي دالة متصلة</b> بأي دقة انت عايزها.</p>
+  <p>ده مش معناه إن layer واحدة دايمًا أحسن حاجة. معناه إن الـ architecture «قادرة نظريًا». في الواقع، الشبكات الأعمق (layers أكتر، ونيورونات أقل في كل واحدة) بتتعلم نفس الدوال بـ parameters أقل بكتير من الشبكات العريضة الضحلة، وعشان كده الـ deep learning شغال.</p>
+  <p><b>الحدس:</b> كل نيورون مخفي بيتعلم «نتوء» (bump) أو feature. نتوءات كفاية في الأماكن الصح تقدر تقرّب أي منحنى ناعم. نيورونات أكتر = نتوءات أكتر = تقريب أحسن. زي ما تبني شكل منحني من مكعبات Lego: كل ما المكعبات تصغر وتكتر، الشكل بيبقى أنعم.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٠٣: ابني منحنى من نتوءات sigmoid</h3>
+      <p>كل نتوء هنا معمول من <b>نيورونين</b> مخفيين: <span class="ltr">sigmoid(k(x−a)) − sigmoid(k(x−b))</span>، يعني «اطلع عند a وانزل عند b»، وطوله متظبط على قيمة الدالة في النص. الـ output هنا linear (مجموع موزون من غير sigmoid) عشان يقدر يطلع أي قيمة.</p>
+      <p>زوّد عدد النيورونات من 4 لـ 16 لـ 64 وشوف الخطأ بينزل. وغيّر الحدة k: لو صغيرة أوي النتوءات بتسيح في بعض.</p>
+      <label style="display:flex;gap:8px;align-items:center">الدالة الهدف: <select id="d45-fn"><option value="sin">sin موجة</option><option value="bump">جرس</option><option value="abs">|x| (فيها زاوية)</option></select></label>
+    </div>
+    <div class="instrument">
+      <canvas id="d45-uatCanvas" width="520" height="300" aria-label="تقريب دالة بنيورونات sigmoid"></canvas>
+      <label style="display:grid;gap:2px">نيورونات مخفية = <b class="mono" id="d45-nv">16</b><input type="range" id="d45-n" min="2" max="64" step="2" value="16"></label>
+      <label style="display:grid;gap:2px">الحدة k = <b class="mono" id="d45-skv">60</b><input type="range" id="d45-sk" min="5" max="300" step="5" value="60"></label>
+      <div class="readout">
+        <div><small>أكبر خطأ</small><b id="d45-err">—</b></div>
+        <div><small>parameters</small><b id="d45-up">—</b></div>
+      </div>
+    </div>
+  </div>
+  <h3>الشبكات بتتركب زي الـ Lego (Composability)</h3>
+  <p>تقدر ترص الشبكات فوق بعض، أو تسلسلهم، أو تشغلهم بالتوازي. موديل <b>Whisper</b> بيستخدم شبكة encoder تعالج الصوت، وشبكة decoder منفصلة تطلّع النص. الـ LLMs الحديثة <b>decoder-only</b>، و BERT <b>encoder-only</b>، و T5 <b>encoder-decoder</b>. اختيار الـ architecture هو اللي بيحدد الموديل يقدر يعمل إيه.</p>
+</section>
+
+<!-- CODE -->
+<section id="d45-code">
+  <div class="station-head"><span class="tag">05</span><h2>طبّق بإيدك: Layer و Network من الصفر</h2></div>
+  <p>Python صافي، من غير numpy. كل عملية مصفوفات مكتوبة بإيدك. شغّل الملف الأصلي من الـ root بتاع الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/03-deep-learning-core/02-multi-layer-networks/code/main.py</pre></div>
+  <p><b>القاعدة زي كل يوم:</b> متعملش copy-paste. افتح ملف جديد <code>my_mlp.py</code> واكتب الخطوات دي بنفسك، وبص على الأصل لو اتزنقت بس.</p>
+
+  <h3>خطوة ١: الـ sigmoid</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+def sigmoid(x):
+    x = max(-500.0, min(500.0, x))     <span class="c"># احبس القيمة عشان exp ماتعملش overflow</span>
+    return 1.0 / (1.0 + math.exp(-x))</pre></div>
+  <p>الحبس بين -500 و 500 بيمنع الـ overflow: <code>math.exp(500)</code> رقم كبير بس محدود، لكن <code>math.exp(1000)</code> بيبقى infinity.</p>
+
+  <h3>خطوة ٢: كلاس Layer</h3>
+  <p>أهم عملية في الـ deep learning كله هي ضرب المصفوفات. كل layer، كل attention head، كل forward pass: matmuls ورا بعض. الـ linear layer بتعمل <span class="ltr">y = Wx + b</span>، والمعادلة دي لوحدها حوالي 90% من الحسابات في أي neural network.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Layer:
+    def __init__(self, n_inputs, n_neurons, weights=None, biases=None):
+        if weights is not None:
+            self.weights = weights
+        else:
+            import random
+            self.weights = [                     <span class="c"># shape: (n_neurons, n_inputs)</span>
+                [random.uniform(-1, 1) for _ in range(n_inputs)]
+                for _ in range(n_neurons)
+            ]
+        if biases is not None:
+            self.biases = biases
+        else:
+            self.biases = [0.0] * n_neurons      <span class="c"># bias لكل نيورون</span>
+
+    def forward(self, inputs):
+        self.last_input = inputs                 <span class="c"># هنحتاجه في الـ backprop بكرة</span>
+        self.last_output = []
+        for neuron_idx in range(len(self.weights)):
+            z = sum(                             <span class="c"># صف الأوزان dot الـ input</span>
+                w * x for w, x in zip(self.weights[neuron_idx], inputs)
+            )
+            z += self.biases[neuron_idx]
+            self.last_output.append(sigmoid(z))  <span class="c"># فعّل</span>
+        return self.last_output</pre></div>
+
+  <h3>خطوة ٣: كلاس Network</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Network:
+    def __init__(self, layers):
+        self.layers = layers
+
+    def forward(self, inputs):
+        current = inputs
+        for layer in self.layers:               <span class="c"># مخرج layer k = مدخل layer k+1</span>
+            current = layer.forward(current)
+        return current
+
+    def count_parameters(self):                 <span class="c"># موجودة في main.py</span>
+        total = 0
+        for layer in self.layers:
+            for neuron_weights in layer.weights:
+                total += len(neuron_weights)    <span class="c"># الـ weights</span>
+            total += len(layer.biases)          <span class="c"># + الـ biases</span>
+        return total</pre></div>
+  <p>أربع سطور منطق للـ forward pass كله. الداتا تدخل، تعدي على كل layer، وتطلع من الناحية التانية.</p>
+
+  <h3>خطوة ٤: XOR بأوزان متظبطة بالإيد</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>hidden = Layer(
+    n_inputs=2,
+    n_neurons=2,
+    weights=[[20.0, 20.0], [-20.0, -20.0]],   <span class="c"># h1 ≈ OR ، h2 ≈ NAND</span>
+    biases=[-10.0, 30.0],
+)
+
+output = Layer(
+    n_inputs=2,
+    n_neurons=1,
+    weights=[[20.0, 20.0]],                   <span class="c"># AND على الاتنين = XOR</span>
+    biases=[-30.0],
+)
+
+xor_net = Network([hidden, output])
+
+xor_data = [
+    ([0, 0], 0),
+    ([0, 1], 1),
+    ([1, 0], 1),
+    ([1, 1], 0),
+]
+
+for inputs, expected in xor_data:
+    result = xor_net.forward(inputs)
+    predicted = 1 if result[0] &gt;= 0.5 else 0
+    print(f"  {inputs} -&gt; {result[0]:.6f} (rounded: {predicted}, expected: {expected})")</pre></div>
+  <p>الأوزان الكبيرة (20 و -20) بتخلي الـ sigmoid تتصرف كأنها step. جربت ده في المعمل ٠١.</p>
+
+  <h3>خطوة ٥: تصنيف الدايرة بأوزان عشوائية</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random
+
+random.seed(42)
+data = []
+for _ in range(200):
+    x = random.uniform(-1, 1)
+    y = random.uniform(-1, 1)
+    label = 1 if (x * x + y * y) &lt; 0.25 else 0   <span class="c"># جوه دايرة نص قطرها 0.5</span>
+    data.append(([x, y], label))
+
+random.seed(7)
+circle_net = Network([
+    Layer(n_inputs=2, n_neurons=8),
+    Layer(n_inputs=8, n_neurons=1),
+])
+
+correct = 0
+for inputs, expected in data:
+    result = circle_net.forward(inputs)
+    predicted = 1 if result[0] &gt;= 0.5 else 0
+    if predicted == expected:
+        correct += 1
+print(f"Accuracy with random weights: {correct}/{len(data)} ({100*correct/len(data):.1f}%)")</pre></div>
+  <p>الأوزان العشوائية بتدي accuracy وحشة، وغالبًا أسوأ من إنك تقول «برة» على طول. بس الـ forward pass شغال، وده المقصود. إزاي الشبكة تلاقي الأوزان الصح؟ ده الـ backpropagation، درس بكرة.</p>
+
+  <details><summary>الناتج المتوقع (أجزاء منه)</summary><pre class="term">DEMO 1: XOR with hand-tuned 2-2-1 network
+  [0, 0] -&gt; 0.000045 (rounded: 0, expected: 0) OK
+  [0, 1] -&gt; 0.999955 (rounded: 1, expected: 1) OK
+  [1, 0] -&gt; 0.999955 (rounded: 1, expected: 1) OK
+  [1, 1] -&gt; 0.000045 (rounded: 0, expected: 0) OK
+
+XOR solved: True
+Parameters: 9
+
+DEMO 2: Circle classification with 2-8-1 network
+  Dataset: 200 points (35 inside, 165 outside)
+  Accuracy with random weights: 35/200 (17.5%)
+  Parameters: 33
+
+DEMO 3: Forward pass internals on XOR
+  Input: [0, 0]
+    Hidden: [0.000045, 1.000000]
+  ...
+
+DEMO 4: Parameter count for classic architectures
+  2-3-1 (this lesson): 13 parameters
+  2-8-1 (circle): 33 parameters
+  784-256-128-10 (MNIST): 235,146 parameters
+  784-512-256-128-10 (deep MNIST): 567,434 parameters</pre>
+  <p>الأرقام دي أنا حاسبها بالإيد من الكود (نفس الـ seeds)، فلو طلع عندك فرق بسيط في الـ formatting متقلقش. لاحظ إن 35/200 بالظبط هو عدد النقط اللي جوه، يعني الشبكة العشوائية دي غالبًا بتقول «جوه» لكل حاجة.</p></details>
+
+  <h3>خطوة ٦: نفس الكلام في PyTorch</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+
+model = nn.Sequential(
+    nn.Linear(2, 8),     <span class="c"># الـ Layer بتاعتك: weight (8, 2) و bias (8,)</span>
+    nn.Sigmoid(),
+    nn.Linear(8, 1),
+    nn.Sigmoid(),
+)
+
+x = torch.tensor([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
+output = model(x)        <span class="c"># batch من 4 صفوف مرة واحدة</span>
+print(output)</pre></div>
+  <p><code>nn.Sequential</code> هو كلاس الـ Network بتاعك. الفرق في السرعة والحجم: PyTorch بيشتغل على GPU، وبياخد batches بالملايين، وبيحسب الـ gradients لوحده. بس منطق الـ forward pass هو هو اللي انت بنيته.</p>
+  <p><b>Ship It:</b> الدرس معاه prompt جاهز في <code>outputs/prompt-network-architect.md</code>، استخدمه لما تحتاج تقرر كام layer وكام نيورون وأنهي activation لمشكلة معينة.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d45-exercises">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>شبكة 2-4-2-1:</b> ابنيها بأوزان عشوائية وشغّل الـ forward pass على XOR. اطبع مخرجات كل hidden layer عشان تشوف التمثيل بيتغير إزاي.
+      <details><summary>تلميح</summary>بعد <code>net.forward(x)</code> لف على <code>net.layers</code> واطبع <code>layer.last_output</code>. هتلاقي متجه طوله 4 وبعدين 2 وبعدين 1. عدد الـ parameters لازم يطلع 25 (8+4 + 8+2 + 2+1).</details></li>
+    <li><b>حجم الـ hidden في الدايرة:</b> غيّره من 8 لـ 2 ولـ 32 بأوزان عشوائية. هل عدد النيورونات بيغير مدى أو توزيع المخرجات؟ ليه؟
+      <details><summary>تلميح</summary>كل hidden output بين 0 و 1. مع نيورونات أكتر، الـ z بتاع الـ output بقى مجموع حدود عشوائية أكتر، فانتشاره (variance) بيكبر والمخرجات بتروح أكتر ناحية 0 أو 1. المدى نفسه ثابت (0,1) بسبب الـ sigmoid. الملاحظة دي بداية فكرة الـ weight initialization اللي هتيجي في Lesson 08.</details></li>
+    <li><b>count_parameters:</b> اعملها (لو مكتبتهاش) وجرّبها على 784-256-128-10.
+      <details><summary>الإجابة</summary><span class="ltr">784·256+256 + 256·128+128 + 128·10+10 = 235,146</span>.</details></li>
+    <li><b>مصنّف ألوان 3-4-4-2:</b> ادّيله قيم RGB متطبّعة بين 0 و 1 وبص على المخرجين.
+      <details><summary>تلميح</summary>قسّم كل قناة على 255: <code>[r/255, g/255, b/255]</code>. الـ parameters: 46. المخرجين بأوزان عشوائية مالهمش معنى لسه، المهم إن الـ shapes ماشية من غير errors.</details></li>
+    <li><b>Leaky step:</b> بدّل الـ sigmoid بـ <code>0.01*z if z &lt; 0 else 1.0</code> وشغّل XOR بنفس الأوزان. لسه شغالة؟ ليه الـ sigmoid الناعمة أحسن؟
+      <details><summary>الإجابة</summary>لو حسبتها: [0,0] → hidden [-0.1, 1] → z الـ output = -12 → -0.12 → 0 ✓، و [0,1] و [1,0] → 1 ✓، و [1,1] → 0 ✓. يعني الـ forward pass لسه بيحل XOR. بس الدالة دي flat تمامًا لما <span class="ltr">z ≥ 0</span> (الـ gradient صفر) وفيها قفزة عند الصفر، فالـ backprop مش هيعرف يتعلم بيها. الـ sigmoid ناعمة وليها مشتقة <span class="ltr">s·(1−s)</span> في كل نقطة.</details></li>
+    <li><b>إضافة مني · احسب حجم الـ MLP في GPT-2:</b> كل block في GPT-2 small فيه شبكة feed-forward بالشكل <span class="ltr">768 → 3072 → 768</span>. استخدم <code>count_parameters</code> (أو احسب بالإيد) عشان تعرف عدد الـ parameters في block واحد، وفي الـ 12 block، وقد إيه دول بيشغلوا ميموري بـ fp32 (4 bytes لكل رقم).
+      <details><summary>الإجابة</summary><span class="ltr">768·3072+3072 + 3072·768+768 = 4,722,432</span> في الـ block. في 12 block: <span class="ltr">56,669,184</span>. بـ fp32 تقريبًا <span class="ltr">227 MB</span> للـ MLPs بس. ده نفس الحساب اللي بتعمله وانت بتقدر GPU memory لموديل قبل ما تشغله. (متبنيهاش بالـ Python الصافي، الـ loops هتاخد وقت طويل، احسبها بالمعادلة.)</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d45-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: اللي الدرس ماقالوش صريح</h2></div>
+  <h3>ليه الـ activation لازم تبقى nonlinear؟</h3>
+  <p>لو شلت الـ sigmoid من النص، layerين ورا بعض يبقوا <span class="ltr">W₂(W₁x + b₁) + b₂ = (W₂W₁)x + (W₂b₁ + b₂)</span>، يعني <b>مصفوفة واحدة وbias واحد</b>. عشر layers linear = layer linear واحدة = خط واحد تاني. الـ nonlinearity هي «الثنية» اللي بتخلي الطي ممكن. فكرها زي الورق: من غير ما تثني، مهما تحرك الورقة هتفضل مسطحة.</p>
+  <h3>الـ batches: الصفوف بدل الـ loop</h3>
+  <p>في الكود بتاعنا بنعدّي نقطة واحدة في المرة. في الواقع بنحط batch كامل في مصفوفة <span class="ltr">X</span> شكلها <span class="ltr">(batch, n_inputs)</span>، و PyTorch بيحسب <span class="ltr">X @ W.T + b</span> مرة واحدة على الـ GPU. علشان كده <code>nn.Linear(2, 8).weight</code> شكله <span class="ltr">(8, 2)</span> زي ما اتعلمنا بالظبط: (out, in).</p>
+  <h3>غلطات شائعة</h3>
+  <ul class="checklist" style="list-style:disc;padding-inline-start:20px">
+    <li>تقلب الـ shape: تكتب W على إنها <span class="ltr">(in, out)</span> وتنسى الـ transpose. اكتب الـ shapes جنب كل سطر لحد ما تبقى عادة.</li>
+    <li>تنسى الـ bias، فالنيورون مايقدرش يشتغل لما كل المدخلات أصفار (من غير bias، أي نيورون مخفي هيطلّع 0.5 بالظبط عند [0,0] مهما كانت الأوزان، لأن z = 0).</li>
+    <li>أوزان كبيرة أوي: الـ sigmoid بتتشبع (قريبة من 0 أو 1) والمشتقة بتبقى قريبة من الصفر. الشبكة بتبقى «متأكدة» بس مش بتتعلم. ده هيوضح أكتر بكرة في الـ backprop.</li>
+    <li>تفتكر إن الـ forward pass «بيتعلم». لأ، ده حساب بس. التعلم = تعديل W و b، وده شغل الـ backprop.</li>
+  </ul>
+  <h3>بيظهر فين في الـ LLMs؟</h3>
+  <p>كل block في أي transformer (GPT, Llama, Claude…) فيه جزء اسمه <b>MLP / feed-forward</b>، وهو حرفيًا شبكة layerين من اللي بنيناها النهاردة، بس بـ activation زي GELU أو SwiGLU بدل sigmoid، والـ hidden أكبر من الـ input بحوالي ٤ مرات. والـ «hidden state» اللي بتسمع عنها في الـ LLMs هي نفس الفكرة: متجه بيتنقل من layer للي بعدها. ولما agent بيطلب embedding لنص عشان RAG، الـ embedding ده هو hidden state طالع من forward pass زي ده.</p>
+</section>
+
+<!-- QUIZ -->
+<section id="d45-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز</h2></div>
+  <div class="quiz" id="d45-quizBox"></div>
+</section>
+
+<!-- DONE -->
+<section id="d45-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d45-checklist">
+    <li><label><input type="checkbox" data-ck="c1"> أقدر أشرح input و hidden و output layer والنيورون بخطواته التلاتة</label></li>
+    <li><label><input type="checkbox" data-ck="c2"> شفت في المعمل ٠١ إزاي الـ hidden layer بتحل XOR وإن الأوزان الكبيرة بتخلي الـ sigmoid زي step</label></li>
+    <li><label><input type="checkbox" data-ck="c3"> أقدر أكتب shape الـ W لأي layer: (الحالية، اللي قبلها)</label></li>
+    <li><label><input type="checkbox" data-ck="c4"> كتبت Layer و Network بإيدي وشغلت main.py</label></li>
+    <li><label><input type="checkbox" data-ck="c5"> فاهم الـ universal approximation ومعنى «نتوءات أكتر = تقريب أحسن»</label></li>
+    <li><label><input type="checkbox" data-ck="c6"> حليت تمرينين على الأقل وجبت ٥ من ٧ في الكويز</label></li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Forward pass</td><td>كل inference لأي موديل، من classifier صغير لـ LLM</td></tr>
+    <tr><td>Hidden layer / hidden state</td><td>الـ embeddings، الـ residual stream في الـ transformers</td></tr>
+    <tr><td>Weight matrix (out, in)</td><td><code>nn.Linear</code>، حساب حجم الموديل والـ GPU memory</td></tr>
+    <tr><td>Nonlinear activation</td><td>GELU / SwiGLU في الـ MLP بتاع كل transformer block</td></tr>
+    <tr><td>Universal approximation</td><td>ليه شبكة واحدة تقدر تتعلم مهام كتير مختلفة</td></tr>
+    <tr><td>Composability</td><td>encoder-decoder (Whisper، T5)، decoder-only (LLMs)، encoder-only (BERT)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Backpropagation from Scratch. الشبكة اللي بنيناها النهاردة هتتعلم أوزانها بنفسها، وهنبدأ بمراجعة ٥ دقايق على الـ forward pass.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F03-deep-learning-core%2F02-multi-layer-networks" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/03-deep-learning-core/02-multi-layer-networks</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const sig=z=>1/(1+Math.exp(-Math.max(-500,Math.min(500,z))));
+
+// roadmap
+const rm=$('d45-roadmap');
+for(let i=1;i<=13;i++){const s=document.createElement('span');s.textContent=i;if(i===2)s.className='now';rm.appendChild(s)}
+
+// ---------- shared net helpers ----------
+function fwd(net,x){let cur=x;const acts=[x];for(const L of net){cur=L.W.map((row,i)=>sig(row.reduce((a,w,j)=>a+w*cur[j],0)+L.b[i]));acts.push(cur)}return acts}
+function randLayer(nin,nout){return{W:Array.from({length:nout},()=>Array.from({length:nin},()=>Math.random()*2-1)),b:Array(nout).fill(0)}}
+function pcount(sizes){let t=0;for(let i=1;i<sizes.length;i++)t+=sizes[i]*sizes[i-1]+sizes[i];return t}
+
+// ---------- LAB 1: XOR / circle ----------
+const xc=$('d45-xorCanvas'),xctx=AI.setupCanvas(xc),XW=+xc.dataset.w,XH=+xc.dataset.h;
+let mode='xor',k=20,circNet=null,circData=[];
+(function(){for(let i=0;i<200;i++){const x=Math.random()*2-1,y=Math.random()*2-1;circData.push([[x,y],x*x+y*y<0.25?1:0])}})();
+function newCirc(){circNet=[randLayer(2,8),randLayer(8,1)]}
+newCirc();
+function xorNet(){const s=k/20;return[{W:[[20*s,20*s],[-20*s,-20*s]],b:[-10*s,30*s]},{W:[[20*s,20*s]],b:[-30*s]}]}
+function hexA(c,a){const m=c.match(/^#([0-9a-f]{6})$/i);if(!m)return c;const n=parseInt(m[1],16);return`rgba(${n>>16},${(n>>8)&255},${n&255},${a})`}
+function drawXor(){
+  const net=mode==='xor'?xorNet():circNet;
+  // domain
+  const lo=mode==='xor'?-0.5:-1,hi=mode==='xor'?1.5:1;
+  const toPx=(x,y)=>[(x-lo)/(hi-lo)*XW,XH-(y-lo)/(hi-lo)*XH];
+  xctx.clearRect(0,0,XW,XH);
+  const ca=css('--vec-a'),cb=css('--vec-b'),C=6;
+  for(let px=0;px<XW;px+=C)for(let py=0;py<XH;py+=C){
+    const x=lo+(px+C/2)/XW*(hi-lo),y=lo+(XH-py-C/2)/XH*(hi-lo);
+    const o=fwd(net,[x,y])[net.length][0];
+    xctx.fillStyle=hexA(o>=0.5?ca:cb,0.12+Math.abs(o-0.5)*0.9);xctx.fillRect(px,py,C,C);
+  }
+  // axes
+  xctx.strokeStyle=css('--muted');xctx.lineWidth=1;const [ox,oy]=toPx(0,0);
+  xctx.beginPath();xctx.moveTo(0,oy);xctx.lineTo(XW,oy);xctx.moveTo(ox,0);xctx.lineTo(ox,XH);xctx.stroke();
+  let correct=0,total=0;
+  if(mode==='xor'){
+    // hidden boundary lines w1x+w2y+b=0
+    net[0].W.forEach((w,i)=>{const b=net[0].b[i];xctx.setLineDash([6,5]);xctx.strokeStyle=css('--ink');xctx.lineWidth=1.5;xctx.beginPath();
+      const y1=-(w[0]*lo+b)/w[1],y2=-(w[0]*hi+b)/w[1];xctx.moveTo(...toPx(lo,y1));xctx.lineTo(...toPx(hi,y2));xctx.stroke();xctx.setLineDash([]);
+      xctx.fillStyle=css('--ink');xctx.font='12px JetBrains Mono, monospace';const p=toPx(lo+0.05,-(w[0]*(lo+0.05)+b)/w[1]);xctx.fillText(i?'h2 (NAND)':'h1 (OR)',p[0]+4,p[1]-6)});
+    [[0,0,0],[0,1,1],[1,0,1],[1,1,0]].forEach(([x,y,l])=>{const o=fwd(net,[x,y])[2][0];total++;if((o>=0.5?1:0)===l)correct++;
+      const [px,py]=toPx(x,y);xctx.fillStyle=l?ca:cb;xctx.strokeStyle=css('--ink');xctx.lineWidth=2;xctx.beginPath();xctx.arc(px,py,11,0,7);xctx.fill();xctx.stroke();
+      xctx.fillStyle=css('--paper');xctx.font='bold 12px JetBrains Mono, monospace';xctx.textAlign='center';xctx.fillText(l,px,py+4);xctx.textAlign='left'});
+    $('d45-o01').textContent=f(fwd(net,[0,1])[2][0],3);$('d45-o11').textContent=f(fwd(net,[1,1])[2][0],3);
+    $('d45-params').textContent=pcount([2,2,1]);
+  }else{
+    // true circle
+    xctx.strokeStyle=css('--ink');xctx.lineWidth=2;xctx.setLineDash([4,4]);xctx.beginPath();const r=0.5/(hi-lo)*XW;xctx.arc(ox,oy,r,0,7);xctx.stroke();xctx.setLineDash([]);
+    circData.forEach(([[x,y],l])=>{const o=fwd(net,[x,y])[2][0];total++;if((o>=0.5?1:0)===l)correct++;const [px,py]=toPx(x,y);
+      xctx.fillStyle=l?ca:cb;xctx.beginPath();xctx.arc(px,py,3.5,0,7);xctx.fill()});
+    $('d45-o01').textContent='—';$('d45-o11').textContent='—';$('d45-params').textContent=pcount([2,8,1]);
+  }
+  $('d45-acc').textContent=correct+'/'+total;
+  const v=$('d45-verdict');
+  if(mode==='xor'){if(correct===4&&k>=8){v.textContent='الشبكة حلت XOR وهي متأكدة: الـ sigmoid شغالة زي step';v.style.color=css('--ok')}
+    else if(correct===4){v.textContent='لسه بتحلها، بس المخرجات بقت قريبة من 0.5: الشبكة مش متأكدة';v.style.color=css('--vec-b')}
+    else{v.textContent='الأوزان صغيرة أوي فالشبكة بقت تغلط: الحدود ساحت';v.style.color=css('--bad')}}
+  else{v.textContent='أوزان عشوائية = حدود ملهاش علاقة بالدايرة. محتاجين تدريب (بكرة)';v.style.color=css('--muted')}
+}
+$('d45-k').addEventListener('input',e=>{k=+e.target.value;$('d45-kv').textContent=k;drawXor()});
+$('d45-modeXor').addEventListener('click',()=>{mode='xor';$('d45-modeXor').classList.add('primary');$('d45-modeCircle').classList.remove('primary');drawXor()});
+$('d45-modeCircle').addEventListener('click',()=>{mode='circle';$('d45-modeCircle').classList.add('primary');$('d45-modeXor').classList.remove('primary');drawXor()});
+$('d45-reroll').addEventListener('click',()=>{newCirc();if(mode!=='circle')$('d45-modeCircle').click();else drawXor()});
+drawXor();
+
+// ---------- LAB 2: forward pass tracer ----------
+const nc=$('d45-netCanvas'),nctx=AI.setupCanvas(nc),NW=+nc.dataset.w,NH=+nc.dataset.h;
+let sizes=[2,3,1],net=[],xin=[],shown=0,anim=null;
+function build(){
+  net=[];for(let i=1;i<sizes.length;i++)net.push(randLayer(sizes[i-1],sizes[i]));
+  const box=$('d45-inputs');box.innerHTML='';xin=Array(sizes[0]).fill(0).map((_,i)=>i%2?0.2:0.8);
+  xin.forEach((v,i)=>{const l=document.createElement('label');l.innerHTML='x'+(i+1)+' = <span>'+v+'</span><input type="range" min="0" max="1" step="0.05" value="'+v+'">';
+    const r=l.querySelector('input'),s=l.querySelector('span');r.addEventListener('input',()=>{xin[i]=+r.value;s.textContent=r.value;drawNet()});box.appendChild(l)});
+  shown=sizes.length-1;table();drawNet();
+}
+function table(){
+  let h='<tr><th>Layer</th><th>W shape</th><th>b shape</th><th>output</th><th>params</th></tr>';
+  h+='<tr><td>Input</td><td>—</td><td>—</td><td class="ltr">('+sizes[0]+',)</td><td>0</td></tr>';
+  for(let i=1;i<sizes.length;i++)h+='<tr><td>'+(i===sizes.length-1?'Output':'Hidden '+i)+'</td><td class="ltr">('+sizes[i]+', '+sizes[i-1]+')</td><td class="ltr">('+sizes[i]+',)</td><td class="ltr">('+sizes[i]+',)</td><td class="ltr">'+(sizes[i]*sizes[i-1]+sizes[i])+'</td></tr>';
+  $('d45-shapeTable').innerHTML=h;$('d45-pcount').textContent=pcount(sizes).toLocaleString('en');
+}
+function drawNet(){
+  const acts=fwd(net,xin);nctx.clearRect(0,0,NW,NH);
+  const L=sizes.length,pos=sizes.map((n,li)=>{const x=40+li*(NW-80)/Math.max(1,L-1),shownN=Math.min(n,10);return Array.from({length:shownN},(_,i)=>[x,NH/2+(i-(shownN-1)/2)*Math.min(30,(NH-40)/Math.max(1,shownN-1||1))])});
+  const ca=css('--vec-a'),cb=css('--vec-b');
+  for(let li=1;li<L;li++){const W=net[li-1].W;pos[li].forEach((p,i)=>pos[li-1].forEach((q,j)=>{const w=W[i][j];
+    nctx.strokeStyle=hexA(w>=0?ca:cb,li<=shown?0.25+Math.min(0.7,Math.abs(w)*0.6):0.1);nctx.lineWidth=0.5+Math.abs(w)*2.2;nctx.beginPath();nctx.moveTo(...q);nctx.lineTo(...p);nctx.stroke()}))}
+  for(let li=0;li<L;li++){pos[li].forEach((p,i)=>{const on=li<=shown,v=acts[li][i];
+    nctx.fillStyle=css('--panel');nctx.strokeStyle=css('--ink');nctx.lineWidth=1.5;nctx.beginPath();nctx.arc(p[0],p[1],12,0,7);nctx.fill();nctx.stroke();
+    if(on){nctx.fillStyle=hexA(ca,0.15+0.85*v);nctx.beginPath();nctx.arc(p[0],p[1],10.5,0,7);nctx.fill();
+      nctx.fillStyle=css('--ink');nctx.font='10px JetBrains Mono, monospace';nctx.textAlign=li===0?'right':'left';nctx.fillText(f(v,2),p[0]+(li===0?-16:16),p[1]+3);nctx.textAlign='left'}});
+    if(sizes[li]>10){nctx.fillStyle=css('--muted');nctx.font='11px JetBrains Mono, monospace';nctx.textAlign='center';nctx.fillText('+'+(sizes[li]-10)+' more',pos[li][0][0],NH-4);nctx.textAlign='left'}
+    nctx.fillStyle=css('--muted');nctx.font='11px JetBrains Mono, monospace';nctx.textAlign='center';nctx.fillText(li===0?'input':li===L-1?'output':'hidden '+li,pos[li][0][0],14);nctx.textAlign='left'}
+  $('d45-out').textContent=shown>=L-1?'['+acts[L-1].map(v=>f(v,3)).join(', ')+']':'…';
+}
+function parseArch(){const s=$('d45-arch').value.split(/[^0-9]+/).filter(Boolean).map(Number);
+  if(s.length>=2&&s.length<=6&&s.every(n=>n>=1&&n<=64)){sizes=s;$('d45-arch').style.borderColor='';build()}else $('d45-arch').style.borderColor=css('--bad')}
+$('d45-arch').addEventListener('change',parseArch);
+$('d45-step').addEventListener('click',()=>{shown=shown>=sizes.length-1?0:shown+1;drawNet()});
+$('d45-all').addEventListener('click',()=>{cancelAnimationFrame(anim);shown=0;drawNet();const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  if(reduce){shown=sizes.length-1;drawNet();return}let t0=performance.now();const tick=t=>{if(!document.body.contains(nc))return;const s=Math.min(sizes.length-1,Math.floor((t-t0)/450));if(s!==shown){shown=s;drawNet()}if(s<sizes.length-1)anim=requestAnimationFrame(tick)};anim=requestAnimationFrame(tick)});
+$('d45-rand').addEventListener('click',()=>{net=[];for(let i=1;i<sizes.length;i++)net.push(randLayer(sizes[i-1],sizes[i]));drawNet()});
+build();
+
+// ---------- LAB 3: universal approximation ----------
+const uc=$('d45-uatCanvas'),uctx=AI.setupCanvas(uc),UW=+uc.dataset.w,UH=+uc.dataset.h;
+const FN={sin:x=>Math.sin(2*Math.PI*x)*0.8,bump:x=>1.6*Math.exp(-Math.pow((x-0.5)/0.12,2))-0.8,abs:x=>Math.abs(2*x-1)*1.6-0.8};
+function drawUat(){
+  const N=+$('d45-n').value,K=+$('d45-sk').value,g=FN[$('d45-fn').value],B=N/2;
+  $('d45-nv').textContent=N;$('d45-skv').textContent=K;
+  const bumps=[];for(let i=0;i<B;i++){const a=i/B,b=(i+1)/B;bumps.push([a,b,g((a+b)/2)])}
+  const approx=x=>bumps.reduce((s,[a,b,h])=>s+h*(sig(K*(x-a))-sig(K*(x-b))),0);
+  const tx=x=>20+x*(UW-40),ty=y=>UH/2-y*(UH/2-20);
+  uctx.clearRect(0,0,UW,UH);AI.grid(uctx,UW,UH,40,20,UH/2);
+  // individual bumps faint
+  uctx.strokeStyle=hexA(css('--vec-b'),0.35);uctx.lineWidth=1;
+  if(B<=16)bumps.forEach(([a,b,h])=>{uctx.beginPath();for(let p=0;p<=200;p++){const x=p/200,y=h*(sig(K*(x-a))-sig(K*(x-b)));p?uctx.lineTo(tx(x),ty(y)):uctx.moveTo(tx(x),ty(y))}uctx.stroke()});
+  uctx.strokeStyle=css('--muted');uctx.lineWidth=2;uctx.setLineDash([6,4]);uctx.beginPath();
+  for(let p=0;p<=300;p++){const x=p/300;p?uctx.lineTo(tx(x),ty(g(x))):uctx.moveTo(tx(x),ty(g(x)))}uctx.stroke();uctx.setLineDash([]);
+  let err=0;uctx.strokeStyle=css('--vec-a');uctx.lineWidth=3;uctx.beginPath();
+  for(let p=0;p<=300;p++){const x=p/300,y=approx(x);if(x>0.02&&x<0.98)err=Math.max(err,Math.abs(y-g(x)));p?uctx.lineTo(tx(x),ty(y)):uctx.moveTo(tx(x),ty(y))}uctx.stroke();
+  uctx.font='12px JetBrains Mono, monospace';uctx.fillStyle=css('--vec-a');uctx.fillText('network',UW-90,18);uctx.fillStyle=css('--muted');uctx.fillText('target ---',UW-90,34);
+  $('d45-err').textContent=f(err,3);$('d45-up').textContent=pcount([1,N,1]);
+}
+['d45-n','d45-sk'].forEach(id=>$(id).addEventListener('input',drawUat));$('d45-fn').addEventListener('change',drawUat);
+drawUat();
+
+// ---------- quiz ----------
+AI.quiz($('d45-quizBox'),[
+ ['الـ hidden layer في شبكة multi-layer وظيفتها إيه؟',['تحوّل المدخلات لتمثيلات features جديدة تسمح بحدود قرار nonlinear','تطبق الـ loss function','تقلل عدد الـ parameters','تخزن داتا التدريب'],0,'الـ hidden layers بتطبق weights و bias و activation وتطلّع features وسيطة، ودي اللي بتخلي الشبكة تتعلم علاقات nonlinear مستحيل على layer واحدة.'],
+ ['الـ forward pass بيعمل إيه؟',['بيحسب الـ gradients للـ backprop','بيلخبط داتا التدريب','بيعدّل الأوزان بالـ gradients','بيزق المدخل في كل layer لحد ما يطلع output'],3,'حساب بس: لكل layer اضرب في الـ weights، زوّد الـ bias، فعّل، وسلّم للي بعدها. مفيش تعلم بيحصل في الـ forward pass.'],
+ ['layer فيها 3 نيورونات وجايلها input من 2 نيورون. شكل الـ weight matrix؟',['(2, 3)','(3, 2)','(2, 2)','(3, 3)'],1,'الشكل (نيورونات الـ layer الحالية، نيورونات اللي قبلها) = (3, 2). كل صف فيه weights نيورون واحد على كل المدخلات.'],
+ ['الـ Universal Approximation Theorem بيضمن إيه؟',['إن الـ neural networks تحل أي مسألة حسابية','إن hidden layer واحدة بنيورونات كفاية تقرّب أي دالة متصلة','إن الشبكات الأعمق دايمًا أحسن من الضحلة','إن أي شبكة تتدرب في وقت polynomial'],1,'Cybenko (1989) أثبت إن hidden layer واحدة بنيورونات كفاية تقرّب أي دالة متصلة بأي دقة. عمليًا الشبكات الأعمق بتعمل نفس الحاجة بـ parameters أقل.'],
+ ['ليه الـ sigmoid بتخلي التعلم ممكن، عكس الـ step بتاعة الـ perceptron؟',['لأنها بتطلّع قيم أكبر','لأنها أسرع في الحساب','لأنها ناعمة وليها مشتقة في كل حتة، فالـ gradients موجودة للـ backprop','لأنها بتطلّع قيم سالبة'],2,'الـ step الـ gradient بتاعها صفر تقريبًا في كل مكان ومش معرّف عند العتبة. الـ sigmoid ناعمة ومشتقتها s·(1−s) موجودة في كل نقطة.'],
+ ['(سؤال مني) كام parameter في شبكة 2-4-2-1؟',['7','16','25','32'],2,'(2·4+4) + (4·2+2) + (2·1+1) = 12 + 10 + 3 = 25.'],
+ ['(سؤال مني) لو شلت كل الـ activations من شبكة 10 layers، هتبقى عاملة إزاي؟',['أقوى لأنها أبسط','زي layer linear واحدة بالظبط، يعني حدود قرار خطية بس','مش هتشتغل خالص وهتطلع error','زي شبكة فيها sigmoid بالظبط'],1,'ضرب مصفوفات ورا بعض = مصفوفة واحدة. من غير nonlinearity العمق ملوش لازمة، ومش هتعرف تحل XOR.']
+],5);
+
+// ---------- checklist ----------
+AI.checklist(45,$('d45-checklist'));
+
+// redraw on theme
+AI.onTheme(()=>{if(!document.body.contains(xc))return false;drawXor();drawNet();drawUat()});
+})();
+</script>
