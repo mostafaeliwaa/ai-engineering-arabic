@@ -1,0 +1,285 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 04 · Lesson 11 · Stable Diffusion — Architecture & Fine-Tuning</span>
+  <h1>اليوم ٦٧: Stable Diffusion، الـ diffusion في الـ latent space</h1>
+  <p class="lede">النهاردة هتشوف إزاي الـ diffusion اللي اتعلمته اتحوّل لنظام production: VAE بيضغط الصورة 48 مرة، وtext encoder بيفهم الـ prompt، وU-Net بـ cross-attention، وscheduler سريع، وCFG بيوجّه. وهتتعلم تستخدم diffusers لـ text-to-image وimg2img وinpainting وLoRA.</p>
+  <div class="meta"><span>الوقت: <b>~٧٥ دقيقة</b></span><span>اللغة: <b>Python</b> (diffusers)</span><span>قبله: <b>Diffusion Models</b></span><span>بعده: <b>Video Understanding</b></span></div>
+  <div><span class="eyebrow">Phase 04 — 25 lessons</span>
+    <div class="roadmap" id="d67-roadmap" aria-label="دروس الفيز"></div></div>
+</header>
+<section id="d67-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>الـ forward في diffusion: إزاي تاخد x_t من x_0 في خطوة واحدة؟
+      <details><summary>الإجابة</summary><code>x_t = √ᾱ_t · x_0 + √(1−ᾱ_t) · ε</code> حيث ε ~ N(0,I). الـ ᾱ هي حاصل ضرب (1−β) لحد t.</details></li>
+    <li>الشبكة في DDPM بتتنبأ بإيه، والـ loss إيه؟
+      <details><summary>الإجابة</summary>بتتنبأ بالـ noise ε اللي اتضاف، والـ loss هو MSE بين ε الحقيقي والمتوقع.</details></li>
+    <li>إيه الفرق بين DDPM وDDIM؟
+      <details><summary>الإجابة</summary>التدريب واحد. DDPM sampler عشوائي بـ 1000 خطوة، وDDIM حتمي (eta=0) بـ 20 لـ 100 خطوة بجودة قريبة، من غير إعادة تدريب.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan"><div><b>5 min</b>التسخين</div><div><b>20 min</b>الـ pipeline والـ latent diffusion</div><div><b>15 min</b>CFG وLoRA + المعامل</div><div><b>20 min</b>كود diffusers</div><div><b>15 min</b>تمارين وكويز</div></div>
+</section>
+
+<section>
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: pixel-space غالي أوي</h2></div>
+  <p>تدريب DDPM مباشرة على صور 512×512 RGB غالي. كل خطوة تدريب بتعمل backprop في U-Net شايفة <span class="ltr"><code>3×512×512 = 786,432</code></span> قيمة، والـ sampling بياخد 50+ forward pass في نفس الـ U-Net. بجودة Stable Diffusion 1.5 (2022) الـ pixel-space كان محتاج حوالي 256 GPU-month تدريب و10 لـ 30 ثانية للصورة على GPU عادي.</p>
+  <p>الحيلة اللي خلّت text-to-image مفتوح المصدر عملي هي <b>latent diffusion</b> (Rombach وزمايله، CVPR 2022): درّب VAE يحوّل صورة <span class="ltr"><code>3×512×512</code></span> لـ latent <span class="ltr"><code>4×64×64</code></span> ويرجّعها، وبعدين اعمل الـ diffusion جوه الـ latent. الحساب يقل <span class="ltr"><code>(3·512·512)/(4·64·64) = 48x</code></span>. والـ sampling يقل من عشرات الثواني لأقل من ثانيتين على نفس الـ GPU.</p>
+  <div class="note"><strong>تشبيه:</strong> بدل ما تعدّل صورة ضخمة بكسل بكسل، بتضغطها لملف صغير (زي zip ذكي)، تشتغل على الملف الصغير، وفي الآخر تفتحه. الـ VAE هو الـ zip والـ unzip.</div>
+  <p>تقريبًا كل موديل صور حديث (SDXL, SD3, FLUX, HunyuanDiT, Wan-Video) هو latent diffusion model بتنويعات على الـ autoencoder والـ denoiser (U-Net أو DiT) والـ text conditioning. اتعلّم Stable Diffusion وهتبقى فاهم القالب.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">02</span><h2>الـ Pipeline: خمس قطع</h2></div>
+  <ul>
+    <li><b>VAE:</b> autoencoder متجمّد. الـ encoder بيحوّل الصورة لـ latents (بنستخدمه في img2img والتدريب). والـ decoder بيرجّع الـ latents لصورة.</li>
+    <li><b>Text encoder:</b> CLIP text encoder (SD 1.x/2.x)، أو CLIP-L + CLIP-G (SDXL)، أو T5-XXL (SD3/FLUX). بيطلّع تسلسل embeddings للـ tokens.</li>
+    <li><b>U-Net:</b> الـ denoiser. فيه cross-attention بيبص من الـ latents على الـ text embedding في كل مستوى دقة.</li>
+    <li><b>Scheduler:</b> خوارزمية الـ sampling (DDIM, Euler, DPM-Solver++). بيختار الـ sigmas ويدمج الـ noise المتوقع في الـ latent.</li>
+    <li><b>Safety checker:</b> فلتر اختياري للمحتوى غير الآمن على الصورة الناتجة.</li>
+  </ul>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: تتبّع الـ pipeline</h3>
+      <p>اضغط «اللي بعدها» وشوف مين اتفعّل في كل مرحلة وإيه اللي بيتنقل. لاحظ إن الـ VAE decoder بيتشغّل <b>مرة واحدة بس في الآخر</b>، بينما الـ U-Net بيتكرر في حلقة الـ scheduler.</p>
+    </div>
+    <div id="d67-lab1"></div>
+  </div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">03</span><h2>Classifier-free guidance (CFG)</h2></div>
+  <p>الـ text conditioning العادي بيتعلم <span class="ltr"><code>ε_θ(x_t, t, c)</code></span> لكل prompt <span class="ltr"><code>c</code></span>. الـ CFG بيدرّب نفس الشبكة بحيث الـ <span class="ltr"><code>c</code></span> بيتشال 10% من الوقت (يتبدّل بـ embedding فاضي)، فنطلع بموديل واحد بيتنبأ بالـ noise المشروط وغير المشروط. وقت الاستخدام:</p>
+  <div class="formula">ε = ε_uncond + w · ( ε_cond − ε_uncond )</div>
+  <p>الـ <span class="ltr"><code>w</code></span> هو guidance scale. <span class="ltr"><code>w=0</code></span> غير مشروط، <span class="ltr"><code>w=1</code></span> مشروط عادي، و<span class="ltr"><code>w&gt;1</code></span> بيدفع الصورة لتبقى «أكتر التزامًا بالـ prompt» على حساب التنوع. الافتراضي في SD هو <span class="ltr"><code>w=7.5</code></span>.</p>
+  <p>الـ CFG هو سبب إن text-to-image بيشتغل بجودة production. من غيره الـ prompt بيأثّر ضعيف، ومعاه الـ prompt بيسيطر.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: الـ CFG كـ extrapolation</h3>
+      <p>السهم الأزرق هو <span class="ltr"><code>ε_uncond</code></span> والبرتقالي <span class="ltr"><code>ε_cond</code></span>. اسحب رأس أي واحد. الأسهم المتقطعة هي النتيجة عند <span class="ltr"><code>w = 1, 3, 7.5, 15</code></span>. لاحظ إن w=1 بيطابق cond بالظبط، وأي w أكبر <b>بيتجاوز</b> cond في نفس الاتجاه.</p>
+      <div class="note ai"><strong>ليه artefacts عند w=15؟</strong> الصيغة مفيهاش حد أعلى. كل ما w يكبر بنبعد عن المنطقة اللي الموديل اتدرب عليها فالـ VAE مش بيعرف يفك الـ latent كويس وتطلع ألوان مشبّعة زيادة وتشوهات.</div>
+    </div>
+    <div id="d67-lab2"></div>
+  </div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">04</span><h2>هندسة الـ Latent space</h2></div>
+  <p>الـ latent بتاع الـ VAE (4 قنوات) مش مجرد صورة مضغوطة. هو مجال (manifold) فيه الحساب بيقابل تعديلات دلالية تقريبًا (الـ prompt engineering والـ interpolation الاتنين بيحصلوا هنا)، والـ U-Net اتدرب إنه يصرف كل ميزانيته عليه. لو فكّيت latent عشوائي <span class="ltr"><code>4×64×64</code></span> مش هتاخد صورة عشوائية الشكل، هتاخد زبالة، لأن مجموعة فرعية معينة بس من الـ latents هي اللي بتتفك لصور صالحة.</p>
+  <h3>نتيجتين مهمين</h3>
+  <ol>
+    <li><b>Img2img:</b> شفّر الصورة لـ latent، زوّد noise جزئي، شغّل الـ denoiser، وفك. بنية الصورة بتفضل لأن التشفير قريب من قابل للعكس، والمحتوى بيتغيّر حسب الـ prompt.</li>
+    <li><b>Inpainting:</b> نفس img2img لكن الـ denoiser بيحدّث المناطق المقنّعة (masked) بس، والباقي بيفضل زي الـ latent المشفّر.</li>
+  </ol>
+  <h3>الـ U-Net</h3>
+  <p>الـ U-Net في SD هو نسخة كبيرة من TinyUNet اللي اتعملت في درس 10 مع تلات إضافات: <b>transformer blocks</b> في كل مستوى (self-attention + cross-attention للنص)، و<b>time embedding</b> عن طريق MLP على sinusoidal encoding، و<b>skip connections</b> بين الـ encoder والـ decoder في نفس الدقة. عدد الـ parameters: حوالي 860M في SD 1.5، و2.6B في SDXL، و12B في FLUX. الزيادة معظمها في طبقات الـ attention.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">05</span><h2>LoRA: fine-tune بدون ما تلمس الموديل</h2></div>
+  <p>الـ full fine-tuning لـ Stable Diffusion محتاج 20+ GB VRAM وبيحدّث 860M parameter. الـ LoRA (Low-Rank Adaptation) بتخلّي الموديل الأساسي متجمّد وبتحقن مصفوفات صغيرة (rank decomposition) في طبقات الـ attention. الـ adapter عادةً 10 لـ 50 MB، بيتدرب في 10 لـ 60 دقيقة على GPU استهلاكي واحد، وبيتحمّل وقت الاستخدام كتعديل drop-in.</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>Original: W_q : (d_in, d_out)   متجمّد
+LoRA:     W_q + alpha * (A @ B)   حيث A : (d_in, r) ، B : (r, d_out)
+r عادةً 4 لـ 32</pre></div>
+  <p>الـ LoRA هي الطريقة اللي بتتوزع بيها تقريبًا كل fine-tune مجتمعي. CivitAI وHugging Face فيهم ملايين.</p>
+  <div class="note"><strong>تشبيه:</strong> الموديل كتاب مطبوع ما ينفعش تعدّل فيه. الـ LoRA ورقة شفافة بتحطها فوق الصفحات وفيها ملاحظات صغيرة. تشيلها وهو زي ما كان، أو تحط ورقة تانية.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: أرقام الـ latent وLoRA وImg2img</h3>
+      <p>الآلة الحاسبة دي بتجمع التلات أرقام اللي لازم تحسّ بيها: ضغط الـ latent، حجم الـ LoRA، وعدد خطوات الـ denoising الفعلية في img2img.</p>
+      <div class="note ai"><strong>جرّب:</strong> غيّر الـ rank من 4 لـ 64 وشوف النسبة من الـ full. وغيّر strength من 0.2 لـ 1.0: عند 1.0 كل الخطوات بتتنفذ يعني الصورة الأصلية ضاعت تمامًا.</div>
+    </div>
+    <div id="d67-lab3"></div>
+  </div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">06</span><h2>الـ Schedulers اللي هتقابلها</h2></div>
+  <ul>
+    <li><b>DDIM:</b> حتمي، حوالي 50 خطوة، بسيط.</li>
+    <li><b>Euler ancestral:</b> عشوائي، 30 لـ 50 خطوة، عيّنات أكتر «إبداعًا».</li>
+    <li><b>DPM-Solver++ 2M Karras:</b> حتمي، 20 لـ 30 خطوة، الافتراضي في production.</li>
+    <li><b>LCM / TCD / Turbo:</b> consistency models ونسخ مقطّرة (distilled): 1 لـ 4 خطوات على حساب شوية جودة.</li>
+  </ul>
+  <p>تبديل الـ scheduler سطر واحد في <span class="ltr"><code>diffusers</code></span>، وساعات بيصلّح مشاكل في العيّنات من غير إعادة تدريب.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">07</span><h2>اكتب الكود (diffusers)</h2></div>
+  <div class="note ai"><strong>اكتب بإيدك.</strong> الدرس ده بيستخدم <span class="ltr"><code>diffusers</code></span> كلها بدل ما نعيد بناء SD من الصفر. المطلوب تتمكّن من الـ API. التنفيذ الحقيقي محتاج GPU وتحميل أوزان (عدة GB). على CPU مش هتقدر عمليًا، فاقرأ الكود واكتبه وشغّل نسخة الريبو الخفيفة آخر الجزء.</div>
+  <h3>خطوة ١: text-to-image</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+from diffusers import StableDiffusionPipeline
+
+pipe = StableDiffusionPipeline.from_pretrained(
+    &quot;runwayml/stable-diffusion-v1-5&quot;,
+    torch_dtype=torch.float16,            # نص الذاكرة بدون فرق ملحوظ
+).to(&quot;cuda&quot;)
+
+image = pipe(
+    prompt=&quot;a dog riding a skateboard in tokyo, studio ghibli style&quot;,
+    guidance_scale=7.5,                   # الـ CFG
+    num_inference_steps=25,
+    generator=torch.Generator(&quot;cuda&quot;).manual_seed(42),   # عشان النتيجة تتكرر
+).images[0]
+image.save(&quot;dog.png&quot;)</pre></div>
+  <p><span class="ltr"><code>num_inference_steps=25</code></span> مع DPM-Solver++ الافتراضي بيطابق 50 مع DDIM.</p>
+  <h3>خطوة ٢: بدّل الـ scheduler</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>from diffusers import DPMSolverMultistepScheduler, EulerAncestralDiscreteScheduler
+
+pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+# أو:
+pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)</pre></div>
+  <p>الـ scheduler منفصل عن أوزان الـ U-Net. تدرّب على DDPM وتولّد بأي scheduler.</p>
+  <h3>خطوة ٣: image-to-image</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>from diffusers import StableDiffusionImg2ImgPipeline
+from PIL import Image
+
+img2img = StableDiffusionImg2ImgPipeline.from_pretrained(
+    &quot;runwayml/stable-diffusion-v1-5&quot;,
+    torch_dtype=torch.float16,
+).to(&quot;cuda&quot;)
+
+init_image = Image.open(&quot;dog.png&quot;).convert(&quot;RGB&quot;).resize((512, 512))
+out = img2img(
+    prompt=&quot;a dog riding a skateboard, oil painting&quot;,
+    image=init_image,
+    strength=0.6,            # 0.0 = زي ما هي ، 1.0 = إعادة توليد كاملة
+    guidance_scale=7.5,
+).images[0]</pre></div>
+  <p>الـ <span class="ltr"><code>strength</code></span> هو كمية الـ noise اللي بتتضاف قبل الـ denoising. من 0.5 لـ 0.7 هو المدى المعتاد لنقل الستايل.</p>
+  <h3>خطوة ٤: inpainting</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>from diffusers import StableDiffusionInpaintPipeline
+
+inpaint = StableDiffusionInpaintPipeline.from_pretrained(
+    &quot;runwayml/stable-diffusion-inpainting&quot;,
+    torch_dtype=torch.float16,
+).to(&quot;cuda&quot;)
+
+image = Image.open(&quot;dog.png&quot;).convert(&quot;RGB&quot;).resize((512, 512))
+mask = Image.open(&quot;dog_mask.png&quot;).convert(&quot;L&quot;).resize((512, 512))
+
+out = inpaint(
+    prompt=&quot;a cat&quot;,
+    image=image,
+    mask_image=mask,         # الأبيض = المنطقة اللي هتتولّد من جديد
+    guidance_scale=7.5,
+).images[0]</pre></div>
+  <p>البكسلات البيضا في الـ mask هي اللي هتتعاد، والسودا بتتحفظ.</p>
+  <h3>خطوة ٥: تحميل LoRA</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>pipe.load_lora_weights(
+    &quot;artificialguybr/studioghibli-redmond-1-5v-studio-ghibli-lora-for-liberteredmond-sd-1-5&quot;,
+    weight_name=&quot;StudioGhibliRedmond-15V-LiberteRedmond-StdGBRedmAF-StudioGhibli.safetensors&quot;,
+)
+pipe.fuse_lora(lora_scale=0.8)       # 0.0 = مفيش تأثير ، 1.0 = تأثير كامل
+
+image = pipe(prompt=&quot;a village square, StdGBRedmAF, Studio Ghibli&quot;).images[0]</pre></div>
+  <p>عبارة التفعيل (trigger phrase) من الـ model card هي اللي بتشغّل الستايل. الـ <span class="ltr"><code>fuse_lora</code></span> بتدمج الـ adapter في الأوزان للسرعة لكن بتمنع التبديل، فاستخدم <span class="ltr"><code>pipe.unfuse_lora()</code></span> قبل ما تحمّل adapter تاني.</p>
+  <h3>خطوة ٦: تدريب LoRA (رسم تخطيطي)</h3>
+  <p>التدريب الحقيقي في <span class="ltr"><code>peft</code></span> أو <span class="ltr"><code>diffusers.training</code></span>. ده الهيكل (pseudocode):</p><div class="codebox"><button class="copy" type="button">Copy</button><pre># Pseudocode
+for step, batch in enumerate(dataloader):
+    images, prompts = batch
+    latents = vae.encode(images).latent_dist.sample() * 0.18215   # نحوّل لـ latent ونعمل scale
+
+    t = torch.randint(0, num_train_timesteps, (batch_size,))
+    noise = torch.randn_like(latents)
+    noisy_latents = scheduler.add_noise(latents, noise, t)         # نفس q_sample
+
+    text_emb = text_encoder(tokenizer(prompts))
+
+    pred_noise = unet(noisy_latents, t, text_emb)                  # هنا الـ LoRA متحقنة
+
+    loss = F.mse_loss(pred_noise, noise)                           # نفس loss درس 10
+    loss.backward()
+    optimizer.step()</pre></div>
+  <p>مصفوفات الـ LoRA بس هي اللي بتاخد gradient. الـ U-Net الأساسي والـ VAE والـ text encoder متجمّدين. مع batch size = 1 وgradient checkpointing بتتحمّل في 8 GB VRAM.</p>
+  <h3>شغّل نسخة الريبو</h3>
+  <p>الملف الجاهز خفيف: بيطبع وصف الـ pipeline وجدول CFG وpseudocode الـ LoRA، ولو عندك diffusers وGPU بيولّد صورة كمان. من جذر الريبو:</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/11-stable-diffusion/code/main.py</pre></div>
+  <p>المتوقع أول حاجة:</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>[stable diffusion pipeline]
+  text_encoder:   CLIP-L (SD 1.5) / CLIP-L+G (SDXL) / T5-XXL (SD3, FLUX)
+  unet_params:    860M (SD 1.5) / 2.6B (SDXL) / 12B (FLUX)
+  vae_latent:     4 x 64 x 64 for 512x512 input, 4 x 128 x 128 for 1024x1024
+  vae_scale:      0.18215 (SD 1.5/2), 0.13025 (SDXL)
+  default_cfg:    7.5</pre></div>
+  <p>وبعدها جدول <span class="ltr"><code>[cfg sweep ...]</code></span> من <span class="ltr"><code>w=1.0</code></span> لـ <span class="ltr"><code>w=15.0</code></span> بوصف التأثير المتوقع، وبعدها رسالة إن <span class="ltr"><code>diffusers</code></span> مش متنصّبة أو مفيش GPU (لو الحال كده)، وفي الآخر الـ pseudocode.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">08</span><h2>في الواقع: قرارات الـ production</h2></div>
+  <ul>
+    <li><b>عيلة الموديل:</b> SD 1.5 لـ fine-tunes المجتمع المفتوحة، SDXL لدقة أعلى، SD3 / FLUX لأحدث مستوى مع الانتباه لشروط الترخيص.</li>
+    <li><b>الـ scheduler:</b> DPM-Solver++ 2M Karras لـ 20 لـ 30 خطوة، وLCM-LoRA لو الـ latency أقل من ثانية.</li>
+    <li><b>الدقة العددية:</b> <span class="ltr"><code>float16</code></span> على 4080/4090، و<span class="ltr"><code>bfloat16</code></span> على A100 وأحدث، و<span class="ltr"><code>int8</code></span> (عن طريق <span class="ltr"><code>bitsandbytes</code></span>) لما الـ VRAM ضيقة.</li>
+    <li><b>الـ conditioning:</b> النص يشتغل، ولتحكم أقوى أضف <b>ControlNet</b> (canny, depth, pose) فوق الـ pipeline الأساسي. ControlNet هو adapter متدرب لوحده بيوجّه SD بمدخل إضافي.</li>
+  </ul>
+  <p>للتوليد الدفعي: <span class="ltr"><code>AUTO1111</code></span> / <span class="ltr"><code>ComfyUI</code></span>. وللـ APIs الـ production: <span class="ltr"><code>diffusers</code></span> + <span class="ltr"><code>accelerate</code></span> أو <span class="ltr"><code>optimum-nvidia</code></span> مع TensorRT. والدرس بيطلّع prompt بيختار الموديل والـ scheduler والدقة حسب الـ latency والجودة والترخيص، وskill بيكتب config كامل لتدريب LoRA (captions, rank, batch size, learning rate).</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> ولّد نفس الـ prompt بـ <span class="ltr"><code>guidance_scale</code></span> = 1, 3, 5, 7.5, 10, 15. وصف إزاي الصورة بتتغير. عند أنهي قيمة الـ artefacts بتظهر؟
+      <details><summary>تلميح / إجابة</summary>ثبّت الـ seed. من الجدول في الريبو: w≈1 غير مشروط، أقل من 5 إبداعي والتزام ضعيف بالـ prompt، 5 لـ 8 قياسي، 8 لـ 12 التزام قوي مع احتمال تشبّع زيادة، فوق 12 artefacts واضحة. وده بيتأكد في تجربتك: توقّع إن الـ artefacts تبدأ عند حوالي 10 لـ 15.</details></li>
+    <li><b>(متوسط)</b> خد صورة حقيقية ومرّرها في img2img بـ <span class="ltr"><code>strength</code></span> = 0.2, 0.4, 0.6, 0.8, 1.0. أنهي strength بيحافظ على التكوين ويغيّر الستايل؟ وليه 1.0 بيتجاهل الصورة تمامًا؟
+      <details><summary>إجابة</summary>غالبًا 0.4 لـ 0.6. عند 1.0 بنضيف noise كامل لحد ما الـ latent بقى noise صافي ثم بنـ denoise كل الخطوات، فمفيش أي معلومة من الصورة الأصلية فاضلة. strength بيحدد من أنهي خطوة نبدأ: <span class="ltr"><code>steps_run ≈ strength × num_inference_steps</code></span>.</details></li>
+    <li><b>(صعب)</b> درّب LoRA على 10 لـ 20 صورة لموضوع واحد (حيوان أليف، لوجو، شخصية) وولّد مشاهد جديدة بيه. سجّل الـ rank وعدد الخطوات اللي طلّعوا أحسن حفاظ على الهوية من غير overfit.
+      <details><summary>تلميح</summary>ابدأ بـ r=4 أو 8 وlearning rate صغير (حوالي 1e-4)، واحفظ checkpoints كل شوية. الـ overfit بيبان لما كل الصور بتطلع بنفس الخلفية أو الوضعية بتاعة الداتا. استخدم prompt بيغيّر المشهد (&quot;in the snow&quot;) واختبر.</details></li>
+    <li><b>(تمرين مني)</b> احسب حجم LoRA لطبقة attention واحدة بـ <span class="ltr"><code>d_in = d_out = 768</code></span> وrank=8، وقارنه بالطبقة الكاملة.
+      <details><summary>إجابة</summary>الكاملة: 768×768 = 589,824. الـ LoRA: A (768×8) + B (8×768) = 6,144 + 6,144 = 12,288. يعني حوالي 2.1% من الكاملة. والـ adapter كله بيجمع الرقم ده على كل طبقات الـ attention اللي حقنت فيها.</details></li>
+  </ol>
+</section>
+<section>
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note"><strong>الحدس:</strong> الـ CFG بيسأل الموديل سؤالين في نفس الوقت: «إيه اللي هتعمله لو معاك الـ prompt؟» و«إيه اللي هتعمله من غيره؟». الفرق بين الإجابتين هو «تأثير الـ prompt الصافي». ونضخّمه w مرة. عشان كده كل خطوة sampling بتكلّف forward pass مرتين (أو batch مضاعف).</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>تحتسب إن CFG أعلى = جودة أعلى:</b> فوق 9 لـ 12 الجودة بتقل. 7 لـ 8 هو المنطقة الآمنة.</li>
+    <li><b>تنسى الـ scale factor 0.18215:</b> من غيره الـ latents مش بوحدة تباين تقريبًا وتدريبك ينهار (SDXL ثابته مختلف 0.13025).</li>
+    <li><b>تجرّب على CPU:</b> هتستنى ساعات. اشتغل على GPU أو Colab.</li>
+    <li><b>تدمج LoRA بـ fuse وبعدين تحمّل واحدة تانية:</b> لازم <span class="ltr"><code>unfuse_lora()</code></span> الأول.</li>
+    <li><b>تنسى trigger phrase بتاع الـ LoRA:</b> الستايل مش هيظهر.</li>
+  </ul>
+  <h3>بيظهر في الـ LLMs والـ agents؟</h3>
+  <p>فكرة LoRA نفسها اتولدت في الـ NLP (ورقة Hu وزمايله 2021 عن الموديلات اللغوية) وبتستخدم بنفس الطريقة لتخصيص LLMs صغيرة بأقل تكلفة. وكل الـ cross-attention هو نفس آلية الـ attention اللي هتتعمق فيها في Phase 7. وفي الـ agents، الـ image-generation بتبقى tool: الـ agent يكتب الـ prompt ويستدعي pipeline زي ده، وفهم الـ guidance scale والـ steps بيخلّيك تضبط الـ tool بدل ما تسيبه افتراضي.</p>
+</section>
+
+<section id="d67-quiz">
+  <div class="station-head"><span class="tag">QZ</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d67-quizBox"></div>
+</section>
+<section id="d67-done">
+  <div class="station-head"><span class="tag">END</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d67-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم الـ pipeline والخمس قطع ودور كل واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه latent diffusion بيوفّر 48x</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم CFG والـ guidance scale وليه w عالي بيطلّع artefacts</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم LoRA وحجمها مقارنة بالـ full fine-tuning</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت كود text-to-image وimg2img وinpainting وLoRA بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+<div class="tablewrap"><table><tr><th>المفهوم</th><th>بيظهر فين</th></tr><tr><td>Latent diffusion</td><td>SDXL, SD3, FLUX, Wan-Video وكل موديل صور/فيديو حديث</td></tr><tr><td>Cross-attention للنص</td><td>أي text-to-image وفي الـ multimodal LLMs</td></tr><tr><td>CFG</td><td>أهم مقبض في أي واجهة توليد صور (ComfyUI, AUTO1111)</td></tr><tr><td>LoRA</td><td>تخصيص الـ LLMs كمان، مش بس الصور</td></tr><tr><td>Schedulers</td><td>قرارات الـ latency في أي API توليد</td></tr></table></div>
+  <p><b>بكرة:</b> Video Understanding وبعده 3D Vision. هننقل من الصور الثابتة للفيديو (البُعد الزمني) وبعدين للـ point clouds وNeRFs.</p>
+</section>
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F11-stable-diffusion" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/11-stable-diffusion</span>
+</footer>
+<script>
+(function(){
+const N=67,$=id=>document.getElementById(id),L=AI.lab,css=AI.css,f=AI.fmt;
+const root=$('d67-roadmap').closest('.day');
+const rm=$('d67-roadmap');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===11)s.className='now';rm.appendChild(s)}
+
+L.flow($('d67-lab1'),{height:340,nodes:[{id:'txt',label:'Prompt',x:0,y:.1},{id:'te',label:'Text encoder',x:.4,y:.1},{id:'noise',label:'Noise 4x64x64',x:0,y:.6},{id:'unet',label:'U-Net',x:.5,y:.6},{id:'sch',label:'Scheduler',x:1,y:.6},{id:'vae',label:'VAE decoder',x:.5,y:1},{id:'img',label:'Image 512x512',x:1,y:1}],
+ edges:[['txt','te'],['te','unet','text emb'],['noise','unet'],['unet','sch','eps'],['sch','unet','x(t-1)'],['sch','vae','clean latent'],['vae','img']],
+ steps:[{active:['txt','te'],edges:[['txt','te']],text:'<b>١:</b> الـ prompt بيدخل الـ text encoder (CLIP/T5) ويطلع تسلسل embeddings.'},
+ {active:['noise','unet','te'],edges:[['noise','unet'],['te','unet']],text:'<b>٢:</b> نولّد noise صافي في حجم الـ latent (4×64×64) والـ U-Net بياخده مع الـ text embedding (cross-attention).'},
+ {active:['unet','sch'],edges:[['unet','sch'],['sch','unet']],text:'<b>٣:</b> حلقة: الـ U-Net يتنبأ بالـ noise (مرتين مع CFG: بـ prompt وبدونه)، والـ scheduler يحدّث الـ latent. بتتكرر 20 لـ 50 مرة.'},
+ {active:['sch','vae'],edges:[['sch','vae']],text:'<b>٤:</b> لما يخلص الـ latent بقى نضيف (clean latent).'},
+ {active:['vae','img'],edges:[['vae','img']],text:'<b>٥:</b> الـ VAE decoder بيفك الـ latent لصورة RGB حقيقية. ده بيحصل مرة واحدة بس.'}]});
+L.vectors($('d67-lab2'),{range:12,vecs:[{v:[1,1],label:'uncond',color:'a'},{v:[2,2.5],label:'cond',color:'b'}],
+ derived:vs=>[1,3,7.5,15].map(w=>({v:[vs[0][0]+w*(vs[1][0]-vs[0][0]),vs[0][1]+w*(vs[1][1]-vs[0][1])],label:'w='+w,color:w===1?'ok':'muted',dash:1})),
+ readout:vs=>{const d=[vs[1][0]-vs[0][0],vs[1][1]-vs[0][1]];return [['cond−uncond',f(d[0])+', '+f(d[1])],['|الفرق|',Math.hypot(d[0],d[1])],['final @7.5',f(vs[0][0]+7.5*d[0])+', '+f(vs[0][1]+7.5*d[1])]]},
+ note:vs=>'كل ما w يكبر، النتيجة بتبعد أكتر في اتجاه (cond − uncond)'});
+L.calc($('d67-lab3'),{params:[{k:'px',label:'image size px',min:256,max:1024,step:64,v:512},{k:'r',label:'LoRA rank r',min:2,max:64,step:2,v:8},{k:'d',label:'d (attention dim)',min:320,max:1280,step:320,v:640},{k:'str',label:'img2img strength',min:0.1,max:1,step:0.1,v:0.6},{k:'st',label:'steps',min:10,max:50,step:5,v:30}],
+ compute:p=>{const pix=3*p.px*p.px,lat=4*(p.px/8)*(p.px/8),full=p.d*p.d,lora=2*p.d*p.r;return [['pixel values',pix.toLocaleString()],['latent values',lat.toLocaleString()],['الضغط',Math.round(pix/lat)+'x'],['full layer',full.toLocaleString()],['LoRA layer',lora.toLocaleString()],['LoRA / full',(100*lora/full).toFixed(1)+'%'],['img2img steps فعلية',Math.round(p.str*p.st)]]},
+ note:p=>p.str>=1?'strength=1: الصورة الأصلية ضاعت تمامًا':'الصورة الأصلية لسه مأثّرة'});
+
+AI.quiz($('d67-quizBox'),[["ليه Stable Diffusion بيشغّل الـ DDPM في latent space بحجم 4×64×64 بدل صور 3×512×512 مباشرة؟", ["عشان الـ inference يبقى حتمي", "الـ latents أسهل في العرض", "الـ latents هي المخرج الطبيعي للـ GPUs", "التدريب والـ sampling على 16,384 قيمة بدل 786,432 بيوفّر حوالي 48x؛ VAE جاهز بيعمل التحويل صورة ↔ latent، والـ diffusion بس بينمذج الـ manifold المنظم"], 3, "الـ latent diffusion هو الابتكار الوحيد اللي خلّى text-to-image على GPU استهلاكي عملي. الـ VAE بيضغط 48x. والـ diffusion بيصرف كل باراميتراته وحسابه على الـ latent manifold اللي هو الجزء اللي المستخدم بيشوفه بعد الفك."], ["الـ classifier-free guidance (CFG) بيعمل إيه وقت الاستخدام؟", ["بيشغّل موديلين منفصلين ويعمل متوسط", "بيضيف classifier head وقت الاختبار", "بيستخدم موديل واحد متدرب يتنبأ بالـ noise المشروط eps_cond وغير المشروط eps_uncond، ويدمجهم eps = eps_uncond + w*(eps_cond - eps_uncond) لتضخيم الالتزام بالـ prompt", "بيستخدم scheduler أكبر"], 2, "الـ CFG بيدرّب موديل واحد بحيث الـ conditioning بيتشال 10% من الوقت، فنفس الأوزان تدّي التنبؤين. وقت الاستخدام الصيغة بتضخّم الاتجاه المشروط. الـ guidance scale w هو المقبض القياسي بين الالتزام بالـ prompt والتنوع، وSD افتراضه 7.5."], ["بدّلت الـ scheduler الافتراضي بـ DPM-Solver++ 2M Karras وقلّلت num_inference_steps من 50 لـ 20. إيه المتوقع؟", ["لازم تعيد تدريب الموديل", "جودة قريبة في حوالي نص الوقت؛ DPM-Solver++ هو ODE solver من الدرجة التانية بيتقارب في خطوات أقل من DDIM لنفس الجودة", "جودة أسوأ ووقت أطول", "عدم استقرار عددي"], 1, "الـ schedulers منفصلة عن الأوزان. DPM-Solver++ solver من رتبة أعلى بيحقق جودة DDIM-50 في حوالي 20 خطوة. من غير إعادة تدريب، وهو افتراضي الـ production في 2026. تحت 8 خطوات عادةً محتاج نسخ مقطّرة زي LCM أو Turbo."], ["ليه الـ LoRA مشهورة في fine-tune لـ Stable Diffusion بدل الـ full fine-tuning؟", ["الـ LoRA بتطلّع صور أحسن افتراضيًا", "الـ LoRA بتخلّي الـ U-Net الأساسي (860M) متجمّد وبتحقن مصفوفات rank صغيرة في طبقات الـ attention، فالـ fine-tune بيتدرب في دقايق على hardware استهلاكي، والـ adapter 10 لـ 50 MB، وبيتبدّل ويتخلط وقت الاستخدام", "diffusers بتطلبها", "الـ LoRA بتمنع الـ overfitting تمامًا"], 1, "قيمة LoRA في تكلفة التدريب والتوزيع. الـ full fine-tuning بيحدّث 860M+ باراميتر وبيحتاج 20+ GB VRAM. الـ LoRA بتحدّث حوالي 1 لـ 10 مليون وبتتحمّل في 6 لـ 8 GB. الموديل الأساسي ما اتغيرش فنفس الـ LoRA تتحمّل على أي checkpoint متوافق، وتقدر تدمج أكتر من واحدة."], ["ولّدت نفس الـ prompt بـ guidance_scale=15 وطلعت ألوان مشبّعة زيادة وartefacts. إيه اللي بيحصل؟", ["الـ CFG بيضخّم الاتجاه المشروط؛ فوق حوالي 9 لـ 12 التضخيم بيدفع التنبؤات برا الـ manifold اللي الـ VAE بيفكه بنضافة فتطلع artefacts. نزّل الـ guidance لـ 7 لـ 9", "الـ seed غلط", "الموديل باظ", "الـ VAE محتاج إعادة تدريب"], 0, "صيغة CFG مفيهاش حد أعلى: w أعلى بيحرّك التنبؤ أبعد على (eps_cond - eps_uncond). بعد نقطة معينة بتطلع برا التوزيع المتدرب والـ decoder بيطلّع صور مشبّعة. القيمة الافتراضية 7 لـ 8، وبعض الـ schedulers الأحدث بتدعم CFG scheduling (w أقل في الخطوات الأخيرة)."], ["(سؤال مني) في img2img بـ strength=0.5 و num_inference_steps=40، كام خطوة denoising بتتنفذ تقريبًا؟", ["40", "20", "10", "80"], 1, "strength بيحدد من أنهي نقطة في الجدول نبدأ. 0.5 × 40 = 20 خطوة. عند 1.0 كل الـ 40 خطوة."], ["(سؤال مني) ليه CFG بيضاعف تقريبًا تكلفة كل خطوة sampling؟", ["لأن الـ VAE بيتشغل مرتين", "لأن لازم نحسب eps_cond وeps_uncond كل خطوة، يعني forward pass للـ U-Net مرتين (عادةً في batch مضاعف)", "لأن الـ scheduler بيتعمل مرتين", "مش بيضاعف"], 1, "الصيغة محتاجة التنبؤين، وكل واحد forward pass كامل في الـ U-Net. عشان كده فيه تقنيات distillation بتدمج التأثير في موديل واحد."]],5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>
+</div>

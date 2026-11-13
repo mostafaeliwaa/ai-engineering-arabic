@@ -1,0 +1,365 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 17 · Self-Supervised Vision — SimCLR, DINO, MAE</span>
+  <h1>اليوم ٧٢: تعلّم الرؤية من غير labels: SimCLR وDINO وMAE</h1>
+  <p class="lede">الـ labels هي عنق الزجاجة في الـ vision. النهاردة هتفهم تلات طرق بتخلّي الموديل يتعلّم features كويسة من صور <b>من غير ما حد يكتب لها اسم</b>: contrastive (SimCLR)، teacher-student (DINO)، وmasked reconstruction (MAE). وهتكتب InfoNCE بإيدك.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Vision Pipeline Capstone</b></span>
+    <span>بعده: <b>CLIP + OCR</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 يوم · النهاردة رقم ١٦</span>
+    <div class="roadmap" id="d72-roadmap" aria-label="أيام الـ Phase الرابع"></div>
+  </div>
+</header>
+
+<section id="d72-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنينا الـ capstone. جاوب في دماغك الأول.</p>
+  <ol class="ex">
+    <li>ليه بنحط Pydantic عند كل حدّ بين مرحلتين؟
+      <details><summary>الإجابة</summary>عشان الأخطاء الصامتة (زي إحداثيات بصيغة غلط) تتحول لأخطاء عالية الصوت عند الحدّ نفسه.</details></li>
+    <li>إيه اللي بيحصل لـ detection صغير جدًا في الـ pipeline؟
+      <details><summary>الإجابة</summary>بيفضل في الرد، بس بنتخطّى الـ classification له لو أصغر من <code>min_crop</code>.</details></li>
+    <li>ليه نرجّع 400 مش 500 لملف صورة بايظ؟
+      <details><summary>الإجابة</summary>لأن المشكلة في اللي بعته الـ client. الـ 500 بتخلّيه يعيد المحاولة بنفس الملف ويزوّد الحمل.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة وربع</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>الفكرة: التلات عائلات + ليه 75%</div>
+    <div><b>20 min</b>التلات معامل</div>
+    <div><b>20 min</b>اكتب الكود: augmentation وInfoNCE وmask</div>
+    <div><b>10 min</b>تمارين وكويز</div>
+  </div>
+</section>
+
+<section id="d72-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الـ labels غالية</h2></div>
+  <p>ImageNet فيه حوالي 1.3 مليون صورة متعمل لها labels، وتكلفة ده اتقدّرت بحوالي 10 مليون دولار. والداتا الطبية والصناعية أصغر وأغلى. السؤال: ممكن نعمل pretraining على صور كتير <b>من غير labels</b> (فريمات يوتيوب، web crawl، كاميرات، أقمار صناعية) وبعدين نضبط على شوية صور معلّمة؟</p>
+  <p>ده اللي بيعمله الـ <b>self-supervised learning</b>. ViT متدرّب بالطريقة دي على داتا ضخمة بيوصل لدقة الـ supervised أو يتخطاها بعد الـ fine-tuning، وبينقل أحسن لمهام تانية (detection وsegmentation وdepth). و<b>DINOv2</b> (Meta، 2023) و<b>MAE</b> (Meta، 2022) هما الاختيارات الافتراضية للـ features القابلة للنقل.</p>
+  <div class="note"><strong>الفكرة الجوهرية:</strong> المهمة اللي بنتدرّب عليها (الـ <b>pretext task</b>) مش لازم تكون المهمة اللي عايزينها في الآخر. المهم إنها تجبر الموديل يتعلّم features مفيدة. أمثلة نجحت: تلوين صور رمادية، تصنيف زاوية دوران الصورة، إخفاء patches وإعادة بنائها. التلات اللي بتكبّر كويس هما contrastive وteacher-student وmasked reconstruction.</div>
+  <div class="note ai"><strong>تشبيه:</strong> تخيّل طالب بيتعلّم لغة من غير مدرّس: بيشوف نص فيه كلمات ناقصة ويحاول يكمّلها. محدش قاله «ده معنى الكلمة»، بس عشان يكمّل صح لازم يفهم اللغة. ده الـ pretext task.</div>
+</section>
+
+<section id="d72-fam">
+  <div class="station-head"><span class="tag">02</span><h2>التلات عائلات</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>العائلة</th><th>أمثلة</th><th>الفكرة</th></tr>
+    <tr><td>Contrastive</td><td>SimCLR، MoCo، CLIP</td><td>view-ين من نفس الصورة يتقرّبوا، والصور التانية في الـ batch يتبعّدوا</td></tr>
+    <tr><td>Teacher-student</td><td>DINO، BYOL، iBOT</td><td>الـ student يتنبأ بمخرج الـ teacher، والـ teacher هو EMA للـ student</td></tr>
+    <tr><td>Masked reconstruction</td><td>MAE، BEiT، SimMIM</td><td>اخفي 75% من الـ patches وأعد بناء pixels أو tokens</td></tr>
+  </table></div>
+
+  <h3>١) Contrastive (SimCLR)</h3>
+  <p>خد صورة واحدة، طبّق عليها <b>augmentation عشوائي مرتين</b> فتطلع view-ين. مرّرهم على نفس الـ encoder ومعاه projection head. الـ loss بيقول: «embedding الـ view-ين دول لازم يبقوا قريبين، وبعيدين عن embeddings كل الصور التانية في الـ batch».</p>
+  <div class="formula">L(i,j) = −log( exp(sim(zᵢ,zⱼ)/τ) / Σₖ≠ᵢ exp(sim(zᵢ,zₖ)/τ) )     sim = cosine similarity، τ = temperature (0.1 عادةً)</div>
+  <p>ده الـ <b>InfoNCE</b>. بيحتاج سلبيات كتير لكل positive، فحجم الـ batch بيفرق: SimCLR بيحتاج من 512 لـ 8192. و<b>MoCo</b> حلّها بـ queue من features الـ batches اللي فاتت بحيث عدد السلبيات ميعتمدش على حجم الـ batch.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيّل إن عليك تتعرّف على أخوك في زحمة. لو الزحمة 3 ناس بس، تختار صح بسهولة من غير ما تتعلّم أي ملامح مميزة. لو الزحمة ألف، لازم تتعلّم ملامح دقيقة بجد. كتر السلبيات هو اللي بيجبر الموديل يتعلّم.</div>
+
+  <h3>٢) Teacher-student (DINO)</h3>
+  <p>شبكتين بنفس البنية: <b>student</b> و<b>teacher</b>. الـ teacher هو <b>EMA</b> (متوسط متحرك أسّي) لأوزان الـ student. الاتنين بيشوفوا views مختلفة من الصورة، والـ student بيتدرّب إن مخرجه يطابق مخرج الـ teacher. <b>مفيش سلبيات صريحة.</b></p>
+  <div class="formula">loss = CE( student(view₁), teacher(view₂) ) + CE( student(view₂), teacher(view₁) )</div>
+  <div class="formula">teacher = m · teacher + (1 − m) · student     (m ≈ 0.996)</div>
+  <p><b>إزاي مبيتحوّلش لـ «توقّع ثابت دايمًا» (collapse)؟</b> بحيلتين على مخرج الـ teacher: <b>centring</b> (اطرح متوسط كل بُعد) فمفيش بُعد واحد يسيطر، و<b>sharpening</b> (اقسم على temperature صغيرة) فالمخرج مينزلقش لتوزيع منتظم. الاتنين مع بعض بيمنعوا الـ collapse. DINOv2 هو تكبير DINO على 142 مليون صورة منتقاة، وfeatures بتاعته دلوقتي أقوى حاجة في الـ retrieval والـ dense prediction.</p>
+
+  <h3>٣) Masked reconstruction (MAE)</h3>
+  <p>اخفي <b>75%</b> من patches صورة الـ ViT. الـ encoder بيشوف الـ <b>25% الظاهرين بس</b>. بعده decoder صغير بياخد مخرج الـ encoder ومعاه mask tokens في الأماكن المخفية، ويتدرّب يعيد بناء pixels الـ patches المخفية.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>Encoder:  الـ 25% الظاهرين  -&gt;  features
+Decoder:  features + mask tokens في الأماكن المخفية  -&gt;  pixels معاد بناؤها
+Loss:     MSE بين المعاد بناؤه والأصلي، على الـ patches المخفية بس</pre></div>
+  <p>تصميمات بتخلّي MAE شغّال:</p>
+  <ul class="checklist">
+    <li><b>نسبة إخفاء عالية 75%:</b> لو أخفيت قليل، التنبؤ شبه تافه لأن البكسلات المتجاورة مرتبطة جدًا.</li>
+    <li><b>Encoder/decoder غير متماثلين:</b> الـ encoder الكبير بيشوف الظاهر بس، والـ decoder صغير (8 طبقات، 512 بُعد). النتيجة pretraining أسرع حوالي 3 مرات من BEiT الساذج.</li>
+    <li><b>هدف في فضاء الـ pixels:</b> أبسط من tokens بتاعة BEiT وبيشتغل أحسن على ViT.</li>
+  </ul>
+  <p>بعد الـ pretraining بنرمي الـ decoder، والـ encoder هو الـ feature extractor.</p>
+
+  <h3>ليه 75% وBERT بيخفي 15% بس؟</h3>
+  <p>الفرق في <b>كثافة المعلومات</b>. اللغة فيها entropy عالي لكل token: حتى لو أخفيت 15%، كل مكان فيه احتمالات كتير. أما الـ patches فـ entropy منخفض: الجيران غالبًا بيحدّدوا الـ patch المخفي تقريبًا بالظبط. عشان التنبؤ يحتاج فهم دلالي لازم تخفي بشراسة. 75% كفاية إن الاستكمال المكاني البسيط ميحلش المهمة، والـ encoder لازم يمثّل محتوى الصورة.</p>
+</section>
+
+<section id="d72-lab1">
+  <div class="station-head"><span class="tag">03</span><h2>معمل ١: InfoNCE والـ batch والـ temperature</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>جرّب بإيدك</h3>
+      <p>المحور الأفقي = N (عدد الأزواج في الـ batch). المنحنى = قيمة الـ loss لو الـ positive له similarity <code>s_pos</code> وكل السلبيات similarity <code>s_neg</code> (تبسيط مني عشان نشوف الشكل). حرّك الـ temperature وشوف الـ loss.</p>
+      <p>اضبط <code>s_pos = s_neg</code> (يعني الموديل مبيفرقش): هتلاقي الـ loss بتتبع <span class="ltr">log(2N−1)</span>، وده بالظبط الرقم اللي الكود هيطبعه لـ N=16: حوالي 3.43.</p>
+      <div class="note ai"><strong>لاحظ:</strong> كل ما N يكبر، الـ loss للموديل «الأعمى» بيكبر (log(2N−1))، فبقى الـ loss بيحتاج الموديل يفرّق بين positive وسلبيات أكتر. وبعدها لو الـ positive أقرب فعلًا من السلبيات، المنحنى بيبقى أوطى.</div>
+    </div>
+    <div id="d72-nce"></div>
+  </div>
+</section>
+
+<section id="d72-lab2">
+  <div class="station-head"><span class="tag">04</span><h2>معمل ٢: قناع MAE</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>شوف الـ patches الظاهرة والمخفية</h3>
+      <p>صورة 224×224 مقسّمة patches بحجم 16 = شبكة 14×14 = 196 patch. اللون الفاتح = ظاهر، الغامق = مخفي. حرّك نسبة الإخفاء. على 75% هتلاقي 49 ظاهر و147 مخفي، زي الكود.</p>
+      <div class="note"><strong>فكّر:</strong> لو الظاهر 90% (إخفاء 10%)، أي patch مخفي له 4 جيران ظاهرين تقريبًا. هل تحتاج تفهم إن ده «قطة» عشان تعيد بناءه؟ لأ، كفاية متوسط الجيران. ده معنى «المهمة سهلة».</div>
+      <div class="note ai"><strong>ميزة الكفاءة:</strong> الـ encoder بيعالج 49 token بدل 196، يعني الحسابات بتقل جامد.</div>
+    </div>
+    <div id="d72-mask"></div>
+  </div>
+</section>
+
+<section id="d72-lab3">
+  <div class="station-head"><span class="tag">05</span><h2>معمل ٣: ليه DINO مبيعملش collapse؟</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>centring وsharpening</h3>
+      <p>عندنا مخرج teacher من 8 أبعاد، والبُعد الأول (d1) فيه «ميل» ثابت (+3) بيظهر في كل الصور، فبيكسب دايمًا مهما كانت الصورة. الـ centring بيطرح المتوسط الجاري لكل بُعد، فالميل ده بيتشال وتفضل الإشارة الحقيقية. الأعمدة = احتمالات الـ teacher بعد الـ softmax.</p>
+      <ul class="checklist">
+        <li>اضبط <b>centring = 0</b> و<b>temperature = 1</b>: بُعد واحد بيسيطر (الـ collapse الأول).</li>
+        <li>زوّد <b>centring</b>: السيطرة بتروح، لأننا بنطرح المتوسط.</li>
+        <li>زوّد <b>temperature</b> لحد 3: المخرج بيقرب لتوزيع منتظم (collapse تاني: كل الأبعاد زي بعض ومفيش معلومة).</li>
+        <li>قلّل temperature لـ 0.2 مع centring كامل: مخرج حاد ومفيد.</li>
+      </ul>
+    </div>
+    <div id="d72-dino"></div>
+  </div>
+</section>
+
+<section id="d72-probe">
+  <div class="station-head"><span class="tag">06</span><h2>إزاي نقيس إن الـ features كويسة؟ Linear probe</h2></div>
+  <p>بعد الـ pretraining: <b>جمّد الـ encoder</b> ودرّب <b>طبقة linear واحدة</b> فوقه على labels ImageNet، وسجّل top-1 accuracy. ده مقياس صافي لجودة الـ features. الـ fine-tuning الكامل بيزوّد عادةً 2-5 نقاط بس بيخلط أثر تدريب الـ head.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الموديل</th><th>تقريبًا Linear-probe top-1</th><th>السنة</th></tr>
+    <tr><td>SimCLR ResNet-50</td><td>~71%</td><td>2020</td></tr>
+    <tr><td>DINO ViT-S/16</td><td>~77%</td><td>2021</td></tr>
+    <tr><td>MAE ViT-L/16</td><td>~76%</td><td>2022</td></tr>
+    <tr><td>DINOv2 ViT-g/14</td><td>~86%</td><td>2023</td></tr>
+  </table></div>
+</section>
+
+<section id="d72-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الكود</h2></div>
+  <p>من فولدر الريبو شغّل الأصل:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/17-self-supervised-vision/code/main.py</pre></div>
+  <p>هتشوف ٣ أجزاء: <code>[info_nce]</code> (identical pairs منخفضة، random pairs قريبة من log(31) = 3.434)، و<code>[mae mask]</code> (49 ظاهر و147 مخفي من 196 مع أول 5 indices)، و<code>[dino centring demo]</code> (متوسط أعلى عمود في مخرج الـ teacher قبل وبعد تحديث الـ centre). الأرقام العشوائية تختلف حسب الـ seed.</p>
+  <p><b>القاعدة:</b> افتح ملف <code>my_ssl.py</code> واكتب الخطوات سطر سطر بإيدك.</p>
+
+  <h3>خطوة ١: pipeline الـ two-view</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torchvision.transforms as T
+
+two_view_train = lambda: T.Compose([
+    T.RandomResizedCrop(96, scale=(0.2, 1.0)),   <span class="c"># قص عشوائي بين 20% و100% من الصورة</span>
+    T.RandomHorizontalFlip(),
+    T.ColorJitter(0.4, 0.4, 0.4, 0.1),           <span class="c"># تغيير سطوع/تباين/تشبع/درجة اللون</span>
+    T.RandomGrayscale(p=0.2),
+    T.ToTensor(),
+])
+
+class TwoViewDataset(torch.utils.data.Dataset):
+    def __init__(self, base):
+        self.base = base
+        self.aug = two_view_train()
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, i):
+        img, _ = self.base[i]                    <span class="c"># بنرمي الـ label، مش محتاجينه</span>
+        v1 = self.aug(img)                       <span class="c"># view أول</span>
+        v2 = self.aug(img)                       <span class="c"># view تاني من نفس الصورة</span>
+        return v1, v2</pre></div>
+  <p>كل <code>__getitem__</code> بيرجّع view-ين متغيّرين من نفس الصورة. الـ labels مش محتاجينها.</p>
+
+  <h3>خطوة ٢: دالة InfoNCE</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch.nn.functional as F
+
+def info_nce(z1, z2, tau=0.1):
+    """z1, z2: (N, D) embeddings متعملها L2-normalise، كل صف زوج views"""
+    N, D = z1.shape
+    z = torch.cat([z1, z2], dim=0)               <span class="c"># (2N, D) كل الـ views</span>
+    sim = z @ z.T / tau                          <span class="c"># (2N, 2N) cosine similarity / tau</span>
+
+    mask = torch.eye(2 * N, dtype=torch.bool, device=z.device)
+    sim = sim.masked_fill(mask, float("-inf"))   <span class="c"># الصورة متقارنش بنفسها</span>
+
+    <span class="c"># شريك كل view: i (من الأول) شريكه i+N، والعكس</span>
+    targets = torch.cat([torch.arange(N, 2 * N), torch.arange(0, N)]).to(z.device)
+    return F.cross_entropy(sim, targets)</pre></div>
+  <p>لازم تعمل <b>L2-normalise</b> للـ embeddings قبل النداء. <code>tau=0.1</code> هو الافتراضي في SimCLR، وقيمة أقل بتخلّي الـ loss أحدّ وبتحتاج سلبيات أكتر. الـ <code>masked_fill</code> بـ <code>-inf</code> بيمنع الـ view من مقارنة نفسه.</p>
+
+  <h3>خطوة ٣: اختبار سلامة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>z1 = F.normalize(torch.randn(16, 32), dim=-1)
+z2 = z1.clone()                                  <span class="c"># أزواج متطابقة</span>
+loss_same = info_nce(z1, z2, tau=0.1).item()
+z2_random = F.normalize(torch.randn(16, 32), dim=-1)
+loss_random = info_nce(z1, z2_random, tau=0.1).item()
+print(f"InfoNCE with identical pairs:  {loss_same:.3f}")
+print(f"InfoNCE with random pairs:     {loss_random:.3f}")</pre></div>
+  <p>الأزواج المتطابقة لازم تدّي loss صغيرة، والعشوائية قريبة من <span class="ltr">log(2N−1) = log(31) ≈ 3.4</span> لباتش 16 زوج.</p>
+
+  <h3>خطوة ٤: قناع على طريقة MAE</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def random_mask_indices(num_patches, mask_ratio=0.75, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    n_keep = int(num_patches * (1 - mask_ratio))     <span class="c"># 196 * 0.25 = 49 ظاهرين</span>
+    perm = torch.randperm(num_patches, generator=g)  <span class="c"># ترتيب عشوائي</span>
+    visible = perm[:n_keep]
+    masked = perm[n_keep:]
+    return visible.sort().values, masked.sort().values
+
+num_patches = 196                                    <span class="c"># صورة 224 مقسومة patches 16x16 = 14x14</span>
+visible, masked = random_mask_indices(num_patches, mask_ratio=0.75)
+print(f"visible: {len(visible)} / {num_patches}")
+print(f"masked:  {len(masked)} / {num_patches}")</pre></div>
+  <p>بسيط وسريع وثابت لنفس الـ seed. التطبيقات الحقيقية بتعمل ده على batch وبتحتفظ بقناع مختلف لكل عينة.</p>
+
+  <h3>خطوة ٥: DINO head صغير (من <code>main.py</code>)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class DinoHead(torch.nn.Module):
+    """نسخة صغيرة بتوضّح centring + sharpening"""
+    def __init__(self, in_dim=64, out_dim=128, momentum=0.9):
+        super().__init__()
+        self.proj = torch.nn.Linear(in_dim, out_dim)
+        self.register_buffer("centre", torch.zeros(out_dim))   <span class="c"># المتوسط الجاري للـ teacher</span>
+        self.momentum = momentum
+
+    def student(self, x, temp=0.1):
+        return F.log_softmax(self.proj(x) / temp, dim=-1)
+
+    def teacher(self, x, temp=0.04):                          <span class="c"># temp صغيرة = sharpening</span>
+        out = self.proj(x)
+        return F.softmax((out - self.centre) / temp, dim=-1).detach()   <span class="c"># centring</span>
+
+    @torch.no_grad()
+    def update_centre(self, teacher_out):                     <span class="c"># EMA للمتوسط</span>
+        self.centre.mul_(self.momentum).add_(teacher_out.mean(dim=0), alpha=1 - self.momentum)</pre></div>
+  <p>الـ <code>register_buffer</code> بيخزّن الـ centre جوه الموديل من غير ما يبقى parameter بيتدرّب. الـ teacher بيستخدم temperature <b>أصغر</b> (0.04) من الـ student (0.1): ده الـ sharpening.</p>
+
+  <h3>للاستخدام الحقيقي: DINOv2</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+from transformers import AutoImageProcessor, AutoModel
+
+processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+model = AutoModel.from_pretrained("facebook/dinov2-base")
+model.eval()
+
+with torch.no_grad():
+    inputs = processor(images=[pil_image], return_tensors="pt")   <span class="c"># pil_image صورتك</span>
+    outputs = model(**inputs)
+    embedding = outputs.last_hidden_state[:, 0]                   <span class="c"># الـ CLS token = بصمة الصورة</span></pre></div>
+  <p>الـ embedding ده (768 بُعد) هو أساس image retrieval الحديث والـ dense correspondence والـ zero-shot transfer. الـ fine-tuning نادرًا بيحتاج أكتر من linear head. وللـ image-text فيه SigLIP وOpenCLIP (بكرة)، ولـ MAE فمكتبة <code>timm</code> فيها كل الـ checkpoints.</p>
+</section>
+
+<section id="d72-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> اتأكد إن الـ InfoNCE بتنزل لما تقلّل الـ temperature للـ embeddings المتطابقة، وبتطلع لما تقلّلها للعشوائية. اعمل رسم <code>tau ∈ [0.05, 0.1, 0.2, 0.5]</code> مقابل الـ loss.
+      <details><summary>تلميح</summary>اعمل loop على قيم tau، واستدعي <code>info_nce(z1, z1.clone(), tau)</code> وبعدها مع <code>z2_random</code>. ارسم بـ matplotlib خطّين. المتطابقة هتقرب من 0 كل ما tau يصغر لأن الـ positive بيسيطر على الـ softmax، والعشوائية بتفضل حوالي log(2N−1) أو أعلى شوية لأن tau الصغيرة بتضخّم الفروق العشوائية.</details></li>
+    <li><b>(متوسط)</b> نفّذ centre buffer على طريقة DINO. وريني إن من غير الـ centring الـ student بيقع في collapse لمتجه ثابت خلال كام epoch.
+      <details><summary>تلميح</summary>ابدأ من <code>DinoHead</code> في الملف. درّب student على مطابقة الـ teacher على داتا عشوائية صغيرة مرتين: مرة مع <code>update_centre</code> ومرة من غيره (خلّي الـ centre صفر). قيس <code>teacher_out.mean(dim=0).max()</code> كل epoch. من غير centring المتوسط بيقرب لـ 1 على بُعد واحد، يعني الـ collapse.</details></li>
+    <li><b>(صعب)</b> درّب MAE على CIFAR-100 بـ TinyUNet من Lesson 10 كـ backbone. سجّل دقة linear-probe عند 10 و50 و200 epoch، وورّي إن MAE-pretrained linear probe بيغلب supervised linear probe من الصفر على نفس subset من 1000 صورة.
+      <details><summary>تلميح</summary>خطوات: (١) <code>random_mask_indices</code> لكل batch، (٢) encoder على الظاهر، (٣) decoder صغير بـ mask tokens، (٤) MSE على المخفي بس، (٥) اجمّد الـ encoder وحط <code>nn.Linear</code> فوقه. المقارنة العادلة: نفس الـ 1000 صورة ونفس عدد خطوات تدريب الـ probe. توقّع نتايج متقاربة في الأول والفرق بيبان مع epochs أكتر.</details></li>
+    <li><b>إضافة مني · عدّ السلبيات:</b> في <code>info_nce</code>، لو N=64 زوج، كام view في الـ batch، وكام سلبي لكل positive؟ وإيه اللي بيحصل لو N=2؟
+      <details><summary>الإجابة</summary>الـ views = 2N = 128. لكل view واحد positive (شريكه) و<span class="ltr">2N−2 = 126</span> سلبي. لو N=2: 4 views وسلبيين بس لكل positive، فالـ loss سهل والإشارة ضعيفة. ده ملخّص ليه SimCLR بيحتاج batch كبير.</details></li>
+  </ol>
+</section>
+
+<section id="d72-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: أخطاء وفين ده بيظهر في الـ LLMs</h2></div>
+  <ul class="checklist">
+    <li><b>نسيان الـ L2-normalise:</b> من غيره الـ dot product مش cosine similarity، والـ loss بتتأثر بطول المتجه بدل الاتجاه.</li>
+    <li><b>Augmentations ضعيفة:</b> لو الـ view-ين شبه بعض جدًا، الموديل بيحل المهمة بحيلة (مثلًا يطابق الألوان) من غير ما يتعلّم حاجة مفيدة. الـ crop العشوائي مع الـ color jitter هما اللي بيمنعوا الحيل دي.</li>
+    <li><b>الـ collapse صعب يتلاحظ:</b> الـ loss ممكن تنزل جامد والـ embedding كلها نفس المتجه. راقب الـ std للـ embeddings عبر الـ batch.</li>
+    <li><b>قياس الجودة:</b> الـ loss بتاع الـ pretext مش مقياس جودة. استخدم linear probe على داتا معلّمة.</li>
+    <li><b>في الـ LLMs:</b> النص بيعمل نفس الفكرة: next-token prediction وmasked language modeling (BERT) هما pretext tasks من غير labels. وCLIP (الدرس الجاي) هو InfoNCE بين صورة ونص. والـ MAE نسخة بصرية من BERT مع فرق نسبة الإخفاء.</li>
+    <li><b>في الـ agents:</b> embeddings من DINOv2 أو CLIP بتتخزن في vector database لبحث بصري، يعني agent بيدوّر على صور شبه صورة معينة.</li>
+  </ul>
+</section>
+
+<section id="d72-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d72-quizBox"></div>
+</section>
+
+<section id="d72-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d72-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح التلات عائلات في جملة لكل واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه InfoNCE محتاج سلبيات كتير</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه MAE بيخفي 75% وBERT 15%</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت info_nce وقناع MAE بإيدي وشغّلت main.py</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>InfoNCE</td><td>CLIP، SimCLR، embedding models للنصوص والـ retrieval</td></tr>
+    <tr><td>EMA teacher</td><td>BYOL، MoCo، DINO، وحتى الـ EMA weights في تدريب الـ diffusion</td></tr>
+    <tr><td>Masked prediction</td><td>BERT، MAE، BEiT</td></tr>
+    <tr><td>Linear probe</td><td>تقييم أي representation (صور، صوت، نص)</td></tr>
+    <tr><td>DINOv2 embeddings</td><td>image retrieval، dense correspondence، backbones للـ VLMs</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> CLIP وOCR. ربط الصورة بالنص في فضاء واحد، وقراءة النص من الصور وفهم المستندات.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F17-self-supervised-vision" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/17-self-supervised-vision</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=72,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d72-roadmap').closest('.day');
+const rm=$('d72-roadmap');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===16)s.className='now';rm.appendChild(s)}
+
+// ---- lab 1: InfoNCE vs batch size ----
+AI.lab.plot($('d72-nce'),{x:[2,64],y:'auto',height:300,label:'InfoNCE loss مقابل N',
+ params:[{k:'tau',label:'temperature τ',min:0.05,max:1,step:0.05,v:0.1},{k:'sp',label:'s_pos',min:-1,max:1,step:0.05,v:0.9},{k:'sn',label:'s_neg',min:-1,max:1,step:0.05,v:0}],
+ curves:[
+  {f:(n,p)=>{const a=Math.exp(p.sp/p.tau),b=(2*n-2)*Math.exp(p.sn/p.tau);return -Math.log(a/(a+b))},label:'loss',color:'a'},
+  {f:(n,p)=>Math.log(2*n-1),label:'log(2N−1) أعمى',color:'muted',dash:1}],
+ marks:p=>{const n=16,a=Math.exp(p.sp/p.tau),b=(2*n-2)*Math.exp(p.sn/p.tau);return [{x:n,y:-Math.log(a/(a+b)),label:'N=16',color:'bad'}]},
+ readout:p=>{const n=16,a=Math.exp(p.sp/p.tau),b=(2*n-2)*Math.exp(p.sn/p.tau);return [['loss عند N=16',f(-Math.log(a/(a+b)),3)],['log(31)',f(Math.log(31),3)]]},
+ note:p=>p.sp===p.sn?'الموديل مبيفرقش: الـ loss = log(2N−1) بالظبط.':(p.sp>p.sn?'الـ positive أقرب من السلبيات: الـ loss أقل من الأعمى.':'الـ positive أبعد من السلبيات: الـ loss أعلى من الأعمى.')});
+
+// ---- lab 2: MAE mask ----
+(function(){
+ function perm(n,seed){const a=[...Array(n).keys()];let s=seed>>>0||1;const rnd=()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296};for(let i=n-1;i>0;i--){const j=Math.floor(rnd()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+ AI.lab.heatmap($('d72-mask'),{rows:Array.from({length:14},(_, i)=>''+(i+1)),cols:Array.from({length:14},(_, i)=>''+(i+1)),
+  params:[{k:'r',label:'نسبة الإخفاء %',min:10,max:95,step:5,v:75},{k:'seed',label:'seed',min:0,max:20,step:1,v:0}],
+  values:p=>{const P=perm(196,p.seed+1);const keep=Math.floor(196*(1-p.r/100));const vis=new Set(P.slice(0,keep));const g=[];for(let i=0;i<14;i++){const row=[];for(let j=0;j<14;j++)row.push(vis.has(i*14+j)?1:0);g.push(row)}return g},
+  fmt:0,
+  readout:p=>{const keep=Math.floor(196*(1-p.r/100));return [['ظاهر',keep+' / 196'],['مخفي',(196-keep)+' / 196']]},
+  note:p=>p.r===75?'75% زي MAE: 49 ظاهر و147 مخفي.':(p.r<=25?'نسبة قليلة: المهمة سهلة بالاستكمال من الجيران.':'ارفع النسبة لحد ما الاستكمال المحلي يبطل يكفي.')});
+})();
+
+// ---- lab 3: DINO centring / sharpening ----
+(function(){
+ const bias=[3,0,0,0,0,0,0,0],sig=[0.8,1.2,0.8,0.5,0.1,-0.2,-0.5,-1];
+ const dist=p=>{const e=sig.map((v,i)=>Math.exp((v+bias[i]-p.c*bias[i])/p.T));const s=e.reduce((a,b)=>a+b);return e.map(v=>v/s)};
+ AI.lab.bars($('d72-dino'),{labels:['d1','d2','d3','d4','d5','d6','d7','d8'],names:['teacher'],
+  params:[{k:'c',label:'centring (0..1)',min:0,max:1,step:0.05,v:0},{k:'T',label:'temperature',min:0.1,max:3,step:0.1,v:1}],
+  values:p=>dist(p),max:1,highlight:p=>{const q=dist(p);return q.indexOf(Math.max(...q))},
+  readout:p=>{const q=dist(p);const H=-q.reduce((a,b)=>a+b*Math.log(b+1e-12),0);return [['أكبر احتمال',f(Math.max(...q),3)],['entropy',f(H,3)],['أقصى entropy',f(Math.log(8),3)]]},
+  note:p=>{const q=dist(p);const m=Math.max(...q);return m>0.8?'بُعد واحد بيسيطر: collapse الأول.':(m<0.2?'التوزيع تقريبًا منتظم: collapse التاني (مفيش معلومة).':'توزيع حاد ومتنوع: ده الوضع الصحي.')}});
+})();
+
+AI.quiz($('d72-quizBox'),[
+["ليه SimCLR بيحتاج batch من 512 لـ 8192 بينما تدريب ImageNet الـ supervised يشتغل بـ 256؟", ["كل عينة محتاجة سلبيات كتير عشان الإشارة التقابلية تبقى مفيدة، والـ batch نفسه هو مخزن السلبيات. الـ batch الصغير بيجوّع الـ InfoNCE فالتدريب بيقف أو بيعمل collapse", "الـ batch norm بيطلب كده", "الـ contrastive loss بيقسم على حجم الـ batch", "SimCLR أبطأ"], 0, "الـ InfoNCE بيرتّب الـ positive قصاد كل العينات التانية في الـ batch. كل ما الـ batch أكبر، السلبيات أكتر والإشارة أحدّ. MoCo عمل queue من features قديمة فعدد السلبيات الفعلي بقى أكبر من الـ batch."],
+["إيه اللي بيمنع DINO من collapse لمخرج ثابت؟", ["حجم batch كبير", "جدول الـ momentum", "الـ augmentation القوي لوحده", "مزيج من centring (اطرح متوسط EMA لكل بُعد من مخرج الـ teacher) وsharpening (temperature صغيرة للـ teacher): الـ centring بيمنع بُعد واحد من السيطرة، والـ sharpening بيمنع الانزلاق لتوزيع منتظم"], 3, "DINO مفيهوش سلبيات صريحة. من غير centring، بُعد واحد ممكن يسيطر والـ student يتعلّم يتنبأ بيه دايمًا. ومن غير sharpening، مخرج الـ teacher بيبقى شبه منتظم والـ student يطابقه وده collapse تاني."],
+["MAE بيخفي 75% من الـ patches وBERT بيخفي 15% من الـ tokens. ليه الفرق؟", ["75% اختيار عشوائي", "BERT مفروض عليه 15%", "الـ patches entropy منخفض: الجيران مرتبطين جدًا، فإخفاء 15% بس بيتحل بالاستكمال المحلي. إخفاء 75% بيجبر الـ encoder يتعلّم features دلالية عامة", "الـ tokens النصية أكبر من الـ patches"], 2, "نسبة الإخفاء لازم تناسب كثافة المعلومات في النوع. النص: كل token ليه استكمالات كتير فـ 15% كفاية. الصور: الجيران بيحدّدوا بعض تقريبًا فالنسب المنخفضة بتتحل من غير تعلّم تمثيل حقيقي."],
+["الـ linear probe بعد الـ self-supervised pretraining بيدرّب إيه؟", ["MLP head كامل", "الـ encoder كله", "الـ positional embedding", "طبقة linear واحدة فوق features الـ encoder المجمّد، وده بيفصل جودة الـ features عن ديناميكيات الـ fine-tuning"], 3, "الـ linear probe بيجمّد الـ encoder وبيعمل fit لـ Linear(features → num_classes). الدقة بتقيس قابلية فصل الـ features خطيًا. الـ fine-tuning الكامل بيضيف سعة غير خطية وبيرفع الدقة شوية."],
+["ليه MAE بيستخدم encoder كبير على الـ 25% الظاهرين وdecoder صغير على كل الـ tokens؟", ["الـ decoder محتاج backbone خاص", "قيود الذاكرة", "الـ mask tokens بتلخبط الـ self-attention", "الـ encoder مبيعالجش mask tokens أبدًا، وdecoder صغير بس هو اللي بيعيد البناء. فتكلفة الـ encoder متناسبة مع ربع المدخل، والـ pretraining أسرع حوالي 3 مرات من التصميمات اللي بتمرّر كل الـ tokens في الـ encoder الكامل"], 3, "مكسب الكفاءة الأساسي: الـ encoder الغالي بيشوف الظاهر بس، والـ mask tokens بتظهر في الـ decoder الضحل. ده بيخلّي الـ pretraining أسرع حوالي 3 مرات من BEiT بنفس الدقة أو أحسن."],
+["(سؤال مني) لو N=64 زوج في InfoNCE، كام سلبي لكل positive؟", ["63", "64", "126", "128"], 2, "الـ views = 2N = 128. لكل view: positive واحد (شريكه) و 2N−2 = 126 سلبي. الـ view متقارنش بنفسه (masked_fill بـ -inf)."],
+["(سؤال مني) الـ loss بتاعة الـ pretext task نزلت جامد. هل ده معناه الـ features كويسة؟", ["أيوه دايمًا", "لأ، الـ loss ممكن تنزل بسبب collapse أو حيلة سهلة. لازم تقيّم بـ linear probe على داتا معلّمة", "أيوه لو الـ batch كبير", "لأ، لازم تقيس الـ learning rate بس"], 1, "الـ pretext loss مش مقياس جودة نهائي. الـ linear probe هو القياس المعتاد لأنه بيحكم على الـ features نفسها في مهمة حقيقية."]
+],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

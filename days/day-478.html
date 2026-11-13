@@ -1,0 +1,442 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 50 · Hypothesis Generator</span>
+  <h1>اليوم ٤٧٨: مولّد الفرضيات: خلّي كل draft يوصل لمكان جديد</h1>
+  <p class="lede">الـ research agent اللي بيسأل نفس السؤال مرتين بيحرق tokens على الفاضي. النهاردة هتبني مولّد بيرفع الـ <b>temperature</b> في كل pass، وبيفلتر التكرار بـ <b>embeddings</b> و<b>cosine distance</b>، وبيرتّب الفرضيات حسب <b>novelty وspecificity وtestability</b> في طابور جاهز للـ runner.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة TypeScript)</span>
+    <span>قبله: <b>LM Eval Harness</b></span>
+    <span>بعده: <b>Literature Retrieval</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — 85 days</span>
+    <div class="roadmap" id="d478-roadmap" aria-label="أيام الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d478-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنينا Eval Harness. جاوب في دماغك وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه اللي بيتغير لو بدّلت الـ adapter بس؟ وإيه اللي المفروض مايتغيرش؟
+      <details><summary>الإجابة</summary>الـ leaderboard هو اللي بيتحرك لأنك بتقيس موديل تاني. المهام والـ metrics والـ runner وشكل الـ JSON لازم تفضل زي ما هي. الـ adapter هو الكود الوحيد الخاص بالموديل.</details></li>
+    <li>كل metric بترجّع إيه، وليه؟
+      <details><summary>الإجابة</summary>float بين 0.0 و1.0، عشان متوسط المهمة والـ overall يبقوا قابلين للتفسير والمقارنة بين مهام مختلفة.</details></li>
+    <li>ليه الـ leaderboard فيه حقل <code>schema</code>؟
+      <details><summary>الإجابة</summary>عشان لو الشكل اتغير بعدين تتغير النسخة (مثلًا <span class="ltr">leaderboard.v1</span>)، والداشبوردات اللي بتقراه تعرف تتصرف بدل ما تتكسر بصمت.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>الفكرة: generate ثم filter</div>
+    <div><b>20 min</b>التمبرتشر والـ novelty والـ rank (معامل)</div>
+    <div><b>30 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d478-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه نولّد الأول وبعدين نفلتر؟</h2></div>
+  <p>planner بيسأل موديل واحد مرة واحدة هيطلّع فرضية واحدة. ده كويس لمثال تعليمي، لكن الـ research loop عايز <b>طابور مرتب</b> فيه عمق: لما الفرضية الأولى تفشل، الـ runner يلاقي اللي بعدها جاهزة من غير ما يدفع تكلفة sampling كاملة تاني.</p>
+  <p>فكرتين بيتجمعوا عشان يطلع الطابور ده:</p>
+  <ul>
+    <li><b>Temperature ramping:</b> كل pass بيرفع الـ temperature درجة، فالـ drafts اللي بعد كده مشجّعة إنها «تتمشى» بعيد عن اللي قبلها.</li>
+    <li><b>Novelty filtering:</b> بعد كل draft بنقيس مسافة الـ embedding من كل فرضية ناجية قبل كده، ونرفض أي حاجة داخل نفس «العنقود».</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> تخيّل brainstorming مع فريق. في أول الجلسة الكل بيقول الأفكار المتوقعة (temperature واطي). مع الوقت الأفكار بتبقى أغرب (temperature أعلى). والمنسّق (الـ novelty filter) بيشيل أي فكرة اتقالت قبل كده بصيغة تانية.</div>
+  <p>الدرس بيستخدم <b>mock language model</b>: موديل مزيف بيرجّع ردود مكتوبة مسبقًا لـ prompts معيّنة. كفاية يمشّي المسار كله: seed prompt → temperature ramp → candidates تتparse → novelty filter → طابور مرتب.</p>
+
+  <h3>شكل الـ Hypothesis</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>Hypothesis
+  id             : int           (monotonic within a run)
+  text           : str           (the claim)
+  variables      : list[str]     (what changes between conditions)
+  metric         : str           (what the runner will measure)
+  baseline_ref   : str | None    (which paper or run the comparison cites)
+  draft_pass     : int           (which sampler pass produced this)
+  temperature    : float         (the sampler setting at draft time)
+  novelty_score  : float         (distance from prior survivors, 0..1)
+  rank_score     : float         (weighted sum used for ordering)</pre></div>
+  <p>الـ <code>variables</code> والـ <code>metric</code> مش نص حر: الـ parser بيسحبهم من رد فيه tags. الـ runner في الدرس ٥٢ بيقراهم مباشرة وهو بيبني config التجربة. والـ <code>baseline_ref</code> اختياري لكن مهم: الـ evaluator في الدرس ٥٣ محتاج baseline يقارن بيه، ولو مفيش بيرجع لآخر تشغيل على نفس الـ metric.</p>
+</section>
+
+<section id="d478-arch">
+  <div class="station-head"><span class="tag">02</span><h2>المعمارية: كل صندوق ليه عقد صارم</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: امشِ في اللوب</h3>
+      <p>دوس «اللي بعدها» وشوف الـ pass بيمر على أنهي صناديق. الصندوق اللي بيتكرر هو: ramp ← draft ← parse ← novelty ← (survive أو discard). لما عدد الـ passes يخلص بيترتّب الطابور.</p>
+      <div class="note ai"><strong>لاحظ:</strong> فيه مكانين بيرفضوا فيهم الـ draft: الـ parser (لو الرد مش بالـ tags) والـ novelty filter (لو مكرر). وفي الحالتين اللوب بيكمّل وبيسجّل السبب في log، مش بيوقع.</div>
+    </div>
+    <div id="d478-lab1"></div>
+  </div>
+</section>
+
+<section id="d478-temp">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Temperature Ramp</h2></div>
+  <p>بنبدأ من <code>t_min</code> وننتهي عند <code>t_max</code> بخطوة <span class="ltr">(t_max - t_min) / (n_passes - 1)</span>. يعني <code>n_passes</code> قيمة متباعدة بالتساوي من <code>GeneratorConfig.schedule()</code>. الافتراضي: ٦ passes من ٠٫٢ لـ ١٫٢.</p>
+  <div class="formula">t_i = t_min + i · (t_max − t_min) / (n_passes − 1)</div>
+  <p>ليه الحدود دي؟ تحت ٠٫٢ الموديل بيردد الـ seed زي الببغاء. فوق ١٫٢ الردود بتتفكك وتخرج عن الموضوع وتفشل في الـ parser. وستة passes كفاية تملّا الطابور من غير ما تدفع على عينات الـ novelty filter هيرفضها أصلًا.</p>
+  <p>الـ mock model بيحترم الـ temperature بإنه يغيّر بين مجموعة صغيرة من الردود حسب <b>bucket</b>:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>temperature &lt; 0.35  → bucket 0
+temperature &lt; 0.65  → bucket 1
+temperature &lt; 0.95  → bucket 2
+otherwise           → bucket 3</pre></div>
+  <p>الـ buckets بتحوّل الـ schedule المتصل لقيم منفصلة: درجتين متجاورتين ممكن يقعوا في bucket مختلف فيسحبوا draft مختلف، وده بيحاكي الـ sampling المتنوع. في الإنتاج الـ sampler موديل حقيقي بياخد <span class="ltr">temperature=t</span>.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: ارسم الـ schedule فوق الـ buckets</h3>
+      <p>النقط الزرقا هي درجات الـ passes، والخط المتدرّج هو رقم الـ bucket اللي بتقع فيه. حرّك السلايدرز وشوف: لو خليت <code>n_passes</code> كبير ومدى الـ temperature صغير هتلاقي كذا pass في نفس الـ bucket، يعني نفس الـ draft (لأن الـ mock بيرجّع من نفس القايمة).</p>
+      <div class="note ai"><strong>لاحظ:</strong> الافتراضي (٦ passes من ٠٫٢ لـ ١٫٢) بيغطي الـ ٤ buckets كلهم، لكن في الـ mock فيه draft واحد بس لكل bucket، فبتتعمل استفادة محدودة. في موديل حقيقي كل pass بيدّي عينة مختلفة.</div>
+    </div>
+    <div id="d478-lab2"></div>
+  </div>
+</section>
+
+<section id="d478-novel">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Novelty Filter</h2></div>
+  <p>بعد ما الـ draft يتعمل له parse، بنعمل له embedding ونقارنه بكل فرضية ناجية. الـ embedding هنا <b>hashed bag of words</b>: كل كلمة بتتعمل لها hash (md5) تحدد خانة في متجه طوله ١٢٨ وإشارة (+١ أو −١)، وبعدين المتجه كله بيتقسّم على طوله عشان يبقى unit vector.</p>
+  <p>الـ cosine distance بين متجهين طولهم ١ هي <span class="ltr">1 − dot(a, b)</span>. الـ draft بينجح لو <b>أقل مسافة</b> بينه وبين أي ناجٍ سابق أكبر من <code>novelty_threshold</code> (الافتراضي <b>٠٫٢٥</b>).</p>
+  <div class="formula">novelty(c) = min over survivors s of (1 − cos(c, s))       pass if novelty ≥ threshold</div>
+  <div class="note"><strong>تشبيه:</strong> لو اتنين بيشاوروا على نفس الجهة تقريبًا (زاوية صغيرة)، يبقى cosine قريب من ١ والمسافة قريبة من ٠: ده تكرار. لو متعامدين المسافة ١: فكرة جديدة خالص.</div>
+  <p>الـ embedding مش متطور: deterministic وبدون dependencies، وبيمسك الحالة الواضحة: draftين مشتركين في معظم الأسماء. في الإنتاج هتبدّله بـ sentence model صغير، والواجهة (<span class="ltr">Callable[[str], list[float]]</span>) تفضل زي ما هي.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: اسحب الـ candidate وشوف الرفض</h3>
+      <p>السهمين الأزرق هما فرضيتين ناجيتين (embedding مبسّط في بعدين)، والسهم البرتقالي هو الـ draft الجديد. اسحب أطراف السهم. المسافة بتتحسب بالزاوية بس (الطول مش مهم لأننا بنعمل normalize).</p>
+      <div class="note ai"><strong>لاحظ:</strong> لما الـ candidate يقعد جنب أي ناجي المسافة بتقع تحت ٠٫٢٥ ويتصنّف «duplicate». عشان تعدّي لازم يبعد زاوية بنحو ٤١° عن أقرب ناجي. (<span class="ltr">cos θ = 0.75</span>).</div>
+    </div>
+    <div id="d478-lab3"></div>
+  </div>
+</section>
+
+<section id="d478-rank">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Rank Score</h2></div>
+  <div class="formula">rank_score = w_novelty·novelty + w_specificity·specificity + w_testability·testability</div>
+  <ul>
+    <li><b>novelty_score:</b> أقل مسافة embedding من الناجين السابقين (أول فرضية بتاخد ١٫٠ لأن مفيش حد قبلها).</li>
+    <li><b>specificity_score:</b> عدد الـ variables الفعلية مقسوم على عدد مستهدف (افتراضي ٣)، بحد أقصى ١.</li>
+    <li><b>testability_score:</b> ١ لو فيه metric وbaseline معًا، ٠٫٥ لو metric بس، صفر غير كده.</li>
+  </ul>
+  <p>الأوزان الافتراضية <b>٠٫٤ و٠٫٣ و٠٫٣</b>، وبتتحط في الـ config عشان درس لاحق يغيّرها من غير ما تعمل fork للكود.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: حاسبة الـ rank</h3>
+      <p>غيّر الـ novelty وعدد الـ variables ووجود الـ metric والـ baseline وشوف الـ rank_score. جرّب تخلي الأوزان تميل للـ novelty: هتلاقي فرضية غريبة بس مش قابلة للاختبار بتعلى في الطابور، وده ممكن يبقى مش اللي عايزه.</p>
+      <div class="note"><strong>فكّر:</strong> فرضية جميلة وجديدة بدون metric (testability = 0) بتاخد أقصى ٠٫٧ بالأوزان الافتراضية. ده ثمن إن الـ runner مش هيعرف يقيسها.</div>
+    </div>
+    <div id="d478-lab4"></div>
+  </div>
+</section>
+
+<section id="d478-mock">
+  <div class="station-head"><span class="tag">06</span><h2>الـ Mock LLM وطابور الخرج</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class MockLLM:
+    def sample(self, prompt: str, temperature: float, seed: int) -> str:
+        ...</pre></div>
+  <p>الـ sampler deterministic لو ثبّتّ الثلاثي <span class="ltr">(prompt, temperature, seed)</span>. الـ mock عنده جدول ردود مفتاحه <span class="ltr">(prompt_signature, temperature_bucket)</span>. لو المفتاح مش موجود بيرجّع رد «فاشل» عمدًا (<span class="ltr">&lt;noise&gt;untagged drift&lt;/noise&gt;</span>) عشان مسار فشل الـ parser يتجرّب في الاختبارات. والـ seed بيتخلط في الاختيار (<span class="ltr">bank[seed % len(bank)]</span>)، فنفس الـ prompt والـ bucket مع seed مختلف ممكن يدّي draft مختلف. في الاختبارات بنثبّت الـ seed عشان النتايج تتكرر، وفي الإنتاج بيجي من ساعة أو عدّاد.</p>
+  <p><b>الخرج:</b> قايمة <code>Hypothesis</code> مرتبة بـ <code>rank_score</code> تنازليًا. الـ runner في الدرس ٥٢ بياخد الرأس ويجرّب، والـ evaluator في ٥٣ بيكتب الحكم. لو الحكم «الفرضية غلط» الـ runner يسحب اللي بعدها. والطابور <b>محدود</b>: لما يفضى الـ orchestrator يا يوسّع الـ seed prompt ويشغّل المولّد تاني، يا يوقف ويبلّغ إن الـ budget خلص.</p>
+  <div class="note ai"><strong>لو كل الـ drafts فشلت في الـ parser:</strong> الطابور بيرجع فاضي ومش بيحصل crash. كل pass بيسجّل log فيه <code>reject_reason</code> زي <span class="ltr">parse:no hypothesis block found</span>، فالفشل قابل للتدقيق.</div>
+</section>
+
+<section id="d478-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب المولّد</h2></div>
+  <p>من جوه فولدر الريبو شغّل الأصل الأول (stdlib بس، مفيش numpy):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/50-hypothesis-generator/code/main.py
+<span class="c"># نسخة TypeScript:</span>
+npx tsx phases/19-capstone-projects/50-hypothesis-generator/code/main.ts</pre></div>
+  <p>الـ demo بيشغّل المولّد بـ ٤ passes من ٠٫٢ لـ ١٫١ على الـ seed «Investigate attention sparsity in small transformers»، وبيطبع JSON فيه <code>queue_size</code> و<code>queue</code> (كل فرضية بـ id وtext وvariables وmetric وbaseline_ref وdraft_pass وtemperature وnovelty_score وrank_score) و<code>logs</code> (سطر لكل pass: الـ temperature والـ seed وaccepted_id أو reject_reason). الأرقام بالظبط هتشوفها بنفسك: ركّز على ترتيب الطابور وعلى أي pass اتسجّل له reject.</p>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_generator.py</code> واكتب الخطوات دي بإيدك. متعملش Copy غير لو اتزنقت.</p>
+
+  <h3>خطوة ١: الـ Hypothesis والـ parser</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import hashlib, math, re
+from dataclasses import dataclass
+
+TAG_RE = re.compile(
+    r"&lt;hypothesis&gt;\s*"
+    r"&lt;text&gt;(?P&lt;text&gt;.*?)&lt;/text&gt;\s*"
+    r"&lt;variables&gt;(?P&lt;variables&gt;.*?)&lt;/variables&gt;\s*"
+    r"&lt;metric&gt;(?P&lt;metric&gt;.*?)&lt;/metric&gt;\s*"
+    r"(?:&lt;baseline&gt;(?P&lt;baseline&gt;.*?)&lt;/baseline&gt;\s*)?"   <span class="c"># الـ baseline اختياري</span>
+    r"&lt;/hypothesis&gt;", re.DOTALL)
+
+@dataclass
+class Hypothesis:
+    id: int
+    text: str
+    variables: list
+    metric: str
+    baseline_ref: str | None
+    draft_pass: int
+    temperature: float
+    novelty_score: float = 0.0
+    rank_score: float = 0.0
+
+class ParserError(ValueError):
+    pass
+
+def parse_response(raw):
+    m = TAG_RE.search(raw)
+    if m is None:
+        raise ParserError("no hypothesis block found")
+    text, metric = m.group("text").strip(), m.group("metric").strip()
+    if not text:   raise ParserError("empty text")
+    if not metric: raise ParserError("empty metric")
+    variables = [v.strip() for v in m.group("variables").split(",") if v.strip()]
+    if not variables: raise ParserError("empty variables")
+    b = m.group("baseline")
+    return {"text": text, "variables": variables, "metric": metric,
+            "baseline_ref": b.strip() if b and b.strip() else None}</pre></div>
+
+  <h3>خطوة ٢: الـ hashed embedding والـ cosine distance</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>HASH_DIM = 128
+
+def hashed_embed(text, dim=HASH_DIM):
+    vec = [0.0] * dim
+    for tok in re.findall(r"[a-z0-9]+", text.lower()):
+        h = hashlib.md5(tok.encode("utf-8")).digest()
+        idx = int.from_bytes(h[:4], "big") % dim      <span class="c"># الخانة</span>
+        sign = 1.0 if (h[4] &amp; 1) == 0 else -1.0       <span class="c"># الإشارة</span>
+        vec[idx] += sign
+    norm = math.sqrt(sum(v * v for v in vec))
+    return vec if norm == 0.0 else [v / norm for v in vec]   <span class="c"># unit length</span>
+
+def cosine_distance(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    dot = max(-1.0, min(1.0, dot))                    <span class="c"># حماية من أخطاء الفاصلة العائمة</span>
+    return 1.0 - dot</pre></div>
+
+  <h3>خطوة ٣: الـ bucket والـ MockLLM</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def temperature_bucket(t):
+    if t &lt; 0.35: return 0
+    if t &lt; 0.65: return 1
+    if t &lt; 0.95: return 2
+    return 3
+
+class MockLLM:
+    def __init__(self, scripts):                      <span class="c"># {(signature, bucket): [ردود]}</span>
+        self._scripts = dict(scripts)
+
+    @staticmethod
+    def prompt_signature(prompt):
+        return hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:10]
+
+    def sample(self, prompt, temperature, seed):
+        key = (self.prompt_signature(prompt), temperature_bucket(temperature))
+        bank = self._scripts.get(key)
+        if not bank:
+            return "&lt;noise&gt;untagged drift&lt;/noise&gt;"      <span class="c"># فشل عمدًا للـ parser</span>
+        return bank[seed % len(bank)]</pre></div>
+
+  <h3>خطوة ٤: الـ config والـ schedule</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class GeneratorConfig:
+    n_passes: int = 6
+    t_min: float = 0.2
+    t_max: float = 1.2
+    novelty_threshold: float = 0.25
+    target_variable_count: int = 3
+    w_novelty: float = 0.4
+    w_specificity: float = 0.3
+    w_testability: float = 0.3
+    base_seed: int = 0
+
+    def schedule(self):
+        if self.n_passes &lt;= 0: return []
+        if self.n_passes == 1: return [self.t_min]
+        step = (self.t_max - self.t_min) / (self.n_passes - 1)
+        return [self.t_min + i * step for i in range(self.n_passes)]</pre></div>
+
+  <h3>خطوة ٥: الـ generator والـ loop</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class HypothesisGenerator:
+    def __init__(self, llm, config=None, embedder=hashed_embed):
+        self._llm, self._cfg, self._embed = llm, config or GeneratorConfig(), embedder
+
+    def _specificity(self, h):
+        return min(1.0, len(h.variables) / max(1, self._cfg.target_variable_count))
+
+    def _testability(self, h):
+        if h.metric and h.baseline_ref: return 1.0
+        return 0.5 if h.metric else 0.0
+
+    def _score(self, h):
+        c = self._cfg
+        return (c.w_novelty * h.novelty_score
+                + c.w_specificity * self._specificity(h)
+                + c.w_testability * self._testability(h))
+
+    def _novelty(self, vec, survivors):
+        if not survivors:
+            return 1.0                                <span class="c"># أول فرضية دايمًا جديدة</span>
+        return min(cosine_distance(vec, s) for s in survivors)
+
+    def run(self, seed_prompt):
+        survivors, vecs, logs, next_id = [], [], [], 1
+        for i, temp in enumerate(self._cfg.schedule()):
+            seed = self._cfg.base_seed + i
+            raw = self._llm.sample(seed_prompt, temp, seed)
+            try:
+                parsed = parse_response(raw)
+            except ParserError as e:
+                logs.append((i, temp, None, f"parse:{e}"))   <span class="c"># سجّل السبب وكمّل</span>
+                continue
+            vec = self._embed(parsed["text"])
+            nov = self._novelty(vec, vecs)
+            if nov &lt; self._cfg.novelty_threshold:
+                logs.append((i, temp, None, "duplicate"))
+                continue
+            h = Hypothesis(next_id, parsed["text"], parsed["variables"], parsed["metric"],
+                           parsed["baseline_ref"], i, temp, novelty_score=nov)
+            h.rank_score = self._score(h)
+            survivors.append(h); vecs.append(vec)
+            logs.append((i, temp, next_id, None))
+            next_id += 1
+        survivors.sort(key=lambda h: (-h.rank_score, h.id))   <span class="c"># id بيكسر التعادل</span>
+        return survivors, logs</pre></div>
+
+  <h3>خطوة ٦: جرّبه بـ scripts من عندك</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>prompt = "Investigate attention sparsity in small transformers"
+sig = MockLLM.prompt_signature(prompt)
+scripts = {
+    (sig, 0): ["&lt;hypothesis&gt;&lt;text&gt;Lowering head count from 8 to 4 raises loss by under 2 percent.&lt;/text&gt;"
+               "&lt;variables&gt;head_count, validation_loss&lt;/variables&gt;"
+               "&lt;metric&gt;validation_loss&lt;/metric&gt;&lt;baseline&gt;head_count_8&lt;/baseline&gt;&lt;/hypothesis&gt;"],
+    (sig, 2): ["&lt;hypothesis&gt;&lt;text&gt;A learned gate cuts flops by 30 percent without hurting accuracy.&lt;/text&gt;"
+               "&lt;variables&gt;gate_temperature, flops, accuracy&lt;/variables&gt;"
+               "&lt;metric&gt;downstream_accuracy&lt;/metric&gt;&lt;baseline&gt;dense_attention&lt;/baseline&gt;&lt;/hypothesis&gt;"],
+}
+gen = HypothesisGenerator(MockLLM(scripts), GeneratorConfig(n_passes=4, t_min=0.2, t_max=1.1))
+queue, logs = gen.run(prompt)
+for h in queue: print(h.id, round(h.rank_score, 3), h.text)
+for l in logs: print(l)</pre></div>
+  <p>لاحظ إن bucket ١ و٣ مالهمش scripts في المثال ده، فهتلاقي في الـ logs <code>parse:no hypothesis block found</code> لـ passes ١ و٣ والطابور فيه فرضيتين بس. دي بالظبط حالة «الـ fallback اللي بيفشل» في الدرس، وأحد اختبارات الدرس بيغطيها. لو عايز تشغّل اختبارات الدرس: <span class="ltr">python3 -m pytest phases/19-capstone-projects/50-hypothesis-generator/code/tests/test_generator.py</span> (لو عندك pytest).</p>
+</section>
+
+<section id="d478-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>الدرس الأصلي مفيهوش قسم تمارين، فالتمارين دي من عندي، مبنية على الكود:</p>
+  <ol class="ex">
+    <li>غيّر <code>novelty_threshold</code> من ٠٫٢٥ لـ ٠٫٠٥ ثم لـ ٠٫٨ على نفس الـ scripts. إيه اللي بيحصل لحجم الطابور في الحالتين؟
+      <details><summary>الإجابة</summary>مع ٠٫٠٥ الفلتر متساهل: تقريبًا أي draft مختلف شوية بيعدّي، فالطابور بيكبر لحد عدد الـ drafts اللي عدّت الـ parser. مع ٠٫٨ الفلتر صارم: أي draft بيشارك كلمات كتير مع ناجٍ سابق (زي attention وdense وparameters) بيتسجّل <span class="ltr">duplicate</span>، وبيدخل بس اللي مفردات مختلفة تقريبًا. الأرقام بالظبط هتطلع من تشغيلك. الـ threshold هو مقبض «كام فكرة مختلفة أطلب».</details></li>
+    <li>اكتب اختبار بيثبت إن نفس الـ <code>base_seed</code> والـ prompt بيدّوا نفس الطابور بالظبط (deterministic)، وإن تغيير الـ seed ممكن يغيّره لو الـ bank فيه أكتر من رد.
+      <details><summary>تلميح</summary>شغّل <span class="ltr">gen.run(prompt)</span> مرتين وقارن <span class="ltr">[h.to_dict()...]</span> أو الحقول. للجزء التاني ضيف ردّين في bank واحد واستخدم <span class="ltr">base_seed=0</span> و<span class="ltr">1</span>. لاحظ أن <span class="ltr">seed % len(bank)</span> هو اللي بيختار.</details></li>
+    <li>بدّل الـ <code>hashed_embed</code> بـ embedder بسيط تاني (مثلًا Jaccard distance على مجموعة الكلمات) وابعته للـ constructor.
+      <details><summary>تلميح</summary>الواجهة <span class="ltr">Callable[[str], list[float]]</span> فمحتاج ترجّع «متجه». أسهل طريقة: ابني vocabulary ثابت صغير وارجّع متجه ٠/١ ثم normalize. أو عدّل <code>_novelty</code> نفسها عشان تقبل distance function. الدرس بيقول إن الواجهة تفضل ثابتة.</details></li>
+    <li><b>تمرين عملي إضافي:</b> أضف حقل <code>rationale</code> (tag جديد <span class="ltr">&lt;why&gt;</span>) للـ Hypothesis بشكل اختياري، وعدّل الـ parser والـ <code>to_dict</code>. وما تخليش غيابه يفشل الـ parse.
+      <details><summary>الإجابة</summary>زوّد <span class="ltr">(?:&lt;why&gt;(?P&lt;why&gt;.*?)&lt;/why&gt;\s*)?</span> قبل <span class="ltr">&lt;/hypothesis&gt;</span> في الـ regex (زي ما الـ baseline اختياري)، وفي الـ dataclass <span class="ltr">rationale: str | None = None</span>. الـ group الاختياري لو ماتطابقش بيرجّع <span class="ltr">None</span>. وشغّل اختبارات الدرس: لازم تفضل تعدّي لأن الحقل الجديد اختياري.</details></li>
+  </ol>
+</section>
+
+<section id="d478-own">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مش بيقوله</h2></div>
+  <div class="note ai"><strong>إضافة من عندي، مش من الدرس.</strong></div>
+  <ul>
+    <li><b>الحدس:</b> temperature رافع بيوسّع توزيع الاحتمالات (الـ softmax «يتسطّح») فالموديل بيختار كلمات أقل احتمالًا. ده بيفتح مساحة أفكار أكبر لكن بيرفع احتمال الهلوسة. الـ novelty filter هو شبكة الأمان اللي بتمنع التكرار، والـ parser هو شبكة الأمان اللي بتمنع الهراء.</li>
+    <li><b>أخطاء شائعة:</b> (١) تخلي الـ novelty threshold عالي جدًا فالطابور يطلع فاضي وتفتكر إن فيه bug. (٢) الاعتماد على bag-of-words: جملتين معناهم واحد بكلمات مختلفة هيعدّوا، وجملتين بكلمات متشابهة ومعنى معاكس هيترفضوا. الـ sentence embedding بيحل ده جزئيًا. (٣) نسيان إن الـ rank_score بيخلط ٣ إشارات بأوزان من عندك، فأي تغيير في الأوزان بيغيّر مين الأول في الطابور.</li>
+    <li><b>بيظهر فين في الـ LLMs والـ agents:</b> تنويع الردود بالـ temperature وتصفية التكرار بالـ embeddings موجودين في أي نظام «generate many, filter, rank»: best-of-N sampling، توليد بيانات اصطناعية، وتوليد test cases. والطابور المرتب هو شكل الـ planner/orchestrator في الـ agents: يسحب الرأس، ينفّذ، ولو فشل يسحب اللي بعده.</li>
+    <li><b>الربط بالدروس اللي جاية:</b> الدرس ٥١ هيبحث في الأدبيات هل الفرضية دي اتحلّت قبل كده، والدرس ٥٢ هيجرّبها، والدرس ٥٣ هيكتب الحكم.</li>
+  </ul>
+</section>
+
+<section id="d478-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d478-quizBox"></div>
+</section>
+
+<section id="d478-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d478-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم ليه بنولّد طابور مش فرضية واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أحسب الـ schedule وأحدد كل pass في أنهي bucket</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ novelty = أقل cosine distance وجرّبته في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت المولّد بإيدي وشغّلته ورأيت الـ logs</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Temperature</td><td>أي sampling من LLM، best-of-N، توليد بيانات اصطناعية</td></tr>
+    <tr><td>Embedding + cosine</td><td>RAG، البحث الدلالي، إزالة التكرار (dedup)</td></tr>
+    <tr><td>Structured output (tags)</td><td>tool calls، JSON mode، الـ agents اللي محتاجة رد قابل للـ parse</td></tr>
+    <tr><td>Ranking بأوزان</td><td>reranking في الـ retrieval، اختيار المهام في الـ planners</td></tr>
+    <tr><td>Deterministic seed + logs</td><td>إعادة تشغيل التجارب، تشخيص سبب رفض كل draft</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Literature Retrieval: هنبني بحث BM25 على الـ abstracts ونمشي في citation graph عشان نعرف هل الفرضية اتجرّبت قبل كده.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F50-hypothesis-generator" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT License) · شرح بالعربي: Mostafa Eliwa</span>
+  <span class="ltr">phases/19-capstone-projects/50-hypothesis-generator</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=478,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d478-roadmap').closest('.day');
+const rm=$('d478-roadmap');
+for(let i=1;i<=85;i++){const s=document.createElement('span');s.textContent=i;if(i===N-430)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: loop flow ----
+L.flow($('d478-lab1'),{height:340,label:'لوب توليد الفرضيات',
+ nodes:[{id:'s',label:'seed prompt',x:0,y:0.05},{id:'t',label:'temperature ramp',x:0.5,y:0.05},{id:'d',label:'mock LLM draft',x:1,y:0.05},
+  {id:'p',label:'parse tags',x:1,y:0.4},{id:'n',label:'novelty filter',x:0.5,y:0.4},{id:'x',label:'discard',x:0,y:0.4},
+  {id:'g',label:'survivors',x:0.5,y:0.75},{id:'r',label:'rank → queue',x:1,y:0.95}],
+ edges:[['s','t'],['t','d','t_i'],['d','p','raw'],['p','n','parsed'],['n','x','duplicate'],['n','g','novel'],['g','t','next pass'],['g','r','budget hit']],
+ steps:[
+  {active:['s'],text:'<b>١.</b> الـ seed prompt ثابت طول اللوب. اللي بيتغير هو الـ temperature.'},
+  {active:['t','d'],edges:[['s','t'],['t','d']],text:'<b>٢.</b> الـ pass رقم i بياخد t_i وبيطلب draft من الـ mock LLM.'},
+  {active:['d','p'],edges:[['d','p']],text:'<b>٣.</b> الرد لازم يطابق الـ tags. لو لأ: reject بسبب parse، واللوب يكمّل.'},
+  {active:['p','n'],edges:[['p','n']],text:'<b>٤.</b> بنعمل embedding ونقيس أقل مسافة من الناجين.'},
+  {active:['n','x'],edges:[['n','x']],text:'<b>٥أ.</b> المسافة أقل من threshold ← duplicate ← discard.'},
+  {active:['n','g'],edges:[['n','g']],text:'<b>٥ب.</b> المسافة كافية ← novel ← بيتضاف للناجين مع rank_score.'},
+  {active:['g','t'],edges:[['g','t']],text:'<b>٦.</b> لو لسه فيه passes نرجع للـ ramp بدرجة أعلى.'},
+  {active:['g','r'],edges:[['g','r']],text:'<b>٧.</b> لما الـ passes تخلص بنرتّب بـ rank_score تنازليًا (والـ id بيكسر التعادل) ونسلّم الطابور للـ runner.'}]});
+
+// ---- Lab 2: schedule vs buckets ----
+const bucket=t=>t<0.35?0:t<0.65?1:t<0.95?2:3;
+const sched=p=>{const n=Math.round(p.n);if(n<=1)return [p.tmin];const st=(p.tmax-p.tmin)/(n-1);return Array.from({length:n},(_,i)=>p.tmin+i*st)};
+L.plot($('d478-lab2'),{x:[0,1.4],y:[-0.5,3.5],height:300,label:'الـ schedule فوق الـ buckets',
+ params:[{k:'n',label:'n_passes',min:1,max:12,step:1,v:6},{k:'tmin',label:'t_min',min:0.05,max:0.8,step:0.05,v:0.2},{k:'tmax',label:'t_max',min:0.4,max:1.4,step:0.05,v:1.2}],
+ curves:[{f:x=>bucket(x),label:'bucket',color:'muted'}],
+ points:p=>sched(p).map(t=>[t,bucket(t),'a']),
+ readout:p=>{const s=sched(p),b=new Set(s.map(bucket));return [['درجات',s.map(t=>t.toFixed(2)).join(' ')],['buckets مختلفة',b.size],['passes مكررة bucket',s.length-b.size]]},
+ note:p=>{const s=sched(p);return new Set(s.map(bucket)).size<s.length?'فيه passes في نفس الـ bucket: في الـ mock هتدّي نفس الـ draft':'كل pass في bucket مختلف'}});
+
+// ---- Lab 3: novelty with vectors ----
+const cosd=(a,b)=>{const na=Math.hypot(...a),nb=Math.hypot(...b);return (na&&nb)?1-(a[0]*b[0]+a[1]*b[1])/(na*nb):1};
+L.vectors($('d478-lab3'),{range:6,height:380,label:'cosine distance بين الـ candidate والناجين',
+ vecs:[{v:[4,1],label:'S1',color:'a'},{v:[-1,3.5],label:'S2',color:'a'},{v:[3.5,2],label:'cand',color:'b'}],
+ readout:vs=>{const d1=cosd(vs[2],vs[0]),d2=cosd(vs[2],vs[1]);return [['dist إلى S1',d1],['dist إلى S2',d2],['novelty (الأقل)',Math.min(d1,d2)],['threshold',0.25]]},
+ note:vs=>Math.min(cosd(vs[2],vs[0]),cosd(vs[2],vs[1]))<0.25?'duplicate: هيتشال':'novel: هيدخل الطابور'});
+
+// ---- Lab 4: rank calc ----
+L.calc($('d478-lab4'),{
+ params:[{k:'nov',label:'novelty',min:0,max:1,step:0.05,v:0.6},{k:'vars',label:'عدد الـ variables',min:0,max:6,step:1,v:2},
+  {k:'met',label:'فيه metric؟ (0/1)',min:0,max:1,step:1,v:1},{k:'base',label:'فيه baseline؟ (0/1)',min:0,max:1,step:1,v:0},
+  {k:'wn',label:'w_novelty',min:0,max:1,step:0.05,v:0.4},{k:'ws',label:'w_specificity',min:0,max:1,step:0.05,v:0.3},{k:'wt',label:'w_testability',min:0,max:1,step:0.05,v:0.3}],
+ compute:p=>{const spec=Math.min(1,p.vars/3),test=p.met?(p.base?1:0.5):0;const r=p.wn*p.nov+p.ws*spec+p.wt*test;return [['specificity',spec],['testability',test],['rank_score',r],['مجموع الأوزان',p.wn+p.ws+p.wt]]},
+ note:p=>(p.wn+p.ws+p.wt).toFixed(2)==='1.00'?'الأوزان مجموعها ١: الـ rank بين 0 و1':'الأوزان مجموعها مش ١: الـ rank مش في [0,1]'});
+
+// ---- Quiz ----
+AI.quiz($('d478-quizBox'),[
+ ['ليه المولّد بيطلّع طابور مرتب بدل فرضية واحدة؟',['لأن الـ runner محتاج عمق عشان يسحب اللي بعدها لو الأولى فشلت','لأن الـ mock model بيطلّع قوايم بس','لأن الـ embedding محتاج أكتر من مدخل','لأن الـ parser مبيقراش block واحد'],0,'الطابور بيوزّع تكلفة الـ sampling على اللوب كله: لما الأولى تفشل الـ runner يسحب اللي بعدها من غير pass جديد.'],
+ ['الـ temperature ramp بيعمل إيه في كل pass؟',['بيوسّع توزيع الـ sampling فالـ drafts اللي بعده تبعد أكتر عن الـ seed','بيزوّد بُعد الـ embedding','بيزوّد تسامح الـ parser','بيضرب الـ seed في ٣'],0,'الـ temperature الأعلى بيوسّع التوزيع، والـ ramp بيشجّع كل pass إنه يبعد أكتر عشان الـ novelty filter يلاقي شغل.'],
+ ['إمتى الـ novelty filter بيرفض draft؟',['لو الـ rank score تحت الـ threshold','لو أقل cosine distance بينه وبين أي ناجٍ سابق أقل من الـ novelty threshold','لو الـ parser عدّى بس عدد الـ tags غلط','لو رقم الـ pass أكبر من طول الطابور'],1,'الـ novelty هو أقل مسافة من الناجين. لو أقل من الـ threshold يبقى الـ draft شبه مكرر ويتشال.'],
+ ['أنهي تلات مكونات بيتجمعوا في الـ rank score؟',['Latency وthroughput وcost','Novelty وspecificity وtestability','Temperature وseed ورقم الـ pass','Variables وmetric وطول الـ baseline'],1,'الـ rank score مجموع موزون لـ novelty وspecificity وtestability، وكل واحد بين صفر وواحد.'],
+ ['ليه الـ mock model مفتاحه temperature bucket مش الـ float نفسه؟',['عشان الـ buckets بتخلي الـ schedule منفصل فتغيّر بسيط في الـ temperature ممكن يسحب draft مختلف من الـ scripts','لأن الـ embedding بيحتاجه','لأن الـ parser محتاج integer','لأن الـ floats مينفعش تتعمل لها hash'],0,'الـ buckets بتحوّل الـ schedule المتصل لقيم منفصلة، فدرجتين متجاورتين ممكن يروحوا لـ bucket مختلف ويسحبوا draft مختلف.'],
+ ['إيه اللي بيحصل لو كل drafts الـ mock model فشلت في الـ parser؟',['المولّد بيرفع إيرور','الطابور بيطلع فاضي وكل pass بيسجّل سبب رفض parse، فالفشل قابل للتدقيق','الـ novelty threshold بيقل لوحده','الـ runner بيعيد المحاولة بـ prompt جديد'],1,'فشل الـ parser بيتسجّل في الـ logs بسبب parse reject. الطابور ممكن يرجع فاضي من غير ما اللوب يقع، والـ logs بتشرح السبب.'],
+ ['(سؤال مني) فرضية ليها ٣ variables وmetric بس من غير baseline، والـ novelty = 0.8. الـ rank بالأوزان الافتراضية؟',['0.62','0.77','0.84','0.92'],1,'0.4·0.8 + 0.3·1 (specificity = 3/3) + 0.3·0.5 (metric بس من غير baseline) = 0.32 + 0.30 + 0.15 = 0.77.'],
+ ['(سؤال مني) ليه الـ md5 hashing مناسب للـ embedding في الدرس رغم إنه مش «ذكي»؟',['لأنه بيفهم المعنى','لأنه deterministic وبدون dependencies، فنفس النص يدّي نفس المتجه على أي جهاز، وده بيخلي الاختبارات والـ logs قابلة للإعادة','لأنه أسرع من أي موديل في كل الحالات','لأنه بيمنع التصادم تمامًا'],1,'الدرس نفسه بيقول إن الـ embedding مش متطور لكنه deterministic وكفاية لحالة تكرار الأسماء. وفي الإنتاج بتبدّله بـ sentence model من غير ما تغيّر الواجهة.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

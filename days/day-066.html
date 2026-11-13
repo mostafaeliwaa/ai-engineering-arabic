@@ -1,0 +1,324 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 04 · Lesson 10 · Image Generation — Diffusion Models</span>
+  <h1>اليوم ٦٦: Diffusion، تعلّم تشيل الـ noise</h1>
+  <p class="lede">النهاردة هتفهم إزاي موديل بيتعلم يشيل noise بسيط يقدر يولّد صور. هتشوف الـ forward اللي بيضيف noise والـ reverse اللي بيشيله، وليه المعادلة المغلقة هي السر، والفرق بين DDPM وDDIM، وهتكتب موديل diffusion صغير بنفسك.</p>
+  <div class="meta"><span>الوقت: <b>~٧٥ دقيقة</b></span><span>اللغة: <b>Python</b> (PyTorch)</span><span>قبله: <b>GANs</b></span><span>بعده: <b>Stable Diffusion</b></span></div>
+  <div><span class="eyebrow">Phase 04 — 25 lessons</span>
+    <div class="roadmap" id="d66-roadmap" aria-label="دروس الفيز"></div></div>
+</header>
+<section id="d66-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>G وD في الـ GAN: مين بيتحدّث في كل خطوة، وليه بنستخدم detach؟
+      <details><summary>الإجابة</summary>في خطوة D بنحدّث D بس، فبنعمل <code>G(z).detach()</code> عشان الـ gradient ما يدخلش جوه G. وفي خطوة G بنمرّر المزيّف في D بهدف 1 ونحدّث opt_g بس.</details></li>
+    <li>الـ non-saturating loss بتحل إيه؟
+      <details><summary>الإجابة</summary>vanishing gradients في أول التدريب: لما D(G(z)) قريب من صفر، log(1−D(G(z))) بتبقى مسطّحة. بدّلنا بـ −log D(G(z)) فالـ gradient كبير هناك.</details></li>
+    <li>اذكر عطل من أعطال GAN وعلاجه.
+      <details><summary>الإجابة</summary>Mode collapse (G بيطلّع نوع واحد): spectral norm أو minibatch discrimination. أو D بيكسب: D أصغر / label smoothing. أو oscillation: TTUR أو Wasserstein.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan"><div><b>5 min</b>التسخين</div><div><b>20 min</b>الـ forward والـ reverse والـ loss</div><div><b>15 min</b>DDIM والـ time conditioning + المعامل</div><div><b>25 min</b>اكتب الكود وشغّله</div><div><b>10 min</b>تمارين وكويز</div></div>
+</section>
+
+<section>
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: ليه diffusion بعد GANs؟</h2></div>
+  <p>الـ GAN بيولّد في مرور واحد: noise داخل، صورة طالعة. سريع لكن تدريبه صعب. الـ <b>diffusion</b> بيولّد على مراحل: بيبدأ من noise صافي ويشيله شوية شوية لحد ما الصورة تظهر. بطيء لكن تدريبه سهل. من خمس سنين الميزة التانية هي اللي غلبت: أي فريق صغير يقدر يدرّب diffusion ويطلّع عيّنات معقولة، بينما تدريب GAN حرفة بتتعلمها بعد سنين من التدريبات الفاشلة.</p>
+  <p>والأهم إن التركيب التكراري ده هو اللي فتح كل حاجة في توليد الصور الحديث: التحكم بالنص، الـ inpainting، التعديل، رفع الدقة، والتحكم في الستايل. كل خطوة في حلقة الـ sampling هي مكان تقدر تحقن فيه قيد جديد. عشان كده Stable Diffusion وImagen وDALL-E 3 وMidjourney كلهم diffusion.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيل صورة على ورقة ورسمت عليها شخبطة خفيفة، وكررت لحد ما بقت شخبطة كاملة. لو علّمت حد «شيل شخبطة خفيفة واحدة»، تقدر تديله شخبطة كاملة وهو يرجّعها صورة خطوة خطوة.</div>
+  <p>الدرس بيبني أقل DDPM ممكن: forward noising، backward denoising، وحلقة التدريب. الدرس الجاي بيربطه بـ VAE وtext encoder وclassifier-free guidance.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">02</span><h2>العملية الأمامية (Forward): نزوّد noise</h2></div>
+  <p>ناخد صورة <span class="ltr"><code>x_0</code></span>. نضيف noise Gaussian خفيف فنطلع <span class="ltr"><code>x_1</code></span>، وشوية كمان فـ <span class="ltr"><code>x_2</code></span>، وهكذا T خطوة لحد ما <span class="ltr"><code>x_T</code></span> يبقى تقريبًا noise صافي.</p>
+  <div class="formula">q(x_t | x_{t−1}) = N( x_t ; √(1−β_t) · x_{t−1} , β_t · I )</div>
+  <p>الـ <span class="ltr"><code>β_t</code></span> هو جدول تباين صغير، عادةً خطي من 0.0001 لـ 0.02 على T=1000 خطوة. كل خطوة بتصغّر الإشارة شوية وتحقن noise جديد.</p>
+  <h3>القفزة بصيغة مغلقة</h3>
+  <p>إضافة noise خطوة خطوة هي سلسلة Markov، لكن الرياضة بتتطوي: تقدر تاخد <span class="ltr"><code>x_t</code></span> من <span class="ltr"><code>x_0</code></span> <b>مباشرة</b> في خطوة واحدة.</p>
+  <div class="formula">α_t = 1 − β_t          ᾱ_t = ∏ α_s  (s=1..t)
+x_t = √ᾱ_t · x_0 + √(1−ᾱ_t) · ε       ε ~ N(0, I)</div>
+  <p>المعادلة الواحدة دي هي سبب إن الـ diffusion عملي. في التدريب بتختار <span class="ltr"><code>t</code></span> عشوائي، وتاخد <span class="ltr"><code>x_t</code></span> مباشرة من <span class="ltr"><code>x_0</code></span>، وتدرّب في خطوة واحدة. مفيش محاكاة للسلسلة كلها.</p>
+  <div class="note ai"><strong>إزاي تقرا ᾱ؟</strong> هي «النسبة اللي فضلت من الإشارة». ᾱ قريبة من 1 يعني الصورة لسه واضحة. ᾱ قريبة من 0 يعني ضاعت وبقت noise. وبالتالي <span class="ltr"><code>√ᾱ</code></span> وزن الصورة و<span class="ltr"><code>√(1−ᾱ)</code></span> وزن الـ noise.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: جدول الـ noise (β) و ᾱ</h3>
+      <p>غيّر T وآخر قيمة β، وبدّل بين الجدول الخطي (linear) والـ cosine (Nichol &amp; Dhariwal). المنحنى الأزرق هو وزن الصورة <span class="ltr"><code>√ᾱ_t</code></span> والبرتقالي وزن الـ noise.</p>
+      <div class="note ai"><strong>لاحظ:</strong> في الجدول الخطي الصورة بتضيع بدري (قبل ما نوصل لـ t ≈ 0.6T). الجزء الأخير من الخطوات بيتدرب على noise شبه صافي أصلًا، يعني مضيعة. الـ cosine بيحافظ على الإشارة أطول. ده معنى سؤال الكويز.</div>
+    </div>
+    <div id="d66-lab1"></div>
+  </div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">03</span><h2>العملية العكسية (Reverse) وحلقة التدريب</h2></div>
+  <p>الـ forward ثابتة ومعروفة. الـ reverse <span class="ltr"><code>p(x_{t−1} | x_t)</code></span> هي اللي الشبكة بتتعلمها. بس الشبكة مش بتتنبأ بـ <span class="ltr"><code>x_{t−1}</code></span> مباشرة. هي بتتنبأ بالـ <b>noise ε</b> اللي اتضاف عند الخطوة t، والرياضة بتطلّع منه <span class="ltr"><code>x_{t−1}</code></span>.</p>
+  <h3>خطوات كل iteration تدريب</h3>
+  <ol>
+    <li>خد صورة حقيقية <span class="ltr"><code>x_0</code></span>.</li>
+    <li>اختار <span class="ltr"><code>t</code></span> عشوائي بالتساوي من 1 لـ T.</li>
+    <li>ولّد <span class="ltr"><code>ε ~ N(0, I)</code></span>.</li>
+    <li>احسب <span class="ltr"><code>x_t = √ᾱ_t·x_0 + √(1−ᾱ_t)·ε</code></span>.</li>
+    <li>خلّي الشبكة تتنبأ <span class="ltr"><code>ε_θ(x_t, t)</code></span>.</li>
+    <li>قلّل <span class="ltr"><code>‖ε − ε_θ(x_t, t)‖²</code></span> (MSE).</li>
+  </ol>
+  <p>بس كده. مفيش لعبة خصمين ولا collapse ولا oscillation. الـ loss هو MSE عادي، وده سر الاستقرار.</p>
+  <div class="note"><strong>ليه نتنبأ بالـ noise مش الصورة؟</strong> لأن الـ loss يبقى MSE بسيط وبيدّي gradients أحسن عدديًا. ولو عرفنا الـ noise نقدر نحسب الصورة الأصلية المتوقعة: <span class="ltr"><code>x0_pred = (x_t − √(1−ᾱ_t)·ε) / √ᾱ_t</code></span>. (ده اللي DDIM هيستخدمه.)</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: شوف الصورة وهي بتضيع</h3>
+      <p>الخريطة دي «صورة» 8×8 فيها دايرة. الـ slider هو t من 0 لـ 1000 (جدول خطي). عند t=0 الصورة نضيفة، وعند 1000 بقت noise صافي. الـ noise ثابت (نفس ε) عشان تشوف تأثير t بس.</p>
+      <div class="note ai"><strong>ملاحظة:</strong> الألوان الزرقا = قيم موجبة والحمرا = سالبة. لما الدايرة تختفي، الشبكة لازم تخمّن الـ noise من الصورة.</div>
+    </div>
+    <div id="d66-lab2"></div>
+  </div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">04</span><h2>الـ Sampler (DDPM): نمشي بالعكس</h2></div>
+  <p>عشان نولّد، نبدأ من <span class="ltr"><code>x_T ~ N(0, I)</code></span> ونمشي للخلف خطوة خطوة:</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>for t = T, T-1, ..., 1:
+    eps = model(x_t, t)
+    x_{t-1} = (1/sqrt(alpha_t)) * (x_t - (beta_t/sqrt(1-alpha_bar_t)) * eps) + sqrt(beta_t) * z
+    # z ~ N(0,I) لو t &gt; 1 ، وصفر لو t = 1
+return x_0</pre></div>
+  <p>رغم إن الـ reverse مش معروفة بصيغة مغلقة في العموم، في حالة الـ Gaussian forward دي بالتحديد هي معروفة. المعاملات الطويلة دي هي اللي بتديها قاعدة Bayes. مش لازم تحفظها، لكن لازم تفهم الفكرة: كل خطوة بتشيل جزء من الـ noise المتوقع وبتضيف noise صغير جديد (إلا في آخر خطوة).</p>
+  <h3>ليه 1000 خطوة؟</h3>
+  <p>جدول الـ noise متصمم بحيث كل خطوة تضيف noise قليل أوي فالخطوة العكسية تبقى تقريبًا Gaussian والشبكة تقدر تنمذجها. خطوات قليلة = الخطوة العكسية بعيدة عن Gaussian والشبكة مش هتعرف. خطوات كتير = sampling غالي والفايدة بتقل. T=1000 مع جدول خطي هو افتراضي DDPM.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">05</span><h2>DDIM: أسرع بـ 20 مرة</h2></div>
+  <p>التدريب هو هو. اللي بيتغير الـ sampling. DDIM (Song وزمايله 2020) بيعرّف عملية عكسية <b>حتمية (deterministic)</b> بتقدر تقفز فوق خطوات من غير ما تعيد التدريب. 50 خطوة DDIM بتدّي جودة قريبة من 1000 خطوة DDPM. كل نظام production بيستخدم DDIM أو أسرع منه (DPM-Solver, Euler ancestral).</p>
+  <p>الـ <span class="ltr"><code>eta</code></span> بيتحكم في العشوائية: <span class="ltr"><code>eta=0</code></span> حتمي تمامًا (نفس noise = نفس الصورة)، و<span class="ltr"><code>eta=1</code></span> بيرجّع DDPM لو زرت كل الخطوات.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: تكلفة الـ sampling</h3>
+      <p>كل خطوة = forward pass في الـ U-Net. غيّر عدد الخطوات وزمن الـ pass الواحد وشوف الفرق بين DDPM الكامل وDDIM.</p>
+      <div class="note ai"><strong>فكّر:</strong> لو الـ pass بياخد 40ms، 1000 خطوة = 40 ثانية للصورة. 50 خطوة = 2 ثانية. نفس الموديل بالظبط.</div>
+    </div>
+    <div id="d66-lab3"></div>
+  </div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">06</span><h2>الـ Time Conditioning</h2></div>
+  <p>الشبكة <span class="ltr"><code>ε_θ(x_t, t)</code></span> لازم تعرف هي بتشيل noise عند أنهي خطوة. الموديلات الحديثة بتحقن <span class="ltr"><code>t</code></span> عن طريق <b>sinusoidal time embedding</b> (نفس فكرة الـ positional encoding في الـ transformers) بيتضاف للـ feature maps في كل مستوى من الـ U-Net:</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>t_embedding = sinusoidal(t)
+feature_map += MLP(t_embedding)</pre></div>
+  <p>من غير الـ time conditioning الشبكة لازم تخمّن مستوى الـ noise من الصورة نفسها. ده بيشتغل لكن أقل كفاءة في العيّنات بكتير. والـ sinusoidal أحسن من one-hot لأنه ناعم في t، فالشبكة تعمّم على خطوات قريبة.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">07</span><h2>اكتب الكود خطوة خطوة</h2></div>
+  <div class="note ai"><strong>اكتب بإيدك.</strong> كل خطوة صغيرة. شغّل كل جزء لوحده وشوف الـ shapes قبل ما تكمّل.</div>
+  <h3>خطوة ١: جدول الـ noise</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+
+def linear_beta_schedule(T=1000, beta_start=1e-4, beta_end=2e-2):
+    return torch.linspace(beta_start, beta_end, T)
+
+def precompute_schedule(betas):
+    alphas = 1.0 - betas
+    alphas_cumprod = torch.cumprod(alphas, dim=0)       # ᾱ_t
+    return {
+        &quot;betas&quot;: betas,
+        &quot;alphas&quot;: alphas,
+        &quot;alphas_cumprod&quot;: alphas_cumprod,
+        &quot;sqrt_alphas_cumprod&quot;: torch.sqrt(alphas_cumprod),
+        &quot;sqrt_one_minus_alphas_cumprod&quot;: torch.sqrt(1.0 - alphas_cumprod),
+        &quot;sqrt_recip_alphas&quot;: torch.sqrt(1.0 / alphas),
+    }
+
+schedule = precompute_schedule(linear_beta_schedule(T=1000))</pre></div>
+  <p>بنحسبهم مرة واحدة ونسحب بالـ index وقت التدريب والـ sampling.</p>
+  <h3>خطوة ٢: الـ forward (q_sample)</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>def q_sample(x0, t, noise, schedule):
+    sqrt_a = schedule[&quot;sqrt_alphas_cumprod&quot;][t].view(-1, 1, 1, 1)
+    sqrt_one_minus_a = schedule[&quot;sqrt_one_minus_alphas_cumprod&quot;][t].view(-1, 1, 1, 1)
+    return sqrt_a * x0 + sqrt_one_minus_a * noise     # سطر واحد = الصيغة المغلقة</pre></div>
+  <p><span class="ltr"><code>t</code></span> هنا batch من الخطوات، واحدة لكل صورة. و<span class="ltr"><code>.view(-1,1,1,1)</code></span> عشان الـ broadcasting على (B,C,H,W).</p>
+  <h3>خطوة ٣: U-Net صغيرة بتعرف الـ t</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+def timestep_embedding(t, dim=64):
+    half = dim // 2
+    freqs = torch.exp(-math.log(10000) * torch.arange(half, device=t.device) / half)
+    args = t[:, None].float() * freqs[None]
+    return torch.cat([args.sin(), args.cos()], dim=-1)      # (B, dim)
+
+class TinyUNet(nn.Module):
+    def __init__(self, img_channels=3, base=32, t_dim=64):
+        super().__init__()
+        self.t_mlp = nn.Sequential(nn.Linear(t_dim, base * 4), nn.SiLU(), nn.Linear(base * 4, base * 4))
+        self.t_dim = t_dim
+        self.enc1 = nn.Conv2d(img_channels, base, 3, padding=1)
+        self.enc2 = nn.Conv2d(base, base * 2, 4, stride=2, padding=1)          # نصّف الحجم
+        self.mid = nn.Conv2d(base * 2, base * 2, 3, padding=1)
+        self.dec1 = nn.ConvTranspose2d(base * 2, base, 4, stride=2, padding=1) # ضاعف الحجم
+        self.dec2 = nn.Conv2d(base * 2, img_channels, 3, padding=1)
+        self.time_proj = nn.Linear(base * 4, base * 2)
+
+    def forward(self, x, t):
+        t_emb = self.t_mlp(timestep_embedding(t, self.t_dim))
+        t_proj = self.time_proj(t_emb)[:, :, None, None]       # (B, C, 1, 1)
+        h1 = F.silu(self.enc1(x))
+        h2 = F.silu(self.enc2(h1)) + t_proj                    # نحقن t في الـ bottleneck
+        h3 = F.silu(self.mid(h2))
+        d1 = F.silu(self.dec1(h3))
+        d2 = torch.cat([d1, h1], dim=1)                        # skip connection
+        return self.dec2(d2)                                   # المخرج = ε المتوقع بنفس شكل الصورة</pre></div>
+  <p>مستويين بس مع time conditioning في الـ bottleneck. للصور الحقيقية كبّر العمق والعرض.</p>
+  <h3>خطوة ٤: حلقة التدريب</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>def train_step(model, x0, schedule, optimizer, device, T=1000):
+    model.train()
+    x0 = x0.to(device)
+    bs = x0.size(0)
+    t = torch.randint(0, T, (bs,), device=device)    # t عشوائي لكل صورة
+    noise = torch.randn_like(x0)
+    x_t = q_sample(x0, t, noise, schedule)
+    pred = model(x_t, t)
+    loss = F.mse_loss(pred, noise)                   # بنتنبأ بالـ noise
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    return loss.item()</pre></div>
+  <p>ده التدريب كله. مفيش لعبة ولا loss خاص. استدعاء MSE واحد.</p>
+  <h3>خطوة ٥: DDPM sampler</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>@torch.no_grad()
+def sample(model, schedule, shape, T=1000, device=&quot;cpu&quot;):
+    model.eval()
+    x = torch.randn(shape, device=device)                # نبدأ من noise صافي
+    betas = schedule[&quot;betas&quot;].to(device)
+    sqrt_one_minus_a = schedule[&quot;sqrt_one_minus_alphas_cumprod&quot;].to(device)
+    sqrt_recip_alphas = schedule[&quot;sqrt_recip_alphas&quot;].to(device)
+
+    for t in reversed(range(T)):
+        t_batch = torch.full((shape[0],), t, dtype=torch.long, device=device)
+        eps = model(x, t_batch)
+        coef = betas[t] / sqrt_one_minus_a[t]
+        mean = sqrt_recip_alphas[t] * (x - coef * eps)
+        if t &gt; 0:
+            x = mean + torch.sqrt(betas[t]) * torch.randn_like(x)   # نضيف noise إلا في آخر خطوة
+        else:
+            x = mean
+    return x</pre></div>
+  <p>1000 forward pass عشان batch واحد. في الشغل الحقيقي هتبدّلها بـ DDIM 50 خطوة.</p>
+  <h3>خطوة ٦: DDIM sampler</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>@torch.no_grad()
+def sample_ddim(model, schedule, shape, steps=50, T=1000, device=&quot;cpu&quot;, eta=0.0):
+    model.eval()
+    x = torch.randn(shape, device=device)
+    alphas_cumprod = schedule[&quot;alphas_cumprod&quot;].to(device)
+
+    ts = torch.linspace(T - 1, -1, steps + 1).round().long()      # خطوات متباعدة
+    for i in range(steps):
+        t = int(ts[i]); t_prev = int(ts[i + 1])
+        t_batch = torch.full((shape[0],), t, dtype=torch.long, device=device)
+        eps = model(x, t_batch)
+        a_t = alphas_cumprod[t]
+        a_prev = alphas_cumprod[t_prev] if t_prev &gt;= 0 else torch.tensor(1.0, device=device)
+        x0_pred = (x - torch.sqrt(1 - a_t) * eps) / torch.sqrt(a_t)  # الصورة المتوقعة
+        sigma = eta * torch.sqrt((1 - a_prev) / (1 - a_t) * (1 - a_t / a_prev))
+        dir_xt = torch.sqrt(1 - a_prev - sigma ** 2) * eps
+        noise = sigma * torch.randn_like(x) if eta &gt; 0 else 0
+        x = torch.sqrt(a_prev) * x0_pred + dir_xt + noise
+    return x</pre></div>
+  <p>آخر خطوة <span class="ltr"><code>t_prev = -1</code></span> فبتستخدم <span class="ltr"><code>a_prev = 1.0</code></span> وبترجّع <span class="ltr"><code>x0_pred</code></span> نضيفة من غير noise متبقي.</p>
+  <h3>شغّل نسخة الريبو</h3>
+  <p>النسخة الجاهزة أصغر: T=200، صور 16×16، 3 epochs على 100 صورة. من جذر الريبو:</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/10-image-generation-diffusion/code/main.py</pre></div>
+  <p>المتوقع: أول سطر <span class="ltr"><code>schedule: T=200  alpha_bar[0]=0.9999  alpha_bar[-1]=0.0172</code></span> (حسبتها من نفس الجدول)، وبعده <span class="ltr"><code>params: ...</code></span> وتلات سطور <span class="ltr"><code>epoch N  mse x.xxxx</code></span> (المفروض ينزل)، وفي الآخر شكل العيّنات <span class="ltr"><code>(2, 3, 16, 16)</code></span> لـ DDPM وDDIM. بعد 3 epochs بس الجودة مش هتبقى حلوة، مش مطلوب منها.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">08</span><h2>في الواقع: مكتبة diffusers</h2></div>
+  <p>في الشغل استخدم <span class="ltr"><code>diffusers</code></span>:</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>from diffusers import DDPMScheduler, UNet2DModel
+
+unet = UNet2DModel(sample_size=32, in_channels=3, out_channels=3, layers_per_block=2)
+scheduler = DDPMScheduler(num_train_timesteps=1000)</pre></div>
+  <p>المكتبة فيها schedulers جاهزة (DDPM, DDIM, DPM-Solver, Euler, Heun)، وU-Nets قابلة للضبط، وpipelines للـ text-to-image والـ image-to-image وأدوات LoRA. وللبحث، <span class="ltr"><code>k-diffusion</code></span> (Katherine Crowson) فيها أصدق التطبيقات وأحسن variants للـ sampling.</p>
+  <p>الدرس بيطلّع كمان: prompt بيختار الـ sampler (DDPM/DDIM/DPM-Solver/Euler) حسب الجودة والـ latency ونوع الـ conditioning، وskill بيصمم جدول noise (linear/cosine/sigmoid) مع رسم الـ SNR.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> اعرض الـ forward: خد صورة واحدة وارسم <span class="ltr"><code>x_t</code></span> عند t = 0, 100, 250, 500, 750, 1000. اتأكد إن x_1000 شبه noise صافي.
+      <details><summary>تلميح</summary>استخدم <span class="ltr"><code>q_sample(x0, torch.tensor([t]), noise, schedule)</code></span> بنفس الـ <span class="ltr"><code>noise</code></span> لكل t. حط الصور جنب بعض بـ matplotlib. t max هو 999 في الـ index لأن الـ index بيبدأ من 0. وقيّم <span class="ltr"><code>x_t.std()</code></span> لازم يقرّب 1 لو الصورة في [-1,1] بعد ما الإشارة تضيع.</details></li>
+    <li><b>(متوسط)</b> درّب الـ TinyUNet على الدواير 20 epoch وولّد 16 دايرة. قارن DDPM (1000 خطوة) وDDIM (50 خطوة): هل بيطلّعوا صور متشابهة من نفس الـ seed؟
+      <details><summary>تلميح</summary>ثبّت <span class="ltr"><code>torch.manual_seed(0)</code></span> قبل كل sampler. DDIM مع <span class="ltr"><code>eta=0</code></span> حتمي. DDPM بيحقن noise جديد في كل خطوة فمش هيبقوا نفس الصورة بالظبط، لكن الشكل العام (مكان الدايرة ولونها) غالبًا قريب لو الموديل اتدرب كويس.</details></li>
+    <li><b>(صعب)</b> طبّق جدول cosine: <span class="ltr"><code>ᾱ_t = cos²((t/T + s)/(1+s)·π/2)</code></span> ودرّب نفس الموديل بالخطي والـ cosine وبيّن إن الـ cosine أحسن عند عدد خطوات قليل.
+      <details><summary>تلميح</summary>احسب <span class="ltr"><code>f(t)=cos²(...)</code></span> ثم <span class="ltr"><code>alpha_bar = f(t)/f(0)</code></span> و<span class="ltr"><code>beta_t = 1 − alpha_bar[t]/alpha_bar[t−1]</code></span> مع <span class="ltr"><code>clip(max=0.999)</code></span> (<span class="ltr"><code>s=0.008</code></span>). مرّره على <span class="ltr"><code>precompute_schedule</code></span>. جرّب معمل ١ فوق قبل ما تكتب الكود عشان تشوف الفرق.</details></li>
+    <li><b>(تمرين مني)</b> مقدّر قيمة <span class="ltr"><code>ᾱ_t</code></span> عند t=500 في الجدول الخطي (1e-4 → 0.02, T=1000) بالحساب الذهني التقريبي، وبعدين تأكد بالكود. وإيه مستوى الـ noise نسبةً للإشارة عند النقطة دي؟
+      <details><summary>إجابة</summary>جمع الـ betas لحد 500 ≈ 500 × متوسط (≈0.005) ≈ 2.5. فـ <span class="ltr"><code>ᾱ ≈ e^(−2.5) ≈ 0.08</code></span> تقريبًا. يعني وزن الإشارة <span class="ltr"><code>√ᾱ ≈ 0.28</code></span> ووزن الـ noise <span class="ltr"><code>≈ 0.96</code></span>. الصورة لسه فيها أثر لكن الـ noise غالب. تأكد بـ <span class="ltr"><code>schedule["alphas_cumprod"][499]</code></span>.</details></li>
+  </ol>
+</section>
+<section>
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note"><strong>الحدس:</strong> الـ diffusion بيحوّل مسألة صعبة (ارسم صورة من العدم) لـ 1000 مسألة سهلة (شيل noise بسيط). كل مسألة صغيرة الشبكة بتحلّها بسهولة، والتراكم هو اللي بيعمل المعجزة.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>تنسى <span class="ltr"><code>.view(-1,1,1,1)</code></span>:</b> الـ broadcasting هيطلّع shapes غلط أو يشتغل بشكل غلط بدون ما ينبّهك.</li>
+    <li><b>الداتا مش في [-1, 1]:</b> الـ noise بـ std=1 فلو الصور في [0,255] الإشارة هتغطي على الـ noise ومش هتتدرب صح.</li>
+    <li><b>تنسى <span class="ltr"><code>model.eval()</code></span> و<span class="ltr"><code>torch.no_grad()</code></span> في الـ sampling:</b> بتستهلك ذاكرة جامد على 1000 خطوة.</li>
+    <li><b>تختلط عليك index الـ t:</b> في الكود الـ t من 0 لـ T−1، مش 1 لـ T.</li>
+    <li><b>تفتكر إن DDIM بيحتاج retraining:</b> لأ. نفس الأوزان، sampler مختلف.</li>
+  </ul>
+  <h3>بيظهر في الـ LLMs والـ agents؟</h3>
+  <p>فكرة التحسين على خطوات (iterative refinement) بتظهر في الـ agents: تعمل draft وتراجعه وتعدّله. وفي النماذج اللغوية الجديدة فيه diffusion language models بتولّد نص بتنقيحه على مراحل بدل token بعد token. والـ Time embedding نفسها استعارة من الـ positional encoding في الـ transformers، وده أول خيط بيربط الـ diffusion بالـ attention اللي هتشوفه في الدرس الجاي.</p>
+</section>
+
+<section id="d66-quiz">
+  <div class="station-head"><span class="tag">QZ</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d66-quizBox"></div>
+</section>
+<section id="d66-done">
+  <div class="station-head"><span class="tag">END</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d66-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم الـ forward والصيغة المغلقة ومعنى ᾱ</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه الشبكة بتتنبأ بالـ noise وإن الـ loss هو MSE</label></li>
+    <li><label><input type="checkbox" data-ck="3"> عارف الفرق بين DDPM وDDIM وإن الأوزان واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم الـ time conditioning بـ sinusoidal embedding</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الـ schedule والـ q_sample والـ U-Net والـ train_step بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+<div class="tablewrap"><table><tr><th>المفهوم</th><th>بيظهر فين</th></tr><tr><td>Closed-form q(x_t|x_0)</td><td>تدريب أي diffusion بسرعة، بدون محاكاة السلسلة</td></tr><tr><td>ε-prediction + MSE</td><td>Stable Diffusion وكل موديلات الـ latent diffusion</td></tr><tr><td>DDIM / DPM-Solver</td><td>الـ schedulers اللي في diffusers وComfyUI</td></tr><tr><td>Time embedding</td><td>كل U-Net وDiT في الـ diffusion، نفس فكرة positional encoding</td></tr><tr><td>Noise schedule (cosine)</td><td>الموديلات منخفضة الدقة وأغلب الموديلات الحديثة</td></tr></table></div>
+  <p><b>بكرة:</b> Stable Diffusion. هتشوف إزاي الـ diffusion اللي اتعلمته بيشتغل في latent space بـ VAE، وبيتحكم فيه نص عن طريق cross-attention وclassifier-free guidance.</p>
+</section>
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F10-image-generation-diffusion" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/10-image-generation-diffusion</span>
+</footer>
+<script>
+(function(){
+const N=66,$=id=>document.getElementById(id),L=AI.lab,css=AI.css,f=AI.fmt;
+const root=$('d66-roadmap').closest('.day');
+const rm=$('d66-roadmap');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===10)s.className='now';rm.appendChild(s)}
+
+(function(){
+const sched=(p)=>{const T=Math.round(p.T);const ab=new Float64Array(T+1);ab[0]=1;
+ if(p.cos>=0.5){const s=0.008,f=t=>Math.pow(Math.cos((t/T+s)/(1+s)*Math.PI/2),2);for(let t=1;t<=T;t++)ab[t]=f(t)/f(0)}
+ else{let a=1;for(let t=1;t<=T;t++){const b=1e-4+(p.be-1e-4)*(t-1)/Math.max(1,T-1);a*=1-b;ab[t]=a}}
+ return ab};
+let cache=null,key='';
+const get=p=>{const k=[p.T,p.be,p.cos].join();if(k!==key){cache=sched(p);key=k}return cache};
+L.plot($('d66-lab1'),{x:[0,1],y:[0,1],label:'noise schedule',
+ params:[{k:'T',label:'T',min:100,max:1000,step:100,v:1000},{k:'be',label:'beta_end',min:0.005,max:0.05,step:0.005,v:0.02},{k:'cos',label:'cosine (0=linear 1=cosine)',min:0,max:1,step:1,v:0}],
+ curves:[{f:(x,p)=>{const a=get(p);return Math.sqrt(a[Math.round(x*p.T)])},label:'signal',color:'a'},{f:(x,p)=>{const a=get(p);return Math.sqrt(1-a[Math.round(x*p.T)])},label:'noise',color:'b'}],
+ readout:p=>{const a=get(p);let t=p.T;for(let i=0;i<=p.T;i++){if(a[i]<0.01){t=i;break}}return [['alpha_bar عند النص',a[Math.round(p.T/2)]],['أول t فيه ᾱ<0.01',t+' ('+Math.round(t/p.T*100)+'%)']]},
+ note:p=>p.cos>=0.5?'cosine: الإشارة بتفضل أطول':'linear: الإشارة بتضيع بدري'});
+})();
+(function(){
+const R=8;const x0=[];for(let i=0;i<R;i++){x0.push([]);for(let j=0;j<R;j++){const d=Math.hypot(i-3.5,j-3.5);x0[i].push(d<2.6?1:-1)}}
+let s=12345;const rnd=()=>{s=(s*1664525+1013904223)%4294967296;return s/4294967296};
+const gauss=()=>Math.sqrt(-2*Math.log(rnd()+1e-9))*Math.cos(2*Math.PI*rnd());
+const eps=x0.map(r=>r.map(()=>gauss()));
+const ab=t=>{let a=1;for(let i=1;i<=t;i++)a*=1-(1e-4+(0.02-1e-4)*(i-1)/999);return a};
+L.heatmap($('d66-lab2'),{rows:['0','1','2','3','4','5','6','7'],cols:['0','1','2','3','4','5','6','7'],diverging:true,fmt:1,
+ params:[{k:'t',label:'t',min:0,max:1000,step:50,v:200}],
+ values:p=>{const a=ab(p.t);return x0.map((r,i)=>r.map((v,j)=>Math.sqrt(a)*v+Math.sqrt(1-a)*eps[i][j]))},
+ readout:p=>{const a=ab(p.t);return [['alpha_bar',a],['signal √ᾱ',Math.sqrt(a)],['noise √(1−ᾱ)',Math.sqrt(1-a)]]},
+ note:p=>p.t<150?'الدايرة واضحة':p.t<500?'بتبهت':'noise غالب'});
+})();
+L.calc($('d66-lab3'),{params:[{k:'ms',label:'ms per forward pass',min:5,max:200,step:5,v:40},{k:'ddim',label:'DDIM steps',min:10,max:200,step:10,v:50},{k:'bs',label:'batch',min:1,max:16,step:1,v:1}],
+ compute:p=>[['DDPM (1000)',(1000*p.ms/1000)+' s'],['DDIM ('+p.ddim+')',(p.ddim*p.ms/1000)+' s'],['تسريع',(1000/p.ddim)+'x'],['forward passes للـ batch','نفسهم: '+p.ddim]],
+ note:p=>p.ddim<=20?'قليل أوي: ممكن الجودة تقل':'مقبول: قريب من جودة DDPM'});
+
+AI.quiz($('d66-quizBox'),[["ليه تدريب diffusion يقدر يختار أي t مباشرة من غير ما يحاكي السلسلة خطوة خطوة؟", ["تقريب بيتجاهل الخطوات الوسيطة", "autograd بتاعة PyTorch بتطلبه", "لأن تجميع إضافات Gaussian كتير بيدّي Gaussian برضه، فعندنا صيغة مغلقة q(x_t|x_0) = N(√ᾱ_t x_0, (1 − ᾱ_t) I) نسحب منها في خطوة واحدة", "لأن x_t مستقل عن x_0"], 2, "الإضافات المتكررة بتتطوي تحليليًا. الـ ᾱ_t (حاصل الضرب التراكمي) بتمثل «قد إيه الإشارة فاضلة بعد t خطوة»، فنسحب x_t مباشرة. عشان كده التدريب O(1) للخطوة مش O(T)."], ["الشبكة في DDPM بتتنبأ بإيه بالظبط؟", ["الصورة x_{t-1} مباشرة", "الـ class label", "الـ noise ε اللي اتضاف عند الخطوة t، ومنه نشتق متوسط x_{t-1} تحليليًا", "نسبة الإشارة للـ noise"], 2, "DDPM بيعرّف الشبكة تتنبأ بـ ε. من ε وجدول الـ noise نطلّع متوسط وتباين x_{t-1} بصيغة مغلقة. التنبؤ بـ ε بدل x_0 أو x_{t-1} بيبسّط الـ loss لـ MSE عادي وبيدّي gradients أحسن."], ["ليه DDIM بيدّي جودة قريبة من DDPM بخطوات أقل بحوالي 20 مرة؟", ["DDIM بيولّد صور أصغر", "DDIM بيعيد صياغة الـ sampling كـ ODE حتمية ممكن نقسّمها لخطوات أقل بكتير وتوصل لنفس النهاية تقريبًا، من غير إعادة تدريب", "DDIM بيستخدم معمارية أسرع", "DDIM بيغيّر هدف التدريب"], 1, "الملاحظة الأساسية: العملية العكسية لما تتعاد صياغتها حتميًا بتبقى ODE بتتقرّب كويس بخطوات قليلة. الموديل (الأوزان والـ loss) هو هو. الـ sampler بس اللي مختلف، فنفس checkpoint يشتغل مع DDIM أو DPM-Solver أو Euler."], ["رسمت alpha_bar_t لجدول linear بـ T=1000 ولقيتها بتنزل لقرب الصفر عند t=600. ليه ده مهم؟", ["مش مهم", "لازم alpha_bar يبقى صفر في الآخر", "PyTorch بتطلب جدول خطي", "آخر 40% من الخطوات مش بتضيف إشارة تقريبًا؛ التدريب عليها بيعلّم الشبكة تشيل noise هو أصلًا شبه N(0,I) فبيضيّع قدرة. جداول cosine أو sigmoid بتوزع الـ noise أعدل"], 3, "الجدول الخطي بيخلّص العملية بدري. عند t=600 الإشارة اتدمرت، والتدريب والـ sampling من 600 لـ 1000 مفيهمش فايدة. جدول cosine (Nichol & Dhariwal) بيحافظ على الإشارة أطول، وعشان كده الموديلات الحديثة بتستخدمه خصوصًا على الدقة الواطية."], ["ليه الـ time conditioning بيدخل الـ U-Net بـ sinusoidal embedding بدل one-hot للـ timestep؟", ["one-hot بيكسر قاعدة السلسلة", "one-hot كبير أوي", "الـ sinusoidal ناعم في t فالشبكة تعمّم بين خطوات ما شافتهاش بالظبط، وبيحمل معلومة المقياس بشكل بيتضاف في أعماق كتير", "الـ BatchNorm بتطلب sinusoidal"], 2, "الـ sinusoidal بيدّي الشبكة تمثيل مستمر لـ t بترددات كتير. أي t نقطة فريدة، والخطوات القريبة تمثيلها قريب. فبتعمّم على كل قيم T بباراميترات أقل بكتير من embedding متعلّم لكل خطوة. نفس فكرة positional encoding."], ["(سؤال مني) في q_sample، لو t=0 في الجدول الخطي، الصورة x_t تبقى تقريبًا:", ["noise صافي", "صورة صفر", "x_0 تقريبًا (ᾱ_0 ≈ 0.9999)", "x_0 معكوسة"], 2, "ᾱ في أول خطوة = 1 − β_0 ≈ 0.9999، فالإشارة تقريبًا كاملة والـ noise ضعيف جدًا (√(1−ᾱ) ≈ 0.01)."], ["(سؤال مني) عايز تغيّر من DDPM لـ DDIM بعد ما درّبت. إيه اللي لازم يتغيّر؟", ["إعادة تدريب الموديل بـ loss جديد", "الـ sampler بس، والأوزان زي ما هي", "معمارية الـ U-Net", "الـ dataset"], 1, "التدريب واحد (توقع ε بـ MSE). DDPM وDDIM مجرد طرق مختلفة لاستخدام نفس الشبكة وقت التوليد."]],5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>
+</div>

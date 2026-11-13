@@ -1,0 +1,537 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lessons 12 + 13 · Video Understanding + 3D Vision (Point Clouds &amp; NeRFs)</span>
+  <h1>اليوم ٦٨: الزمن والبُعد التالت — فيديو، Point Clouds و NeRF</h1>
+  <p class="lede">لحد دلوقتي كل حاجة كانت صورة ثابتة 2D. النهاردة بنضيف بُعدين: <b>الزمن</b> (الفيديو) و<b>العمق</b> (3D). هتفهم إزاي الموديلات بتتعامل مع الحركة (2D+pool، 3D conv، transformer)، وإزاي PointNet بيتعامل مع نقط من غير ترتيب، وإزاي NeRF بيخلّي شبكة عصبية «هي المشهد نفسه».</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b> (درسين)</span>
+    <span>اللغة: <b>Python</b> (PyTorch)</span>
+    <span>قبله: <b>Stable Diffusion</b></span>
+    <span>بعده: <b>Vision Transformers</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — الرؤية بالكمبيوتر</span>
+    <div class="roadmap" id="d68-roadmap" aria-label="أيام الفيز الرابعة"></div>
+  </div>
+</header>
+
+<section id="d68-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر Stable Diffusion؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>ليه Stable Diffusion بيعمل الـ diffusion في الـ latent space مش على البكسلات؟
+      <details><summary>الإجابة</summary>لأن الـ VAE بيضغط الصورة <span class="ltr">3×512×512</span> لـ <span class="ltr">4×64×64</span>، يعني الحسبة بتقل حوالي 48 مرة، والجودة تقريبًا زي ما هي.</details></li>
+    <li>إيه الأجزاء الخمسة في الـ pipeline؟
+      <details><summary>الإجابة</summary>VAE، text encoder (CLIP أو T5)، الـ U-Net اللي بيشيل الضوضاء، الـ scheduler (الـ sampler)، والـ safety checker.</details></li>
+    <li>الـ text prompt بيدخل الـ U-Net إزاي؟
+      <details><summary>الإجابة</summary>عن طريق <b>cross-attention</b>: الـ text embedding بيتحول لـ K وV، والـ latent بيطلّع Q. وكمان الـ classifier-free guidance بيوجّه الـ sampling ناحية الـ prompt.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>الفيديو: العائلات التلاتة + sampling + المعمل ١ و٢</div>
+    <div><b>25 min</b>الـ 3D: PointNet و NeRF + المعمل ٣ و٤</div>
+    <div><b>25 min</b>اكتب الكود بإيدك (درسين)</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- PART A: VIDEO -->
+<section id="d68-v1">
+  <div class="station-head"><span class="tag">01</span><h2>الفيديو = صور + فيزيا بتربطهم</h2></div>
+  <p>فيديو 30 ثانية بـ 30 fps هو <b>900 صورة</b>. أسهل فكرة: صنّف كل صورة لوحدها وبعدين اعمل متوسط. ده بيشتغل كويس لما الأكشن باين في أغلب الفريمات (رياضة، طبخ، تمارين). لكن بيفشل لما الأكشن <b>معرّف بالحركة نفسها</b>: «زق حاجة من الشمال لليمين» — في أي فريم لوحده هتلاقي شيئين واقفين وبس!</p>
+  <div class="note"><strong>تشبيه:</strong> تخيّل إنك بتحاول تفهم فيلم من صور فوتوغرافية متفرقة مرمية على الأرض ومن غير ترتيب. هتعرف الأبطال والمكان، بس مش هتعرف مين ضرب مين. الترتيب الزمني هو القصة.</div>
+  <p>السؤال المحوري في كل معمارية فيديو: <b>إمتى وإزاي بنموديل البُعد الزمني؟</b> الإجابة بتحدد التكلفة، وهل ينفع نستخدم أوزان ImageNet، وعلى أنهي داتا بنتدرب.</p>
+  <p>الدرس ده مقصود إنه أقصر من دروس الصور، لأن ماكينة الصور موجودة خلاص، والفيديو معظمه حكاية <b>sampling + modelling + aggregating</b> للزمن.</p>
+
+  <h3>العائلات التلاتة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>العائلة</th><th>الفكرة</th><th>الميزة</th><th>العيب</th></tr>
+    <tr><td><b>2D + pool</b></td><td>CNN عادي (ResNet, EfficientNet, ViT) على كل فريم لوحده، وبعدين متوسط (أو max أو attention-pool) للـ embeddings وclassifier</td><td>أبسط حاجة، أرخص (T × تكلفة صورة)، ImageNet بيتنقل مباشرة</td><td>مبيفهمش حركة؛ الـ pooling مش حساس للترتيب، فـ «open door» و«close door» شكلهم واحد</td></tr>
+    <tr><td><b>3D conv</b></td><td>الـ kernel بقى <span class="ltr">(T,H,W)</span> فبيعمل convolve على المكان والزمن مع بعض (C3D, I3D, SlowFast)</td><td>بيشوف الحركة مباشرة؛ حيلة الـ inflation بتدّيك transfer learning ببلاش</td><td>تقريبًا 3 أضعاف الـ FLOPs لأن 3×3 بقت 3×3×3؛ الـ temporal kernel صغير فالحركة الطويلة محتاجة pyramid أو dual-stream</td></tr>
+    <tr><td><b>Spatio-temporal transformer</b></td><td>قسّم الفيديو لـ patches في الزمان والمكان وخلّي الـ attention يربط بينهم (TimeSformer, ViViT, Video Swin, VideoMAE)</td><td>أعلى دقة على كل الـ benchmarks تقريبًا؛ بينقل من ViT؛ بيدعم فيديو طويل بـ sparse attention</td><td>تقيل في الحسابة؛ لازم تختار pattern الـ attention صح وإلا الوقت يتضاعف</td></tr>
+  </table></div>
+  <p><b>إمتى تستخدم إيه؟</b> 2D+pool: مهام الشكل (appearance)، داتا صغيرة، أول baseline. 3D conv: لما الحركة هي الإشارة (Something-Something V2). Transformer: داتا كبيرة، دقة عالية، مهام multimodal (فيديو + نص).</p>
+
+  <h3>أنواع الـ attention في الـ video transformer</h3>
+  <ul class="checklist">
+    <li><b>Joint:</b> attention واحد كبير على كل <span class="ltr">(t,h,w)</span>. تربيعي في <span class="ltr">T·H·W</span> فغالي جدًا.</li>
+    <li><b>Divided:</b> في كل block attention على الزمن وبعده attention على المكان. الحسبة بتقل جدًا.</li>
+    <li><b>Factorised:</b> attention الزمن والمكان بيتبادلوا بين الـ blocks.</li>
+  </ul>
+  <div class="note ai"><strong>تشبيه:</strong> Joint = كل واحد في قاعة بيكلّم كل الباقيين في كل الأوقات. Divided = الأول كل واحد يكلّم نفسه في الأوقات التانية (زمن)، وبعدين كل واحد يكلّم اللي جنبه في نفس اللحظة (مكان). أرخص بكتير.</div>
+</section>
+
+<section id="d68-v2">
+  <div class="station-head"><span class="tag">02</span><h2>Frame sampling: ناخد أنهي فريمات؟</h2></div>
+  <p>مقطع 10 ثواني بـ 30 fps هو 300 فريم، ومفيش داعي نغذّي الموديل بكل ده. الاستراتيجيات الأساسية:</p>
+  <ul class="checklist">
+    <li><b>Uniform:</b> خد T فريم متباعدين بالتساوي على المقطع كله. الافتراضي في 2D+pool.</li>
+    <li><b>Dense:</b> اختار نافذة متصلة عشوائية من T فريم. بيناسب الـ 3D conv لأن الحركة محتاجة فريمات متجاورة.</li>
+    <li><b>Multi-clip:</b> خد أكتر من نافذة من نفس الفيديو، صنّف كل واحدة، واعمل متوسط وقت الاختبار.</li>
+  </ul>
+  <p>الـ T عادةً 8 أو 16 أو 32 أو 64. كل ما T أكبر، إشارة زمنية أكتر، وحسابة أكتر.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: شوف الـ sampler</h3>
+      <p>عدّل عدد الفريمات الكلي وعدد T. الأعمدة الطويلة هي الفريمات المختارة. في <b>uniform</b> هتلاقيهم متوزعين على الفيديو كله، وفي <b>dense</b> متجمعين في نافذة واحدة. جرّب total أقل من T وشوف الفريم الأخير بيتكرر (الـ padding).</p>
+      <div class="btns" id="d68-samplerBtns">
+        <button type="button" class="primary" id="d68-modeBtn">الوضع: uniform</button>
+        <button type="button" id="d68-reroll">نافذة dense عشوائية جديدة</button>
+      </div>
+      <div class="note ai"><strong>لاحظ:</strong> في uniform بنستخدم <span class="ltr">int(i * step)</span> مع <span class="ltr">step = total / T</span>، يعني آخر فريم في الفيديو بيتفوّت عادةً. ده مش bug لكن لازم تكون عارف.</div>
+    </div>
+    <div id="d68-lab1"></div>
+  </div>
+</section>
+
+<section id="d68-v3">
+  <div class="station-head"><span class="tag">03</span><h2>I3D inflation و (2+1)D: ليه الـ 3D conv تقيل وإزاي نخفّفه</h2></div>
+  <p><b>الـ inflation (حيلة I3D):</b> عندك kernel 2D متدرب على ImageNet بحجم <span class="ltr">3×3</span>. عايز موديل 3D بس من غير تدريب من الصفر. فخد الـ kernel وانسخه 3 مرات على محور الزمن، واقسم على 3. النتيجة kernel <span class="ltr">3×3×3</span> بنفس «المعرفة» عن الأشكال والـ textures. القسمة على <span class="ltr">time_kernel</span> بتحافظ على حجم الـ activations تقريبًا ثابت، وده مهم عشان إحصائيات الـ batch-norm متتلخبطش.</p>
+  <div class="note"><strong>تشبيه:</strong> عندك محقق شاطر في تحليل صورة واحدة. بدل ما تدرّب محقق جديد، بتديله نفس الخبرة وبتقوله «طبّقها على 3 صور ورا بعض وخد المتوسط». هو في الأول بيتصرف زي القديم، وبعدين التدريب يعلّمه يميّز الحركة.</div>
+  <p><b>Factorised (2+1)D:</b> بدل kernel 3D كامل <span class="ltr">3×3×3</span>، اعمل <span class="ltr">1×3×3</span> (مكان بس) وبعده BN وReLU وبعده <span class="ltr">3×1×1</span> (زمن بس). نفس الـ receptive field، بارامترات أقل، وفيه non-linearity زيادة في النص، وده ليه أحيانًا أحسن دقة. شبكة R(2+1)D هي ResNet-18 كل 3×3 فيها اتبدلت بـ <span class="ltr">Conv2Plus1D</span>.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: عدّ البارامترات</h3>
+      <p>غيّر عدد قنوات الدخول والخروج. شوف الفرق بين conv 2D و3D و(2+1)D. الـ mid channels بتتحسب بنفس معادلة الكود: <span class="ltr">mid = in·out·k³ / (in·k² + out·k)</span>.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ 3D بيضرب بارامترات الـ 2D في 3 بالظبط. والـ (2+1)D غالبًا أقل من الـ 3D (لكن مش دايمًا؛ جرّب قنوات صغيرة).</div>
+    </div>
+    <div id="d68-lab2"></div>
+  </div>
+</section>
+
+<section id="d68-v4">
+  <div class="station-head"><span class="tag">04</span><h2>التقييم والـ datasets</h2></div>
+  <p><b>مستويين للتقييم:</b> <b>Clip-level</b>: الموديل شاف نافذة T فريم واحدة. <b>Video-level</b>: متوسط التوقعات على كذا نافذة من نفس الفيديو (أعلى وأكثر ثباتًا). اذكر الاتنين دايمًا. موديل 78% clip / 82% video بيعتمد جدًا على متوسط وقت الاختبار، وموديل 80% / 81% أكثر متانة.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Dataset</th><th>إيه هو</th></tr>
+    <tr><td>Kinetics-400/600/700</td><td>«ImageNet الفيديو»: حوالي 400 ألف clip من يوتيوب (وكتير من اللينكات ماتت)</td></tr>
+    <tr><td>Something-Something V2</td><td>أكشنز معرّفة بالحركة («moving X from left to right»). 2D+pool مش هيحلها</td></tr>
+    <tr><td>UCF-101 / HMDB-51</td><td>أقدم وأصغر، لسه بيتقارن بيها</td></tr>
+    <tr><td>AVA</td><td>action <b>localisation</b> في المكان والزمن، أصعب من التصنيف</td></tr>
+  </table></div>
+  <p><b>في الإنتاج:</b> <code>torchvision.models.video</code> (R(2+1)D, MViT, Swin3D بأوزان Kinetics)، و<code>pytorchvideo</code> من Meta (model zoo وdata loaders)، وللـ video-language: <code>transformers</code> (VideoMAE, VideoLLaMA, InternVideo).</p>
+</section>
+
+<!-- PART B: 3D -->
+<section id="d68-t1">
+  <div class="station-head"><span class="tag">05</span><h2>الـ 3D: ليه الـ CNN مبيشتغلش على Point Cloud؟</h2></div>
+  <p>الكاميرا بتدّي صورة 2D. الـ LIDAR بيدّي مجموعة نقط 3D <b>من غير ترتيب</b>. الـ structure-from-motion بيطلّع سحابة نقط متفرقة. والـ NeRF بيبني مشهد 3D كامل من شوية صور معروف مكان الكاميرا فيها. كلهم «vision» بس مفيش حاجة منهم شبه التنسور المنتظم اللي الـ CNN عايزه.</p>
+  <p>الـ 3D مهم لأن أغلب مهام الروبوتات عالية القيمة في 3D: grasping، تفادي العوائق، navigation، AR، تصوير المحتوى 3D، السواقة الذاتية، والعقارات والإنشاءات.</p>
+  <h3>Explicit مقابل implicit</h3>
+  <p><b>Explicit:</b> point cloud، mesh، voxel (بتخزن الهندسة بنفسها). <b>Implicit:</b> signed distance field (SDF)، NeRF (دالة بتجاوبك «إيه موجود هنا؟»). الـ point cloud بيجيلك ببلاش من السنسورز؛ والـ NeRF وخلفاؤه (Gaussian splatting، neural SDF) هما اللي بتطلّعهم لما تطلب من شبكة تتعلم المشهد.</p>
+  <h3>Point cloud</h3>
+  <p>مجموعة غير مرتبة من N نقطة في <span class="ltr">ℝ³</span>، وممكن لكل نقطة features (لون، intensity، normal). مفيش grid ولا connectivity، وده بيعمل مشكلتين:</p>
+  <ul class="checklist">
+    <li><b>Permutation invariance:</b> الناتج مينفعش يتغير لو غيرنا ترتيب النقط.</li>
+    <li><b>Variable N:</b> موديل واحد لازم يستقبل سحابات بأحجام مختلفة.</li>
+  </ul>
+  <p>الـ CNN بيفترض بيكسلات على grid ومعاها جيران؛ السحابة مفيهاش لا ده ولا ده. ممكن نعمل voxelize ونرجع grid (3D CNN) لكن ده بياكل ذاكرة كتير.</p>
+  <h3>PointNet: حيلة الـ symmetric function</h3>
+  <p>الفكرة كلها: شغّل <b>نفس الـ MLP على كل نقطة لوحدها</b> (shared MLP)، وبعدين جمّع بدالة <b>متماثلة</b> زي الـ max-pool. الـ max مبيهتمش بالترتيب، فالناتج مبيتغيرش.</p>
+  <div class="formula">f(P) = max over p in P of MLP(p)</div>
+  <div class="note"><strong>تشبيه:</strong> مدرس بيسأل كل طالب نفس السؤال لوحده، وبعدين بياخد أعلى درجة. ترتيب الطلبة في الفصل مش هيغيّر أعلى درجة.</div>
+  <p>الـ shared MLP بيتنفذ كـ <b>1×1 conv</b> على بُعد النقط عشان الكفاءة. المعمارية: <span class="ltr">N×3 → MLP(64,64) → MLP(64,128,1024) → max pool → global feature (1024) → classifier</span>. النسخ الأعمق (PointNet++, Point Transformer) بتضيف sampling هرمي وتجميع محلي، لكن حيلة الـ symmetric function ثابتة.</p>
+  <div id="d68-flow"></div>
+</section>
+
+<section id="d68-t2">
+  <div class="station-head"><span class="tag">06</span><h2>NeRF: الشبكة هي المشهد</h2></div>
+  <p>الـ NeRF (Mildenhall 2020) سأل: ممكن نبني مشهد 3D من N صورة؟ وجاوب بشبكة عصبية <b>هي المشهد نفسه</b>. الشبكة بتاخد <span class="ltr">(x, y, z, θ, φ)</span> (المكان واتجاه النظر) وبترجّع <span class="ltr">(σ, r, g, b)</span> (الكثافة واللون).</p>
+  <p><b>إزاي نرسم بكسل (u,v) من زاوية جديدة؟</b></p>
+  <ol class="ex">
+    <li>اطلق شعاع (ray) من الكاميرا خلال البكسل.</li>
+    <li>خد عينات على الشعاع عند مسافات <span class="ltr">t₁…t_N</span>.</li>
+    <li>اسأل الـ MLP عن كل عينة.</li>
+    <li>ركّب (composite) الألوان بأوزان <span class="ltr">1 − exp(−σ·δ)</span>.</li>
+    <li>المجموع = لون البكسل.</li>
+  </ol>
+  <p>الـ loss هو الفرق بين البكسل المرسوم والبكسل الحقيقي في صور التدريب. الـ backprop بيمر عبر خطوة الـ rendering. مفيش ground truth 3D ولا هندسة صريحة: المشهد مخزّن في أوزان الـ MLP.</p>
+  <div class="note"><strong>تشبيه:</strong> شعاع ضوء داخل ضباب. الضباب الكثيف بيحجب اللي وراه. اللون اللي بتشوفه هو مزيج الأماكن اللي الضوء «وقف» عندها، وكل ما الضباب أكتف قدّام، كل ما اللي وراه بيتحجب.</div>
+  <h3>معادلة الـ volumetric rendering</h3>
+  <div class="formula">C(r) = Σ T_i · (1 − exp(−σ_i·δ_i)) · c_i
+T_i  = exp(−Σ_{j&lt;i} σ_j·δ_j)
+δ_i  = t_{i+1} − t_i</div>
+  <p><span class="ltr">T_i</span> هي الـ <b>transmittance</b>: كام من الضوء عدّى لحد النقطة i. <span class="ltr">1 − exp(−σδ)</span> هي opacity (شفافية) النقطة. <span class="ltr">c_i</span> لونها. البكسل = مجموع موزون على الشعاع.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: شعاع بيعدّي في «ضباب»</h3>
+      <p>في الشعاع جسم (كتلة كثافة) عند مسافة معيّنة. الأعمدة هي <span class="ltr">weights = alpha · T</span> لكل عينة. زوّد الكثافة وشوف إزاي الأعمدة بتتركز عند السطح الأول ومفيش حاجة وراه بتتشاف. حرّك الجسم وشوف الـ depth المحسوب.</p>
+      <div class="note ai"><strong>لاحظ:</strong> مجموع الأوزان بيقرّب من 1 لما الجسم كثيف (البكسل معتم)، وبيبقى أقل من 1 لما الجسم رفيع (جزء من الضوء بيعدّي للخلفية).</div>
+    </div>
+    <div id="d68-lab3"></div>
+  </div>
+
+  <h3>Positional encoding: ليه NeRF من غيرها بيطلع ضبابي</h3>
+  <p>الـ MLP العادي <b>متحيز للترددات المنخفضة</b> (spectral bias): سهل عليه يتعلم دوال ناعمة، وصعب عليه التفاصيل الدقيقة. فـ NeRF بيحوّل كل إحداثي لـ Fourier features قبل الـ MLP:</p>
+  <div class="formula">γ(p) = ( sin(2⁰πp), cos(2⁰πp), sin(2¹πp), cos(2¹πp), … )</div>
+  <p>لحد <span class="ltr">L=10</span> مستوى. نفس فكرة الـ positions في الـ transformers، وبتظهر تاني في الـ time conditioning في الـ diffusion.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: ترددات الـ positional encoding</h3>
+      <p>كل منحنى هو <span class="ltr">sin(2^l·π·x)</span> لمستوى l. زوّد L وشوف إزاي الترددات العالية بتتضاف. ده اللي بيخلّي الشبكة تقدر ترسم حواف حادة.</p>
+    </div>
+    <div id="d68-lab4"></div>
+  </div>
+
+  <h3>إيه اللي حل مكان NeRF؟</h3>
+  <ul class="checklist">
+    <li><b>Instant-NGP (2022):</b> hash-grid بدل الـ MLP على الإحداثيات؛ التدريب بالثواني.</li>
+    <li><b>Mip-NeRF 360:</b> مشاهد غير محدودة وanti-aliasing.</li>
+    <li><b>3D Gaussian Splatting (2023):</b> ملايين الـ 3D Gaussians بدل الحقل؛ تدريب بالدقايق وrendering لحظي. هو الافتراضي في الإنتاج دلوقتي.</li>
+  </ul>
+  <p>معظم «منتجات NeRF» الحقيقية في 2026 فعليًا Gaussian splatting، لكن الـ mental model هو NeRF. وده بيتعمل بـ rasterisation مش MLP queries على الشعاع، وهو أسرع حوالي 100 مرة بجودة قريبة.</p>
+  <p><b>Datasets:</b> ShapeNet (تصنيف وsegmentation لموديلات CAD)، ScanNet (مسح داخلي)، KITTI (LIDAR خارجي للسواقة)، NeRF Synthetic وBlended MVS (صور بوضعيات معروفة)، وMip-NeRF 360. <b>أدوات:</b> <code>nerfstudio</code> و<code>pytorch3d</code> و<code>open3d</code>.</p>
+</section>
+
+<!-- CODE -->
+<section id="d68-code">
+  <div class="station-head"><span class="tag">07</span><h2>الكود خطوة خطوة (اكتبه بإيدك!)</h2></div>
+  <div class="note"><strong>نصيحة:</strong> متعملش copy/paste. اكتب كل سطر بنفسك، حتى لو بتبص على الشاشة. الأيدي بتحفظ أكتر من العين. الزرار Copy موجود بس للمراجعة.</div>
+  <p>من الـ root بتاع الريبو:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/12-video-understanding/code/main.py
+python3 phases/04-computer-vision/13-3d-vision-nerf/code/main.py</pre></div>
+
+  <h3>درس الفيديو</h3>
+  <p><b>الخطوة ١: الـ frame samplers.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def sample_uniform(num_frames_total, T):
+    if num_frames_total &lt;= T:   <span class="c"># الفيديو أقصر من T؟ كرّر آخر فريم</span>
+        return list(range(num_frames_total)) + [num_frames_total - 1] * (T - num_frames_total)
+    step = num_frames_total / T
+    return [int(i * step) for i in range(T)]   <span class="c"># متباعدين بالتساوي</span>
+
+
+def sample_dense(num_frames_total, T, rng=None):
+    rng = rng or np.random.default_rng()
+    if num_frames_total &lt;= T:
+        return list(range(num_frames_total)) + [num_frames_total - 1] * (T - num_frames_total)
+    start = int(rng.integers(0, num_frames_total - T + 1))  <span class="c"># بداية عشوائية</span>
+    return list(range(start, start + T))                    <span class="c"># نافذة متصلة</span>
+
+for total in [5, 30, 300]:
+    print(total, sample_uniform(total, 8))</pre></div>
+  <p>المتوقع من الـ uniform: <span class="ltr">5 → [0,1,2,3,4,4,4,4]</span> و <span class="ltr">30 → [0,3,7,11,15,18,22,26]</span> و <span class="ltr">300 → [0,37,75,112,150,187,225,262]</span>. الـ dense بيتغير حسب الـ seed.</p>
+
+  <p><b>الخطوة ٢: baseline الـ 2D+pool.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+from torchvision.models import resnet18, ResNet18_Weights
+
+class FramePool(nn.Module):
+    def __init__(self, num_classes=400, pretrained=True):
+        super().__init__()
+        weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        backbone = resnet18(weights=weights)
+        self.features = nn.Sequential(*(list(backbone.children())[:-1]))  <span class="c"># من غير الـ fc</span>
+        self.head = nn.Linear(512, num_classes)
+
+    def forward(self, x):
+        <span class="c"># x: (N, T, 3, H, W)</span>
+        N, T = x.shape[:2]
+        x = x.reshape(N * T, *x.shape[2:])         <span class="c"># الفريمات كلها كأنها batch كبير</span>
+        feats = self.features(x).view(N, T, -1)    <span class="c"># (N, T, 512)</span>
+        pooled = feats.mean(dim=1)                 <span class="c"># متوسط على الزمن = مبيعرفش الترتيب</span>
+        return self.head(pooled)
+
+model = FramePool(num_classes=10)
+x = torch.randn(2, 8, 3, 224, 224)
+print(f"output: {model(x).shape}")
+print(f"params: {sum(p.numel() for p in model.parameters()):,}")</pre></div>
+  <p>المتوقع: <span class="ltr">output: torch.Size([2, 10])</span>. حوالي 11 مليون بارامتر (ResNet-18). في الملف الأصلي بيستخدم <code>reshape</code> بدل <code>view</code> في أول سطر عشان تشتغل مع الـ non-contiguous tensors.</p>
+
+  <p><b>الخطوة ٣: الـ inflation.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def inflate_2d_to_3d(conv2d, time_kernel=3):
+    out_c, in_c, kh, kw = conv2d.weight.shape
+    weight_3d = conv2d.weight.data.unsqueeze(2)                      <span class="c"># (out, in, 1, kh, kw)</span>
+    weight_3d = weight_3d.repeat(1, 1, time_kernel, 1, 1) / time_kernel   <span class="c"># انسخ وقسّم</span>
+    conv3d = nn.Conv3d(in_c, out_c, kernel_size=(time_kernel, kh, kw),
+                       padding=(time_kernel // 2, conv2d.padding[0], conv2d.padding[1]),
+                       stride=(1, conv2d.stride[0], conv2d.stride[1]),
+                       bias=False)
+    conv3d.weight.data = weight_3d
+    return conv3d
+
+conv2d = nn.Conv2d(3, 64, kernel_size=3, padding=1, bias=False)
+conv3d = inflate_2d_to_3d(conv2d, time_kernel=3)
+print(f"2D weight shape:  {tuple(conv2d.weight.shape)}")
+print(f"3D weight shape:  {tuple(conv3d.weight.shape)}")
+x = torch.randn(1, 3, 8, 56, 56)
+print(f"3D output shape:  {tuple(conv3d(x).shape)}")</pre></div>
+  <p>المتوقع: <span class="ltr">(64, 3, 3, 3)</span> ثم <span class="ltr">(64, 3, 3, 3, 3)</span> ثم <span class="ltr">(1, 64, 8, 56, 56)</span>.</p>
+
+  <p><b>الخطوة ٤: (2+1)D.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Conv2Plus1D(nn.Module):
+    def __init__(self, in_c, out_c, kernel_size=3):
+        super().__init__()
+        mid_c = (in_c * out_c * kernel_size * kernel_size * kernel_size) \
+                // (in_c * kernel_size * kernel_size + out_c * kernel_size)
+        self.spatial = nn.Conv3d(in_c, mid_c, kernel_size=(1, kernel_size, kernel_size),
+                                 padding=(0, kernel_size // 2, kernel_size // 2), bias=False)
+        self.bn = nn.BatchNorm3d(mid_c)
+        self.act = nn.ReLU(inplace=True)
+        self.temporal = nn.Conv3d(mid_c, out_c, kernel_size=(kernel_size, 1, 1),
+                                  padding=(kernel_size // 2, 0, 0), bias=False)
+
+    def forward(self, x):
+        return self.temporal(self.act(self.bn(self.spatial(x))))   <span class="c"># مكان ثم زمن</span>
+
+c = Conv2Plus1D(3, 64)
+x = torch.randn(1, 3, 8, 56, 56)
+print(f"(2+1)D output: {tuple(c(x).shape)}")</pre></div>
+  <p>المتوقع: <span class="ltr">(1, 64, 8, 56, 56)</span>. (في ملف الريبو mid_c ليه حد أدنى <code>max(8, …)</code>.)</p>
+
+  <h3>درس الـ 3D</h3>
+  <p><b>الخطوة ٥: PointNet.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class PointNet(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.mlp1 = nn.Sequential(                       <span class="c"># Conv1d بحجم 1 = MLP مشترك على كل نقطة</span>
+            nn.Conv1d(3, 64, 1),    nn.BatchNorm1d(64),   nn.ReLU(inplace=True),
+            nn.Conv1d(64, 64, 1),   nn.BatchNorm1d(64),   nn.ReLU(inplace=True),
+        )
+        self.mlp2 = nn.Sequential(
+            nn.Conv1d(64, 128, 1),  nn.BatchNorm1d(128),  nn.ReLU(inplace=True),
+            nn.Conv1d(128, 1024, 1), nn.BatchNorm1d(1024), nn.ReLU(inplace=True),
+        )
+        self.head = nn.Sequential(
+            nn.Linear(1024, 512), nn.BatchNorm1d(512), nn.ReLU(inplace=True), nn.Dropout(0.3),
+            nn.Linear(512, 256),  nn.BatchNorm1d(256), nn.ReLU(inplace=True), nn.Dropout(0.3),
+            nn.Linear(256, num_classes),
+        )
+
+    def forward(self, x):
+        <span class="c"># x: (N, 3, num_points)</span>
+        x = self.mlp1(x)
+        x = self.mlp2(x)
+        x = torch.max(x, dim=-1)[0]    <span class="c"># الـ symmetric aggregation: (N, 1024)</span>
+        return self.head(x)
+
+pts = torch.randn(4, 3, 1024)
+net = PointNet(num_classes=10)
+print(f"output: {net(pts).shape}")
+print(f"params: {sum(p.numel() for p in net.parameters()):,}")</pre></div>
+  <p>المتوقع: <span class="ltr">torch.Size([4, 10])</span>، وحوالي 1.6 مليون بارامتر.</p>
+
+  <p><b>الخطوة ٦: positional encoding.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def positional_encoding(x, L=10):
+    <span class="c"># x: (..., D) -> (..., D * 2 * L)</span>
+    freqs = 2.0 ** torch.arange(L, dtype=x.dtype, device=x.device)   <span class="c"># 1,2,4,8...</span>
+    args = x.unsqueeze(-1) * freqs * 3.141592653589793
+    sinc = torch.cat([args.sin(), args.cos()], dim=-1)
+    return sinc.reshape(*x.shape[:-1], -1)
+
+x = torch.randn(5, 3)
+y = positional_encoding(x, L=10)
+print(f"input:  {x.shape}")
+print(f"encoded: {y.shape}     # (5, 60)")</pre></div>
+
+  <p><b>الخطوة ٧: TinyNeRF.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class TinyNeRF(nn.Module):
+    def __init__(self, L_pos=10, L_dir=4, hidden=128):
+        super().__init__()
+        self.L_pos, self.L_dir = L_pos, L_dir
+        pos_dim = 3 * 2 * L_pos
+        dir_dim = 3 * 2 * L_dir
+        self.trunk = nn.Sequential(
+            nn.Linear(pos_dim, hidden), nn.ReLU(inplace=True),
+            nn.Linear(hidden, hidden),  nn.ReLU(inplace=True),
+            nn.Linear(hidden, hidden),  nn.ReLU(inplace=True),
+            nn.Linear(hidden, hidden),  nn.ReLU(inplace=True),
+        )
+        self.sigma = nn.Linear(hidden, 1)                 <span class="c"># الكثافة من المكان بس</span>
+        self.color = nn.Sequential(                       <span class="c"># اللون من المكان + اتجاه النظر</span>
+            nn.Linear(hidden + dir_dim, hidden // 2), nn.ReLU(inplace=True),
+            nn.Linear(hidden // 2, 3), nn.Sigmoid(),
+        )
+
+    def forward(self, x, d):
+        x_enc = positional_encoding(x, self.L_pos)
+        d_enc = positional_encoding(d, self.L_dir)
+        h = self.trunk(x_enc)
+        sigma = torch.relu(self.sigma(h)).squeeze(-1)
+        rgb = self.color(torch.cat([h, d_enc], dim=-1))
+        return sigma, rgb
+
+nerf = TinyNeRF()
+s, c = nerf(torch.randn(128, 3), torch.randn(128, 3))
+print(f"sigma: {s.shape}   rgb: {c.shape}")</pre></div>
+  <p>المتوقع: <span class="ltr">sigma: torch.Size([128])   rgb: torch.Size([128, 3])</span>.</p>
+
+  <p><b>الخطوة ٨: الـ volumetric rendering.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def volumetric_render(sigma, rgb, t_vals):
+    delta = torch.cat([t_vals[1:] - t_vals[:-1], torch.full_like(t_vals[:1], 1e10)])
+    alpha = 1.0 - torch.exp(-sigma * delta)                              <span class="c"># opacity</span>
+    trans = torch.cumprod(torch.cat([torch.ones_like(alpha[..., :1]),
+                                     1.0 - alpha + 1e-10], dim=-1), dim=-1)[..., :-1]   <span class="c"># T_i</span>
+    weights = alpha * trans
+    rendered = (weights.unsqueeze(-1) * rgb).sum(dim=-2)                 <span class="c"># لون البكسل</span>
+    depth = (weights * t_vals).sum(dim=-1)
+    return rendered, depth, weights
+
+N = 64
+t_vals = torch.linspace(2.0, 6.0, N)
+sigma = torch.rand(N) * 0.5
+rgb = torch.rand(N, 3)
+rendered, depth, weights = volumetric_render(sigma, rgb, t_vals)
+print(f"rendered colour: {rendered.tolist()}")
+print(f"depth:           {depth.item():.2f}")</pre></div>
+  <p>الأرقام عشوائية، لكن الـ depth لازم تقع بين 2 و6 (حدود الشعاع).</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d68-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل — فيديو)</b> احسب تقريبًا الـ FLOPs لـ FramePool بـ T=8 مقابل ResNet 3D على I3D-style بـ T=8، ووضّح ليه الـ 2D+pool أرخص 3–5 مرات.
+      <details><summary>تلميح / إجابة</summary>الـ FramePool = 8 × تكلفة صورة واحدة. الـ 3D conv كل kernel فيه 3× عدد الأوزان وبيتطبق على نفس المواقع، فكل طبقة تقريبًا 3× FLOPs (و I3D بيزود عليها inflation في أغلب الطبقات). لو الطبقات الأولى كلها 3D والباقي أقل، الفرق بيبقى بين 3 و5 حسب المعمارية. استخدم المعادلة: <span class="ltr">FLOPs ≈ params × H_out × W_out × T_out</span> لكل طبقة.</details></li>
+    <li><b>(متوسط — فيديو)</b> اعمل داتا فيديو صناعية: كور بتتحرك في اتجاهات عشوائية، والـ label هو اتجاه الحركة (يمين-لشمال، شمال-ليمين، قطري لفوق). درّب FramePool وأثبت إنه قريب من الصدفة (chance).
+      <details><summary>تلميح / إجابة</summary>ارسم الكورة على صورة سوداء في كل فريم بموضع بيتغير خطيًا حسب الزمن. كل فريم لوحده شكله نفس الشكل لأي اتجاه. الـ pooling مبيعرفش الترتيب، فالدقة هتبقى حوالي <span class="ltr">1/3</span> لـ 3 كلاسات. ده بيثبت الفرق بين appearance وmotion.</details></li>
+    <li><b>(صعب — فيديو)</b> ابنِ R(2+1)D-18 بتبديل كل Conv2d في ResNet-18 بـ Conv2Plus1D. انفخ (inflate) أوزان أول conv من ResNet-18 مدرّب على ImageNet. درّبه على داتا التمرين 2 وتغلب بيه FramePool.
+      <details><summary>تلميح / إجابة</summary>ابدأ من torchvision ResNet-18، واعمل loop على <code>named_children</code> وبدّل كل <code>nn.Conv2d</code> بـ <code>Conv2Plus1D</code> (بالـ stride المناسب). الدخل بقى <span class="ltr">(N,3,T,H,W)</span> فبدّل BatchNorm2d بـ 3d وAdaptiveAvgPool3d. الدقة لازم تعدّي chance بوضوح لأن الـ temporal conv بيشوف الاتجاه.</details></li>
+    <li><b>(سهل — 3D)</b> أثبت إن PointNet permutation-invariant: شغّل نفس الـ cloud مرتين، مرة بنقط متبدلة، وتأكد إن النواتج متطابقة (لحد الـ floating-point).
+      <details><summary>تلميح / إجابة</summary>استخدم <code>net.eval()</code> (مهم للـ BatchNorm/Dropout!). <code>perm = torch.randperm(1024); y1 = net(pts); y2 = net(pts[:, :, perm]); print((y1-y2).abs().max())</code>. المفروض يطلع حوالي <span class="ltr">1e-6</span> أو أقل.</details></li>
+    <li><b>(متوسط — 3D)</b> اكتب دالة ray generation: بمعلومية camera intrinsics والـ pose، طلّع ray origins وdirections لكل بكسل في صورة H×W.
+      <details><summary>تلميح / إجابة</summary>اعمل <code>meshgrid</code> للبكسلات <span class="ltr">(i,j)</span>. الاتجاه في إحداثيات الكاميرا: <span class="ltr">((i − cx)/fx, −(j − cy)/fy, −1)</span>. اضربه في الـ rotation من الـ pose (c2w). الـ origin هو الـ translation (نفسه لكل الأشعة).</details></li>
+    <li><b>(صعب — 3D)</b> درّب TinyNeRF على صور مرسومة لمكعب ملوّن. سجّل الـ loss عند epoch 1 و10 و100. إمتى الصور بتبقى معروفة؟
+      <details><summary>تلميح / إجابة</summary>ابدأ بالـ ray tracer البسيط (تقاطع شعاع مع مكعب). المتوقع: epoch 1 ضبابي، 10 ملامح، 100 المكعب واضح (بيتوقف على الـ lr وعدد الأشعة). من غير positional encoding هتلاقي الحواف مهزوزة.</details></li>
+    <li><b>تمرين إضافي مني (عملي):</b> اكتب سكربت <code>audit_sampler.py</code> بياخد <code>total</code> و<code>T</code> وبيطبع: الـ indices بالـ uniform، وأكبر فجوة بين فريمين، وهل آخر فريم في الفيديو اتضمن. جرّب <span class="ltr">total=5, 30, 300</span> وسجّل إيه اللي لقيته.
+      <details><summary>إجابة</summary>هتلاقي إن آخر فريم (total−1) مش بيتضمن لما total &gt; T في uniform، وأقصى فجوة حوالي <span class="ltr">ceil(total/T)</span>. الحل: استخدم <code>np.linspace(0, total-1, T).astype(int)</code> لو عايز تغطية الطرفين.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d68-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: أخطاء هتقع فيها وفين بتظهر في الـ LLMs والـ agents</h2></div>
+  <ul class="checklist">
+    <li><b>Train/eval للـ PointNet:</b> لو نسيت <code>net.eval()</code> قبل اختبار الـ permutation-invariance هتلاقي فروق بسبب الـ Dropout والـ BatchNorm، وتفتكر إن الفكرة غلط.</li>
+    <li><b>شكل الدخل:</b> PointNet عايز <span class="ltr">(N, 3, points)</span> (الإحداثيات كقنوات) مش <span class="ltr">(N, points, 3)</span>. الخلط ده أشهر إيرور في أول مرة.</li>
+    <li><b>Clip vs video accuracy:</b> متقارنش رقم clip لموديل برقم video لموديل تاني. الفرق ممكن يبقى 4–6 نقط.</li>
+    <li><b>Frame sampling وقت الـ inference:</b> لازم نفس الـ sampler اللي اتدرّبت بيه (أو multi-clip). غلطة صغيرة هنا بتنزّل الدقة بدون أي error.</li>
+    <li><b>في الـ LLMs:</b> الـ video-language models (VideoLLaMA، InternVideo) بتاخد فريمات sampled وتحولها لـ tokens (نفس ViT patches)، فمشاكل الـ sampling هنا هي نفس مشاكل «الـ context بتاعها».</li>
+    <li><b>في الـ agents:</b> agent بيتحكم في روبوت أو بيشوف شاشة بيحتاج 3D (depth, point cloud) للـ grasping والـ navigation، وأحيانًا بيشوف فيديو للشاشة كـ tool input.</li>
+    <li><b>التشابه:</b> positional encoding في NeRF هو نفس فكرة الـ sinusoidal positions في الـ Transformer الأصلي. فهمتها هنا = فهمتها هناك.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d68-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d68-quizBox"></div>
+</section>
+
+<section id="d68-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d68-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح العائلات التلاتة للفيديو ومتى أستخدم كل واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه الـ 2D+pool مش بيشوف الاتجاه</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الـ inflation وليه بنقسم على time_kernel</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم حيلة PointNet (shared MLP + max pool)</label></li>
+    <li><label><input type="checkbox" data-ck="5"> فاهم الـ volumetric rendering وجربت المعمل ٣</label></li>
+    <li><label><input type="checkbox" data-ck="6"> كتبت الكود بإيدي وشغّلته</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٩ من ١٢ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Frame sampling / multi-clip</td><td>كل pipeline فيديو، الـ video-LLMs</td></tr>
+    <tr><td>3D conv / inflation</td><td>I3D، SlowFast، نقل أوزان الصور للفيديو</td></tr>
+    <tr><td>Divided attention</td><td>TimeSformer، ViViT، VideoMAE</td></tr>
+    <tr><td>Symmetric aggregation</td><td>PointNet، DeepSets، الـ pooling في الـ GNNs</td></tr>
+    <tr><td>Positional encoding</td><td>NeRF، Transformers، الـ diffusion time embeddings</td></tr>
+    <tr><td>Volumetric rendering / Gaussian splatting</td><td>تصوير العقارات والـ AR والروبوتات والسواقة الذاتية</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Vision Transformers (ViT): هنقطّع الصورة لـ patches ونطبّق الـ attention عليها، وهي أساس video transformers اللي شفناها النهاردة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرسين الأصليين من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F12-video-understanding" target="_blank" rel="noopener">12 · Video Understanding</a> و<a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F13-3d-vision-nerf" target="_blank" rel="noopener">13 · 3D Vision &amp; NeRF</a> (AI Engineering from Scratch, MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/12-video-understanding + 13-3d-vision-nerf</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=68,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d68-roadmap').closest('.day');
+const rm=$('d68-roadmap');
+for(let i=57;i<=81;i++){const s=document.createElement('span');s.textContent=i-56;s.title='يوم '+i;if(i===N)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: samplers ----
+let mode='uniform',startSeed=0.5;
+function idxUniform(total,T){if(total<=T)return Array.from({length:T},(_,i)=>Math.min(i,total-1));const st=total/T;return Array.from({length:T},(_,i)=>Math.floor(i*st))}
+function idxDense(total,T,r){if(total<=T)return idxUniform(total,T);const s=Math.floor(r*(total-T+1));return Array.from({length:T},(_,i)=>s+i)}
+L.bars($('d68-lab1'),{
+  labels:p=>Array.from({length:p.total},(_,i)=>i%5===0?String(i):''),
+  params:[{k:'total',label:'عدد الفريمات الكلي',min:4,max:60,step:1,v:40},{k:'T',label:'T',min:2,max:16,step:1,v:8}],
+  values:p=>{const ix=mode==='uniform'?idxUniform(p.total,p.T):idxDense(p.total,p.T,startSeed);const a=new Array(p.total).fill(0);ix.forEach(i=>a[i]=1);return a},
+  max:1,
+  readout:p=>{const ix=mode==='uniform'?idxUniform(p.total,p.T):idxDense(p.total,p.T,startSeed);return [['mode',mode],['indices',ix.join(',')],['unique',new Set(ix).size+'/'+p.T]]},
+  note:p=>p.total<=p.T?'الفيديو أقصر من T: آخر فريم بيتكرر (padding).':(mode==='uniform'?'متباعدة بالتساوي بس آخر فريم غالبًا بيتفوّت.':'نافذة متصلة: مناسبة للـ 3D conv.')
+});
+// widgets re-render on slider; mode buttons nudge via input event
+function nudge(){const s=$('d68-lab1').querySelector('input');if(s)s.dispatchEvent(new Event('input',{bubbles:true}))}
+$('d68-modeBtn').addEventListener('click',e=>{mode=mode==='uniform'?'dense':'uniform';e.target.textContent='الوضع: '+mode;nudge()});
+$('d68-reroll').addEventListener('click',()=>{startSeed=Math.random();mode='dense';$('d68-modeBtn').textContent='الوضع: dense';nudge()});
+
+// ---- Lab 2: params ----
+L.calc($('d68-lab2'),{
+  params:[{k:'cin',label:'in channels',min:3,max:256,step:1,v:64},{k:'cout',label:'out channels',min:8,max:512,step:1,v:64}],
+  compute:p=>{const k=3,i=p.cin,o=p.cout;const p2=i*o*9,p3=i*o*27;const mid=Math.max(8,Math.floor(i*o*27/(i*9+o*3)));const p21=i*mid*9+mid*o*3;
+    return [['2D 3×3 params',p2.toLocaleString()],['3D 3×3×3 params',p3.toLocaleString()],['mid (2+1)D',mid],['(2+1)D params',p21.toLocaleString()],['3D / 2D',(p3/p2).toFixed(1)+'×'],['(2+1)D / 3D',(p21/p3).toFixed(2)+'×']]},
+  note:p=>'المعادلة نفس الكود: mid = in·out·27 / (in·9 + out·3)، وبتتجاهل الـ BatchNorm.'
+});
+
+// ---- Flow: PointNet ----
+L.flow($('d68-flow'),{
+  height:260,
+  nodes:[{id:'p',label:'N نقطة (x,y,z)',x:0,y:.5},{id:'m1',label:'shared MLP 64,64',x:.25,y:.5},{id:'m2',label:'shared MLP 128,1024',x:.5,y:.5},{id:'mx',label:'max pool',x:.75,y:.5},{id:'c',label:'classifier',x:1,y:.5}],
+  edges:[['p','m1'],['m1','m2'],['m2','mx'],['mx','c']],
+  steps:[{active:['p'],text:'سحابة نقط بترتيب عشوائي وعدد متغير.'},{active:['m1','m2'],edges:[['p','m1'],['m1','m2']],text:'نفس الأوزان بتتطبق على كل نقطة لوحدها: مفيش اعتماد على الترتيب.'},{active:['mx'],edges:[['m2','mx']],text:'الـ max على بُعد النقط: دالة متماثلة، يطلع global feature ثابت الحجم (1024).'},{active:['c'],edges:[['mx','c']],text:'الـ MLP النهائي بيطلّع logits الكلاسات.'}]
+});
+
+// ---- Lab 3: volumetric render ----
+const NS=40,tv=Array.from({length:NS},(_,i)=>2+4*i/(NS-1));
+function render(p){const dl=tv[1]-tv[0];let T=1;const w=[];let d=0;
+  for(let i=0;i<NS;i++){const s=p.dens*Math.exp(-Math.pow((tv[i]-p.pos)/p.wid,2));const a=1-Math.exp(-s*dl);w.push(a*T);d+=a*T*tv[i];T*=(1-a+1e-10)}return {w,d,sum:w.reduce((a,b)=>a+b,0)}}
+L.bars($('d68-lab3'),{
+  labels:tv.map((t,i)=>i%5===0?t.toFixed(1):''),
+  params:[{k:'dens',label:'كثافة σ',min:0,max:40,step:.5,v:12},{k:'pos',label:'مكان الجسم t',min:2.5,max:5.5,step:.05,v:4},{k:'wid',label:'سُمك الجسم',min:.05,max:1,step:.05,v:.3}],
+  values:p=>render(p).w,max:1,
+  readout:p=>{const r=render(p);return [['Σ weights',r.sum.toFixed(3)],['depth',r.d.toFixed(2)],['opacity',(r.sum*100).toFixed(0)+'%']]},
+  note:p=>{const r=render(p);return r.sum>.95?'الجسم معتم: الشعاع وقف عنده.':(r.sum<.2?'الجسم شبه شفاف: الخلفية غالبة.':'شفاف جزئيًا: جزء من الضوء بيعدّي.')}
+});
+
+// ---- Lab 4: positional encoding ----
+const cols=['a','b','ok','bad','muted'];
+L.plot($('d68-lab4'),{
+  x:[0,1],y:[-1.2,1.2],
+  params:[{k:'Lv',label:'L (عدد الترددات)',min:1,max:5,step:1,v:3}],
+  curves:[0,1,2,3,4].map(l=>({f:(x,p)=>l<p.Lv?Math.sin(Math.pow(2,l)*Math.PI*x):NaN,label:'l='+l,color:cols[l]})),
+  readout:p=>[['features/إحداثي',2*p.Lv],['أعلى تردد',Math.pow(2,p.Lv-1)+'×']],
+  note:p=>'أعلى تردد = '+Math.pow(2,p.Lv-1)+' نصف دورة × π؛ NeRF الأصلي بيستخدم L=10.'
+});
+
+// ---- Quiz ----
+AI.quiz($('d68-quizBox'),[
+ ['ليه موديل 2D+pool بيفشل على Something-Something V2؟',['المعمارية مش متوافقة','الصور صغيرة جدًا','فيه كلاسات كتير','الـ labels معرّفة بالحركة («زق من الشمال لليمين») مش بالشكل، والـ average pooling مش حساس للترتيب فمبيفرقش بين الاتجاهين'],3,'الاتجاهين بيبانوا زي بعض في أي فريم لوحده، ومتوسط الـ embeddings ثابت لو قلبت الترتيب. فمحتاج موديل بيشوف الترتيب الزمني.'],
+ ['إيه حيلة الـ inflation في I3D؟',['جدولة learning rate','ضغط الفيديو','تدريب على صور أكتر','خد kernels الـ 2D المدرّبة، انسخها على محور الزمن واقسم على kernel_T للحفاظ على حجم الـ activations، واستخدمها كبداية للـ 3D CNN'],3,'بتدّي الموديل 3D أوزان قوية بدون pretraining 3D. الـ 3×3 بتبقى 3×3×3.'],
+ ['الـ (2+1)D conv بيقسم الـ 3D conv لإيه؟',['spatial 1×3×3 ثم temporal 3×1×1 مع BN+ReLU في النص','اتنين 3D conv بـ strides مختلفة','temporal conv ثم depthwise','grouped conv و1×1'],0,'الـ non-linearity اللي في النص بتزود قدرة التعبير لكل بارامتر.'],
+ ['إيه معنى «divided attention» في الـ video transformer؟',['attention بيتخطى طبقات','attention على نص الـ tokens','كل block فيه attention على الزمن (نفس الموضع عبر الزمن) ثم attention على المكان (نفس اللحظة)، فبيقلل O((T·H·W)²) لـ O(T²)+O((H·W)²)','attention وقت التدريب بس'],2,'ده اللي TimeSformer عمله؛ بيخلّي التدريب ممكن مع دقة قريبة أو أحسن من joint.'],
+ ['موديل Kinetics-400 طلّع 76% clip و82% video. الفجوة بتقولك إيه؟',['الـ test set صغير','الموديل بايظ','التوقعات لكل clip متقلبة، ومتوسط كذا clip بيثبّتها؛ فجوة كبيرة = الموديل حساس لأنهي نافذة اتاخدت','الـ clip دايمًا أقل بالتعريف'],2,'اذكر الاتنين دايمًا. الفجوة الكبيرة معناها إن الـ features حساسة للنافذة المختارة.'],
+ ['ليه الـ CNN العادي مش بيشتغل مباشرة على Point Cloud؟',['السحابة محتاجة quaternions','الـ CNN بيفترض grid منتظم وجيران، والسحابة مجموعة نقط من غير ترتيب وبأحجام متغيرة','الـ CNN grayscale بس','السحابة كبيرة'],1,'الـ voxelization بيرجّع grid لكن بياكل ذاكرة؛ PointNet تفادى المشكلة بالـ shared MLP والـ symmetric aggregation.'],
+ ['إيه اللي بيخلّي PointNet permutation-invariant؟',['ترتيب النقط الأول','Batch norm','loss خاص','shared MLP على كل نقطة لوحدها وبعدين symmetric aggregation (max أو sum) اللي بيتجاهل الترتيب'],3,'ده قلب كل شبكات الـ point clouds من 2017.'],
+ ['NeRF بيدخّل (x,y,z) خام للـ MLP فبيطلع ضبابي. إيه الحل؟',['داتا أكتر','استخدام CNN','Positional encoding: sin/cos بتردد 2^l·π لعدة مستويات قبل الـ MLP عشان يقدر يمثل تفاصيل عالية التردد','دقة 16-bit'],2,'الـ MLP متحيز للترددات المنخفضة (spectral bias)، والـ encoding بيدّيه ترددات جاهزة.'],
+ ['إزاي بنحسب بكسل في NeRF؟',['نطلق شعاع من الكاميرا خلال البكسل، نخد N عينة، نسأل الـ MLP عن (كثافة، لون) لكل عينة، ونركّبهم بمعادلة الـ volumetric rendering','convolution على depth map','lookup في voxel grid جاهز','مخرج آخر طبقة'],0,'T_i وalpha بيحددوا مين بيحجب مين على الشعاع.'],
+ ['ليه Gaussian Splatting حل مكان NeRF في الإنتاج؟',['NeRF غلط رياضيًا','تمثيل explicit (ملايين Gaussians) بيترسم بـ rasterisation مش queries للـ MLP؛ تدريب بالدقايق ورسم أسرع حوالي 100× بجودة قريبة','أسهل في الضغط','جودة أعلى دايمًا'],1,'الرسم بالـ GPU rasterisation أسرع بدرجات من أخذ عينات على الشعاع.'],
+ ['(مني) في uniform sampling بـ total=300 وT=8، أنهي من دول فريم مش هيتاخد أبدًا؟',['الفريم 0','الفريم 150','الفريم 299 (آخر فريم)','الفريم 262'],2,'step=37.5 فالأخير 262، وآخر فريم 299 مبيتاخدش. لو عايز تغطية الطرفين استخدم linspace.'],
+ ['(مني) في معمل ٣، لو الكثافة σ بقت كبيرة جدًا عند جسم قريب، إيه اللي بيحصل للأجسام اللي وراه؟',['بتبان أوضح','بتتحجب لأن الـ transmittance T بيقرّب من صفر بعد الجسم','بتتحول لحمرا','مفيش تغيير'],1,'T_i بيتضرب في (1−alpha) كل خطوة؛ بعد سطح معتم T≈0 فالأوزان اللي وراه ≈0.']
+],9);
+AI.checklist(N,root);
+})();
+</script>

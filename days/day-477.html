@@ -1,0 +1,477 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 49 · Language Model Evaluation Harness</span>
+  <h1>اليوم ٤٧٧: بناء Eval Harness: لوحة الدرجات اللي بتفرّق بين الموديل والإعلان</h1>
+  <p class="lede">النهاردة هتبني بإيدك نظام تقييم صغير للموديلات: مهام في ملفات <b>JSONL</b>، خمس metrics مكتوبة من الصفر، <b>adapter</b> بتبدّل بيه الموديل، و<b>runner</b> بيطلّع <b>leaderboard.json</b> تقدر تعمله diff. الفكرة كلها: لو مش قادر تقيس، تبقى بتقارن بالإحساس.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة TypeScript)</span>
+    <span>قبله: <b>Distributed DDP &amp; FSDP</b></span>
+    <span>بعده: <b>Hypothesis Generator</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — 85 days</span>
+    <div class="roadmap" id="d477-roadmap" aria-label="أيام الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d477-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الدرس اللي فات؟</h2></div>
+  <p>الدرس اللي فات كان عن تدريب الموديل على أكتر من جهاز (rank). جاوب في دماغك وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>في DDP، كل rank بيشتغل على إيه، وبعد الـ backward بيحصل إيه بالظبط؟
+      <details><summary>الإجابة</summary>كل rank بيشغّل نفس الموديل على شريحة مختلفة من الـ batch. بعد الـ backward بيعملوا <span class="ltr">all_reduce</span> للـ gradients ويقسموا على <span class="ltr">world_size</span>، فكل rank يطلع بنفس الـ gradient قبل الـ optimizer step.</details></li>
+    <li>ليه الـ parameters بتتعمل لها broadcast من rank 0 في أول التدريب؟
+      <details><summary>الإجابة</summary>عشان كل الـ ranks يبدأوا بنفس الأوزان بالظبط. لو الأوزان اختلفت بين الـ ranks التدريب بيبوّظ بصمت من غير ما يطلع إيرور.</details></li>
+    <li>الـ FSDP بيعمل إيه مختلف عن DDP؟
+      <details><summary>الإجابة</summary>كل rank بيحتفظ بشريحة (shard) من كل parameter بس، والتنسور الكامل بيتجمّع (gather) وقت الـ forward للـ layer وبعدين بيتشال. بيوفر ذاكرة لما الموديل مش بيدخل على جهاز واحد.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>المشكلة + الـ task spec + الـ metrics</div>
+    <div><b>15 min</b>الـ adapter والـ runner والـ leaderboard</div>
+    <div><b>30 min</b>اكتب الكود وشغّله</div>
+    <div><b>20 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d477-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: موديل جديد كل أسبوع، وكله بيقول «أنا الأحسن»</h2></div>
+  <p>كل أسبوع بينزل موديل لغة جديد، والإعلان بيقول إنه «شاطر». السؤال الصح: <b>شاطر في إيه؟</b> الإجابة الأمينة إنك تبني leaderboard بنفسك، لأن الـ leaderboard بتاع الشركة هو اللي هما ظبطوا الموديل عليه.</p>
+  <p>من غير harness في الريبو بتقارن موديلين بالإحساس («حسّيت إن ده أحسن»). ومعاه بتقارن بـ <b>درجة</b> على مجموعة مهام ثابتة وبـ metric ثابتة، والنتيجة JSON تقدر تعمل لها diff. الـ harness هو <b>العقد</b> بين تشغيل إمبارح وتشغيل النهاردة. من غيره، الـ regressions بتتشحن للمستخدمين.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ harness زي امتحان موحّد للثانوية. كل الطلبة بنفس الأسئلة وبنفس ورقة التصحيح. لو كل مدرسة عملت امتحانها بنفسها، مش هتعرف مين شاطر فعلًا.</div>
+  <p><b>الفخ:</b> إنك تظبط الـ harness على موديل واحد. العلاج إن كل قرار خاص بموديل معيّن يتحط في مكان واحد بس: الـ <b>adapter</b>. الباقي صغير لدرجة إنك تقراه في ١٥ دقيقة: المهام صغيرة وتتشحن في الريبو، والـ metrics مكتوبة من الصفر عشان زميلك يراجعها. ولو بدّلت الـ adapter الـ leaderboard يتحرك، ولو بدّلت المهام يتحرك، وأي حاجة تانية <b>ماينفعش</b> تحركه.</p>
+</section>
+
+<section id="d477-spec">
+  <div class="station-head"><span class="tag">02</span><h2>المفهوم: الـ pipeline كله في رسمة واحدة</h2></div>
+  <div class="formula">task JSONLs → load_all_tasks → run_leaderboard → ModelAdapter.generate (batch) → METRIC_FNS → per-example score → task score → overall → leaderboard.json</div>
+  <p>خد بالك من الترتيب: الـ metric بتاخد ردّ الموديل وبتطلّع رقم بين 0 و1. الـ runner بيعمل متوسط الأرقام دي للمهمة، وبعدين متوسط درجات المهام هو الـ overall.</p>
+
+  <h3>الـ Task spec: كل مثال سطر JSONL</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>{"id": "arith-00", "prompt": "compute: 2 + 2", "targets": ["4"], "metric": "exact_match"}</pre></div>
+  <p>فيه أربع حقول أساسية: <code>id</code> و<code>prompt</code> و<code>targets</code> (قايمة إجابات مقبولة) و<code>metric</code>. وفيه حقل اختياري <code>extras</code> بيشيل بيانات جانبية للـ metric من غير ما تلوّث الـ prompt. مثال الكود:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>{
+  "id": "code-00",
+  "prompt": "python: write a function f that doubles its input",
+  "targets": ["ok"],
+  "metric": "code_exec",
+  "extras": {"io_pairs": [[1, 2], [3, 6]]}
+}</pre></div>
+  <p>المهمة = ملف <code>.jsonl</code> جوه <code>outputs/tasks/</code>، واسم الملف هو اسم المهمة. كل الأمثلة في الملف الواحد ليها <b>نفس الـ metric</b> (الـ runner بيعمل assert على ده). والسطور اللي بتبدأ بـ <code>#</code> والسطور الفاضية بيتخطاها الـ loader، عشان المساهمين يعلّقوا على الملفات.</p>
+
+  <h3>المهام الخمس الجاهزة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المهمة</th><th>الـ Metric</th><th>بتختبر إيه</th></tr>
+    <tr><td>arithmetic</td><td>exact_match</td><td>صحة إجابة محددة بالحرف</td></tr>
+    <tr><td>summary</td><td>rouge_l</td><td>أطول subsequence مشتركة (F1) مع ملخص مرجعي من سطر</td></tr>
+    <tr><td>code-exec</td><td>code_exec</td><td>الدالة المتولدة لازم تحقق قايمة input/output</td></tr>
+    <tr><td>multiple-choice</td><td>multiple_choice</td><td>أول حرف في الرد لازم يطابق الحرف المسموح</td></tr>
+    <tr><td>generation</td><td>substring_contains</td><td>النص الحر لازم يحتوي على واحد من الأهداف</td></tr>
+  </table></div>
+
+  <h3>عقد الـ Metric</h3>
+  <p>كل metric دالة من <span class="ltr">(prediction, targets, extras) → float in [0.0, 1.0]</span>. الـ harness بيعمل متوسط درجات الأمثلة = درجة المهمة، وبعدين متوسط درجات المهام = الـ overall. وكل metric صغيرة:</p>
+  <ul>
+    <li><b>exact_match:</b> lowercase، دمج المسافات المتكررة، وبعدين مساواة.</li>
+    <li><b>substring_contains:</b> نفس التطبيع، لكن اختبار «موجود جوه» بدل المساواة.</li>
+    <li><b>multiple_choice:</b> أول حرف في الرد (uppercase) لازم يكون من الحروف المسموحة.</li>
+    <li><b>rouge_l:</b> طول الـ LCS مقسوم على طول التوقع وعلى طول المرجع، وبناخد الـ F1 بين الـ precision والـ recall.</li>
+    <li><b>code_exec:</b> بننفّذ التوقع في namespace مقيّد، وننده <span class="ltr">f(x)</span> على كل زوج input/output ونعدّ المطابقات.</li>
+  </ul>
+  <div class="note"><strong>ليه الرقم بين 0 و1؟</strong> عشان المتوسطات تبقى قابلة للتفسير: ٠٫٨ يعني «٨٠٪» في أي مهمة، وتقدر تجمع مهام مختلفة جنب بعض.</div>
+  <div class="note ai"><strong>أمان الـ code_exec:</strong> بتشغّل كود جاي من موديل، فبتديله <span class="ltr">__builtins__</span> مقلّصة لأسماء قليلة (range, len, min, max, abs, int, float). النتيجة إن <span class="ltr">import os</span> بيفشل لأن الـ importer مش موجود، والسكور بيبقى 0.0 بدل ما الكود يتنفذ. (ده مش sandbox كامل زي الـ containers؛ هو حاجز بسيط يكفي للدرس.)</div>
+</section>
+
+<section id="d477-lab1">
+  <div class="station-head"><span class="tag">03</span><h2>معمل ١: شوف الـ ROUGE-L بيتحسب إزاي</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>الـ LCS: أطول تسلسل مشترك</h3>
+      <p>الـ <b>LCS</b> هو أطول تسلسل كلمات موجود في الجملتين بنفس الترتيب (مش لازم متلاصقين). الجدول اللي على الشمال هو جدول الـ dynamic programming: الصفوف كلمات التوقع (prediction) والأعمدة كلمات المرجع (reference)، وخانة الركن الأخير الشمال-تحت هي الطول النهائي.</p>
+      <p>بعدها: <span class="ltr">precision = lcs / len(pred)</span> و<span class="ltr">recall = lcs / len(ref)</span> و<span class="ltr">F1 = 2·p·r / (p+r)</span>. الـ precision بتعاقبك على الكلام الزيادة، والـ recall بتعاقبك على اللي نسيته.</p>
+      <div class="note ai"><strong>جرّب:</strong> حرّك السلايدر بين الأزواج. لاحظ إن «cats are warm blooded mammals» بتاخد recall كامل لكن precision أقل بسبب الكلمات الزيادة، وإن «mammals are cats» نفس الكلمات بس ترتيبها بوّظ الـ LCS.</div>
+    </div>
+    <div id="d477-lab1"></div>
+  </div>
+</section>
+
+<section id="d477-adapter">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Adapter والـ Runner والـ Leaderboard</h2></div>
+  <h3>الـ Adapter: الوصلة الوحيدة مع الموديل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class ModelAdapter(Protocol):
+    def generate(self, prompts: Sequence[str]) -> List[str]: ...
+    @property
+    def name(self) -> str: ...</pre></div>
+  <p>الدرس بيجيب <code>ToyAdapter</code>: بيبصّ في بداية الـ prompt (<code>compute:</code> أو <code>summarize:</code> أو <code>python:</code>...) وبيرجّع الإجابة الصح لكل مثال في المهام الخمس. هدفه مش إنه «ذكي»، هدفه يدّي الـ harness مخرجات ثابتة يتحسب عليها السكور. ولما تيجي تقيس موديل حقيقي بتكتب adapter بيبعت الـ prompt لـ API وبيرجّع النص، و<b>الـ harness مش بيعرف الفرق</b>.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ adapter زي مترجم في اجتماع. أي حد يتكلم بأي لغة، والـ harness بيسمع نفس الشكل (قايمة strings) دايمًا.</div>
+
+  <h3>الـ Runner</h3>
+  <p><span class="ltr">run_task</span> بياخد الأمثلة <code>batch_size</code> واحدة واحدة، ويبعتها للـ adapter، ويتأكد إن عدد المخرجات = عدد الـ prompts (وإلا بيرفع إيرور)، وبعدين بيحسب سكور كل مثال بالـ metric المناسبة ويقيس الـ latency. وبيطلّع <code>TaskResult</code> فيه: score وcorrect وtotal وlatency. أما <span class="ltr">run_leaderboard</span> فبيلف على كل المهام (مرتبة بالاسم) ويحسب الـ overall = متوسط درجات المهام.</p>
+
+  <h3>الـ Leaderboard JSON</h3>
+  <p><span class="ltr">write_leaderboard</span> بيكتب JSON فيه <code>schema</code> (مثلًا <code>leaderboard.v1</code>) وtimestamp وoverall_score واسم الـ adapter وقايمة المهام. وجود حقل الـ schema مهم: لو غيّرت الشكل بعدين تغيّر النسخة، والداشبورد اللي بتقرا الملف يعرف يتصرف بدل ما يتكسر بصمت. ولو شغّلت بـ <code>--include-per-example</code> بتتحط معاها كل التوقعات عشان تعمل diff.</p>
+</section>
+
+<section id="d477-lab2">
+  <div class="station-head"><span class="tag">05</span><h2>معمل ٢: امشِ مع مثال واحد جوه الـ pipeline</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>رحلة مثال واحد</h3>
+      <p>دوس «اللي بعدها» وشوف أنهي مكوّن بيشتغل في كل خطوة. لاحظ إن الـ adapter هو الوحيد اللي بيلمس الموديل، وإن الـ metrics بتتنده بالاسم من جدول (<span class="ltr">METRIC_FNS</span>) مش بـ if/else كبير.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الخطوة اللي بتتكرر لكل batch هي <span class="ltr">generate</span> وبعدها الـ metric. أما التحميل والـ JSON فبيحصلوا مرة واحدة.</div>
+    </div>
+    <div id="d477-lab2"></div>
+  </div>
+</section>
+
+<section id="d477-lab3">
+  <div class="station-head"><span class="tag">06</span><h2>معمل ٣: الـ overall بيتحسب إزاي، والـ batching بيعمل إيه</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>متوسط المتوسطات</h3>
+      <p>العمود الأول: درجة كل مهمة (حرّكها بالسلايدرز). الـ overall = <b>متوسط درجات المهام</b> الخمسة، يعني كل مهمة وزنها واحد بغض النظر عن عدد أمثلتها. ده قرار تصميم: مهمة فيها ٥ أمثلة وزنها زي مهمة فيها ٥٠٠.</p>
+      <p>تحت: حاسبة الـ batching و<span class="ltr">code_exec</span>. لاحظ إن كود الدالة اللي بتعدي ٢ من ٣ اختبارات بياخد ٠٫٦٧، مش صفر. الـ metric ده بيدّي <b>درجة جزئية</b>.</p>
+      <div class="note"><strong>حاجة تفكّر فيها:</strong> لو حطيت ٥ مهام درجتها ١٫٠ ومهمة واحدة ٠، الـ overall هيبقى ٠٫٨٣ بس. الـ overall لوحده بيخبّي المهمة اللي وقعت، عشان كده هنعمل diff للتوقعات (تمرين ٣).</div>
+    </div>
+    <div style="display:grid;gap:14px;min-width:0">
+      <div id="d477-lab3a"></div>
+      <div id="d477-lab3b"></div>
+    </div>
+  </div>
+</section>
+
+<section id="d477-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الـ Harness</h2></div>
+  <p>من جوه فولدر الريبو شغّل الأصل الأول عشان تشوف الناتج:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/49-lm-eval-harness/code/main.py
+<span class="c"># نسخة TypeScript:</span>
+npx tsx phases/19-capstone-projects/49-lm-eval-harness/code/main.ts</pre></div>
+  <p>أول مرة السكريبت بيعمل seed للمهام الخمس لو الفولدر فاضي، وبيسكّرها بالـ <code>ToyAdapter</code> (اللي بيجاوب كل حاجة صح)، وبيكتب <code>outputs/leaderboard.json</code>. المفروض تشوف كده (الـ latency هتختلف عندك):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>loaded 5 tasks: ['arithmetic', 'code-exec', 'generation', 'multiple-choice', 'summary']
+overall_score = 1.000
+        arithmetic  metric=       exact_match  score=1.000  (5/5)  latency_ms=...
+         code-exec  metric=         code_exec  score=1.000  (5/5)  latency_ms=...
+        generation  metric= substring_contains  score=1.000  (5/5)  latency_ms=...
+   multiple-choice  metric=   multiple_choice  score=1.000  (5/5)  latency_ms=...
+           summary  metric=           rouge_l  score=1.000  (5/5)  latency_ms=...
+wrote .../outputs/leaderboard.json</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد اسمه <code>my_harness.py</code> واكتب الخطوات دي بإيدك. متعملش Copy غير لو اتزنقت وعايز تقارن بالأصل.</p>
+
+  <h3>خطوة ١: الـ dataclasses والـ Protocol</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import json, re, time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Protocol, Sequence
+
+@dataclass
+class Example:                       <span class="c"># سطر JSONL واحد</span>
+    id: str
+    prompt: str
+    targets: List[str]
+    metric: str
+    extras: Dict[str, object] = field(default_factory=dict)
+
+@dataclass
+class TaskResult:                    <span class="c"># نتيجة مهمة كاملة</span>
+    task: str
+    metric: str
+    score: float
+    correct: int
+    total: int
+    per_example: List[Dict[str, object]] = field(default_factory=list)
+    latency_ms: float = 0.0
+
+class ModelAdapter(Protocol):        <span class="c"># الوصلة الوحيدة مع الموديل</span>
+    def generate(self, prompts: Sequence[str]) -> List[str]: ...
+    @property
+    def name(self) -> str: ...</pre></div>
+
+  <h3>خطوة ٢: التطبيع والـ metrics البسيطة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def normalize(s):                    <span class="c"># lowercase + مسافات مفردة</span>
+    return re.sub(r"\s+", " ", s.strip().lower())
+
+def metric_exact_match(prediction, targets):
+    p = normalize(prediction)
+    return 1.0 if any(normalize(t) == p for t in targets) else 0.0
+
+def metric_substring_contains(prediction, targets):
+    p = normalize(prediction)
+    return 1.0 if any(normalize(t) in p for t in targets) else 0.0
+
+def metric_multiple_choice(prediction, targets):   <span class="c"># أول حرف بس</span>
+    pred = prediction.strip()[:1].upper()
+    return 1.0 if pred in {t.strip()[:1].upper() for t in targets} else 0.0</pre></div>
+
+  <h3>خطوة ٣: ROUGE-L (الـ LCS + F1)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def _tokens(s):
+    return re.findall(r"[a-z0-9]+", s.lower())
+
+def _lcs_length(a, b):               <span class="c"># dynamic programming بصف واحد في الذاكرة</span>
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    for ai in a:
+        cur = [0] * (len(b) + 1)
+        for j, bj in enumerate(b):
+            if ai == bj:
+                cur[j + 1] = prev[j] + 1          <span class="c"># تطابق: زوّد على القطر</span>
+            else:
+                cur[j + 1] = max(prev[j + 1], cur[j])   <span class="c"># خد الأحسن من فوق أو من الشمال</span>
+        prev = cur
+    return prev[-1]
+
+def metric_rouge_l(prediction, targets):
+    pred = _tokens(prediction)
+    if not pred:
+        return 0.0
+    best = 0.0
+    for ref in targets:                         <span class="c"># أحسن مرجع من عدة مراجع</span>
+        r = _tokens(ref)
+        lcs = _lcs_length(pred, r) if r else 0
+        if lcs == 0:
+            continue
+        prec, rec = lcs / len(pred), lcs / len(r)
+        best = max(best, 2 * prec * rec / (prec + rec))
+    return best</pre></div>
+
+  <h3>خطوة ٤: code_exec في namespace مقيّد</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def metric_code_exec(prediction, targets, extras):
+    pairs = extras.get("io_pairs") or []
+    if not isinstance(pairs, list) or not pairs:
+        return 0.0
+    safe_globals = {"__builtins__": {"range": range, "len": len, "min": min,
+                                     "max": max, "abs": abs, "int": int, "float": float}}
+    local = {}
+    try:
+        exec(prediction, safe_globals, local)   <span class="c"># import os هيفشل هنا</span>
+    except Exception:
+        return 0.0
+    fn = local.get("f")
+    if not callable(fn):
+        return 0.0
+    correct = 0
+    for x, expected in pairs:
+        try:
+            if fn(x) == expected:
+                correct += 1
+        except Exception:
+            continue                            <span class="c"># خطأ في زوج واحد = صفر لزوج واحد</span>
+    return correct / len(pairs)
+
+METRIC_FNS = {                                  <span class="c"># dispatch بالاسم</span>
+    "exact_match": lambda p, t, e: metric_exact_match(p, t),
+    "substring_contains": lambda p, t, e: metric_substring_contains(p, t),
+    "multiple_choice": lambda p, t, e: metric_multiple_choice(p, t),
+    "rouge_l": lambda p, t, e: metric_rouge_l(p, t),
+    "code_exec": lambda p, t, e: metric_code_exec(p, t, e),
+}</pre></div>
+
+  <h3>خطوة ٥: تحميل المهام والـ Runner</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def load_task_jsonl(path):
+    out = []
+    for n, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):       <span class="c"># تعليقات وسطور فاضية</span>
+            continue
+        obj = json.loads(raw)
+        out.append(Example(str(obj.get("id", f"ex-{n}")), obj["prompt"],
+                           list(obj["targets"]), obj["metric"], dict(obj.get("extras", {}))))
+    return out
+
+def run_task(name, examples, adapter, batch_size=8):
+    if batch_size <= 0:
+        raise ValueError("batch_size must be > 0")
+    metric = examples[0].metric
+    assert all(e.metric == metric for e in examples), "task mixes metrics"
+    fn, total_score, per = METRIC_FNS[metric], 0.0, []
+    start = time.perf_counter()
+    for i in range(0, len(examples), batch_size):
+        chunk = examples[i:i + batch_size]
+        outs = adapter.generate([e.prompt for e in chunk])
+        if len(outs) != len(chunk):
+            raise ValueError("adapter returned wrong number of outputs")
+        for e, o in zip(chunk, outs):
+            s = fn(o, e.targets, e.extras)
+            total_score += s
+            per.append({"id": e.id, "prediction": o, "score": s})
+    ms = (time.perf_counter() - start) * 1000
+    return TaskResult(name, metric, total_score / len(examples),
+                      int(round(total_score)), len(examples), per, ms)</pre></div>
+
+  <h3>خطوة ٦: الـ Leaderboard وكتابة الـ JSON</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def run_leaderboard(tasks, adapter, batch_size=8):
+    results = [run_task(n, tasks[n], adapter, batch_size) for n in sorted(tasks)]
+    overall = sum(r.score for r in results) / len(results) if results else 0.0
+    return overall, results
+
+def write_leaderboard(path, overall, results, adapter_name, include_per_example=False):
+    payload = {"schema": "leaderboard.v1", "timestamp": time.time(),   <span class="c"># schema = نقطة الـ migration</span>
+               "overall_score": overall, "adapter": adapter_name,
+               "tasks": [{"task": r.task, "metric": r.metric, "score": r.score,
+                          "correct": r.correct, "total": r.total, "latency_ms": r.latency_ms,
+                          **({"per_example": r.per_example} if include_per_example else {})}
+                         for r in results]}
+    path.write_text(json.dumps(payload, indent=2) + "\n")</pre></div>
+  <p>جرّب بإيدك: اعمل adapter «غبي» بيرجّع <code>""</code> دايمًا (<span class="ltr">return [""] * len(prompts)</span>) وشغّل الـ runner. المفروض الـ overall يبقى ٠٫٠ زي ما اختبار الـ stub في <code>test_main.py</code> بيثبت. ولو عندك pytest شغّل اختبارات الدرس: <span class="ltr">python3 -m pytest phases/19-capstone-projects/49-lm-eval-harness/code/test_main.py</span>.</p>
+
+  <h3>الاستخدام الحقيقي: adapter لموديل فعلي</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class HttpAdapter:
+    name = "vendor.v1"
+
+    def __init__(self, endpoint, api_key):
+        self.endpoint = endpoint
+        self.api_key = api_key
+
+    def generate(self, prompts):
+        out = []
+        for prompt in prompts:
+            response = http_post(self.endpoint, prompt, self.api_key)  <span class="c"># دالة من عندك</span>
+            out.append(response["text"])
+        return out</pre></div>
+  <p>بدّل <code>ToyAdapter</code> بـ <code>HttpAdapter</code> في أول <span class="ltr">main()</span>، والـ tasks والـ metrics والـ leaderboard يفضلوا زي ما هم. وفيه ٣ عادات لازم تلتزم بيها في أي مشروع حقيقي: <b>ثبّت ملفات المهام</b> (hash أو انسخها جنب الـ leaderboard) وإلا السكور يتحرك لما الملف يتحرك ومش هتعرف السبب؛ <b>اعمل diff للتوقعات مش للسكور بس</b> بالـ <code>--include-per-example</code>؛ و<b>حدّد حجم الـ batch</b> صغير عشان الـ rate limits.</p>
+</section>
+
+<section id="d477-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li>أضف مهمة سادسة بـ metric من تأليفك من الصفر (زي overlap شبه BLEU، أو أي حاجة ليها عقد واضح).
+      <details><summary>تلميح</summary>اكتب الدالة بنفس التوقيع <span class="ltr">(prediction, targets, extras) → float</span>، وزوّدها في <span class="ltr">METRIC_FNS</span> باسم جديد، واعمل ملف <code>.jsonl</code> بالاسم ده. مثلًا unigram overlap: عدد الكلمات المشتركة ÷ عدد كلمات التوقع. ماتنساش تكتب لها unit test صغير بحالات حدّية (توقع فاضي، مفيش تطابق).</details></li>
+    <li>وسّع <code>code_exec</code> عشان يلتقط الـ stdout ويقبل قايمة stdout متوقعة كـ targets.
+      <details><summary>تلميح</summary>حوّل <span class="ltr">sys.stdout</span> لـ <span class="ltr">io.StringIO</span> وقت الـ <span class="ltr">exec</span> (<span class="ltr">contextlib.redirect_stdout</span>)، وبعدها قارن النص الملتقط بالـ target بعد <code>normalize</code>. مهم: لازم تضيف <code>print</code> للـ builtins المسموحة في الـ namespace وإلا الكود مش هيقدر يطبع.</details></li>
+    <li>اعمل أمر diff للـ leaderboard: ياخد ملفي <code>leaderboard.json</code> ويطبع أنهي مهام اتحركت وبكام.
+      <details><summary>تلميح</summary>حمّل الملفين، ابني dict من <span class="ltr">task → score</span> لكل واحد، والف على اتحاد الأسماء، واطبع الفرق <span class="ltr">new - old</span> لو مش صفر. ماتنساش مهمة موجودة في ملف وناقصة في التاني، واطبع الـ overall كمان.</details></li>
+    <li>حدّد latency أقصى لكل مثال: لف نداء الـ adapter بـ timeout واعرض عمود <code>timeouts</code> منفصل في الـ leaderboard.
+      <details><summary>تلميح</summary>الأسهل <span class="ltr">concurrent.futures.ThreadPoolExecutor</span> مع <span class="ltr">future.result(timeout=...)</span>. الـ timeout يتحسب «مثال فاشل» بدرجة صفر وعدّاد <code>timeouts</code> يزيد، من غير ما يوقف التشغيل كله.</details></li>
+    <li>ثبّت محتوى المهام بـ sha256 داخل الـ leaderboard عشان أي حد بعدك يتأكد إنكم سكّرتوا نفس المهام.
+      <details><summary>تلميح</summary><span class="ltr">hashlib.sha256(path.read_bytes()).hexdigest()</span> لكل ملف مهمة، وخزّنهم في حقل <code>task_hashes</code> (dict بالاسم) جنب الـ schema. وده بيسهّل فهم سبب تحرك السكور.</details></li>
+    <li><b>تمرين إضافي مني (عملي):</b> اعمل adapter ثاني اسمه <code>FlakyAdapter</code> بيجاوب صح أول ٣ أمثلة في كل batch وغلط الباقي، وشغّله بـ batch_size = 2 ثم 8 ثم 20. إيه اللي بيتغير في السكور ولماذا؟ وكمان اكتب اختبار بيثبت إن الـ runner يرفع إيرور لو الـ adapter رجّع عدد مخرجات غلط.
+      <details><summary>الإجابة</summary>السكور بيتغير لأن «أول ٣ في كل batch» بيتحسب حسب حدود الـ batch. كل مهمة فيها ٥ أمثلة: مع batch=2 الـ batches بتبقى ٢+٢+١ وكلها جوه أول ٣ فالسكور ١٫٠، ومع batch=8 أو 20 بيبقى batch واحد من ٥، فبيجاوب صح ٣ بس والسكور ٠٫٦. الدرس: سلوك الـ adapter لو اتأثر بحجم الـ batch يبقى الـ batch size جزء من نتيجة التقييم، ولازم تثبّته وتسجّله. اختبار الإيرور: adapter بيرجّع <span class="ltr">[]</span> و<span class="ltr">pytest.raises(ValueError)</span> حوالين <span class="ltr">run_task</span>.</details></li>
+  </ol>
+</section>
+
+<section id="d477-own">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مش بيقوله</h2></div>
+  <div class="note ai"><strong>إضافة من عندي، مش من الدرس.</strong></div>
+  <ul>
+    <li><b>الحدس:</b> الـ harness هو unit test للموديل. زي ما مش بتشحن كود من غير tests، متشحنش موديل (أو prompt جديد أو quantization) من غير ما تشغّل نفس المهام وتقارن بالرقم القديم.</li>
+    <li><b>أخطاء شائعة:</b> (١) metric مرنة زيادة (substring_contains) بتدّي ١٫٠ لرد غلط فيه الكلمة صدفة. (٢) metric صارمة زيادة (exact_match) بتعاقب إجابة صح بصيغة مختلفة مثل «4.0» بدل «4». لاحظ إن الدرس نفسه بيستخدم target «25.0» للقسمة. (٣) عدد أمثلة قليل: ٥ أمثلة يعني كل مثال بـ ٢٠٪، والفرق بين موديلين ممكن يكون ضوضاء. (٤) تغيير المهام والـ adapter في نفس الوقت، فمتعرفش مين حرّك الرقم.</li>
+    <li><b>تسريب الـ test set (contamination):</b> لو أمثلة التقييم دخلت في بيانات تدريب الموديل، الدرجة العالية مش معناها فهم. ولو ظبطت الـ prompts على الموديل لحد ما الدرجة تعلى، بقى الـ harness نفسه over-fitted. احتفظ بمهام «مخفية» ماتعدّلش عليها.</li>
+    <li><b>بيظهر فين في الـ LLMs والـ agents:</b> نفس الشكل (task + metric + adapter + leaderboard) هو شكل <span class="ltr">lm-evaluation-harness</span> و<span class="ltr">lighteval</span> (المرجع اللي الدرس بيشاور عليه). وفي الـ agents بتتحول المهمة لـ «شغّل الـ agent وشوف الـ environment وصل للحالة المطلوبة؟»، والـ metric بقت «هل الاختبارات عدّت؟» (زي code_exec بالظبط).</li>
+  </ul>
+</section>
+
+<section id="d477-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d477-quizBox"></div>
+</section>
+
+<section id="d477-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d477-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم شكل سطر الـ JSONL وإزاي extras بتوصل للـ metric</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أحسب ROUGE-L على جملتين بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه الـ adapter هو المكان الوحيد الخاص بالموديل</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ harness بإيدي وشغّلته وطلع overall = 1.0</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Task spec (JSONL)</td><td>datasets الـ evals، سجلات تقييم الـ agents</td></tr>
+    <tr><td>Metric بدرجة 0..1</td><td>exact match في QA، ROUGE في الـ summarization، pass@k في الكود</td></tr>
+    <tr><td>Adapter</td><td>أي مكتبة تقييم بتدعم أكتر من provider</td></tr>
+    <tr><td>Leaderboard مع schema</td><td>داشبوردات المقارنة، الـ regression tests في الـ CI</td></tr>
+    <tr><td>Restricted exec</td><td>تقييم توليد الكود (HumanEval-style)، sandboxes لأدوات الـ agents</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Hypothesis Generator: هنبني مولّد فرضيات بيرفع الـ temperature في كل pass وبيفلتر التكرار بالـ embeddings، وبيطلّع طابور مرتب للـ research loop.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F49-lm-eval-harness" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT License) · شرح بالعربي: Mostafa Eliwa</span>
+  <span class="ltr">phases/19-capstone-projects/49-lm-eval-harness</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=477,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d477-roadmap').closest('.day');
+const rm=$('d477-roadmap');
+for(let i=1;i<=85;i++){const s=document.createElement('span');s.textContent=i;if(i===N-430)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: ROUGE-L LCS table ----
+const pairs=[
+ ['cats are mammals','cats are mammals'],
+ ['cats are warm blooded mammals','cats are mammals'],
+ ['dogs are mammals','cats are mammals'],
+ ['mammals are cats','cats are mammals']];
+const tok=s=>s.toLowerCase().match(/[a-z0-9]+/g)||[];
+const lab1Rows=[],lab1Cols=[];
+L.heatmap($('d477-lab1'),{rows:lab1Rows,cols:lab1Cols,fmt:0,
+ params:[{k:'k',label:'الزوج (0..3)',min:0,max:3,step:1,v:1}],
+ values:p=>{const a=tok(pairs[p.k][0]),b=tok(pairs[p.k][1]);
+  lab1Rows.length=0;a.forEach(x=>lab1Rows.push(x));lab1Cols.length=0;b.forEach(x=>lab1Cols.push(x));
+  let prev=new Array(b.length+1).fill(0);const T=[];
+  for(const ai of a){const cur=new Array(b.length+1).fill(0);
+   for(let j=0;j<b.length;j++){cur[j+1]=ai===b[j]?prev[j]+1:Math.max(prev[j+1],cur[j])}
+   T.push(cur.slice(1));prev=cur}
+  return T},
+ readout:p=>{const a=tok(pairs[p.k][0]),b=tok(pairs[p.k][1]);
+  let prev=new Array(b.length+1).fill(0);
+  for(const ai of a){const cur=new Array(b.length+1).fill(0);
+   for(let j=0;j<b.length;j++){cur[j+1]=ai===b[j]?prev[j]+1:Math.max(prev[j+1],cur[j])}prev=cur}
+  const l=prev[b.length],pr=l/a.length,rc=l/b.length,f=l?2*pr*rc/(pr+rc):0;
+  return [['pred',pairs[p.k][0]],['ref',pairs[p.k][1]],['LCS',l],['precision',pr],['recall',rc],['F1',f]]},
+ note:p=>p.k===0?'تطابق كامل: F1 = 1':p.k===3?'نفس الكلمات بترتيب تاني: الـ LCS اتقلّص':'الكلمات الزيادة بتقلل الـ precision'});
+
+// ---- Lab 2: pipeline flow ----
+L.flow($('d477-lab2'),{height:340,label:'مسار مثال واحد في الـ harness',
+ nodes:[{id:'t',label:'tasks/*.jsonl',x:0,y:0.1},{id:'l',label:'load_all_tasks',x:0.5,y:0.1},{id:'r',label:'run_task',x:1,y:0.1},
+  {id:'a',label:'adapter.generate',x:1,y:0.5},{id:'m',label:'METRIC_FNS',x:0.5,y:0.5},{id:'s',label:'task score',x:0,y:0.5},
+  {id:'b',label:'run_leaderboard',x:0,y:0.9},{id:'j',label:'leaderboard.json',x:1,y:0.9}],
+ edges:[['t','l'],['l','r','Example'],['r','a','prompts'],['a','m','outputs'],['m','s','0..1'],['s','b','mean'],['b','j','schema v1']],
+ steps:[
+  {active:['t'],text:'<b>١.</b> مهمة = ملف JSONL. كل سطر فيه prompt وtargets وmetric.'},
+  {active:['t','l'],edges:[['t','l']],text:'<b>٢.</b> الـ loader بيقرا كل .jsonl ويتخطى التعليقات والسطور الفاضية.'},
+  {active:['l','r'],edges:[['l','r']],text:'<b>٣.</b> الـ runner بياخد أمثلة المهمة ويقسّمها batches.'},
+  {active:['r','a'],edges:[['r','a']],text:'<b>٤.</b> كل batch يروح للـ adapter: الحتة الوحيدة اللي بتكلم الموديل.'},
+  {active:['a','m'],edges:[['a','m']],text:'<b>٥.</b> ردّ الموديل بيتسلّم للـ metric المناسبة (بالاسم من الجدول).'},
+  {active:['m','s'],edges:[['m','s']],text:'<b>٦.</b> كل مثال بياخد درجة بين 0 و1، ومتوسطها هو درجة المهمة.'},
+  {active:['s','b'],edges:[['s','b']],text:'<b>٧.</b> الـ overall = متوسط درجات كل المهام.'},
+  {active:['b','j'],edges:[['b','j']],text:'<b>٨.</b> الناتج JSON فيه schema وكل المهام، تقدر تعمله diff مع تشغيل إمبارح.'}]});
+
+// ---- Lab 3a: overall bars ----
+const names=['arithmetic','code-exec','generation','mult-choice','summary'];
+L.bars($('d477-lab3a'),{labels:names,height:260,max:1,
+ params:names.map((n,i)=>({k:'s'+i,label:n,min:0,max:1,step:0.05,v:[1,0.67,0.8,0.6,0.9][i]})),
+ values:p=>names.map((n,i)=>p['s'+i]),
+ readout:p=>{const m=names.reduce((a,n,i)=>a+p['s'+i],0)/names.length;return [['overall',m],['أضعف مهمة',names[names.map((n,i)=>p['s'+i]).indexOf(Math.min(...names.map((n,i)=>p['s'+i])))]]]},
+ note:p=>'الـ overall متوسط حسابي: الأضعف بيتخبّى فيه، فاتبع الـ diff'});
+
+// ---- Lab 3b: batching + code_exec ----
+L.calc($('d477-lab3b'),{
+ params:[{k:'n',label:'عدد الأمثلة',min:1,max:100,step:1,v:23},{k:'bs',label:'batch_size',min:1,max:16,step:1,v:4},{k:'ok',label:'أزواج code_exec صح (من 5)',min:0,max:5,step:1,v:3}],
+ compute:p=>{const b=Math.ceil(p.n/p.bs),last=p.n-(b-1)*p.bs;return [['عدد نداءات generate',b],['حجم آخر batch',last],['درجة code_exec',p.ok/5]]},
+ note:p=>p.bs>8?'batch كبير: انتبه لحدود الـ rate limit عند الـ vendor':'تمام'});
+
+// ---- Quiz ----
+AI.quiz($('d477-quizBox'),[
+ ['إيه الحقول الأساسية اللي بتعرّف مثال في ملف JSONL بتاع الـ harness؟',['id و prompt و targets و metric، ومعاهم extras اختياري لبيانات جانبية للـ metric','name و score و payload و vendor','weights و bias بس','input و output بس'],0,'سطر الـ JSONL هو العقد. حقل extras بيسمح لـ code_exec يستلم io_pairs من غير ما يلوّث الـ prompt.'],
+ ['ليه توقيع الـ metric هو (prediction, targets, extras) → float؟',['عشان يرجّع integer','عشان يحتاج object الموديل','لأنه أصغر توقيع بيغطي المطابقة بهدف واحد، وrouge-l بعدة مراجع، وcode_exec ببيانات جانبية، مع إبقاء الدرجات في [0.0, 1.0] قابلة للمقارنة','اختيار عشوائي'],2,'الأرقام بين 0 و1 بتخلي متوسط المهمة والـ overall قابلين للتفسير، وslot الـ extras هو اللي بيوصّل io_pairs لـ code_exec.'],
+ ['إزاي metric الـ code_exec بتقاوم التوقعات الخبيثة؟',['بتستخدم sandbox containers','بتشغّل التوقع بـ __builtins__ مقلّصة لأسماء قليلة، فـ import بيفشل لأن الـ importer مش موجود في الـ namespace','مش بتقاوم','بترفض أي نص فيه كلمة def'],1,'الـ namespace الآمن مقلّص لشوية أسماء. اختبار الدرس بيثبت إن import os بيرجّع 0.0 بدل ما يتنفذ.'],
+ ['الـ adapter بيدّيك إيه؟',['هو الكود الوحيد الخاص بالموديل: بدّله وانت بتغير الـ vendor، والمهام والـ metrics والـ runner وشكل الـ leaderboard تفضل زي ما هي','مطلوب من torch','مفيش فايدة','بيخلي الموديل أسرع'],0,'ToyAdapter في الدرس pattern matcher ثابت. أي HttpAdapter لموديل حقيقي له نفس واجهة generate(prompts) → list[str].'],
+ ['ليه الـ leaderboard JSON فيه schema string زي leaderboard.v1؟',['عشان أي تغيير في الشكل مستقبلًا يغيّر النسخة، والداشبوردات تتصرف على أساسها بدل ما تتكسر بصمت','عشان يضغط الملف','للـ SEO','عشوائي'],0,'نفس حيلة payload الـ checkpoint من الدرس ٤٧. الـ schema هو نقطة الـ migration.'],
+ ['الـ overall_score بيتحسب إزاي، وإيه اللي تنتبه له وانت بتقارن تشغيلين؟',['عينة عشوائية','مجموع الـ correct counts','متوسط درجات المهام (كل واحدة في [0,1])؛ وعند المقارنة اعمل diff للتوقعات في المهام اللي درجتها اتحركت، لأن السكور لوحده بيخبّي أنهي أمثلة وقعت','أحسن مهمة'],2,'متوسط المتوسطات بيدّي كل مهمة نفس الوزن. استخدم --include-per-example عشان تحتفظ بدليل التوقعات جنب السكور.'],
+ ['(سؤال مني) رد الموديل على «compute: 100 / 4» كان «25» وtarget هو «25.0». metric = exact_match. الدرجة؟',['1.0 لأن القيمتين متساويتين رياضيًا','0.0 لأن النصين مختلفين بعد التطبيع','0.5 درجة جزئية','هيرفع إيرور'],1,'exact_match بتقارن النص بعد lowercase ودمج المسافات بس، مش القيمة الرقمية. عشان كده الـ target في الدرس هو «25.0». لو عايز مرونة تحتاج metric رقمية.'],
+ ['(سؤال مني) غيّرت ملف مهمة وفي نفس الوقت بدّلت الـ adapter، والسكور زاد ٥٪. إيه المشكلة؟',['مفيش مشكلة','مش هتعرف الزيادة جاية من الموديل ولا من تغيير المهام، فثبّت واحد وغيّر التاني، وسجّل hash للمهام','لازم تزوّد batch_size','لازم تحذف الـ schema'],1,'الـ harness المفروض يتحرك بس لما تبدّل الـ adapter أو المهام، وواحد في المرة. ولذلك ثبّت المهام بـ hash.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

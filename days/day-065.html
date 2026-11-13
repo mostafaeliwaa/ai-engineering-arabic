@@ -1,0 +1,337 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 04 · Lesson 09 · Image Generation — GANs</span>
+  <h1>اليوم ٦٥: GANs، مزوّر ومفتّش بيتعلموا مع بعض</h1>
+  <p class="lede">النهاردة هتفهم لعبة الـ GAN بين المولّد والمفتّش، وليه الـ loss بيتقلب (non-saturating)، وقواعد الـ DCGAN، وإزاي تعرف إن التدريب باظ (mode collapse وغيره). وهتكتب DCGAN كامل بتولّد بيه دواير ملونة.</p>
+  <div class="meta"><span>الوقت: <b>~٧٥ دقيقة</b></span><span>اللغة: <b>Python</b> (PyTorch)</span><span>قبله: <b>Mask R-CNN</b></span><span>بعده: <b>Diffusion Models</b></span></div>
+  <div><span class="eyebrow">Phase 04 — 25 lessons</span>
+    <div class="roadmap" id="d65-roadmap" aria-label="دروس الفيز"></div></div>
+</header>
+<section id="d65-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه الفرق بين الـ semantic segmentation والـ instance segmentation؟
+      <details><summary>الإجابة</summary>الـ semantic بيدّي mask واحد لكل class (كل العربيات mask واحد). الـ instance بيدّي mask لكل جسم لوحده حتى لو من نفس الـ class، وده اللي بنحتاجه في العدّ والتتبع.</details></li>
+    <li>ليه RoIAlign بقى بديل لـ RoIPool في Mask R-CNN؟
+      <details><summary>الإجابة</summary>لأن حدود الـ proposal box مش بتقع على حدود البيكسلات بالظبط. الـ RoIPool بيقرّب الإحداثيات لأرقام صحيحة فالـ mask بيتزحزح. الـ RoIAlign بيعمل sampling بـ bilinear interpolation من غير تقريب.</details></li>
+    <li>اذكر مكوّنات Mask R-CNN بالترتيب.
+      <details><summary>الإجابة</summary>Backbone (ResNet) ← FPN ← RPN بيطلّع proposals ← RoIAlign ← box head (class + تعديل الصندوق) وmask head ← NMS ← boxes + classes + masks. وفي الـ fine-tuning بنبدّل الـ heads ونجمّد الـ backbone.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan"><div><b>5 min</b>التسخين</div><div><b>20 min</b>فكرة اللعبة والـ loss والـ DCGAN</div><div><b>15 min</b>الأعطال وطرق التقييم + المعامل</div><div><b>25 min</b>اكتب الكود وشغّله</div><div><b>10 min</b>تمارين وكويز</div></div>
+</section>
+
+<section>
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: إزاي تعلّم شبكة تولّد صور؟</h2></div>
+  <p>الـ classification بيحوّل صورة لـ label. الـ <b>generation</b> العكس: عايزين نطلّع صور جديدة تبان إنها جت من نفس الداتا اللي اتدرّبنا عليها. المشكلة إن مفيش «إجابة صح» نقارن بيها ونطرح. فيه بس <i>توزيع</i> (distribution) عايزين نقلّده.</p>
+  <p>لو استخدمنا MSE أو cross-entropy ونقلل الفرق بين كل بيكسل، الشبكة بتطلّع <b>متوسط باهت</b> (blurry average) مش صورة حقيقية. الدوال دي مش بتعرف تقيس «هل العيّنة دي جت من التوزيع الحقيقي؟».</p>
+  <div class="note"><strong>الفكرة العبقرية:</strong> بدل ما نكتب الـ loss بإيدينا، <b>نتعلّمه</b>. ندرّب شبكة تانية شغلها تفرّق بين الحقيقي والمزيّف، ونستخدم حكمها عشان ندفع المولّد لقدام. دي فكرة GANs (Goodfellow وزمايله، 2014).</div>
+  <p>لحد 2018 كان StyleGAN بيطلّع وشوش 1024×1024 مش بتفرّقها عن الصور الحقيقية. الـ diffusion أخد الصدارة في الجودة والتحكم بعد كده، لكن كل حاجة بتخلّي الـ diffusion عملي (طرق الـ normalization، الـ latent spaces، الـ feature losses) اتفهمت الأول على الـ GANs. فتعلمها مش مضيعة وقت.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">02</span><h2>الشبكتين: المولّد والمفتّش</h2></div>
+  <p>الـ GAN شبكتين في لعبة ثابتة:</p>
+  <ul>
+    <li><b>Generator (G):</b> بياخد متجه noise <span class="ltr"><code>z ~ N(0, I)</code></span> ويطلّع صورة. بيستخدم transposed convolutions عشان يكبّر الحجم.</li>
+    <li><b>Discriminator (D):</b> بياخد صورة ويطلّع رقم واحد: احتمال إنها حقيقية. هو classifier عادي بـ convolutions.</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> مزوّر فلوس ومفتّش بنك. المزوّر بيطبع ورق، والمفتّش بيقول «مضروب» أو «سليم». كل مرة المفتّش يكشفه، المزوّر يتعلم يحسّن. وكل مرة المزوّر يحسّن، المفتّش لازم يبقى أدق. بعد فترة الورق المزوّر بقى شبه الأصلي لدرجة المفتّش يلعب بالعملة.</div>
+  <div class="formula">z ~ N(0,I) → G → fake image → D → P(real)       real image → D → P(real)</div>
+  <p>ملحوظة مهمة: مفيش «label» للصورة اللي G بيعملها. G بيتعلم بس من الإشارة اللي بتيجيله من D عن طريق الـ gradients.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">03</span><h2>اللعبة (Minimax) والتوازن</h2></div>
+  <p>الـ D عايز يبقى صح، والـ G عايز D يغلط. رياضيًا:</p>
+  <div class="formula">min_G max_D  E_x[ log D(x) ] + E_z[ log(1 − D(G(z))) ]</div>
+  <p>اقرأها كده: الـ D بيحاول يكبّر دقته على الصور الحقيقية (<span class="ltr"><code>log D(real)</code></span>) والمزيّفة (<span class="ltr"><code>log(1 − D(fake))</code></span>). والـ G بيحاول يصغّر دقة D على المزيّف، يعني عايز <span class="ltr"><code>D(G(z))</code></span> يبقى عالي.</p>
+  <p>Goodfellow أثبت إن للعبة دي توازن عالمي: <span class="ltr"><code>p_G = p_data</code></span>، والـ D بيطلّع <b>0.5 في كل مكان</b> (مش قادر يفرّق)، والـ Jensen-Shannon divergence بين التوزيعين بيبقى صفر. الصعوبة كلها في إننا نوصل للتوازن ده بالتدريب.</p>
+  <div class="note ai"><strong>لاحظ:</strong> لو D بيطلّع 0.5 دايمًا، ده معناه إن المزيّف والحقيقي مش بيتفرّقوا. ده هدف اللعبة، مش فشل في الـ D.</div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">04</span><h2>الـ Non-saturating loss</h2></div>
+  <p>الصيغة اللي فوق مش مستقرة عدديًا. في أول التدريب <span class="ltr"><code>D(G(z))</code></span> قريب من صفر لكل الصور المزيّفة (D بيكشفهم بسهولة)، فـ <span class="ltr"><code>log(1 − D(G(z)))</code></span> بتبقى مسطّحة وgradient بتاعها للـ G بيختفي (<b>vanishing gradients</b>). G متعلّق وماحدش بيقوله يتحسّن إزاي.</p>
+  <p>الحل: نقلب loss الـ G:</p>
+  <div class="formula">L_D = −E_x[log D(x)] − E_z[log(1 − D(G(z)))]
+L_G = −E_z[ log D(G(z)) ]     ← non-saturating</div>
+  <p>دلوقتي لما <span class="ltr"><code>D(G(z))</code></span> قريب من صفر، الـ loss بتاع G كبير والـ gradient مفيد. كل GAN حديث بيتدرب بالنسخة دي.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ليه الـ gradient بيختفي؟</h3>
+      <p>حرّك <span class="ltr"><code>D(G(z))</code></span> من 0 لـ 1. المنحنيين بيوروك حجم الـ gradient اللي بيوصل لـ G (بالنسبة لـ logit الـ D). لو الصيغة الأصلية: الـ gradient = <span class="ltr"><code>D(G(z))</code></span> نفسه، يعني قريب من صفر لما D واثق إن الصورة مزيّفة. الصيغة المقلوبة: <span class="ltr"><code>1 − D(G(z))</code></span> يعني كبير بالظبط وقت ما G محتاجه.</p>
+      <div class="note ai"><strong>جرّب:</strong> حط الـ slider على 0.02 (أول التدريب). مين فيهم بيدّي إشارة؟</div>
+    </div>
+    <div id="d65-lab1"></div>
+  </div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">05</span><h2>قواعد الـ DCGAN الخمسة</h2></div>
+  <p>Radford وMetz وChintala (2015) لخّصوا سنين من التجارب الفاشلة في خمس قواعد بتخلّي التدريب مستقر:</p>
+  <ol>
+    <li>استبدل الـ pooling بـ <b>strided convolutions</b> في الشبكتين. (الـ pooling اختيار يدوي بيرمي معلومات، والـ strided conv بتتعلم تصغّر إزاي.)</li>
+    <li>استخدم <b>batch norm</b> في G وD، ما عدا مخرج G ومدخل D.</li>
+    <li>شيل الـ fully connected layers في الشبكات العميقة.</li>
+    <li>الـ G يستخدم <b>ReLU</b> في كل الطبقات ما عدا الأخيرة اللي بتستخدم <b>tanh</b> (المخرج بين -1 و1).</li>
+    <li>الـ D يستخدم <b>LeakyReLU</b> (<span class="ltr"><code>negative_slope=0.2</code></span>) في كل الطبقات.</li>
+  </ol>
+  <p>كل GAN حديث (StyleGAN, BigGAN, GigaGAN) لسه بيبدأ من القواعد دي ويستبدل حتة حتة.</p>
+  <div class="note"><strong>حساب حجم الـ transposed conv:</strong> <span class="ltr"><code>out = (in − 1)·stride − 2·pad + kernel</code></span>. مع <span class="ltr"><code>kernel=4, stride=2, padding=1</code></span> بتطلع <span class="ltr"><code>2·in</code></span> بالظبط، يعني الحجم بيتضاعف. وأول طبقة بـ <span class="ltr"><code>kernel=4, stride=1, padding=0</code></span> بتحوّل <span class="ltr"><code>1×1</code></span> لـ <span class="ltr"><code>4×4</code></span>. فالمسار في الكود: <span class="ltr"><code>1 → 4 → 8 → 16 → 32</code></span>.</div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">06</span><h2>أعطال الـ GAN وإزاي تعرفها</h2></div>
+  <p>ما فيش ground truth، فلازم تقرا الأعراض. تلات أعطال مشهورة:</p>
+  <div class="tablewrap"><table>
+    <tr><th>العطل</th><th>العَرَض</th><th>العلاج</th></tr>
+    <tr><td><b>Mode collapse</b>: G لقى صورة واحدة بتضحك على D فبقى بيطلّعها بس</td><td>D loss واطي، G loss بيتذبذب، تنوّع العيّنات بيقل</td><td>minibatch discrimination، spectral norm، conditioning على label</td></tr>
+    <tr><td><b>D بيكسب بالضربة القاضية</b> (vanishing gradients)</td><td>D accuracy قريبة من 100%، وG loss كبير وثابت</td><td>D أصغر، learning rate أقل لـ D، label smoothing (0.9 بدل 1.0)</td></tr>
+    <tr><td><b>Oscillation</b>: كل واحد بيكسب مرة وبيرجع</td><td>الـ lossين بيتأرجحوا بشدة من غير اتجاه نازل</td><td>TTUR (D أسرع من G بـ 2 لـ 4 مرات) أو Wasserstein loss</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: شوف الـ mode collapse</h3>
+      <p>عندنا داتا حقيقية فيها 8 «أنواع» (modes) متساوية. الـ slider بيمثل قد إيه G اتمركز على نوع واحد. لما يبقى 0 كل الأنواع موجودة. لما يقرب من 1، G بيطلّع نوع واحد تقريبًا.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الصور اللي بيطلّعها G ممكن كل واحدة منها تبان ممتازة، ومع ذلك الموديل فاشل لأنه مش بيغطي التوزيع. عشان كده الـ FID وحده مش كفاية، ومحتاج تبص على recall كمان.</div>
+    </div>
+    <div id="d65-lab2"></div>
+  </div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">07</span><h2>إزاي تقيّم GAN؟</h2></div>
+  <ul>
+    <li><b>فحص العيّنات بالعين:</b> بصّ على 64 عيّنة في آخر كل epoch. ده مش اختياري.</li>
+    <li><b>FID (Fréchet Inception Distance):</b> المسافة بين توزيع features الـ Inception-v3 للصور الحقيقية والمولّدة. كل ما قلّ كان أحسن. المعيار المتفق عليه.</li>
+    <li><b>Inception Score:</b> أقدم وأهش. فضّل FID.</li>
+    <li><b>Precision/Recall للموديلات التوليدية:</b> بيقيس الجودة (precision) والتغطية (recall) كل واحدة لوحدها. أكتر فايدة من FID لوحده.</li>
+  </ul>
+  <p>في تجربة صغيرة على داتا صناعية، الفحص بالعين كفاية.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">08</span><h2>خطوة التدريب: بالترتيب وبـ detach</h2></div>
+  <p>كل batch بنعمل خطوتين: نحدّث D مرة، وبعدين نحدّث G مرة. نقطة الخطورة هي <span class="ltr"><code>G(z).detach()</code></span> في خطوة D: مش عايزين gradients تسري جوه G وإحنا بنحدّث D. نسيانها هو أشهر bug للمبتدئين.</p>
+  <p>والـ optimizer هو <span class="ltr"><code>Adam(lr=2e-4, betas=(0.5, 0.999))</code></span>. الـ beta1 الواطي (0.5 بدل 0.9) بيقلل الـ momentum، لأن في لعبة بتتغير كل خطوة، momentum تقيل بيخلي كل optimizer يكمّل في اتجاه غلط وقت طويل ويسبب عدم استقرار.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: خطوة تدريب واحدة</h3>
+      <p>اضغط «اللي بعدها» وراقب مين اللي شغال ومين متجمّد في كل مرحلة. لاحظ إن في الخطوة الأولى الـ gradient بيقف عند D، وفي التانية بيعدّي من D لحد G لكن بنحدّث G بس.</p>
+    </div>
+    <div id="d65-lab3"></div>
+  </div>
+</section>
+<section>
+  <div class="station-head"><span class="tag">09</span><h2>Spectral Norm وTTUR: الإصلاحات السريعة</h2></div>
+  <p><b>Spectral normalisation:</b> بديل لـ BN في الـ D بيضمن إن الشبكة 1-Lipschitz (مش بتبقى حادة أوي). بيحل معظم حالات «D بيكسب جامد». لو بدّلت الـ Discriminator بنسخة spectral norm غالبًا مش هتحتاج TTUR. هو أسهل ترقية للمتانة بتعملها.</p>
+  <p><b>TTUR:</b> D يتعلم أسرع من G بمعامل 2 لـ 4 (learning rates مختلفة). بيهدّي التأرجح.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">10</span><h2>اكتب الكود خطوة خطوة</h2></div>
+  <div class="note ai"><strong>اكتب بإيدك:</strong> افتح ملف جديد واكتب كل خطوة بنفسك (حتى لو هتبص على المثال). الكتابة بتخلّي شكل الأبعاد يثبت في دماغك. تحتاج <span class="ltr"><code>torch</code></span> و<span class="ltr"><code>numpy</code></span>.</div>
+  <h3>خطوة ١: الـ Generator</h3>
+  <p>بياخد noise طوله 64 ويطلّع صورة 32×32. أربع transposed convs: الأولى 1→4 والباقي بيضاعف.</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+
+class Generator(nn.Module):
+    def __init__(self, z_dim=64, img_channels=3, feat=64):
+        super().__init__()
+        self.net = nn.Sequential(
+            # 1x1 -&gt; 4x4
+            nn.ConvTranspose2d(z_dim, feat * 4, kernel_size=4, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(feat * 4),
+            nn.ReLU(inplace=True),
+            # 4x4 -&gt; 8x8
+            nn.ConvTranspose2d(feat * 4, feat * 2, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(feat * 2),
+            nn.ReLU(inplace=True),
+            # 8x8 -&gt; 16x16
+            nn.ConvTranspose2d(feat * 2, feat, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(feat),
+            nn.ReLU(inplace=True),
+            # 16x16 -&gt; 32x32 ، وtanh عشان المخرج بين -1 و 1
+            nn.ConvTranspose2d(feat, img_channels, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.Tanh(),
+        )
+
+    def forward(self, z):
+        # z شكلها (B, z_dim) ... بنحوّلها لـ (B, z_dim, 1, 1)
+        return self.net(z.view(z.size(0), -1, 1, 1))</pre></div>
+  <h3>خطوة ٢: الـ Discriminator</h3>
+  <p>مرآة للـ Generator: LeakyReLU وstrided convs وبينتهي بـ logit واحد. من غير sigmoid، لأن الـ loss هيعملها جواه.</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>class Discriminator(nn.Module):
+    def __init__(self, img_channels=3, feat=64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(img_channels, feat, kernel_size=4, stride=2, padding=1),   # من غير BN في أول طبقة
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(feat, feat * 2, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(feat * 2),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(feat * 2, feat * 4, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(feat * 4),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(feat * 4, 1, kernel_size=4, stride=1, padding=0),          # 4x4 -&gt; 1x1
+        )
+
+    def forward(self, x):
+        return self.net(x).view(-1)   # رقم واحد (logit) لكل صورة</pre></div>
+  <h3>خطوة ٣: خطوة التدريب</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch.nn.functional as F
+
+def train_step(G, D, real, z, opt_g, opt_d, device):
+    real = real.to(device)
+
+    # --- خطوة D: عايزه يدّي 1 للحقيقي و 0 للمزيّف ---
+    opt_d.zero_grad()
+    d_real = D(real)
+    d_fake = D(G(z).detach())            # detach مهمة: ماتسيبش gradient يدخل G هنا
+    loss_d = (F.binary_cross_entropy_with_logits(d_real, torch.ones_like(d_real))
+              + F.binary_cross_entropy_with_logits(d_fake, torch.zeros_like(d_fake)))
+    loss_d.backward()
+    opt_d.step()
+
+    # --- خطوة G: non-saturating، عايز D يقول 1 على المزيّف ---
+    opt_g.zero_grad()
+    d_fake = D(G(z))
+    loss_g = F.binary_cross_entropy_with_logits(d_fake, torch.ones_like(d_fake))
+    loss_g.backward()
+    opt_g.step()
+
+    return loss_d.item(), loss_g.item()</pre></div>
+  <h3>خطوة ٤: داتا صناعية وحلقة التدريب</h3>
+  <p>دواير ملونة على خلفية سودا. صغيرة وبسيطة فتتدرب على CPU.</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>from torch.utils.data import DataLoader, TensorDataset
+import numpy as np
+
+def synthetic_images(num=2000, size=32, seed=0):
+    rng = np.random.default_rng(seed)
+    imgs = np.zeros((num, 3, size, size), dtype=np.float32) - 1.0   # خلفية = -1
+    for i in range(num):
+        r = rng.uniform(6, 12)
+        cx, cy = rng.uniform(r, size - r, size=2)
+        yy, xx = np.meshgrid(np.arange(size), np.arange(size), indexing=&quot;ij&quot;)
+        mask = (xx - cx) ** 2 + (yy - cy) ** 2 &lt; r ** 2
+        color = rng.uniform(-0.5, 1.0, size=3)
+        for c in range(3):
+            imgs[i, c][mask] = color[c]
+    return torch.from_numpy(imgs)
+
+device = &quot;cuda&quot; if torch.cuda.is_available() else &quot;cpu&quot;
+data = synthetic_images()
+loader = DataLoader(TensorDataset(data), batch_size=64, shuffle=True)
+
+G = Generator(z_dim=64, img_channels=3, feat=32).to(device)
+D = Discriminator(img_channels=3, feat=32).to(device)
+opt_g = torch.optim.Adam(G.parameters(), lr=2e-4, betas=(0.5, 0.999))
+opt_d = torch.optim.Adam(D.parameters(), lr=2e-4, betas=(0.5, 0.999))
+
+for epoch in range(10):
+    for (batch,) in loader:
+        z = torch.randn(batch.size(0), 64, device=device)
+        ld, lg = train_step(G, D, batch, z, opt_g, opt_d, device)
+    print(f&quot;epoch {epoch}  D {ld:.3f}  G {lg:.3f}&quot;)</pre></div>
+  <h3>خطوة ٥: التوليد (sampling)</h3>
+  <p>دايمًا <span class="ltr"><code>G.eval()</code></span> قبل ما تولّد، لأن الـ batch norm هيستخدم الإحصائيات المخزّنة مش إحصائيات الـ batch.</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>@torch.no_grad()
+def sample(G, n=16, z_dim=64, device=&quot;cpu&quot;):
+    G.eval()
+    z = torch.randn(n, z_dim, device=device)
+    imgs = G(z)
+    imgs = (imgs + 1) / 2          # من [-1,1] لـ [0,1]
+    return imgs.clamp(0, 1)</pre></div>
+  <h3>خطوة ٦: Spectral normalisation</h3><div class="codebox"><button class="copy" type="button">Copy</button><pre>from torch.nn.utils import spectral_norm
+
+def build_sn_discriminator(img_channels=3, feat=64):
+    return nn.Sequential(
+        spectral_norm(nn.Conv2d(img_channels, feat, 4, 2, 1)),
+        nn.LeakyReLU(0.2, inplace=True),
+        spectral_norm(nn.Conv2d(feat, feat * 2, 4, 2, 1)),
+        nn.LeakyReLU(0.2, inplace=True),
+        spectral_norm(nn.Conv2d(feat * 2, feat * 4, 4, 2, 1)),
+        nn.LeakyReLU(0.2, inplace=True),
+        spectral_norm(nn.Conv2d(feat * 4, 1, 4, 1, 0)),   # مفيش BN هنا، الـ SN بدّلها
+    )</pre></div>
+  <h3>شغّل نسخة الريبو الجاهزة</h3>
+  <p>الملف الجاهز بيستخدم spectral norm، وبيدرّب 5 epochs على 400 صورة دواير، وبيطبع عدد الـ parameters وmatrix المتوسط للـ loss. من جذر الريبو:</p><div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/09-image-generation-gans/code/main.py</pre></div>
+  <p>المتوقع تشوف: سطر <span class="ltr"><code>G params: ...</code></span> وسطر <span class="ltr"><code>D params: ...</code></span>، وبعدين خمس سطور <span class="ltr"><code>epoch N  D x.xxx  G x.xxx</code></span>، وفي الآخر <span class="ltr"><code>generated shape: (8, 3, 32, 32)  range [0.xx, 1.00]</code></span>. الأرقام بالظبط هتختلف على جهازك. الشكل هو اللي يهمك: <span class="ltr"><code>(8, 3, 32, 32)</code></span> يعني 8 صور RGB بحجم 32×32.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">11</span><h2>في الواقع: استخدم إيه؟</h2></div>
+  <p>للتوليد الجدي استخدم أوزان جاهزة أو روح للـ diffusion. مكتبتين معروفين: <span class="ltr"><code>torch_fidelity</code></span> بتحسب FID وIS من غير ما تكتب كود تقييم، و<span class="ltr"><code>pytorch-gan-zoo</code></span> (قديمة) و<span class="ltr"><code>StudioGAN</code></span> فيهم تطبيقات مختبرة لـ DCGAN وWGAN-GP وSN-GAN وStyleGAN وBigGAN.</p>
+  <p>في 2026 لسه الـ GANs أحسن اختيار في: التوليد اللحظي (latency أقل من 10ms)، الـ style transfer، وترجمة الصورة لصورة بتحكم دقيق (Pix2Pix, CycleGAN). الـ diffusion أحسن في الواقعية والتحكم بالنص.</p>
+  <p>الدرس بيطلّع كمان ملفين في <span class="ltr"><code>outputs/</code></span>: prompt بيقرا وصف منحنى التدريب ويحدد العطل والعلاج، وskill بيكتب scaffold لـ DCGAN من <span class="ltr"><code>z_dim</code></span> وحجم الصورة وعدد القنوات.</p>
+</section>
+<section>
+  <div class="station-head"><span class="tag">12</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> درّب الـ DCGAN على الدواير واحفظ شبكة 16 عيّنة في آخر كل epoch. من أنهي epoch الدواير بتبقى دايرية بوضوح؟
+      <details><summary>تلميح / إجابة</summary>استخدم <span class="ltr"><code>sample(G)</code></span> و<span class="ltr"><code>torchvision.utils.save_image(imgs, f"ep{epoch}.png", nrow=4)</code></span>. على الداتا دي غالبًا بين الـ epoch 3 و6، لكن ده بيختلف مع الـ seed، فاكتب اللي شفته إنت.</details></li>
+    <li><b>(متوسط)</b> بدّل batch norm في الـ D بـ spectral norm وقارن النسختين على 3 seeds. مين بيتقارب أسرع ومين تباينه أقل؟
+      <details><summary>تلميح</summary>اطبع متوسط loss في كل epoch لكل seed. لاحظ التباين بين الـ seeds مش الرقم المطلق، لأن spectral norm الأساس بتاعه الاستقرار. لو الـ D loss نزل لقرب الصفر في نسخة BN ده علامة D بيكسب.</details></li>
+    <li><b>(صعب)</b> اعمل conditional DCGAN: حط الـ label في G وD. (في G: one-hot مضاف للـ noise. في D: قناة embedding للـ class.) درّبه على داتا «دواير ومربعات» من درس 7 وبيّن إن الـ conditioning شغال بالتوليد بـ label معيّن.
+      <details><summary>تلميح</summary>في G: <span class="ltr"><code>z = torch.cat([z, F.one_hot(y, 2).float()], 1)</code></span> وغيّر <span class="ltr"><code>z_dim</code></span> لـ 66. في D: ولّد قناة <span class="ltr"><code>nn.Embedding(2, 32*32)</code></span> وحوّلها لـ (B,1,32,32) وضمها للصورة (4 قنوات بدل 3). ولّد بـ y ثابت وتأكد إن كل العيّنات من نوعه.</details></li>
+    <li><b>(تمرين مني)</b> شيل <span class="ltr"><code>.detach()</code></span> من خطوة D. هل التدريب بيكسر؟ وإيه اللي بيتغيّر؟
+      <details><summary>إجابة</summary>مش هيطلع إيرور. في الغالب هتحصل <span class="ltr"><code>RuntimeError: Trying to backward through the graph a second time</code></span> أو gradient بيتراكم جوه G من غير ما تقصد، حسب ترتيب الأوامر عندك. المهم إن <span class="ltr"><code>loss_d.backward()</code></span> هيبعت gradient لوزن G اللي أنت مش عايز تحدّثه الآن. اطبع <span class="ltr"><code>G.net[0].weight.grad</code></span> بعد خطوة D بالـ detach (None أو صفر) وبدونه (قيم).</details></li>
+  </ol>
+</section>
+<section>
+  <div class="station-head"><span class="tag">13</span><h2>إضافة مني: اللي الدرس ما قالوش</h2></div>
+  <div class="note"><strong>الحدس:</strong> فكّر في G كأنه بيتعلم يرسم «من غير ما يشوف الصور الحقيقية أبدًا». هو بس بيشوف رد فعل D. يعني D هو المعلم الوحيد. لو D غبي، G هيتعلم يخدع مفتّش غبي ويطلّع صور وحشة بس بتعدّي.</div>
+  <h3>أخطاء شائعة</h3>
+  <ul>
+    <li><b>تحكم في D loss وحده:</b> D loss عالي مش معناه فشل، والواطي جدًا مش معناه نجاح. الاتنين بيتحركوا مع بعض ومحتاج تبص على العيّنات.</li>
+    <li><b>تنسى <span class="ltr"><code>G.train()</code></span> بعد <span class="ltr"><code>G.eval()</code></span>:</b> الـ BN هيفضل في وضع eval وتدريبك يتلخبط. (الكود في الريبو بيرجّعها بعد الـ sampling.)</li>
+    <li><b>تسوّي sigmoid + BCELoss:</b> استخدم <span class="ltr"><code>binary_cross_entropy_with_logits</code></span> لأنها أثبت عدديًا.</li>
+    <li><b>مدخل الصورة مش في [-1, 1]:</b> الـ G بيطلّع tanh فلازم الداتا الحقيقية تتحوّل لنفس المدى وإلا D هيفرّق من المدى لوحده.</li>
+  </ul>
+  <h3>بيظهر في الـ LLMs والـ agents؟</h3>
+  <p>فكرة «شبكة بتتعلم تقيّم شبكة» بتتكرر: الـ reward model في RLHF بيلعب دور D (بيدّي score يوجّه الموديل)، وفكرة الـ <b>LLM-as-a-judge</b> في تقييم الـ agents شبيهة. الفرق إن في RLHF الـ judge بيتدرب على تفضيلات بشرية مرة واحدة، مش بيتحدّث في لعبة ضد الموديل. وكمان الـ mode collapse له شبيه في الـ LLMs لما الموديل يبدأ يكرر نفس الإجابات (قلة التنوع بعد الـ fine-tuning).</p>
+</section>
+
+<section id="d65-quiz">
+  <div class="station-head"><span class="tag">QZ</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d65-quizBox"></div>
+</section>
+<section id="d65-done">
+  <div class="station-head"><span class="tag">END</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d65-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم لعبة G وD والـ minimax وإن التوازن D=0.5</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه الـ non-saturating loss وجرّبت معمل ١</label></li>
+    <li><label><input type="checkbox" data-ck="3"> عارف قواعد DCGAN الخمسة وحساب حجم الـ transposed conv</label></li>
+    <li><label><input type="checkbox" data-ck="4"> أقدر أميّز الأعطال التلاتة وأعالج كل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الـ G والـ D وخطوة التدريب بإيدي وشغّلتها</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+<div class="tablewrap"><table><tr><th>المفهوم</th><th>بيظهر فين</th></tr><tr><td>Minimax / non-saturating</td><td>كل GAN حديث، وبيشبه تدريب الـ reward models</td></tr><tr><td>DCGAN rules</td><td>أساس StyleGAN وBigGAN وGigaGAN</td></tr><tr><td>Spectral norm</td><td>الـ discriminators في SN-GAN وBigGAN</td></tr><tr><td>Mode collapse</td><td>قلة التنوع في الـ LLMs بعد الـ fine-tuning</td></tr><tr><td>FID</td><td>المعيار الأساسي لتقييم أي موديل توليدي للصور (حتى الـ diffusion)</td></tr></table></div>
+  <p><b>بكرة:</b> Diffusion Models. نفس الهدف (توليد صور) لكن من غير لعبة خصمين: بتتعلم تشيل noise بسيط في كل مرة. وبيكون التدريب أسهل بكتير.</p>
+</section>
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F09-image-generation-gans" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/09-image-generation-gans</span>
+</footer>
+<script>
+(function(){
+const N=65,$=id=>document.getElementById(id),L=AI.lab,css=AI.css,f=AI.fmt;
+const root=$('d65-roadmap').closest('.day');
+const rm=$('d65-roadmap');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===9)s.className='now';rm.appendChild(s)}
+
+L.plot($('d65-lab1'),{x:[0.01,0.99],y:[0,1],label:'gradient magnitude',params:[{k:'d',label:'D(G(z))',min:0.01,max:0.99,step:0.01,v:0.05}],
+ curves:[{f:x=>x,label:'saturating',color:'bad'},{f:x=>1-x,label:'non-saturating',color:'ok'}],
+ marks:p=>[{x:p.d,y:p.d,color:'bad'},{x:p.d,y:1-p.d,color:'ok'}],
+ readout:p=>[['saturating',p.d],['non-saturating',1-p.d]],
+ note:p=>p.d<0.2?'D واثق إنها مزيّفة: الصيغة الأصلية إشارتها ضعيفة، والمقلوبة قوية':p.d>0.8?'G بيخدع D كويس: هنا الصيغة الأصلية أقوى لكن مش وقتها':'منطقة وسط: الاتنين شغالين'});
+L.bars($('d65-lab2'),{labels:['1','2','3','4','5','6','7','8'],names:['حقيقي','G'],colors:['a','b'],max:1,
+ params:[{k:'c',label:'collapse',min:0,max:1,step:0.05,v:0.7}],
+ values:p=>[Array(8).fill(1/8),Array.from({length:8},(_,i)=>(1-p.c)/8+(i===0?p.c:0))],
+ readout:p=>{const n=Array.from({length:8},(_,i)=>(1-p.c)/8+(i===0?p.c:0)).filter(v=>v>0.02).length;return [['modes covered',n+' / 8'],['recall ~',n/8]]},
+ note:p=>p.c>0.5?'mode collapse: G بيطلّع نوع واحد تقريبًا':p.c>0.15?'بداية collapse':'تغطية كويسة'});
+L.flow($('d65-lab3'),{height:300,nodes:[{id:'z',label:'z noise',x:0,y:.5},{id:'g',label:'Generator',x:.4,y:.2},{id:'r',label:'Real batch',x:.4,y:.85},{id:'d',label:'Discriminator',x:.8,y:.5}],
+ edges:[['z','g','z'],['g','d','fake'],['r','d','real']],
+ steps:[{active:['z','g','r','d'],text:'<b>البداية:</b> batch حقيقي + noise يتحول لصور مزيّفة.'},
+ {active:['g','d','r'],edges:[['g','d'],['r','d']],text:'<b>خطوة D:</b> نحسب loss_d على الحقيقي (هدف 1) والمزيّف (هدف 0). المزيّف بـ <code>.detach()</code> فـ G متجمّد. نحدّث D بس.'},
+ {active:['z','g','d'],edges:[['z','g'],['g','d']],text:'<b>خطوة G:</b> نمرّر المزيّف تاني في D بهدف 1 (non-saturating). الـ gradient بيعدّي من D لـ G، لكن opt_g بس هو اللي بيحدّث.'}]});
+
+AI.quiz($('d65-quizBox'),[["ليه GAN training بيستخدم non-saturating loss اللي هو -log(D(G(z))) بدل log(1 - D(G(z)))؟", ["الاتنين مختلفين رياضيًا والتاني بيدّي توازن أحسن", "PyTorch بتطلبه", "بيسرّع الـ discriminator", "في أول التدريب D(G(z)) قريب من صفر، فـ log(1 - D(G(z))) gradient بتاعها بيختفي، لكن -log(D(G(z))) gradient كبير هناك فـ G بياخد إشارة مفيدة"], 3, "الـ lossين ليهم نفس اتجاه الـ gradient لكن حجم مختلف جدًا لما D(G(z)) صغير. الأصلية بتسطح عند صفر، والمقلوبة بتفضل مفيدة على المدى كله. Goodfellow لاحظ التعديل ده في الورقة الأصلية وكل GAN حديث بيستخدمه."], ["قواعد DCGAN بتقول استخدم strided convolutions بدل الـ pooling. ليه؟", ["الـ pooling مش بيتعلم وبيرمي معلومات قد يحتاجها المولّد، والـ strided convs بتخلّي الشبكة تتعلم التصغير وبتطلّع صور أحدّ عمليًا", "الـ pooling مش متوافق مع batch norm", "الـ pooling أبطأ على الـ GPU", "الـ pooling بيكسر تدفق الـ gradient"], 0, "الـ max-pool اختيار يدوي بيرمي كل حاجة غير الأكبر. في التوليد بنستفيد من تصغير متعلَّم بيحافظ على المعلومات. الـ strided convs في D والـ transposed strided في G هي التغيير المعماري اللي خلّى DCGAN قابل للتدريب."], ["درّبت GAN وبتلاحظ إن G بيطلّع صور شبه بعض مهما كان الـ noise. ده أنهي عطل؟", ["Oscillation", "Vanishing gradients", "Mode collapse: G لقى منطقة ضيقة بتخدع D ومفيش حافز يستكشف غيرها. العلاج: spectral norm أو minibatch discrimination أو batch أكبر", "الداتا صغيرة"], 2, "Mode collapse هو عطل GAN المميز: العيّنات ناقصة تنوّع. التشخيص بسيط: noise مختلف يطلّع نفس الصورة. العلاجات كلها بتخلّي D أقدر يعاقب قلة التنوع، أو بتدّي G مساحة أقل يتكمش فيها."], ["ليه سكربتات DCGAN بتستخدم Adam بـ betas=(0.5, 0.999) بدل الافتراضي (0.9, 0.999)؟", ["غلطة مطبعية انتشرت في الشروحات", "الـ beta1 الأقل بيقلل الـ momentum، وفي لعبة خصمين كل واحد بيغيّر سلوكه فـ momentum تقيل بتخلّي كل optimizer يكمّل في اتجاه غلط وقت طويل وبتسبب عدم استقرار", "الافتراضي معطّل", "Adam بيدعم beta1=0.5 بس على CUDA"], 1, "beta1=0.9 بيعمل متوسط على حوالي 10 خطوات. في هدف ثابت ده كويس، لكن في لعبة الـ loss landscape بتتغير مع كل تحديث فالمتوسط بيأخّر الاستجابة ويسبب تأرجح. Radford وزمايله لقوا 0.5 أثبت بكتير."], ["زميلك قال إن D loss قريب من صفر وG loss بيزيد مع التدريب. إيه اللي بيحصل وإزاي تعالجه؟", ["المولّد بيعمل overfit صح", "ده التوازن", "D بقى قوي أوي وبيخلّي gradient بتاع G يختفي. العلاج: D أصغر، spectral norm، label smoothing على الحقيقي (0.9 بدل 1.0)، أو WGAN-GP", "الشبكتين بيتحسنوا صح"], 2, "D loss قريب من صفر معناه إن D مثالي على الحقيقي والمزيّف. وقتها gradient الـ BCE لـ G بيختفي: G مش بيشوف إشارة مهما طلّع. العلاج إضعاف D أو loss ما بيشبعش. Spectral norm وWGAN-GP هما الإنقاذ المعروف."], ["(سؤال مني) في الـ Generator، الطبقة الأولى ConvTranspose2d بـ kernel=4, stride=1, padding=0 داخلها 1×1. حجم خرجها إيه؟", ["2×2", "4×4", "8×8", "1×1"], 1, "out = (1−1)·1 − 0 + 4 = 4. وبعدها كل طبقة بـ (k=4,s=2,p=1) بتضاعف: 8 ثم 16 ثم 32."], ["(سؤال مني) ليه المفروض مخرج G ومدخل D مفيهمش batch norm حسب القواعد؟", ["عشان الـ BN مش بتشتغل على الصور", "عشان الـ BN على مخرج G ممكن يغيّر مدى tanh ويخلّي التوزيع الناتج مش هو توزيع الصور، وعلى مدخل D بيطبّع الحقيقي والمزيّف بشكل بيخبّي الفرق بينهم", "عشان توفّر ذاكرة", "عشان تسرّع الـ sampling"], 1, "القاعدة عملية من تجارب DCGAN: الطبقات اللي بتلمس التوزيع الحقيقي مباشرة بدون BN بتحافظ على الفرق اللي D محتاج يشوفه."]],5,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>
+</div>

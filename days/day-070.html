@@ -1,0 +1,366 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 15 · Real-Time Vision — Edge Deployment</span>
+  <h1>اليوم ٧٠: موديل 90% دقة يجري 30 فريم في الثانية على جهاز 2GB</h1>
+  <p class="lede">التدريب بيطلّع «وحش floating-point»: 100 مليون بارامتر و10 GFLOPs و2GB VRAM. ده مش هيدخل موبايل ولا كاميرا صناعية ولا درون. النهاردة هتتعلم تقيس صح (latency وmemory)، وتطبّق الـ INT8 quantisation، وتصدّر ONNX، وتختار الـ backbone المناسب لكل ميزانية.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة Rust)</span>
+    <span>قبله: <b>Vision Transformers</b></span>
+    <span>بعده: <b>Phase 4، الدرس ١٦</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — الرؤية بالكمبيوتر</span>
+    <div class="roadmap" id="d70-roadmap" aria-label="أيام الفيز الرابعة"></div>
+  </div>
+</header>
+
+<section id="d70-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر ViT؟</h2></div>
+  <ol class="ex">
+    <li>صورة 224×224 وpatch 16: كام token (من غير الـ CLS)؟
+      <details><summary>الإجابة</summary>14×14 = 196 token، ومعاهم الـ CLS يبقوا 197.</details></li>
+    <li>ليه pre-LN أحسن من post-LN؟
+      <details><summary>الإجابة</summary>بيدرّب شبكات أعمق بثبات من غير warmup، لأن الـ residual path نضيف والـ gradient بيعدي مباشرة.</details></li>
+    <li>إيه فكرة MAE؟
+      <details><summary>الإجابة</summary>تخبّي 75% من الـ patches، الـ encoder يشوف الباقي بس، وdecoder صغير يعيد بناء المخبّي. بعدين نرمي الـ decoder ونعمل fine-tune للـ encoder.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٧٥ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>25 min</b>الميزانيات التلاتة، القياس، الـ quantisation والمعامل</div>
+    <div><b>25 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>الـ runtimes والـ picker</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d70-s1">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة والميزانيات التلاتة</h2></div>
+  <p>شحن نظام رؤية يعني تحشر نفس التوقعات في ميزانية أصغر بـ <b>100 مرة</b>. التلات مفاتيح اللي بتعمل أغلب الشغل: <b>اختيار الموديل</b> (معمارية أصغر بنفس الوصفة)، <b>الـ quantisation</b> (INT8 بدل FP32)، و<b>الـ runtime</b> (ONNX Runtime، TensorRT، Core ML، TFLite). الفرق بين demo شغال على workstation ومنتج على كاميرا بـ 30 دولار هو إنك تظبطهم صح.</p>
+  <p>والدرس بيبدأ بالقياس لأن <b>اللي متقدرش تقيسه متقدرش تحسّنه</b>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>الميزانية</th><th>إيه المقصود</th><th>فخ شائع</th></tr>
+    <tr><td><b>Latency</b></td><td>p50 وp95 وp99 (مش المتوسط بس)</td><td>المتوسط بيخبّي الـ tail اللي بيكسر الأنظمة الـ real-time</td></tr>
+    <tr><td><b>Peak memory</b></td><td>أقصى حاجة الجهاز بيشوفها، مش المتوسط</td><td>الـ OOM قاتل على الأجهزة المدمجة</td></tr>
+    <tr><td><b>Power</b></td><td>mJ لكل inference على الباطاري، وغالبًا بنقدره بـ utilisation × time</td><td>تتجاهله لحد ما الجهاز يسخن</td></tr>
+  </table></div>
+  <p>قرار الـ edge بيتاخد من جدول <span class="ltr">(model, latency, memory, accuracy)</span>، وكل خانة <b>بتتقاس على الجهاز المستهدف</b> مش الـ workstation.</p>
+
+  <h3>انضباط القياس: تلات قواعد</h3>
+  <ol class="ex">
+    <li><b>Warm up</b>: 5–10 forward تجريبية قبل القياس. الـ cache البارد والـ JIT بيدّوا أرقام أول مرة مش تمثيلية.</li>
+    <li><b>Synchronise</b> مع الـ GPU: <code>torch.cuda.synchronize()</code> قبل وبعد المنطقة المقاسة. من غيرها بتقيس إطلاق الـ kernel مش تنفيذه.</li>
+    <li><b>ثبّت حجم الدخل</b> على دقة الإنتاج: latency على 224×224 غير 512×512.</li>
+  </ol>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ليه المتوسط بيكدّب؟</h3>
+      <p>الأعمدة توزيع latency محاكي (أغلب الطلبات سريعة وقليل منها بطيء جدًا). زوّد «احتمال الـ spike» وشوف إزاي p99 بيطير بينما p50 والمتوسط تقريبًا ثابتين.</p>
+      <div class="note ai"><strong>لاحظ:</strong> لو الـ SLA بتاعك 33ms (30fps) وp99 = 80ms، فكل مئة فريم هيفوتك واحد. وده مبيظهرش في المتوسط.</div>
+    </div>
+    <div id="d70-lab1"></div>
+  </div>
+
+  <h3>FLOPs كـ proxy</h3>
+  <p>الـ FLOPs رقم رخيص ومستقل عن الجهاز، مفيد لمقارنة المعماريات، لكنه <b>مضلل كزمن فعلي</b>. موديل بـ 10% FLOPs زيادة ممكن يبقى أسرع مرتين لأنه بيستخدم عمليات مناسبة للهاردوير (الـ depthwise convs بتتcompile كويس، والـ 7×7 الكبيرة لأ). والعكس: depthwise قليلة الـ FLOPs لكنها memory-bound على الـ GPU. <b>القاعدة:</b> FLOPs لاختيار المعمارية، وlatency على الجهاز لقرار النشر.</p>
+</section>
+
+<section id="d70-s2">
+  <div class="station-head"><span class="tag">02</span><h2>Quantisation: من FP32 لـ INT8</h2></div>
+  <p>استبدل أوزان وactivations الـ FP32 بـ INT8. حجم الموديل بينزل <b>4×</b>، وعرض النطاق للذاكرة 4×، والحسبة 2–4× على الهاردوير اللي فيه kernels INT8 (كل SoC موبايل حديث وكل NVIDIA GPU بـ Tensor Cores). الخسارة في الدقة عادةً <b>0.1–1 نقطة</b> مع post-training static.</p>
+  <div class="note"><strong>تشبيه:</strong> بدل ما تكتب كل سعر بـ 6 أرقام عشرية، بتقرّبه لأقرب جنيه. الفاتورة بتبقى أخف بكتير، والفرق في الإجمالي صغير جدًا طالما التقريب منظم ومظبوط على نطاق الأسعار الفعلي (ده الـ calibration).</div>
+  <div class="tablewrap"><table>
+    <tr><th>النوع</th><th>بيعمل إيه</th><th>إمتى</th></tr>
+    <tr><td><b>Dynamic</b></td><td>الأوزان INT8، والـ activations بتتحسب بـ FP</td><td>سهل، تسريع صغير</td></tr>
+    <tr><td><b>Static (PTQ)</b></td><td>الأوزان + نطاقات الـ activations بتتعاير (calibration) على set صغير</td><td>أسرع بكتير من dynamic. الاختيار الأول للرؤية: 95% من الفايدة بـ 5% من المجهود</td></tr>
+    <tr><td><b>QAT</b></td><td>محاكاة الـ quantisation وقت التدريب فالموديل يتعلم يتعايش معاه</td><td>أحسن دقة، محتاج labelled data. استخدمه لما خسارة PTQ مش مقبولة</td></tr>
+  </table></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: شوف الـ quantisation بعينك</h3>
+      <p>المنحنى الأزرق وزن/activation متصل، والمنحنى الثاني بعد ما قرّبناه لـ <span class="ltr">2^bits</span> مستوى. قلّل الـ bits وشوف الدرجات بتكبر. جرّب 8 وبعدين 4 وبعدين 2.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ INT8 (256 مستوى) تقريبًا مش بيبان على المنحنى. ده بالظبط ليه الخسارة صغيرة.</div>
+    </div>
+    <div id="d70-lab2"></div>
+  </div>
+
+  <h3>Pruning و Distillation</h3>
+  <ul class="checklist">
+    <li><b>Pruning:</b> شيل الأوزان الضعيفة (حسب الحجم magnitude) أو قنوات كاملة (structured). بيشتغل كويس على الموديلات الكبيرة جدًا، وأقل فايدة على المعماريات المضغوطة أصلًا.</li>
+    <li><b>Distillation:</b> درّب student صغير يقلّد logits الـ teacher الكبير. بيرجّع معظم الدقة اللي ضاعت مع التصغير. معيار في موديلات الـ edge الإنتاجية.</li>
+  </ul>
+</section>
+
+<section id="d70-s3">
+  <div class="station-head"><span class="tag">03</span><h2>الـ runtimes: طريق النشر</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>Runtime</th><th>ملاحظة</th></tr>
+    <tr><td>PyTorch eager</td><td>بطيء، للتطوير بس</td></tr>
+    <tr><td>TorchScript</td><td>قديم، حلّ مكانه <code>torch.compile</code> وتصدير ONNX</td></tr>
+    <tr><td><b>ONNX Runtime</b></td><td>الـ runtime المحايد: CPU وCUDA وCoreML وTensorRT وOpenVINO كلهم عندهم providers. ابدأ منه</td></tr>
+    <tr><td>TensorRT</td><td>مترجم NVIDIA: أحسن latency على GPUs (workstation وJetson)</td></tr>
+    <tr><td>Core ML</td><td>Apple: iOS/macOS، محتاج <code>.mlmodel</code> أو <code>.mlpackage</code></td></tr>
+    <tr><td>TFLite</td><td>Google: Android/ARM، محتاج <code>.tflite</code></td></tr>
+    <tr><td>OpenVINO</td><td>Intel: CPU/VPU، محتاج <code>.xml</code> + <code>.bin</code></td></tr>
+  </table></div>
+  <p>عمليًا: صدّر PyTorch ← ONNX ← اختار الـ runtime للجهاز. ONNX هو «لغة التفاهم».</p>
+  <div id="d70-flow"></div>
+  <h3>التلات مسارات الإنتاجية</h3>
+  <ul class="checklist">
+    <li><b>Web / serverless:</b> PyTorch ← ONNX ← ONNX Runtime (CPU أو CUDA). الأسهل وكفاية لمعظم الحالات.</li>
+    <li><b>NVIDIA edge (Jetson، GPU server):</b> PyTorch ← ONNX ← TensorRT. أحسن latency وأكبر مجهود هندسي.</li>
+    <li><b>Mobile:</b> PyTorch ← ONNX ← Core ML (iOS) أو TFLite (Android). اعمل quantise قبل التصدير.</li>
+  </ul>
+  <p>للقياس: <code>torch-tb-profiler</code> وnvprof/nsys وInstruments على macOS بيدّوك تفصيل طبقة طبقة؛ و<code>benchmark_app</code> (OpenVINO) و<code>trtexec</code> (TensorRT) أرقام CLI مستقلة.</p>
+</section>
+
+<section id="d70-s4">
+  <div class="station-head"><span class="tag">04</span><h2>اختيار الـ backbone للـ edge</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>الميزانية</th><th>الموديل</th><th>ليه</th></tr>
+    <tr><td>&lt; 3M بارامتر</td><td>MobileNetV3-Small</td><td>بيتcompile في كل مكان، baseline كويس</td></tr>
+    <tr><td>3–10M</td><td>EfficientNet-Lite-B0</td><td>أحسن دقة لكل بارامتر على TFLite</td></tr>
+    <tr><td>10–20M</td><td>ConvNeXt-Tiny</td><td>أحسن accuracy-per-param، مناسب للـ CPU</td></tr>
+    <tr><td>20–30M</td><td>MobileViT-S أو EfficientViT</td><td>transformer بدقة ImageNet</td></tr>
+    <tr><td>30–80M</td><td>Swin-V2-Tiny</td><td>لو الـ stack بيدعم window attention</td></tr>
+  </table></div>
+  <p>اعمل quantise لكل دول لـ INT8 إلا لو عندك سبب محدد.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: حاسبة الميزانية</h3>
+      <p>حدد عدد بارامترات الموديل ودقة التخزين (bits) وFLOPs وقدرة الجهاز. هتطلع حجم الموديل وزمن تقديري وهل ينفع 30fps. (التقدير النظري: <span class="ltr">latency ≈ FLOPs / (GFLOPS × كفاءة)</span> — الرقم الحقيقي لازم تقيسه على الجهاز!)</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ FP32 → INT8 بيقسم الحجم على 4 بالظبط، لكن الزمن الحقيقي مرتبط بالكفاءة اللي بتتغير حسب الـ ops.</div>
+    </div>
+    <div id="d70-lab3"></div>
+  </div>
+</section>
+
+<section id="d70-code">
+  <div class="station-head"><span class="tag">05</span><h2>الكود خطوة خطوة (اكتبه بإيدك!)</h2></div>
+  <div class="note"><strong>نصيحة:</strong> اكتب كل سطر بنفسك. الزرار Copy للمراجعة بس.</div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/15-real-time-edge/code/main.py
+<span class="c"># ونسخة Rust (بتبني depthwise-separable block وتطبع p50/p95/p99):</span>
+rustc --edition 2021 -O phases/04-computer-vision/15-real-time-edge/code/main.rs -o /tmp/lesson_edge &amp;&amp; /tmp/lesson_edge</pre></div>
+  <p>الأمر الأول بيقارن 4 backbones على CPU بدقة 160×160 ويطبع جدول: model / params(M) / GFLOPs / p50 / p95. الأرقام بتختلف حسب جهازك.</p>
+
+  <p><b>الخطوة ١: قياس الـ latency صح.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import time
+import torch
+
+def measure_latency(model, input_shape, device="cpu", warmup=10, iters=50):
+    model = model.to(device).eval()
+    x = torch.randn(input_shape, device=device)
+    with torch.no_grad():
+        for _ in range(warmup):                 <span class="c"># warm-up: نسخّن الـ cache والـ JIT</span>
+            model(x)
+        if device == "cuda":
+            torch.cuda.synchronize()
+        times = []
+        for _ in range(iters):
+            if device == "cuda":
+                torch.cuda.synchronize()        <span class="c"># نتأكد إن اللي قبل خلص</span>
+            t0 = time.perf_counter()
+            model(x)
+            if device == "cuda":
+                torch.cuda.synchronize()        <span class="c"># نستنى الـ kernel يخلص فعلًا</span>
+            times.append((time.perf_counter() - t0) * 1000)   <span class="c"># ms</span>
+    times.sort()
+    return {
+        "p50_ms": times[len(times) // 2],
+        "p95_ms": times[int(len(times) * 0.95)],
+        "p99_ms": times[int(len(times) * 0.99)],
+        "mean_ms": sum(times) / len(times),
+    }</pre></div>
+
+  <p><b>الخطوة ٢: عدّ البارامترات والـ FLOPs.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def parameter_count(model):
+    return sum(p.numel() for p in model.parameters())
+
+def flops_estimate(model, input_shape):
+    total = 0
+    def conv_hook(m, inp, out):                         <span class="c"># hook بيتنادى بعد كل conv</span>
+        nonlocal total
+        c_out, c_in, kh, kw = m.weight.shape
+        h, w = out.shape[-2:]
+        total += 2 * c_in * c_out * kh * kw * h * w     <span class="c"># 2 لأن multiply + add</span>
+    def linear_hook(m, inp, out):
+        nonlocal total
+        total += 2 * m.in_features * m.out_features
+    hooks = []
+    for m in model.modules():
+        if isinstance(m, torch.nn.Conv2d):
+            hooks.append(m.register_forward_hook(conv_hook))
+        elif isinstance(m, torch.nn.Linear):
+            hooks.append(m.register_forward_hook(linear_hook))
+    model.eval()
+    with torch.no_grad():
+        model(torch.randn(input_shape))
+    for h in hooks:
+        h.remove()
+    return total</pre></div>
+  <p>ملحوظة: العدّاد ده مبسّط (conv وlinear بس، ومبيراعيش الـ groups). للمشاريع الحقيقية استخدم <code>fvcore</code> أو <code>ptflops</code>.</p>
+
+  <p><b>الخطوة ٣: Post-training static quantisation.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def quantise_ptq(model, calibration_loader, backend="x86"):
+    import torch.ao.quantization as tq
+    model = model.eval().cpu()
+    model.qconfig = tq.get_default_qconfig(backend)    <span class="c"># 1) configure</span>
+    tq.prepare(model, inplace=True)                    <span class="c"># 2) نحط observers</span>
+    with torch.no_grad():
+        for x, _ in calibration_loader:                <span class="c"># 3) calibrate ببيانات حقيقية</span>
+            model(x)
+    tq.convert(model, inplace=True)                    <span class="c"># 4) convert لـ INT8</span>
+    return model</pre></div>
+  <p>لازم الموديل يكون <b>fused</b> أولًا (<span class="ltr">Conv → BN → ReLU</span> يبقوا وحدة واحدة) وده شغل <code>torch.ao.quantization.fuse_modules</code>.</p>
+
+  <p><b>الخطوة ٤: تصدير ONNX.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def export_onnx(model, sample_input, path="model.onnx"):
+    model = model.eval()
+    torch.onnx.export(
+        model, sample_input, path,
+        input_names=["input"], output_names=["output"],
+        dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},   <span class="c"># batch متغير</span>
+        opset_version=17,
+    )
+    return path</pre></div>
+
+  <p><b>الخطوة ٥: قارن الأنظمة.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torchvision.models import mobilenet_v3_small
+
+def compare_regimes():
+    model = mobilenet_v3_small(weights=None, num_classes=10)
+    params = parameter_count(model)
+    flops = flops_estimate(model, (1, 3, 224, 224))
+    lat = measure_latency(model, (1, 3, 224, 224), device="cpu")
+    print(f"FP32 MobileNetV3-Small: {params:,} params  {flops/1e9:.2f} GFLOPs  "
+          f"p50={lat['p50_ms']:.2f}ms  p95={lat['p95_ms']:.2f}ms")
+
+compare_regimes()</pre></div>
+  <p>شغّل نفس الدالة على <code>resnet18</code> و<code>efficientnet_v2_s</code> و<code>convnext_tiny</code> وهيطلعلك جدول القرار.</p>
+</section>
+
+<section id="d70-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> قِس p50 latency لـ resnet18 وmobilenet_v3_small وefficientnet_v2_s وconvnext_tiny على CPU بدقة 224×224. اعمل جدول وحدد أنهي معمارية أحسن accuracy-per-ms.
+      <details><summary>تلميح / إجابة</summary>استخدم <code>measure_latency</code>. الدقة بتجيبها من جداول torchvision المنشورة (لأن الموديلات هنا من غير weights). متوقع إن MobileNetV3-Small الأسرع وConvNeXt-Tiny أدق بس أبطأ. الأرقام تعتمد على جهازك.</details></li>
+    <li><b>(متوسط)</b> طبّق static PTQ على mobilenet_v3_small. قارن FP32 مقابل INT8 في الـ latency والخسارة في الدقة على جزء held-out من CIFAR-10 أو شبهه.
+      <details><summary>تلميح / إجابة</summary>استخدم <code>torchvision.models.quantization.mobilenet_v3_large</code>/<code>quantizable</code> variants أو اعمل fuse يدويًا. معايرة بـ 100–500 صورة. المتوقع خسارة أقل من 1 نقطة لو المعايرة سليمة.</details></li>
+    <li><b>(صعب)</b> صدّر convnext_tiny لـ ONNX، شغّله بـ <code>onnxruntime</code> (CPUExecutionProvider) وقارن بالـ eager. حدد أول طبقة بقى ONNX Runtime أسرع فيها واشرح ليه.
+      <details><summary>تلميح / إجابة</summary>استخدم profiling من ONNX Runtime (<code>sess_options.enable_profiling = True</code>). الأسباب المعتادة: graph optimisations (fusing)، وتقليل الـ overhead بتاع Python، وتحسين الـ memory layout.</details></li>
+    <li><b>تمرين إضافي مني (عملي):</b> عدّل <code>measure_latency</code> عشان تطبع كمان <code>std</code> وأقصى قيمة، وجرّبها مرة مع <code>warmup=0</code> ومرة مع <code>warmup=10</code>. إيه الفرق في أول قياس؟
+      <details><summary>إجابة</summary>من غير warmup أول قياس (أو أول كام) بيكون أبطأ بوضوح بسبب الـ cache والـ allocation، فبيطلع max كبير وp99 أسوأ. ده بيثبت ليه الـ warmup ضروري.</details></li>
+  </ol>
+</section>
+
+<section id="d70-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني: أخطاء شائعة وفين بتظهر في الـ LLMs والـ agents</h2></div>
+  <ul class="checklist">
+    <li><b>القياس على الجهاز الغلط:</b> أرقام الـ workstation مش تمثل Jetson أو موبايل. دايمًا اقيس على الـ target.</li>
+    <li><b>مقارنة FP32 بـ INT8 من غير نفس الـ pre-processing:</b> الفرق في الـ resize والـ normalisation بيبان كخسارة دقة.</li>
+    <li><b>معايرة بداتا مش تمثيلية:</b> لو الـ calibration set مختلف عن الداتا الحقيقية، النطاقات هتتظبط غلط والدقة تنزل أكتر من 1 نقطة.</li>
+    <li><b>ONNX tracing:</b> الـ control flow اللي بيعتمد على القيم (if على tensor) مبيتصدّرش صح بالـ tracing؛ حوّله لـ ops أو استخدم <code>torch.jit.script</code>.</li>
+    <li><b>نفس المفاهيم في الـ LLMs:</b> الـ quantisation (INT8/INT4) وdistillation والـ runtimes (llama.cpp، TensorRT-LLM) هي نفس الأفكار بالظبط، بس على الـ LLMs. وlatency في LLM بتتقسم لـ time-to-first-token وtokens/sec.</li>
+    <li><b>في الـ agents:</b> agent بيشغّل vision tool محلي (OCR، detection) محتاج ميزانية latency واضحة؛ كل tool call بيزود زمن الخطوة، فاختيار موديل أصغر بيسرّع الـ loop كله.</li>
+  </ul>
+</section>
+
+<section id="d70-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز</h2></div>
+  <div class="quiz" id="d70-quizBox"></div>
+</section>
+
+<section id="d70-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d70-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم الميزانيات التلاتة وليه نقيس p95/p99</label></li>
+    <li><label><input type="checkbox" data-ck="2"> بحفظ قواعد القياس: warmup وsynchronize وحجم دخل ثابت</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الفرق بين dynamic وstatic وQAT</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت measure_latency وflops_estimate بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="5"> أقدر أرسم طريق PyTorch → ONNX → runtime</label></li>
+    <li><label><input type="checkbox" data-ck="6"> أقدر أختار backbone حسب الميزانية</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Percentile latency</td><td>SLAs لأي API، وtime-to-first-token في الـ LLMs</td></tr>
+    <tr><td>INT8 / INT4 quantisation</td><td>GGUF وllama.cpp وbitsandbytes وTensorRT-LLM</td></tr>
+    <tr><td>Distillation</td><td>الموديلات الصغيرة (mini) المأخوذة من موديلات كبيرة</td></tr>
+    <tr><td>ONNX / TensorRT</td><td>نشر كل موديل رؤية تقريبًا</td></tr>
+    <tr><td>Calibration</td><td>أي quantisation static، بما فيه LLMs</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> الدرس التالي في Phase 4. كمّل من الخريطة فوق.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F15-real-time-edge" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/15-real-time-edge</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=70,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d70-roadmap').closest('.day');
+const rm=$('d70-roadmap');
+for(let i=57;i<=81;i++){const s=document.createElement('span');s.textContent=i-56;s.title='يوم '+i;if(i===N)s.className='now';rm.appendChild(s)}
+
+// Lab 1: latency distribution
+function dist(p){const bins=new Array(20).fill(0);const base=10,sp=p.spike/100;
+  for(let i=0;i<=200;i++){const u=i/200;// base ~ 8..14ms
+    const v=base+4*u;bins[Math.min(19,Math.floor((v-8)/(60/20)))]+=(1-sp)*1/201}
+  // spike: mass spread 20..68ms
+  for(let b=0;b<20;b++){const v=8+b*3+1.5;if(v>=20)bins[b]+=sp/ (20-4)*0.9}
+  return bins}
+function samples(p){const sp=p.spike/100,arr=[];for(let i=0;i<1000;i++){const u=(i+.5)/1000;
+  if(u<1-sp)arr.push(10+4*(u/(1-sp)));else arr.push(20+48*((u-(1-sp))/sp))}return arr}
+L.bars($('d70-lab1'),{
+ labels:Array.from({length:20},(_,b)=>b%4===0?String(8+b*3):''),
+ params:[{k:'spike',label:'احتمال الـ spike %',min:0,max:10,step:.5,v:2}],
+ values:p=>{const s=samples(p);const bins=new Array(20).fill(0);s.forEach(v=>{bins[Math.min(19,Math.floor((v-8)/3))]++});return bins.map(x=>x/1000)},
+ max:1,
+ readout:p=>{const s=samples(p);const m=s.reduce((a,b)=>a+b)/s.length;return [['mean',m.toFixed(1)+' ms'],['p50',s[500].toFixed(1)+' ms'],['p95',s[949].toFixed(1)+' ms'],['p99',s[989].toFixed(1)+' ms']]},
+ note:p=>{const s=samples(p);return s[989]>33?'p99 فوق 33ms: كل 100 فريم هتفوتك فريم ('+s[989].toFixed(0)+'ms).':'p99 داخل ميزانية 30fps.'}
+});
+
+// Lab 2: quantisation
+L.plot($('d70-lab2'),{
+ x:[-1,1],y:[-1.2,1.2],
+ params:[{k:'bits',label:'bits',min:2,max:8,step:1,v:4}],
+ curves:[{f:x=>Math.tanh(2*x),label:'FP32',color:'a'},{f:(x,p)=>{const lv=Math.pow(2,p.bits)-1;const y=Math.tanh(2*x);return Math.round((y+1.2)/2.4*lv)/lv*2.4-1.2},label:'quantised',color:'bad',dash:1}],
+ readout:p=>[['levels',Math.pow(2,p.bits)],['size vs FP32',(p.bits/32*100).toFixed(0)+'%']],
+ note:p=>p.bits>=8?'8 bits: الفرق شبه مش باين.':(p.bits<=3?'درجات كبيرة: الخسارة هتبان.':'تقريب متوسط.')
+});
+
+// Lab 3: budget
+L.calc($('d70-lab3'),{
+ params:[{k:'pm',label:'بارامترات (M)',min:1,max:100,step:1,v:5},{k:'bits',label:'bits',min:4,max:32,step:4,v:32},{k:'gf',label:'GFLOPs للصورة',min:.05,max:20,step:.05,v:.6},{k:'dev',label:'قدرة الجهاز (GFLOPS)',min:10,max:2000,step:10,v:200},{k:'eff',label:'كفاءة %',min:5,max:80,step:5,v:30}],
+ compute:p=>{const mb=p.pm*1e6*p.bits/8/1e6;const ms=p.gf/(p.dev*p.eff/100)*1000;const fps=1000/ms;return [['حجم الموديل',mb.toFixed(1)+' MB'],['latency تقديري',ms.toFixed(1)+' ms'],['fps تقديري',fps.toFixed(0)],['30fps؟',fps>=30?'أيوه':'لأ']]},
+ note:p=>'تقدير نظري؛ الرقم الحقيقي بيتقاس على الجهاز.'
+});
+
+// flow
+L.flow($('d70-flow'),{height:300,
+ nodes:[{id:'t',label:'PyTorch',x:0,y:.5},{id:'q',label:'INT8 PTQ',x:.25,y:.5},{id:'o',label:'ONNX',x:.5,y:.5},{id:'r',label:'ONNX Runtime',x:1,y:.1},{id:'n',label:'TensorRT',x:1,y:.5},{id:'m',label:'Core ML / TFLite',x:1,y:.9}],
+ edges:[['t','q'],['q','o'],['o','r'],['o','n'],['o','m']],
+ steps:[{active:['t'],text:'موديل مدرّب FP32.'},{active:['q'],edges:[['t','q']],text:'Fuse + calibrate + convert (أو QAT).'},{active:['o'],edges:[['q','o']],text:'تصدير ONNX (opset 17 + dynamic batch).'},{active:['r','n','m'],edges:[['o','r'],['o','n'],['o','m']],text:'اختار الـ runtime حسب الجهاز: web/serverless، NVIDIA، موبايل.'}]});
+
+// Quiz
+AI.quiz($('d70-quizBox'),[
+ ['عملت benchmark وقلت «متوسط 12ms للصورة على 4090». إيه الناقص؟',['اسم الـ dataset','حجم الموديل','مفيش ناقص','الـ percentiles (p50/p95/p99) وانضباط الـ warmup وCUDA synchronisation؛ المتوسط بيخبّي الـ tail وممكن يقيس إطلاق الـ kernel مش تنفيذه'],3,'الأنظمة الـ real-time بتفشل في الـ tails مش المتوسط.'],
+ ['ليه FLOPs وlatency الفعلي مش متطابقين؟',['العمليات مختلفة في ملاءمتها للهاردوير: depthwise قليلة FLOPs لكنها memory-bound، والـ dense بتستغل Tensor Cores؛ وكمان الـ bandwidth والـ kernel launch والـ cache','عدّادات FLOPs بايظة','FLOPs بتتجاهل الـ batch','PyTorch بيعد غلط'],0,'FLOPs proxy رخيص، لكن الزمن الفعلي بيعتمد على مدى مناسبة العملية للهاردوير.'],
+ ['الـ static INT8 PTQ بيخسر كام من الدقة عادةً على موديلات ImageNet؟',['صفر دايمًا','أكتر من 20 نقطة','5–10 نقاط','0.1–1 نقطة لو المعايرة سليمة؛ موديلات conv مع BN fused مستقرة جدًا'],3,'أكبر مصادر الخسارة: معايرة بداتا قليلة أو غير تمثيلية.'],
+ ['تطبيق موبايل محتاج موديل رؤية أقل من 10MB وlatency أقل من 10ms. تختار إيه؟',['ResNet-50','ConvNeXt-Large','ViT-Base','MobileNetV3-Small أو EfficientNet-Lite-B0 بـ INT8؛ مصممين للميزانية دي وبيتcompile على TFLite/Core ML'],3,'مصممين بـ depthwise convs وh-swish للميزانيات الصغيرة.'],
+ ['صدّرت موديل لـ ONNX opset 17 وجالك «Unsupported operator». إيه الأسباب المحتملة؟',['عدد البارامترات كبير','شكل الدخل غلط','مكتبة ONNX قديمة','(1) custom op ملوش مقابل في ONNX؛ (2) control flow بيعتمد على القيم والـ tracing مش بيلقطه؛ (3) تفاعل tensor-scalar ضمني. الحل: استبدال الـ op أو torch.jit.script أو opset أعلى'],3,'التصدير tracing افتراضيًا فأي حاجة مش بتتتبّع بتفشل.'],
+ ['(مني) الـ INT8 بيصغّر الموديل كام مرة مقارنة بـ FP32؟',['2×','4×','8×','16×'],1,'32 bit ÷ 8 bit = 4. (الحجم بس؛ السرعة بتختلف حسب الهاردوير.)'],
+ ['(مني) الـ calibration set في static PTQ المفروض يكون عامل إزاي؟',['صور عشوائية من النت','نفس الـ test set بالظبط','عينة صغيرة بتمثّل بيانات الإنتاج الفعلية (توزيع وpre-processing)','مش محتاجينه'],2,'النطاقات (min/max) بتتحسب منه؛ لو مش تمثيلي النطاقات هتتظبط غلط.']
+],5);
+AI.checklist(N,root);
+})();
+</script>

@@ -1,0 +1,440 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 16 · Build a Complete Vision Pipeline — Capstone</span>
+  <h1>اليوم ٧١: الـ Capstone — pipeline رؤية كاملة، من الصورة للـ JSON</h1>
+  <p class="lede">كل اللي اتعلمته في الـ Phase ده (detector، classifier، quantisation، سرعة) هنربطه النهاردة في <b>خدمة واحدة</b>: صورة تدخل، detections مع classification تطلع كـ JSON متحقق منه، وكل حالة فشل ليها رد واضح. ده الفرق بين «موديل شغال عندي» و«منتج».</p>
+  <div class="meta">
+    <span>الوقت: <b>~١٢٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Real-Time Vision — Edge Deployment</b></span>
+    <span>بعده: <b>Self-Supervised Vision</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 يوم · النهاردة رقم ١٥</span>
+    <div class="roadmap" id="d71-roadmap" aria-label="أيام الـ Phase الرابع"></div>
+  </div>
+</header>
+
+<section id="d71-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كان عن الـ Edge Deployment. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه التلات «ميزانيات» (budgets) اللي بتحدد ship ولا no-ship لموديل على جهاز صغير؟
+      <details><summary>الإجابة</summary>الـ <b>latency</b> (ملّي ثانية لكل صورة)، والـ <b>memory</b> (أقصى استهلاك بالـ MB)، والـ <b>power</b> (طاقة لكل inference).</details></li>
+    <li>إيه التلات «مقابض» (knobs) اللي بتصغّر الموديل وتسرّعه؟
+      <details><summary>الإجابة</summary>(١) اختيار architecture أصغر بنفس الـ recipe، (٢) الـ quantisation يعني INT8 بدل FP32، (٣) الـ runtime زي ONNX Runtime أو TensorRT أو Core ML أو TFLite.</details></li>
+    <li>ليه بنقيس الأول قبل ما نحسّن، وإيه حد الخسارة المقبول في الدقة بعد INT8؟
+      <details><summary>الإجابة</summary>لأنك مينفعش تحسّن اللي مش بتقيسه. والهدف إن الدقة تنزل أقل من 1% بعد الـ quantisation.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعتين</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>25 min</b>الفكرة: pipeline وdata contracts وlatency وfailures</div>
+    <div><b>25 min</b>التلات معامل</div>
+    <div><b>45 min</b>اكتب الكود: contracts وPipeline وFastAPI وbenchmark</div>
+    <div><b>20 min</b>تمارين وكويز</div>
+  </div>
+</section>
+
+<section id="d71-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: المنتج سلسلة موديلات مش موديل</h2></div>
+  <p>موديل واحد مفيد، لكن المنتجات الحقيقية <b>سلاسل</b> منهم:</p>
+  <ul class="checklist">
+    <li><b>Retail shelf audit:</b> detector + product classifier + price OCR.</li>
+    <li><b>العربية ذاتية القيادة:</b> 2D detector + 3D detector + segmenter + tracker + planner.</li>
+    <li><b>فحص طبي مبدئي:</b> segmenter + region classifier + واجهة للدكتور.</li>
+  </ul>
+  <p>كل <b>وصلة</b> بين موديلين هي مكان جديد للـ bugs: coordinate transform، normalisation، resize للماسك. أخطر حاجة إن الغلطة دي <b>صامتة</b>: الكود بيشتغل وبيرجّع أرقام غلط. والـ pipeline قوته بقد أضعف وصلة فيه.</p>
+  <div class="note"><strong>تشبيه:</strong> فكّر في خط إنتاج مصنع. كل ماكينة كويسة لوحدها، بس لو ماكينة بتطلّع القطعة بمقاس مقلوب والتانية متوقعة المقاس العادي، الخط كله بيطلّع خردة من غير ما أي إنذار يرن. الـ data contract هو جهاز الفحص اللي بين كل ماكينتين.</div>
+  <p>الـ capstone ده بيبني الحد الأدنى من pipeline حقيقي: <b>detection + classification + structured output + serving</b>. وأي حاجة تانية في الـ Phase (YOLOv8 بدل Mask R-CNN، OCR head، segmentation branch، tracker) بتتحط في نفس الهيكل. الـ architecture ثابت والقطع بتتبدّل.</p>
+</section>
+
+<section id="d71-pipe">
+  <div class="station-head"><span class="tag">02</span><h2>الـ pipeline: سبع مراحل</h2></div>
+  <p>الطلب بيعدّي على سبع محطات: فك الصورة وتجهيزها، الـ detector، قص كل detection وتصغيره، الـ classifier، تجميع النتايج، التحقق بـ Pydantic، وبعدين الـ JSON. <b>موديلين بس تقال ومكلفين</b>، والخمس مراحل التانيين هما المكان اللي الـ bugs بتعيش فيه.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: امشي مع طلب جوه الـ pipeline</h3>
+      <p>دوس «اللي بعدها» وشوف أنهي مرحلة بتنوّر. الخطوات الأخيرة بتوريك مسارين: النجاح، والفشل (صورة بايظة بترجع 400 على طول).</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ classifier بياخد crops مش الصورة كلها، وكل crop لازم يتحجّم لنفس المقاس (224×224). ده المكان اللي بيحصل فيه أكتر bugs: الـ clamp، والحجم الصغير، وترتيب الأبعاد.</div>
+    </div>
+    <div id="d71-flow"></div>
+  </div>
+</section>
+
+<section id="d71-contract">
+  <div class="station-head"><span class="tag">03</span><h2>Data contracts: خلّي الغلط يصوّت</h2></div>
+  <p>كل حدّ بين مرحلتين بيبقى <b>object بنوع</b> (typed). ده بيحوّل الفشل الصامت لفشل عالي الصوت. المستخدم هنا <b>Pydantic</b>.</p>
+  <div class="formula">Detection(box=(x1,y1,x2,y2) بالبكسل، score∈[0,1]، class_id≥0، mask_rle اختياري)</div>
+  <div class="formula">PipelineResult(image_id، detections، classifications، inference_ms)</div>
+  <p>مثال: لو detector رجّع الصناديق بصيغة <span class="ltr">(cx, cy, w, h)</span> والمرحلة اللي بعده متوقعة <span class="ltr">(x1, y1, x2, y2)</span>، من غير contract هتلاقي الـ crop رجع فاضي ومحدش عارف ليه. ومع الـ contract (أو أي validation على الحدود) بتعرف في نفس اللحظة. الـ validation بيكلّف ميكروثواني، ويوفّر ساعات debugging.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: صندوق detection يعدّي ولا يتخطى؟</h3>
+      <p>الصورة حجمها W×H. حرّك الصندوق خلّيه يطلع برا الصورة، وغيّر <code>min_crop</code>. الأداة بتعمل نفس اللي في <code>run()</code>: clamp، وبعدين تحسب حجم الـ crop، وتقول هل هيروح للـ classifier أو يتخطّى.</p>
+      <div class="note"><strong>جرّب:</strong> خلّي x2 أكبر من عرض الصورة. الـ clamp بيقصّه. وخلّي الصندوق صغير (عرضه 10) وشوف الـ detection بيفضل في الرد بس من غير classification.</div>
+    </div>
+    <div id="d71-crop"></div>
+  </div>
+</section>
+
+<section id="d71-lat">
+  <div class="station-head"><span class="tag">04</span><h2>الوقت بيروح فين؟ التلات حقائق</h2></div>
+  <ol class="ex">
+    <li><b>الـ preprocessing غالبًا أكبر بلوك لوحده</b> (خصوصًا من غير GPU): فك JPEG، تحويل ألوان، resize. كلها CPU وسهل تنساها.</li>
+    <li><b>الـ detector بياخد 70-90% من وقت الـ GPU.</b></li>
+    <li><b>الـ postprocessing (NMS، RLE encode/decode)</b> رخيص على GPU وغالي على CPU. قيس دايمًا على الجهاز الهدف.</li>
+  </ol>
+  <p>معرفة التوزيع ده بتحوّل «عايز أسرّع» لقايمة أولويات. الأرقام النموذجية من الدرس على CPU: preprocess حوالي 3ms، detect من 300 لـ 500ms، classify من 20 لـ 40ms، المجموع من 350 لـ 550ms. على GPU الـ detect بينزل لـ 20-40ms وساعتها الـ preprocess والـ classify بيبانوا أكتر في النسبة.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: مين الـ bottleneck؟</h3>
+      <p>الأعمدة أرقام تقريبية مبنية على المدى اللي في الدرس (مش قياس حقيقي على جهازك). حرّك «تسريع الـ GPU للـ detector» وشوف النسبة بتتغير. بعدها حرّك «عدد الـ detections» وشوف الـ classify بيكبر.</p>
+      <div class="note ai"><strong>الدرس:</strong> بعد ما الـ detector يتسرّع، المرحلة التانية الأكبر هي اللي تستاهل الشغل. الأدوات بتتغير والـ bottleneck بيتحرك.</div>
+    </div>
+    <div id="d71-bars"></div>
+  </div>
+</section>
+
+<section id="d71-fail">
+  <div class="station-head"><span class="tag">05</span><h2>حالات الفشل: لكل واحدة اسم ورد</h2></div>
+  <p>الـ pipeline الإنتاجي بيتعامل مع كل فشل من غير <code>try/except</code> عام بيخبّي المشكلة. كل فشل له رد محدد:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الحالة</th><th>الحل</th></tr>
+    <tr><td>مفيش detections</td><td>رجّع list فاضية، متعملش crash، واكتب log</td></tr>
+    <tr><td>صندوق برا حدود الصورة</td><td>اعمل clamp لحجم الصورة قبل الـ crop</td></tr>
+    <tr><td>crop صغير جدًا</td><td>اتخطى الـ classification لو أصغر من الحد الأدنى للـ classifier، واحتفظ بالـ detection</td></tr>
+    <tr><td>رفع ملف بايظ</td><td>رد <b>400</b> بكود خطأ محدد، مش 500</td></tr>
+    <tr><td>الموديل مش بيتحمّل</td><td>السيرفس تفشل وقت الـ <b>startup</b> مش عند أول request</td></tr>
+  </table></div>
+  <div class="note"><strong>ليه 400 مش 500؟</strong> الـ 5xx معناها «السيرفر عنده مشكلة» فالـ client غالبًا يعيد المحاولة بنفس الملف البايظ ويضاعف الحمل. الـ 4xx بتقول للـ client إن المشكلة في اللي بعته.</div>
+</section>
+
+<section id="d71-batch">
+  <div class="station-head"><span class="tag">06</span><h2>الـ Batching: مقايضة throughput بـ latency</h2></div>
+  <p>الخدمة الحقيقية بتخدّم ناس كتير في نفس الوقت. لو جمّعت الـ crops من أكتر من طلب في forward pass واحد، الـ throughput بيزيد جامد. الثمن: كل طلب بيستنى لحد ما الـ batch يتملى. الإعداد المعتاد: اجمع الطلبات لحد <b>20ms</b>، شغّلهم مع بعض، ووزّع الردود. <code>torchserve</code> و<code>Triton</code> بيعملوا ده جاهز، والخدمات الصغيرة بتكتب <b>micro-batcher</b> بسيط لوحدها.</p>
+  <div class="note"><strong>تشبيه:</strong> الأتوبيس مقابل التاكسي. الأتوبيس بيستنى لحد ما يتملى (ناقل أكتر ناس في الساعة، بس كل واحد بيستنى)، والتاكسي بيمشي على طول (أسرع لكل واحد، بس عدد أقل في الساعة).</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣ ب: حاسبة الـ batching (نموذج مبسّط مني)</h3>
+      <p>الحسبة دي تقريب بسيط: الـ batch المتوقع = الطلبات في النافذة. الـ forward لـ batch فيه تكلفة ثابتة وتكلفة لكل صورة. غيّر النافذة ومعدل الطلبات وشوف إمتى الـ batching بيكسب وإمتى بيخسر.</p>
+    </div>
+    <div id="d71-calc"></div>
+  </div>
+</section>
+
+<section id="d71-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الـ capstone</h2></div>
+  <p>من جوه فولدر الريبو شغّل الأصل الأول. الملف بيستخدم <b>stub detector وstub classifier</b> (موديلات وهمية بتطلع 3 detections ثابتة) عشان يشتغل على أي جهاز من غير تحميل أوزان، وبيطبع JSON وبعده جدول benchmark:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/16-vision-pipeline-capstone/code/main.py</pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_pipeline.py</code> واكتب الخطوات دي بإيدك سطر سطر. متعملش Copy غير لو اتزنقت. الأرقام اللي هتطلع بتختلف من جهاز لجهاز، المهم الشكل: JSON فيه <code>detections</code> و<code>classifications</code> و<code>inference_ms</code>، وبعده سطور <code>preprocess</code> و<code>detect</code> و<code>classify</code> و<code>total</code> بـ p50 وp95.</p>
+
+  <h3>خطوة ١: الـ data contracts</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from pydantic import BaseModel, Field
+from typing import List, Optional, Tuple
+
+class Detection(BaseModel):
+    box: Tuple[float, float, float, float]   <span class="c"># (x1, y1, x2, y2) بالبكسل</span>
+    score: float = Field(ge=0, le=1)         <span class="c"># لازم بين 0 و 1</span>
+    class_id: int = Field(ge=0)
+    mask_rle: Optional[str] = None           <span class="c"># الماسك لو موجود</span>
+
+class Classification(BaseModel):
+    detection_index: int                     <span class="c"># بيشاور على أنهي detection</span>
+    class_id: int
+    class_name: str
+    score: float = Field(ge=0, le=1)
+
+class PipelineResult(BaseModel):
+    image_id: str
+    detections: List[Detection]
+    classifications: List[Classification]
+    inference_ms: float</pre></div>
+  <p>خمس ثواني كود بتوفر ساعة debugging في أي pipeline جدي.</p>
+
+  <h3>خطوة ٢: كلاس Pipeline (الجزء الأول)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import time
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+class VisionPipeline:
+    def __init__(self, detector, classifier, class_names, device="cpu", min_crop=32):
+        self.detector = detector.to(device).eval()      <span class="c"># eval: بدون dropout/BN training</span>
+        self.classifier = classifier.to(device).eval()
+        self.class_names = class_names
+        self.device = device
+        self.min_crop = min_crop                        <span class="c"># أصغر crop نقبله</span>
+
+    def preprocess(self, image):
+        <span class="c"># PIL أو numpy (H, W, 3) uint8  -&gt;  tensor (3, H, W) float في [0,1]</span>
+        tensor = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+        return tensor.to(self.device)
+
+    @torch.no_grad()                                    <span class="c"># مفيش gradients في الـ inference</span>
+    def detect(self, image_tensor):
+        return self.detector([image_tensor])[0]         <span class="c"># الـ detector بياخد list</span>
+
+    @torch.no_grad()
+    def classify(self, crops):
+        if len(crops) == 0:                             <span class="c"># مفيش crops؟ رجّع list فاضية</span>
+            return []
+        batch = torch.stack(crops).to(self.device)      <span class="c"># كل الـ crops في batch واحد</span>
+        probs = self.classifier(batch).softmax(-1)
+        scores, cls = probs.max(-1)
+        return list(zip(cls.tolist(), scores.tolist()))</pre></div>
+  <p>لاحظ <code>@torch.no_grad()</code> و<code>.eval()</code>: من غيرهم الـ inference بيستهلك ميموري على الفاضي ونتايج الـ dropout/BatchNorm بتبقى غلط.</p>
+
+  <h3>خطوة ٣: دالة <code>run</code> (الجزء التاني)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>    def run(self, image, image_id="anonymous"):
+        t0 = time.perf_counter()
+        tensor = self.preprocess(image)
+        det = self.detect(tensor)
+
+        crops, detections, valid_indices = [], [], []
+        for i, (box, score, cls) in enumerate(zip(det["boxes"], det["scores"], det["labels"])):
+            x1, y1, x2, y2 = [max(0, int(b)) for b in box.tolist()]   <span class="c"># مفيش سالب</span>
+            x2 = min(x2, tensor.shape[-1])                            <span class="c"># clamp للعرض</span>
+            y2 = min(y2, tensor.shape[-2])                            <span class="c"># clamp للارتفاع</span>
+            detections.append(Detection(box=(x1, y1, x2, y2),
+                                        score=float(score), class_id=int(cls)))
+            if (x2 - x1) &lt; self.min_crop or (y2 - y1) &lt; self.min_crop:
+                continue                                              <span class="c"># crop صغير؟ نتخطاه</span>
+            crop = tensor[:, y1:y2, x1:x2]
+            crop = F.interpolate(crop.unsqueeze(0), size=(224, 224),
+                                 mode="bilinear", align_corners=False)[0]
+            crops.append(crop)
+            valid_indices.append(i)
+
+        class_preds = self.classify(crops)
+        classifications = []
+        for valid_idx, (cls_id, cls_score) in zip(valid_indices, class_preds):
+            classifications.append(Classification(
+                detection_index=valid_idx, class_id=int(cls_id),
+                class_name=self.class_names[cls_id], score=float(cls_score)))
+
+        return PipelineResult(image_id=image_id, detections=detections,
+                              classifications=classifications,
+                              inference_ms=(time.perf_counter() - t0) * 1000)</pre></div>
+  <p>كل وصلة typed، وكل حالة فشل ليها قرار واضح: clamp للصندوق، وتخطّي الـ crop الصغير، ورقم الـ detection محفوظ عشان الـ classification يرجع لصاحبه (<code>detection_index</code>).</p>
+
+  <h3>خطوة ٤: وصّل detector وclassifier حقيقيين</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
+from torchvision.models import convnext_tiny
+
+<span class="c"># أوزان ImageNet/COCO جاهزة: pipeline حقيقي من غير training</span>
+detector = maskrcnn_resnet50_fpn_v2(weights="DEFAULT")
+classifier = convnext_tiny(weights="DEFAULT")
+class_names = [f"imagenet_class_{i}" for i in range(1000)]
+
+pipe = VisionPipeline(detector, classifier, class_names)
+
+<span class="c"># smoke test بصورة عشوائية</span>
+test_image = (np.random.rand(400, 600, 3) * 255).astype(np.uint8)
+result = pipe.run(test_image, image_id="demo")
+print(result.model_dump_json(indent=2)[:500])</pre></div>
+  <p>الدرس بيستخدم Mask R-CNN و ConvNeXt-Tiny بأوزان جاهزة. محتاج <code>torchvision</code> ومعاه تحميل الأوزان لأول مرة.</p>
+
+  <h3>خطوة ٥: خدمة FastAPI</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from fastapi import FastAPI, UploadFile, HTTPException
+from io import BytesIO
+from PIL import Image
+
+app = FastAPI()
+pipe = None                                   <span class="c"># هيتحمّل وقت الـ startup</span>
+
+@app.on_event("startup")
+def load():                                   <span class="c"># لو الموديل وقع، السيرفس تقع هنا مش عند أول request</span>
+    global pipe
+    detector = maskrcnn_resnet50_fpn_v2(weights="DEFAULT").eval()
+    classifier = convnext_tiny(weights="DEFAULT").eval()
+    pipe = VisionPipeline(detector, classifier, class_names=[f"c{i}" for i in range(1000)])
+
+@app.post("/detect")
+async def detect_endpoint(file: UploadFile):
+    if file.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=400, detail="unsupported image type")
+    data = await file.read()
+    try:
+        img = Image.open(BytesIO(data)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="cannot decode image")   <span class="c"># 400 مش 500</span>
+    result = pipe.run(np.asarray(img), image_id=file.filename or "upload")
+    return result.model_dump()</pre></div>
+  <p>شغّلها واختبرها:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>uvicorn main:app --host 0.0.0.0 --port 8000
+curl -F 'file=@dog.jpg' http://localhost:8000/detect</pre></div>
+  <h3>خطوة ٦: الـ benchmark</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def benchmark(pipe, num_runs=20, image_size=(400, 600)):
+    img = (np.random.rand(*image_size, 3) * 255).astype(np.uint8)
+    pipe.run(img)                                    <span class="c"># warm-up: أول مرة دايمًا أبطأ</span>
+    stages = {"preprocess": [], "detect": [], "classify": [], "total": []}
+    for _ in range(num_runs):
+        t0 = time.perf_counter()
+        tensor = pipe.preprocess(img)
+        t1 = time.perf_counter()
+        det = pipe.detect(tensor)
+        t2 = time.perf_counter()
+        crops = []
+        for box in det["boxes"]:
+            x1, y1, x2, y2 = [max(0, int(b)) for b in box.tolist()]
+            x2 = min(x2, tensor.shape[-1]); y2 = min(y2, tensor.shape[-2])
+            if (x2 - x1) &gt;= pipe.min_crop and (y2 - y1) &gt;= pipe.min_crop:
+                crop = tensor[:, y1:y2, x1:x2]
+                crop = F.interpolate(crop.unsqueeze(0), size=(224, 224),
+                                     mode="bilinear", align_corners=False)[0]
+                crops.append(crop)
+        pipe.classify(crops)
+        t3 = time.perf_counter()
+        stages["preprocess"].append((t1 - t0) * 1000)
+        stages["detect"].append((t2 - t1) * 1000)
+        stages["classify"].append((t3 - t2) * 1000)
+        stages["total"].append((t3 - t0) * 1000)
+    for stage, times in stages.items():
+        times.sort()                                  <span class="c"># نرتب عشان نجيب p50 و p95</span>
+        print(f"{stage:12s} p50={times[len(times)//2]:7.1f} ms  p95={times[int(len(times)*0.95)]:7.1f} ms")</pre></div>
+  <p>الـ warm-up ضروري. وعلى GPU لازم تعمل <code>torch.cuda.synchronize()</code> بين المراحل عشان القياس يبقى صح، لأن الـ GPU شغّال بشكل غير متزامن (نسخة <code>main.py</code> في الريبو بتعمل sync لـ cuda وmps). الأرقام النموذجية على CPU اتذكرت فوق.</p>
+</section>
+
+<section id="d71-use">
+  <div class="station-head"><span class="tag">08</span><h2>للإنتاج: إيه اللي بيتضاف</h2></div>
+  <ul class="checklist">
+    <li><b>Model versioning:</b> سجّل اسم الموديل وhash الأوزان في كل رد.</li>
+    <li><b>Trace ID لكل request:</b> سجّل وقت كل مرحلة عشان تربط الطلب البطيء بالمرحلة المسؤولة.</li>
+    <li><b>Fallback:</b> لو الـ classifier عدّى الوقت، رجّع الـ detections من غير classifications بدل ما تفشّل الطلب كله.</li>
+    <li><b>Safety filters:</b> فلاتر NSFW أو PII بعد الـ classification وقبل ما الرد يطلع.</li>
+    <li><b>Batch endpoint:</b> <code>/detect_batch</code> بياخد list روابط صور للمعالجة بالجملة.</li>
+  </ul>
+  <p>للإنتاج الحقيقي: <b>torchserve</b> و<b>Triton Inference Server</b> و<b>BentoML</b> بيدّوك batching وversioning وmetrics وhealth checks جاهزين. FastAPI مباشرة كويس للنماذج الأولية والمنتجات الصغيرة. ومن مخرجات الدرس في الريبو: prompt بيراجع شكل الـ service ويسمّي أول bug، وskill بيوزّع ميزانية الوقت على مراحل الـ pipeline.</p>
+</section>
+
+<section id="d71-ex">
+  <div class="station-head"><span class="tag">09</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> شغّل الـ pipeline على 10 صور من أي dataset مفتوح. اطلّع متوسط وقت كل مرحلة وتوزيع عدد الـ detections لكل صورة.
+      <details><summary>تلميح</summary>استخدم <code>benchmark</code> كأساس، بس بدل الصورة العشوائية اقرا الصور بـ <code>PIL.Image.open(path).convert("RGB")</code> وحوّلها <code>np.asarray</code>. خزّن <code>len(result.detections)</code> في list واطبع <code>collections.Counter</code> عليها.</details></li>
+    <li><b>(متوسط)</b> ضيف حقل ماسك في <code>Detection</code> وشفّره RLE. اتأكد إن الـ JSON أقل من 1MB حتى لصورة فيها 10 objects.
+      <details><summary>تلميح</summary>الـ <code>mask_rle</code> موجود أصلًا كـ <code>Optional[str]</code>. الـ RLE بيخزّن «طول التكرار» بدل كل بكسل، فالماسكات الكبيرة المتصلة بتتضغط جامد. اقيس <code>len(result.model_dump_json())</code> وقارنه بـ 1,000,000. لو كبر، قلّل دقة الماسك قبل التشفير.</details></li>
+    <li><b>(صعب)</b> ضيف micro-batcher قدام الـ classifier: يجمّع الـ crops لحد 10ms ويعملها كلها في نداء GPU واحد ويرجّع لكل طلب نتيجته. قيس الـ throughput عند 5 طلبات متزامنة في الثانية والـ latency اللي زادت.
+      <details><summary>تلميح</summary>استخدم <code>asyncio.Queue</code>: كل طلب يحط crops مع <code>asyncio.Future</code>، وtask خلفي يستنى أول عنصر وبعدها ينام 10ms ويسحب كل اللي في الـ queue، يعمل <code>torch.stack</code> ويشغّل الـ classifier مرة واحدة، وبعدها يقسّم النتايج حسب الـ Future. توقّع إن الـ latency تزيد بحد أقصى حوالي 10ms والـ throughput يزيد.</details></li>
+    <li><b>إضافة مني · اكتب الـ contract اللي يمسك الغلط:</b> غيّر الـ <code>Detection</code> بحيث يرفض أي صندوق فيه <code>x2 &lt;= x1</code> أو <code>y2 &lt;= y1</code> باستخدام <code>@model_validator</code> من Pydantic، وبعدها جرّب تدّيه <span class="ltr">(cx, cy, w, h)</span>.
+      <details><summary>تلميح وإجابة</summary>جوه الـ validator خد <code>self.box</code>، اعمل unpack لـ 4 قيم، و<code>raise ValueError("box must be x1,y1,x2,y2 with x2>x1 and y2>y1")</code> لو الشرط اتكسر. صندوق مدخل بصيغة (cx,cy,w,h) غالبًا هيعدّي لو w وh أكبر من cx وcy، فاعتبره تمرين: الـ validation لوحده مش بيمسك كل الأنواع، فضيف كمان تحقق إن الصندوق جوه حدود الصورة، وسجّل صيغة الصندوق في اسم الحقل.</details></li>
+  </ol>
+</section>
+
+<section id="d71-extra">
+  <div class="station-head"><span class="tag">10</span><h2>إضافة مني: أخطاء هتقع فيها، وفين بتظهر في الـ LLMs والـ agents</h2></div>
+  <ul class="checklist">
+    <li><b>RGB مقابل BGR:</b> OpenCV بيقرا الصور BGR وPIL وtorchvision بيتوقعوا RGB. الكود هيشتغل والدقة هتنزل من غير سبب واضح. اعمل check على الحدود.</li>
+    <li><b>إحداثيات قبل وبعد الـ resize:</b> لو الـ detector اشتغل على صورة اتصغّرت، لازم ترجّع الصناديق لمقاس الصورة الأصلية قبل الـ crop، وإلا القص هيكون في مكان غلط.</li>
+    <li><b>ترتيب الأبعاد:</b> الصورة numpy شكلها <span class="ltr">(H, W, 3)</span> والـ tensor <span class="ltr">(3, H, W)</span>. نسيان <code>permute</code> بيكسر الشكل أو يديك نتايج غريبة.</li>
+    <li><b>القياس من غير warm-up:</b> أول نداء بيحمّل kernels وبيبطّأ. ولو قست على GPU من غير synchronize هتقيس وقت «الإطلاق» مش وقت الشغل.</li>
+    <li><b>الـ p95 مش المتوسط:</b> المستخدم بيحس بالطلب البطيء مش بالمتوسط. دايمًا بلّغ p50 وp95.</li>
+    <li><b>في الـ LLMs والـ agents:</b> نفس الفكرة بالظبط. الـ tool calling بيستخدم JSON schema كـ contract بين الـ LLM والأداة، والـ structured output بيتحقق بـ Pydantic. ولو الأداة رجّعت شكل غلط، الـ agent بيكمل على بيانات بايظة ويطلّع إجابة واثقة وغلط. وبعض الأنظمة بتخلّي موديل لغة يقرا crops من detector، يعني pipeline متعدد الموديلات برضه.</li>
+  </ul>
+</section>
+
+<section id="d71-quiz">
+  <div class="station-head"><span class="tag">11</span><h2>كويز</h2></div>
+  <div class="quiz" id="d71-quizBox"></div>
+</section>
+
+<section id="d71-done">
+  <div class="station-head"><span class="tag">12</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d71-checklist">
+    <li><label><input type="checkbox" data-ck="1"> قدرت أشرح المراحل السبعة وأحدد مكان أغلب الـ bugs</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه الـ Pydantic على كل حدّ</label></li>
+    <li><label><input type="checkbox" data-ck="3"> جرّبت معمل الـ crop وفهمت clamp وmin_crop</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ pipeline والـ benchmark بإيدي وشغّلت main.py</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Data contract</td><td>JSON schema للـ tool calling، structured output، validation على APIs</td></tr>
+    <tr><td>Clamp وmin_crop</td><td>أي pipeline قص ثم تصنيف: OCR، وجوه، تحليل منتجات</td></tr>
+    <tr><td>Warm-up وp95</td><td>كل benchmark لـ LLM serving أو أي موديل</td></tr>
+    <tr><td>Batching</td><td>vLLM وTriton وTorchServe، والـ continuous batching في الـ LLMs</td></tr>
+    <tr><td>400 مقابل 500</td><td>أي API بتبنيه بعد كده</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Self-Supervised Vision. إزاي تتعلّم features قوية من صور من غير labels: SimCLR وDINO وMAE.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F16-vision-pipeline-capstone" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/16-vision-pipeline-capstone</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=71,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d71-roadmap').closest('.day');
+const rm=$('d71-roadmap');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===15)s.className='now';rm.appendChild(s)}
+
+// ---- lab 1: pipeline flow ----
+AI.lab.flow($('d71-flow'),{height:340,label:'مراحل الـ vision pipeline',
+ nodes:[{id:'req',label:'HTTP + image',x:0,y:0.5},{id:'load',label:'Decode + preprocess',x:0.22,y:0.1},{id:'det',label:'Detector',x:0.5,y:0.1},{id:'crop',label:'Crop + resize',x:0.78,y:0.1},{id:'cls',label:'Classifier',x:1,y:0.5},{id:'agg',label:'Aggregate',x:0.78,y:0.9},{id:'sch',label:'Pydantic',x:0.5,y:0.9},{id:'res',label:'JSON response',x:0.22,y:0.9}],
+ edges:[['req','load'],['load','det'],['det','crop'],['crop','cls'],['cls','agg'],['agg','sch'],['sch','res'],['req','res','error 400']],
+ steps:[
+  {active:['req'],text:'الطلب وصل: صورة مرفوعة كـ bytes. أول حاجة نتأكد من نوع الملف.'},
+  {active:['load'],edges:[['req','load']],text:'بنفك الـ JPEG ونحوّله RGB ونعمل tensor. غالبًا أكبر بلوك CPU.'},
+  {active:['det'],edges:[['load','det']],text:'الـ detector (YOLO أو Mask R-CNN) بيطلّع boxes وscores وlabels. الأغلى على GPU.'},
+  {active:['crop'],edges:[['det','crop']],text:'لكل detection: clamp، وتخطّي الصغير، وقص وresize لـ 224×224.'},
+  {active:['cls'],edges:[['crop','cls']],text:'كل الـ crops في batch واحد للـ classifier (ConvNeXt-Tiny).'},
+  {active:['agg','sch'],edges:[['cls','agg'],['agg','sch']],text:'بنجمّع detections وclassifications، وPydantic يتحقق من كل حقل.'},
+  {active:['res'],edges:[['sch','res']],text:'JSON متحقق منه يرجع للـ client مع inference_ms.'},
+  {active:['req','res'],edges:[['req','res']],text:'مسار الفشل: ملف بايظ يرجع فورًا 400 بكود خطأ محدد، من غير ما يوصل للموديلات.'}
+ ]});
+
+// ---- lab 2: crop validator ----
+AI.lab.calc($('d71-crop'),{params:[
+ {k:'W',label:'عرض الصورة W',min:200,max:1000,step:10,v:600},
+ {k:'H',label:'ارتفاع الصورة H',min:200,max:1000,step:10,v:400},
+ {k:'x1',label:'x1',min:-50,max:900,step:5,v:500},
+ {k:'y1',label:'y1',min:-50,max:900,step:5,v:100},
+ {k:'x2',label:'x2',min:-50,max:1100,step:5,v:700},
+ {k:'y2',label:'y2',min:-50,max:1100,step:5,v:300},
+ {k:'mc',label:'min_crop',min:8,max:128,step:8,v:32}],
+ compute:p=>{const X1=Math.max(0,p.x1),Y1=Math.max(0,p.y1),X2=Math.min(Math.max(0,p.x2),p.W),Y2=Math.min(Math.max(0,p.y2),p.H);
+  const w=X2-X1,h=Y2-Y1;const ok=w>=p.mc&&h>=p.mc;
+  return [['box بعد الـ clamp','('+X1+','+Y1+','+X2+','+Y2+')'],['crop','w='+w+' × h='+h],['القرار',w<=0||h<=0?'صندوق فاضي':(ok?'يروح للـ classifier':'يتخطّى (detection من غير class)')]]},
+ note:p=>{const w=Math.min(p.x2,p.W)-Math.max(0,p.x1),h=Math.min(p.y2,p.H)-Math.max(0,p.y1);return (w<=0||h<=0)?'الصندوق كله برا الصورة أو مقلوب. ده بالظبط اللي الـ validation يمسكه.':(Math.max(0,p.x1)!==p.x1||p.x2>p.W||Math.max(0,p.y1)!==p.y1||p.y2>p.H?'الـ clamp قصّ جزء من الصندوق.':'الصندوق جوه الصورة.')}});
+
+// ---- lab 3: latency bars ----
+AI.lab.bars($('d71-bars'),{labels:['preprocess','detect','classify'],names:['ms'],
+ params:[{k:'g',label:'تسريع الـ GPU للـ detector (×)',min:1,max:20,step:1,v:1},{k:'n',label:'عدد الـ detections',min:1,max:30,step:1,v:5}],
+ values:p=>[3,400/p.g,6+p.n*3],
+ max:500,highlight:p=>{const v=[3,400/p.g,6+p.n*3];return v.indexOf(Math.max(...v))},
+ readout:p=>{const v=[3,400/p.g,6+p.n*3];const t=v[0]+v[1]+v[2];return [['المجموع ms',f(t,3)],['نسبة الـ detect',f(100*v[1]/t,3)+'%'],['الأكبر',['preprocess','detect','classify'][v.indexOf(Math.max(...v))]]]},
+ note:p=>'أرقام توضيحية من مدى الدرس (preprocess≈3، detect 300-500 على CPU، classify 20-40). مش قياسك أنت.'});
+
+// ---- lab 3b: batching calc ----
+AI.lab.calc($('d71-calc'),{params:[
+ {k:'w',label:'نافذة الـ batch (ms)',min:1,max:50,step:1,v:10},
+ {k:'q',label:'طلبات في الثانية',min:1,max:500,step:1,v:100},
+ {k:'fx',label:'تكلفة ثابتة للـ forward (ms)',min:1,max:30,step:1,v:10},
+ {k:'pi',label:'تكلفة لكل صورة (ms)',min:1,max:20,step:1,v:2}],
+ compute:p=>{const b=Math.max(1,p.q*p.w/1000);const t=p.fx+p.pi*b;const thrB=b/t*1000;const thrN=1000/(p.fx+p.pi);const lat=p.w+t;const latN=p.fx+p.pi;
+  return [['batch متوقع',f(b,3)],['throughput مع batching (img/s)',f(thrB,3)],['throughput من غير (img/s)',f(thrN,3)],['latency مع',f(lat,3)+' ms'],['latency من غير',f(latN,3)+' ms']]},
+ note:p=>{const b=Math.max(1,p.q*p.w/1000);return b<2?'الطلبات قليلة: النافذة بتضيف انتظار من غير ما تجمّع حاجة. الـ batching مش مفيد هنا.':'الـ batch بيجمّع أكتر من صورة وبيوزّع التكلفة الثابتة عليهم. ركّز على الـ latency الزايدة وقرّر بالـ SLA.'}});
+
+// ---- quiz ----
+AI.quiz($('d71-quizBox'),[
+["ليه الـ pipelines الإنتاجية بتستخدم Pydantic (أو حاجة زيه) عند كل حدّ بين مرحلتين؟", ["لأن Pydantic أسرع من الـ dict", "عشان يساعد في تخصيص الـ GPU", "لأن FastAPI بيتطلبه", "الـ schemas بتمسك عدم التطابق عند الحدّ: لو الـ detector رجّع (cx,cy,w,h) والمرحلة اللي بعده متوقعة (x1,y1,x2,y2) هتفشل برسالة واضحة بدل ما تطلّع crops فاضية بصمت"], 3, "الـ bugs الصامتة بين الموديلات هي الألم الأساسي. كل حدّ ليه نظام إحداثيات وترتيب قنوات ومدى قيم وشكل. التحقق عند الحدّ بيحوّل أي عدم تطابق لخطأ فوري، بتكلفة ميكروثواني وتوفير ساعات."],
+["في pipeline شغّال على CPU بس، أنهي مرحلة غالبًا أكبر بلوك في الـ latency؟", ["قراءة جسم الـ HTTP request", "الـ preprocessing (فك JPEG وتحويل الألوان والـ resize) لأنه CPU-bound وبيسيطر لما مفيش GPU", "كتابة الـ JSON", "الـ NMS الأخير في الـ detector"], 1, "على CPU الـ preprocessing كتير بيبقى أكبر تكلفة لوحده. القاعدة: قيس قبل ما تحسّن. على GPU الـ detector هو اللي بيسيطر عادةً، بس ماتفترضش ده على CPU."],
+["الـ classifier بيقع لما detection مقاسه 3×4 بكسل. إيه الحل الصح؟", ["زوّد حجم الـ batch", "درّب الـ classifier على صور أصغر", "حط حد أدنى min_crop (زي 16 أو 32) واتخطى الـ classification للـ detections الأصغر منه، سجّل التخطي وخلّي الـ detection في الرد من غير classification", "حط try/except عام وارجع classifications فاضية"], 2, "الـ crops الصغيرة جدًا حالة فشل مشروعة: الـ classifier اتدرّب على 224×224 ومش هيصنّف 3 بكسل بشكل موثوق. الحد الأدنى بيتخطاها ويحافظ على الـ detection ويطلع رد كامل وصادق. الـ try/except العام بيخبّي المشكلة."],
+["ضفت batching للـ classifier (استنى لحد 10ms، اجمع الـ crops، forward واحد). إيه المتوقع؟", ["الـ latency بتقل دايمًا", "مفيش تأثير", "الـ throughput بيزيد كتير، وlatency كل طلب بتزيد بحد أقصى نافذة الـ batching (حوالي 10ms) وشوية من حجم الـ tensor الأكبر. والقرار بيعتمد على إن الخدمة محكومة بالـ throughput ولا بالـ latency", "الـ throughput بيقل بسبب الانتظار"], 2, "الـ batching مقايضة بين throughput وlatency. كل طلب بيستنى لحد حد النافذة، والـ forward المجمّع أكفأ لكل صورة. استخدمه لما الـ QPS عالي والـ latency عندها مرونة، وتجنبه لما الـ SLA تحت 50ms."],
+["الـ pipeline بيرجّع 500 لما حد يرفع JPEG بايظ. إزاي تصلّحه؟", ["تتجاهله، المستخدم هيعيد المحاولة", "تمسك فشل فك الصورة بدري في الـ preprocessing وترجّع 400 بكود خطأ محدد زي image_decode_failed", "ترجّع 200 مع نتيجة فاضية دايمًا", "تنقل فك الصورة للـ classifier"], 1, "الـ 500 على مدخل بايظ من المستخدم عيب في عقد الـ API. الـ 4xx بتعرّف الـ client إن المشكلة عنده، والـ 5xx بتشغّل منطق إعادة المحاولة بنفس الملف البايظ وتضاعف الحمل. أكواد زي image_decode_failed و image_too_large بتخلّي الـ client يتصرف صح."],
+["(سؤال مني) صندوق detection إحداثياته x1=500، x2=700 والصورة عرضها 600. بعد الـ clamp والـ crop، إيه عرض الـ crop؟", ["200 بكسل", "100 بكسل", "صفر، الصندوق بره", "700 بكسل"], 1, "الـ clamp بيخلّي x2=min(700, 600)=600 فالعرض = 600 - 500 = 100. لو min_crop=32 يعدّي للـ classifier، ولو min_crop=128 يتخطّى."],
+["(سؤال مني) ليه لازم تعمل warm-up قبل ما تقيس الـ latency؟", ["عشان الـ GPU بيبرد", "أول نداء بيحمّل kernels ويعمل allocation وتهيئة، فبيبقى أبطأ بكتير من الحالة المستقرة وبيبوّظ الـ p50 والـ p95", "الـ warm-up بيزوّد الدقة", "Python بيمنع القياس من غيره"], 1, "أول inference بيدفع تكلفة تهيئة لمرة واحدة. لو دخلت في القياس، الأرقام مش بتمثل الأداء اللي المستخدم هيشوفه في الخدمة وهي شغّالة."]
+],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

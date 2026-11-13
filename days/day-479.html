@@ -1,0 +1,424 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 51 · Literature Retrieval</span>
+  <h1>اليوم ٤٧٩: Literature Retrieval: اعرف هل حد أثبت الفرضية قبل ما تفتح الـ sandbox</h1>
+  <p class="lede">الفرضية رخيصة، لكن معرفة إن حد أثبتها قبل كده هي الحتة الغالية. النهاردة هتبني طبقة بحث فيها <b>BM25</b> من الصفر على الـ abstracts، و<b>citation graph</b> بتتمشى فيه لحد مسافتين عشان تلاقي اللي الكلمات فاتتها، ودمج وإزالة تكرار بالـ <b>paper id</b>، وكل ده ورا client واحد بيغلّف API-ين مزيفين.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (وفيه نسخة TypeScript)</span>
+    <span>قبله: <b>Hypothesis Generator</b></span>
+    <span>بعده: <b>Experiment Runner</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — 85 days</span>
+    <div class="roadmap" id="d479-roadmap" aria-label="أيام الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d479-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح بنينا Hypothesis Generator. جاوب في دماغك وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>ليه الـ temperature بيتزوّد في كل pass، ولحد إيه؟
+      <details><summary>الإجابة</summary>عشان الـ drafts اللي بعد كده تبعد أكتر عن اللي قبلها. الافتراضي ٦ passes من ٠٫٢ لـ ١٫٢: تحت ٠٫٢ الموديل بيردد الـ seed، وفوق ١٫٢ الردود بتفكّ وتفشل في الـ parser.</details></li>
+    <li>إمتى الـ novelty filter بيرفض draft؟
+      <details><summary>الإجابة</summary>لما أقل cosine distance بينه وبين أي فرضية ناجية سابقة تبقى أقل من <span class="ltr">novelty_threshold</span> (الافتراضي ٠٫٢٥).</details></li>
+    <li>إيه التلات إشارات في الـ rank_score وأوزانها الافتراضية؟
+      <details><summary>الإجابة</summary>novelty ٠٫٤ وspecificity ٠٫٣ وtestability ٠٫٣.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>ليه بحثين؟ وشكل الـ Paper</div>
+    <div><b>25 min</b>BM25 والـ graph والترتيب (معامل)</div>
+    <div><b>30 min</b>اكتب الكود وشغّله</div>
+    <div><b>15 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d479-why">
+  <div class="station-head"><span class="tag">01</span><h2>ليه محتاجين بحثين مش واحد؟</h2></div>
+  <p>البحث بالكلمات على الـ abstracts بيرجّع الأوراق اللي بتشارك مفرداتك. ده بيغطي أغلب السطح، لكن بيفوّت حالتين:</p>
+  <ul>
+    <li><b>الورقة الأساسية بمفردات مختلفة:</b> بحثك عن «sparse attention» مش هيلاقي ورقة عنوانها «block selection in transformer routing».</li>
+    <li><b>الورقة المتابِعة:</b> لو الورقة اللي تهمّك بتستشهد بورقة معروفة، أرخص إنك تلاقي الورقة المعروفة وتمشي منها لقدّام بدل ما تبحث بالقوة في كل الـ abstracts.</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> بتدوّر على مرجع في مكتبة. البحث بالكلمات زي فهرس الموضوعات. والـ citation graph زي إنك تمسك كتاب لقيته وتشوف مين استشهد بيه ومين هو استشهد بيه: بتوصل لكتب الفهرس مكنش فيها نفس الكلمات.</div>
+  <p>فالدرس بيبني الاتنين: <b>BM25</b> للمطابقة اللفظية، و<b>traversal للـ citation graph</b> بيوسّع مجموعة البداية لقدّام وورا لحد hop أو اتنين. وبعدين الاتحاد بيتشال منه التكرار بالـ paper id ويتترتب بدرجة مدمجة صغيرة.</p>
+
+  <h3>شكل الـ Paper</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>Paper
+  id          : str           (stable identifier, "p001" for the mock corpus)
+  title       : str
+  abstract    : str
+  year        : int
+  authors     : list[str]
+  references  : list[str]     (paper ids this paper cites)
+  citations   : list[str]     (paper ids that cite this paper)
+  source      : str           (which mock api supplied it, "arxiv" or "s2")</pre></div>
+  <p>حقلي <code>references</code> و<code>citations</code> هما اللي بيكوّنوا الـ citation graph الموجّه. الـ API-ين المزيفين بيرجّعوا حقول متداخلة لكن مش متطابقة (arxiv بيرجّع العنوان والـ abstract والسنة والمؤلفين بدون الـ graph، وSemantic Scholar بيزوّد references وcitations)، فالـ loader بيعمل union على الـ <code>id</code>.</p>
+</section>
+
+<section id="d479-arch">
+  <div class="station-head"><span class="tag">02</span><h2>المعمارية</h2></div>
+  <div class="formula">query → [arxiv mock, s2 mock] → corpus → (BM25 index + citation graph) → lexical hits → expand hops 1..2 → merge &amp; dedup → ranked list</div>
+  <p>الـ <b>retrieval client</b> هو اللي بيمتلك البحثين والدمج. اللي بيندهه بيدّيله query ويستلم قايمة مرتبة، وكل عنصر فيها بيحمل حقول بتفسّر الترتيب: <code>bm25_score</code> و<code>graph_distance</code> و<code>recency_score</code> و<code>final_score</code>. وبيرجّع كمان <code>RetrievalResult</code> فيه مقاييس الاستعلام: عدد النتايج، متوسط الدرجة، أعلى درجة، والوقت الكلي. الـ runner بيسجّلهم عشان أي observability بعدين ترسم الجودة عبر الزمن.</p>
+  <p>والـ client بيتبني <b>مرة واحدة</b>: الـ index والـ graph بيتبنوا في الـ constructor ويتستخدموا لكل query بعد كده. بناء الـ index هو الخطوة الغالية، ففصلها عن الاستعلام بيوزّع التكلفة.</p>
+</section>
+
+<section id="d479-bm25">
+  <div class="station-head"><span class="tag">03</span><h2>BM25 من الصفر</h2></div>
+  <p>ده Okapi BM25 القياسي بـ <code>k1=1.5</code> و<code>b=0.75</code>. الـ index عبارة عن قاموسين: <span class="ltr">term → doc_frequency</span> و<span class="ltr">term → {doc_id: term_count}</span>. طول الوثيقة = عدد توكنز الـ abstract، ومتوسط الطول بيتحسب مرة واحدة وقت البناء. الـ tokeniser بسيط: <span class="ltr">lower</span> ثم تقسيم على أي حاجة مش حروف/أرقام، من غير stemming (في الإنتاج بتحط stemmer صغير والواجهة ثابتة).</p>
+  <div class="formula">idf(t) = ln( (N − df + 0.5) / (df + 0.5) + 1 )</div>
+  <div class="formula">tf_norm(t) = f · (k1 + 1) / ( f + k1 · (1 − b + b · dl / avgdl) )</div>
+  <div class="formula">score(d, q) = Σ over t in q of  idf(t) · tf_norm(t)</div>
+  <ul>
+    <li><b>idf:</b> الكلمة النادرة في الـ corpus بتاخد وزن أعلى. الكلمة الموجودة في كل الوثايق بتاخد idf قريب من الصفر (الـ +١ جوه اللوغاريتم بيمنعه يبقى سالب).</li>
+    <li><b>tf_norm:</b> تكرار الكلمة (f) بيزيد الدرجة لكن بـ <b>saturation</b>: أول تكرارين فارقين، والعاشر شبه ملوش لازمة. الحد الأقصى هو <span class="ltr">k1 + 1</span>.</li>
+    <li><b>الـ b:</b> بيتحكم في عقاب الوثيقة الطويلة. <span class="ltr">b=0</span> يعني تجاهل الطول، <span class="ltr">b=1</span> يعني تطبيع كامل بالنسبة لمتوسط الطول.</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> لو كلمة «transformer» اتقالت ١٠ مرات في ورقة، مش معناه إنها ١٠ أضعاف أهم من ورقة قالتها مرتين. زي المطعم اللي أحلى طبق فيه بيجيب ٥ نجوم: بعد حد معيّن النجوم الزيادة مش بتفرق.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الـ saturation والـ idf</h3>
+      <p>فوق: منحنى <span class="ltr">tf_norm</span> مقابل تكرار الكلمة f. الخط الأزرق للإعدادات اللي تحرّكها، والمنقّط للافتراضي (k1=1.5, b=0.75, dl/avgdl=1). زوّد <code>k1</code> وشوف الحد الأقصى بيعلى. خلّي <code>dl/avgdl</code> كبير (وثيقة طويلة) وشوف الدرجة بتنزل.</p>
+      <p>تحت: حاسبة الـ idf. زوّد نسبة الوثايق اللي فيها الكلمة لحد ١٠٠٪ وشوف الـ idf بيقع لقرب الصفر.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الكلمة الشائعة زي «study» أو «accuracy» في الـ mock corpus بتظهر في كل الأوراق تقريبًا، فتأثيرها على الترتيب بيبقى هامشي. اللي بيفرّق هي الكلمات النادرة.</div>
+    </div>
+    <div style="display:grid;gap:14px;min-width:0">
+      <div id="d479-lab1a"></div>
+      <div id="d479-lab1b"></div>
+    </div>
+  </div>
+</section>
+
+<section id="d479-graph">
+  <div class="station-head"><span class="tag">04</span><h2>مشي في الـ Citation Graph</h2></div>
+  <p>الـ graph بيتبني مرة واحدة من الـ corpus: حواف «forward» من الورقة لمراجعها (references)، وحواف «backward» من الورقة للأوراق اللي استشهدت بيها (citations). الـ traversal هو <b>BFS</b> بيبدأ من أحسن نتايج BM25 وبيقف عند ٢ hops. الدالة <span class="ltr">expand(seeds, max_hops)</span> بترجّع قاموس <span class="ltr">paper_id → أقصر مسافة من أي seed</span>.</p>
+  <p><b>ليه ٢ بالظبط؟</b> hop واحد ضحل: الـ agent غالبًا عايز السلف أو الخلف المباشر. ٣ hops في graph متصل بتفجّر عدد النتايج وبتشرد عن الموضوع. فالدرس بيحدد السقف بـ ٢ (حتى لو ضبطت الـ config على أكتر، <span class="ltr">__post_init__</span> بيرجّعه لـ ٢) والـ hop limit متاح كـ config عشان الـ loop يقدر يضيّقه.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: توسّع مسافة بمسافة</h3>
+      <p>الرسمة نموذج مصغّر من الـ mock corpus: ورقة <b>p006</b> هي نتيجة لفظية (seed) في موضوع الـ attention، وبتستشهد بالأنكرين p001 وp002، وبحافة عبر موضوعية لأنكر الموضوع اللي بعده p021. دوس «اللي بعدها» وشوف الـ BFS بيتمشى.</p>
+      <div class="note ai"><strong>لاحظ:</strong> p023 من موضوع تاني ومفيهاش كلمات بحثك، لكنها بتستشهد بالأنكر p021 فبتطلع في hop ٢. وده بالظبط الفرق بين اللي BM25 يفوّته والـ graph يلاقيه.</div>
+    </div>
+    <div id="d479-lab2"></div>
+  </div>
+</section>
+
+<section id="d479-rank">
+  <div class="station-head"><span class="tag">05</span><h2>إزالة التكرار والترتيب</h2></div>
+  <p>البحثين بيرجّعوا مجموعات متداخلة. الـ merge بيستخدم <b>paper id</b> كمفتاح (العنوان والمؤلف بيتكرروا بين نسخ الورقة، والسنة لوحدها مش كفاية). لكل ورقة:</p>
+  <div class="formula">final_score = w_bm25 · bm25_norm + w_graph · graph_score + w_recency · recency</div>
+  <ul>
+    <li><b>bm25_norm:</b> درجة BM25 مقسومة على أعلى درجة BM25 في المجموعة المدموجة، فبتبقى بين ٠ و١.</li>
+    <li><b>graph_score:</b> ١٫٠ للنتيجة اللفظية المباشرة (hop 0)، <b>٠٫٦</b> لو على بعد hop، <b>٠٫٣</b> لو hop ٢، وصفر غير كده.</li>
+    <li><b>recency:</b> ramp خطي من صفر عند أقل سنة في الـ corpus لـ ١ عند أعلى سنة.</li>
+  </ul>
+  <p>الأوزان الافتراضية <b>٠٫٥ و٠٫٣ و٠٫٢</b>، وكلها config: موضوع قديم ممكن تقلّل recency، وموضوع سريع التغير ترفعها.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: فكّك الـ final_score</h3>
+      <p>الأعمدة التلاتة هي مساهمة كل مكوّن (الوزن × القيمة). غيّر الـ hop والسنة والـ bm25 والأوزان وشوف مين اللي بيحمل الورقة للقمة.</p>
+      <div class="note"><strong>فكّر:</strong> ورقة من hop ٢ (٠٫٣) بدون أي تطابق لفظي (bm25_norm = 0) وسنتها أحدث سنة: أقصى ما تاخده <span class="ltr">0.3·0.3 + 0.2·1 = 0.29</span>. ورقة لفظية قديمة جدًا بأعلى BM25 بتاخد <span class="ltr">0.5 + 0.3 = 0.8</span>. الـ graph والـ recency بيرفعوا بس، مش بيقلبوا الدنيا.</div>
+    </div>
+    <div id="d479-lab3"></div>
+  </div>
+</section>
+
+<section id="d479-corpus">
+  <div class="station-head"><span class="tag">06</span><h2>الـ Mock Corpus والـ clients</h2></div>
+  <p>الـ corpus ١٠٠ ورقة بيطلّعها <span class="ltr">build_corpus()</span>: ٢٠ ورقة لكل موضوع من ٥ (attention sparsity، retrieval augmentation، low rank adapters، dataset distillation، evaluation harnesses). كل ورقة ليها عنوان وabstract بقالب من الموضوع، وسنة من ٢٠١٨ لـ ٢٠٢٥. ومربوطين بحيث كل موضوع يكوّن sub-graph متصل: الأوراق من الثالثة لحد العشرين بتستشهد بالأنكرين (الورقة ١ و٢ في الموضوع)، والورقة السادسة في كل موضوع بتستشهد كمان بأنكر الموضوع اللي بعده (حافة عبر موضوعية).</p>
+  <p><span class="ltr">ArxivMockClient</span> بيرجّع العنوان والـ abstract والسنة والمؤلفين. <span class="ltr">SemanticScholarMockClient</span> بيرجّع نفس الأوراق ومعاها references وcitations، وفيه <span class="ltr">fetch(paper_id)</span>. الـ client بيعمل union على الـ id. ومعالجة تعارض الحقول بين الـ client-ين متأجلة لدرس تاني. والفايدة: لما تيجي endpoints حقيقية تتبدّل الـ clients ومكان النداء فوق مايتغيرش.</p>
+  <p>الـ runner في الدرس ٥٢ بيقرا <code>paper.id</code> و<code>paper.title</code> وأول ٣ جمل من الـ abstract كسياق للتجربة، والـ evaluator في ٥٣ بيقرا <code>paper.year</code> و<code>paper.references</code> عشان ينسب الـ baseline لورقة معيّنة. والـ retrieval هو أرخص مرحلة من الأربعة فبيشتغل الأول في الـ orchestrator.</p>
+</section>
+
+<section id="d479-code">
+  <div class="station-head"><span class="tag">07</span><h2>طبّق بإيدك: اكتب الـ Retrieval</h2></div>
+  <p>من جوه فولدر الريبو شغّل الأصل الأول (stdlib بس):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/51-literature-retrieval/code/main.py
+<span class="c"># نسخة TypeScript:</span>
+npx tsx phases/19-capstone-projects/51-literature-retrieval/code/main.ts</pre></div>
+  <p>الـ demo بيعمل client بـ <span class="ltr">top_k_lexical=5, max_hops=2</span> ويبحث عن «attention sparsity head pruning»، وبيطبع JSON فيه <code>hit_count</code> و<code>top_score</code> وأول ٣ نتايج (<code>id</code> و<code>title</code> و<code>year</code> و<code>bm25_score</code> و<code>graph_distance</code> و<code>recency_score</code> و<code>final_score</code>). الأرقام بتطلع من تشغيلك. اللي تركّز عليه: فيه نتايج <code>graph_distance</code> بتاعها ١ أو ٢ و<code>bm25_score</code> صفر؟ دي الأوراق اللي الـ graph جابها.</p>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_retrieval.py</code> واكتب الخطوات دي بإيدك. متعملش Copy غير لو اتزنقت.</p>
+
+  <h3>خطوة ١: الـ Paper والـ tokenizer</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math, re, time
+from collections import Counter, defaultdict, deque
+from dataclasses import dataclass, field
+
+TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+@dataclass
+class Paper:
+    id: str
+    title: str
+    abstract: str
+    year: int
+    authors: list
+    references: list = field(default_factory=list)   <span class="c"># مين بيستشهد بيهم</span>
+    citations: list = field(default_factory=list)    <span class="c"># مين استشهد بيه</span>
+    source: str = "merged"
+
+def tokenise(text):
+    return TOKEN_RE.findall(text.lower())            <span class="c"># lower + تقسيم، من غير stemming</span></pre></div>
+
+  <h3>خطوة ٢: BM25Index</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class BM25Index:
+    def __init__(self, k1=1.5, b=0.75):
+        self.k1, self.b = k1, b
+        self._doc_lens = {}
+        self._term_freq = defaultdict(dict)     <span class="c"># term -> {doc_id: count}</span>
+        self._doc_freq = Counter()              <span class="c"># term -> عدد الوثايق</span>
+        self._avgdl = 0.0
+        self._n_docs = 0
+
+    def add(self, doc_id, text):
+        tokens = tokenise(text)
+        self._doc_lens[doc_id] = len(tokens)
+        for term, count in Counter(tokens).items():
+            self._term_freq[term][doc_id] = count
+            self._doc_freq[term] += 1
+        self._n_docs += 1
+
+    def finalise(self):                         <span class="c"># نده بعد آخر add</span>
+        self._avgdl = (sum(self._doc_lens.values()) / self._n_docs) if self._n_docs else 0.0
+
+    def idf(self, term):
+        df = self._doc_freq.get(term, 0)
+        return math.log((self._n_docs - df + 0.5) / (df + 0.5) + 1.0)
+
+    def score(self, doc_id, query_terms):
+        if doc_id not in self._doc_lens or self._avgdl == 0.0:
+            return 0.0
+        dl, total = self._doc_lens[doc_id], 0.0
+        for term in query_terms:
+            f = self._term_freq.get(term, {}).get(doc_id, 0)
+            if f == 0:
+                continue
+            tf_norm = (f * (self.k1 + 1.0)) / (f + self.k1 * (1.0 - self.b + self.b * dl / self._avgdl))
+            total += self.idf(term) * tf_norm
+        return total
+
+    def search(self, query, top_k=10):
+        terms = tokenise(query)
+        if not terms:
+            return []
+        candidates = set()
+        for t in terms:
+            candidates.update(self._term_freq.get(t, {}).keys())   <span class="c"># بس الوثايق اللي فيها كلمة</span>
+        scores = {d: self.score(d, terms) for d in candidates}
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))   <span class="c"># الـ id بيكسر التعادل</span>
+        return [(d, s) for d, s in ranked[:top_k] if s &gt; 0.0]</pre></div>
+
+  <h3>خطوة ٣: CitationGraph والـ BFS</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class CitationGraph:
+    def __init__(self):
+        self._forward, self._backward = {}, {}
+
+    def add_paper(self, paper):
+        self._forward[paper.id] = list(paper.references)
+        self._backward[paper.id] = list(paper.citations)
+
+    def neighbours(self, doc_id):                 <span class="c"># لقدّام ولورا</span>
+        return list(self._forward.get(doc_id, [])) + list(self._backward.get(doc_id, []))
+
+    def expand(self, seeds, max_hops=2):
+        distance = {sid: 0 for sid in seeds}
+        queue = deque(seeds)
+        while queue:
+            current = queue.popleft()
+            d = distance[current]
+            if d &gt;= max_hops:                     <span class="c"># سقف المسافة</span>
+                continue
+            for n in self.neighbours(current):
+                if n in distance:
+                    continue                      <span class="c"># أقصر مسافة اتسجّلت بالفعل (BFS)</span>
+                distance[n] = d + 1
+                queue.append(n)
+        return distance</pre></div>
+
+  <h3>خطوة ٤: الـ config وـ RetrievalClient.search</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@dataclass
+class RetrievalConfig:
+    top_k_lexical: int = 10
+    max_hops: int = 2
+    w_bm25: float = 0.5
+    w_graph: float = 0.3
+    w_recency: float = 0.2
+    def __post_init__(self):
+        if self.max_hops &gt; 2:                     <span class="c"># سقف ثابت</span>
+            self.max_hops = 2
+
+class RetrievalClient:
+    def __init__(self, corpus, config=None):      <span class="c"># (النسخة الأصلية بتاخد كمان arxiv وs2 clients)</span>
+        self._cfg = config or RetrievalConfig()
+        self._corpus = {p.id: p for p in corpus}
+        self._index = BM25Index()
+        for p in corpus:
+            self._index.add(p.id, p.title + " " + p.abstract)
+        self._index.finalise()                    <span class="c"># الـ index بيتبني مرة واحدة</span>
+        self._graph = CitationGraph()
+        for p in corpus:
+            self._graph.add_paper(p)
+        years = [p.year for p in corpus]
+        self._ymin, self._ymax = min(years), max(years)
+
+    def _recency(self, year):
+        return 1.0 if self._ymax == self._ymin else (year - self._ymin) / (self._ymax - self._ymin)
+
+    def _graph_score(self, distance):
+        return {0: 1.0, 1: 0.6, 2: 0.3}.get(distance, 0.0)
+
+    def search(self, query):
+        start = time.perf_counter()
+        terms = tokenise(query)
+        if not terms:                             <span class="c"># query فاضي = نتيجة فاضية</span>
+            return []
+        lexical = self._index.search(query, self._cfg.top_k_lexical)
+        seeds = [d for d, _ in lexical]
+        dist = self._graph.expand(seeds, self._cfg.max_hops)
+        max_bm25 = max((s for _, s in lexical), default=0.0)
+        ranked = []
+        for doc_id in set(seeds) | set(dist):     <span class="c"># الاتحاد، والـ set بيشيل التكرار</span>
+            paper = self._corpus[doc_id]
+            bm25 = self._index.score(doc_id, terms)
+            final = (self._cfg.w_bm25 * (bm25 / max_bm25 if max_bm25 &gt; 0 else 0.0)
+                     + self._cfg.w_graph * self._graph_score(dist.get(doc_id))
+                     + self._cfg.w_recency * self._recency(paper.year))
+            ranked.append((final, doc_id, bm25, dist.get(doc_id)))
+        ranked.sort(key=lambda r: (-r[0], r[1]))
+        return ranked</pre></div>
+
+  <h3>خطوة ٥: corpus صغير تجرّب عليه</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>corpus = [
+    Paper("a", "Sparse attention", "sparse attention reduces cost of attention heads", 2022, ["X"]),
+    Paper("b", "Block routing",    "block selection in transformer routing", 2024, ["Y"]),
+    Paper("c", "Dense baseline",   "dense transformer baseline with full heads", 2020, ["Z"]),
+]
+corpus[0].references = ["b"]; corpus[1].citations = ["a"]   <span class="c"># a بتستشهد بـ b</span>
+client = RetrievalClient(corpus, RetrievalConfig(top_k_lexical=1))
+for final, pid, bm25, hop in client.search("sparse attention"):
+    print(pid, round(final, 3), round(bm25, 3), hop)</pre></div>
+  <p>المتوقع (من اللي الكود بيعمله، مش من ناتج الدرس): الـ <code>a</code> أول واحدة (hop 0)، والـ <code>b</code> بتطلع كـ hop 1 بالرغم إنها مفيهاش كلمات «sparse attention» خالص، والـ <code>c</code> مش بتظهر لأنها مش seed ومش قريبة. ده مثال الدرس بالظبط: الـ graph لقت ورقة مفردات مختلفة. جرّب بنفسك وشوف.</p>
+  <p>لو عندك pytest: <span class="ltr">python3 -m pytest phases/19-capstone-projects/51-literature-retrieval/code/tests/test_retrieval.py</span> (الاختبارات بتغطي المسار اللفظي والـ graph والدمج والـ dedup والـ query الفاضي).</p>
+</section>
+
+<section id="d479-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <p>الدرس الأصلي مفيهوش قسم تمارين، فالتمارين دي من عندي:</p>
+  <ol class="ex">
+    <li>غيّر <code>max_hops</code> لـ ١ ثم ٢ وقارن عدد النتايج لنفس الـ query على الـ corpus الكبير. وجرّب تعمله ٣ في الـ config واكتب إيه اللي بيحصل.
+      <details><summary>الإجابة</summary>عدد النتايج بيكبر بشدة من hop ١ لـ ٢، لأن الأنكرين مستشهد بيهم من ١٨ ورقة. وبالنسبة لـ ٣: <span class="ltr">__post_init__</span> بيرجّعه لـ ٢ بصمت، فالنتيجة نفس ٢. ده قرار تصميم عشان الـ graph ما يفجّرش.</details></li>
+    <li>اعمل stemmer بسيط (يشيل <span class="ltr">s</span> و<span class="ltr">ing</span> من آخر الكلمة) وحطه في الـ tokenise. هل «heads» و«head» بقوا نفس الـ term؟ وإيه اللي بيتغير في الـ idf؟
+      <details><summary>الإجابة</summary>أيوه، المصطلحين بيندمجوا في term واحد فـ df بتاعه بيزيد (فالـ idf بيقل شوية)، لكن الـ recall بيتحسن لأن البحث عن «head» بيلاقي «heads». لازم تطبّق نفس الـ tokenise على الـ index والـ query. وإلا هيحصل mismatch.</details></li>
+    <li>اضبط الأوزان على <code>w_graph=0</code> و<code>w_recency=0</code> وقارن الترتيب بالافتراضي. إيه الفرق، ومتى تفضّل كل واحد؟
+      <details><summary>الإجابة</summary>من غير graph وrecency الترتيب هو BM25 النقي (مضروب في ٠٫٥)، فأوراق الـ hop بتنزل لتحت. ده مناسب لو عايز تطابق لفظي دقيق. الافتراضي أفضل لو عايز استكشاف السلف والخلف وتفضيل الأحدث في مجال سريع.</details></li>
+    <li><b>تمرين عملي إضافي:</b> اكتب دالة <code>explain(result)</code> بتطبع لكل نتيجة جملة بالإنجليزي زي «found via hop 1 from a lexical hit; year 2024». وليه ده مهم للـ agent اللي بيستهلك النتايج؟
+      <details><summary>الإجابة</summary>اعتمد على <span class="ltr">graph_distance</span> (None، 0، 1، 2) وbm25_score والسنة. الأهمية: الـ agent لازم يفرّق بين «الورقة دي طابقت كلماتك» و«الورقة دي قريبة بالاستشهاد بس»، لأن مستوى الثقة في الحالتين مختلف، فالـ evaluator في الدرس ٥٣ ممكن يعامل كل واحدة بوزن مختلف.</details></li>
+  </ol>
+</section>
+
+<section id="d479-own">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مش بيقوله</h2></div>
+  <div class="note ai"><strong>إضافة من عندي، مش من الدرس.</strong></div>
+  <ul>
+    <li><b>الحدس:</b> BM25 بيسأل «مين بيتكلم بنفس كلماتي؟» والـ graph بيسأل «مين بيتكلم مع اللي بيتكلم زيي؟». التكامل بينهم هو نفس فكرة الـ hybrid retrieval في أنظمة الـ RAG: lexical + semantic (embeddings)، والـ graph بيزوّد بُعد تالت.</li>
+    <li><b>أخطاء شائعة:</b> (١) نسيان إن الـ corpus في الدرس مولّد بقالب فالأوراق في نفس الموضوع شبه بعض جدًا، فمتعتمدش على فروق دقيقة بين درجاتها كأنها بيانات حقيقية. (٢) الـ tokenise المختلف بين الـ index والـ query. (٣) اعتبار الـ hop ١ دايمًا «دعم» للفرضية: الاستشهاد ممكن يكون نقد، مش تأييد. الـ graph بيقولك «مرتبطة»، مش «مؤيِّدة».</li>
+    <li><b>بيظهر فين في الـ LLMs والـ agents:</b> أداة بحث (search tool) في الـ agent لازم ترجّع نتايج مفسَّرة (id وscore وسبب). الـ BM25 هو اللي بيشغّل Elasticsearch وLucene من زمان، وبيتستخدم جنب الـ embeddings في معظم أنظمة الـ RAG الإنتاجية. والـ citation graph فكرة بتتكرر في أي graph-based retrieval.</li>
+    <li><b>الربط بالدروس اللي جاية:</b> بكرة هتشغّل الـ Experiment Runner على الفرضية اللي مالقتش لها إجابة في الأدبيات، وبعدها الـ evaluator يكتب الحكم.</li>
+  </ul>
+</section>
+
+<section id="d479-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d479-quizBox"></div>
+</section>
+
+<section id="d479-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d479-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم ليه بنحتاج بحث لفظي وبحث بالـ graph</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أشرح idf وtf_norm والـ saturation</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه سقف الـ hops ٢ وجرّبت الـ BFS في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ BM25 والـ graph بإيدي وشغّلت مثال صغير</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>BM25</td><td>Elasticsearch/Lucene، الجزء اللفظي في الـ hybrid RAG</td></tr>
+    <tr><td>idf</td><td>أي scoring لفظي، وكمان بيتسمى في الـ TF-IDF القديم</td></tr>
+    <tr><td>Citation / link graph</td><td>PageRank، أدوات البحث الأكاديمي، graph-based retrieval</td></tr>
+    <tr><td>BFS بسقف hops</td><td>توسيع السياق في الـ knowledge graphs وفي الـ agents</td></tr>
+    <tr><td>Dedup بالـ id + score مدمج</td><td>reranking لنتايج مصادر متعددة في أي search tool</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Experiment Runner: هنشغّل التجربة الفعلية على الفرضية اللي طلعت من الطابور.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F51-literature-retrieval" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT License) · شرح بالعربي: Mostafa Eliwa</span>
+  <span class="ltr">phases/19-capstone-projects/51-literature-retrieval</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=479,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d479-roadmap').closest('.day');
+const rm=$('d479-roadmap');
+for(let i=1;i<=85;i++){const s=document.createElement('span');s.textContent=i;if(i===N-430)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1a: tf saturation ----
+const tfn=(f,k1,b,r)=>f*(k1+1)/(f+k1*(1-b+b*r));
+L.plot($('d479-lab1a'),{x:[0,10],y:'auto',height:290,label:'BM25 tf saturation',
+ params:[{k:'k1',label:'k1',min:0.2,max:3,step:0.1,v:1.5},{k:'b',label:'b',min:0,max:1,step:0.05,v:0.75},{k:'r',label:'dl/avgdl',min:0.3,max:3,step:0.1,v:1}],
+ curves:[{f:(x,p)=>tfn(x,p.k1,p.b,p.r),label:'your',color:'a'},{f:x=>tfn(x,1.5,0.75,1),label:'default',color:'muted',dash:1}],
+ readout:p=>[['الحد الأقصى k1+1',p.k1+1],['tf_norm عند f=3',tfn(3,p.k1,p.b,p.r)],['tf_norm عند f=10',tfn(10,p.k1,p.b,p.r)]],
+ note:p=>p.r>1.5?'وثيقة طويلة: الدرجة بتقل':p.r<0.7?'وثيقة قصيرة: الدرجة بتزيد':'طول عادي'});
+
+// ---- Lab 1b: idf ----
+L.calc($('d479-lab1b'),{
+ params:[{k:'N',label:'N وثايق',min:10,max:1000,step:10,v:100},{k:'pct',label:'% وثايق فيها الكلمة',min:1,max:100,step:1,v:5}],
+ compute:p=>{const df=Math.max(1,Math.round(p.N*p.pct/100));return [['df',df],['idf',Math.log((p.N-df+0.5)/(df+0.5)+1)]]},
+ note:p=>p.pct>=95?'كلمة في كل الوثايق تقريبًا: idf قريب من الصفر':p.pct<=5?'كلمة نادرة: idf عالي':'متوسطة'});
+
+// ---- Lab 2: BFS flow ----
+L.flow($('d479-lab2'),{height:340,label:'توسّع الـ citation graph',
+ nodes:[{id:'p006',label:'p006 (seed)',x:0.45,y:0.05},{id:'p001',label:'p001 anchor',x:0,y:0.45},{id:'p002',label:'p002 anchor',x:0.45,y:0.45},{id:'p021',label:'p021 anchor',x:1,y:0.45},
+  {id:'p003',label:'p003',x:0,y:0.95},{id:'p023',label:'p023',x:1,y:0.95}],
+ edges:[['p006','p001','cites'],['p006','p002','cites'],['p006','p021','cites'],['p001','p003','cited by'],['p021','p023','cited by']],
+ steps:[
+  {active:['p006'],text:'<b>hop 0:</b> p006 جت من BM25 (نتيجة لفظية). graph_score = 1.0.'},
+  {active:['p006','p001','p002','p021'],edges:[['p006','p001'],['p006','p002'],['p006','p021']],text:'<b>hop 1:</b> بنمشي على references. بنلاقي الأنكرين p001 وp002 وكمان p021 من موضوع تاني (الحافة عبر الموضوعية). graph_score = 0.6.'},
+  {active:['p001','p021','p003','p023'],edges:[['p001','p003'],['p021','p023']],text:'<b>hop 2:</b> من الأنكرز بنمشي على citations: p003 وp023 بيستشهدوا بيهم. graph_score = 0.3.'},
+  {active:[],text:'<b>وقف:</b> max_hops = 2. أي حاجة بعد كده بتبقى graph_score = 0 وبتشرد عن الموضوع.'}]});
+
+// ---- Lab 3: score decomposition ----
+L.bars($('d479-lab3'),{labels:['bm25','graph','recency'],height:270,max:1,
+ params:[{k:'bm',label:'bm25_norm',min:0,max:1,step:0.05,v:0.7},{k:'hop',label:'hop (3 = بعيد)',min:0,max:3,step:1,v:1},{k:'yr',label:'السنة',min:2018,max:2025,step:1,v:2023},
+  {k:'wb',label:'w_bm25',min:0,max:1,step:0.05,v:0.5},{k:'wg',label:'w_graph',min:0,max:1,step:0.05,v:0.3},{k:'wr',label:'w_recency',min:0,max:1,step:0.05,v:0.2}],
+ values:p=>{const g=[1,0.6,0.3,0][p.hop],r=(p.yr-2018)/7;return [p.wb*p.bm,p.wg*g,p.wr*r]},
+ readout:p=>{const g=[1,0.6,0.3,0][p.hop],r=(p.yr-2018)/7;return [['graph_score',g],['recency',r],['final_score',p.wb*p.bm+p.wg*g+p.wr*r]]},
+ note:p=>p.hop===3?'مفيش graph: الورقة محتاجة BM25 قوي عشان تطلع':'مساهمة كل مكوّن = الوزن × القيمة'});
+
+// ---- Quiz ----
+AI.quiz($('d479-quizBox'),[
+ ['ليه الـ retrieval client بيشغّل بحث BM25 وبحث citation graph؟',['لأن الـ mock APIs بتطلب كده','لأن الـ parser هيفشل من غيره','لأن BM25 محتاج الـ graph عشان يبني الـ index','لأن النتايج اللفظية بتفوّت الأوراق الأساسية اللي بمفردات مختلفة، والـ graph بيفوّت الأوراق اللي مالهاش استشهاد مشترك مع الـ seed'],3,'كل بحث بيلقط اللي التاني بيفوّته: اللفظي بيغطي المفردات المشتركة، والـ graph بيغطي السلف والخلف مهما كانت المفردات.'],
+ ['ليه traversal الـ citation graph بيتقفل عند hopين؟',['لأن حد الـ recursion في بايثون بيمنع ٣','لأن بعد hopين الـ result set بيشرد عن الموضوع وبيغرّق الـ ranking اللي بعده','لأن BM25 بيقيّم hopين بس','لأن الـ corpus مخزّن فيه طبقتين استشهاد بس'],1,'٢ هو السقف العملي. ٣ hops في graph متصل بتفجّر النتايج وقليل جدًا منها على الموضوع.'],
+ ['إيه قيمة idf لكلمة موجودة في كل الوثايق؟',['سالب ما لا نهاية','قيمة موجبة كبيرة','غير معرّفة، والتطبيق بيتخطاها','قيمة قريبة من الصفر'],3,'لما df = N البسط والمقام جوه اللوغاريتم قريبين، والـ +1 بيخلي الحد موجب لكن صغير. فمساهمة الكلمات الشائعة جدًا قريبة من الصفر.'],
+ ['إيه المفتاح اللي الـ merge بيستخدمه لإزالة التكرار بين نتايج البحثين؟',['bucket درجة BM25','paper id الثابت','السنة وأول مؤلف','نص العنوان'],1,'الـ id هو المقبض الثابت. العنوان والمؤلفين بيتكرروا بين نسخ الورقة، والسنة لوحدها غامضة.'],
+ ['إيه الـ graph_score لورقة بعيدة hopين عن مجموعة الـ seeds؟',['درجة BM25 مقسومة على ١٠','٠٫٣ افتراضيًا','١٫٠ افتراضيًا','صفر'],1,'الجدول الافتراضي: ١٫٠ عند hop 0، و٠٫٦ عند hop 1، و٠٫٣ عند hop 2، وصفر بعد كده.'],
+ ['ليه الـ corpus بيتحمّل مرة واحدة في الـ RetrievalClient بدل ما يتجاب مع كل query؟',['لأن الـ recency score بيحتاج ده','لأن الـ BM25 index والـ citation graph بيتبنوا مرة واحدة في الـ constructor ويتعاد استخدامهم عبر كل الـ queries','لأن الـ mock APIs بطيئة في كل نداء','لأن الـ parser عام'],1,'بناء الـ index هو الخطوة الغالية. إعادة استخدامه بتوزّع التكلفة على كل query.'],
+ ['(سؤال مني) ورقة بـ bm25_norm = 0، hop = 2، وسنتها هي أحدث سنة في الـ corpus. الـ final_score بالأوزان الافتراضية؟',['0.20','0.29','0.50','0.80'],1,'0.5·0 + 0.3·0.3 + 0.2·1 = 0.09 + 0.20 = 0.29.'],
+ ['(سؤال مني) ورقة بتستشهد بالفرضية بتاعتك كـ «مثال على اللي ماينفعش». الـ graph لقاها hop 1. إيه الاستنتاج الصح؟',['الفرضية اتأيّدت','الورقة مرتبطة بس، ولازم تقرا السياق عشان تعرف تؤيد ولا تنتقد','الفرضية اتنفت','الورقة مالهاش لازمة'],1,'الاستشهاد علاقة مش حكم. الـ graph بيقولك «قريبة»، والتأييد أو النقد محتاج قراءة أو evaluator.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

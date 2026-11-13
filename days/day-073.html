@@ -1,0 +1,526 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lessons 18–19 · Open-Vocabulary Vision — CLIP + OCR &amp; Document Understanding</span>
+  <h1>اليوم ٧٣: CLIP بيربط الصورة بالكلام، وOCR بيقرا اللي مكتوب فيها</h1>
+  <p class="lede">يوم بدرسين. الأول <b>CLIP</b>: تدريب encoder للصور وencoder للنص مع بعض، فأي كلمتين وصورة يتقارنوا في فضاء واحد وتصنّف أي حاجة من غير ما تتدرّب عليها (zero-shot). التاني <b>OCR وفهم المستندات</b>: إزاي بنطلّع النص من صورة (CTC)، وإزاي ننتقل لـ «ده إجمالي الفاتورة».</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b> (٤٥ + ٤٥)</span>
+    <span>اللغة: <b>Python</b></span>
+    <span>قبله: <b>Self-Supervised Vision</b></span>
+    <span>بعده: <b>Image Retrieval &amp; Keypoints</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 يوم · النهاردة رقم ١٧</span>
+    <div class="roadmap" id="d73-roadmap" aria-label="أيام الـ Phase الرابع"></div>
+  </div>
+</header>
+
+<section id="d73-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كان الـ Self-Supervised. جاوب في دماغك الأول.</p>
+  <ol class="ex">
+    <li>إيه الـ InfoNCE، وليه بيحتاج batch كبير؟
+      <details><summary>الإجابة</summary>softmax على الـ cosine similarities: الـ positive pair هو الـ target وباقي العينات سلبيات. السلبيات الكتير بتدّي إشارة أحدّ، فالـ batch الصغير بيجوّع الـ loss.</details></li>
+    <li>إيه اللي بيمنع DINO من الـ collapse؟
+      <details><summary>الإجابة</summary>الـ centring (طرح المتوسط) والـ sharpening (temperature صغيرة للـ teacher).</details></li>
+    <li>ليه MAE بيخفي 75% بينما BERT 15%؟
+      <details><summary>الإجابة</summary>الـ patches entropy منخفض والجيران بيحدّدوا بعض، فلازم إخفاء عالي عشان المهمة تحتاج فهم دلالي.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الساعة ونص</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>CLIP: الفكرة والمعملين</div>
+    <div><b>15 min</b>كود CLIP</div>
+    <div><b>20 min</b>OCR: الفكرة والمعملين</div>
+    <div><b>20 min</b>كود OCR</div>
+    <div><b>10 min</b>تمارين وكويز</div>
+  </div>
+</section>
+
+<!-- ============ PART A: CLIP ============ -->
+<section id="d73-clipwhy">
+  <div class="station-head"><span class="tag">01</span><h2>الجزء ١ · CLIP: المشكلة وفكرة البرج المزدوج</h2></div>
+  <p>الـ classifier العادي <b>closed-vocabulary</b>: موديل ImageNet بـ 1000 class مش هيقول غير واحدة من الـ 1000 دي. أي فئة جديدة = داتا جديدة وتدريب جديد.</p>
+  <p><b>CLIP</b> (OpenAI، 2021) اتدرّب على 400 مليون زوج (صورة، caption) من الويب، وبقى يصنّف لأي مجموعة فئات بتوصفها <b>بجملة</b> وقت الاستخدام. ده الـ <b>zero-shot transfer</b>. وعشان كده كل نظام رؤية حديث بيبدأ بـ checkpoint من عيلة CLIP: الـ detection (Grounding DINO، OWL-ViT)، والـ segmentation (CLIPSeg)، والـ retrieval، والـ moderation، والـ VLMs، وتوليد الصور.</p>
+  <h3>برجين (two towers)</h3>
+  <p>encoder للصور (مثلًا ViT-L/14) وencoder للنص (transformer). كل واحد بيخلّص بـ linear projection لنفس البُعد (512 لـ CLIP-B/32، و1024 لـ CLIP-L/14). بنعمل L2-normalise ونحسب cosine similarity.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيّل مكتبة فيها مترجمين: واحد بيحوّل أي صورة لإحداثيات على خريطة، وواحد بيحوّل أي جملة لإحداثيات على <b>نفس الخريطة</b>. التدريب بيخلّي «صورة كلب» و«a photo of a dog» يقعوا على نفس النقطة. بعدها أي مهمة صورة+نص بقت مسألة قياس مسافة.</div>
+  <h3>الـ objective</h3>
+  <p>لباتش من N زوج، نبني مصفوفة تشابه N×N. القطر = الأزواج الصح (عايزينه عالي)، وخارج القطر = أزواج غلط (عايزينه واطي).</p>
+  <div class="formula">sim = image_emb @ text_emb.T / τ</div>
+  <div class="formula">loss_i2t = CE(sim, arange(N))     loss_t2i = CE(simᵀ, arange(N))     loss = (loss_i2t + loss_t2i) / 2</div>
+  <p>الـ loss <b>متماثل</b> لأننا عايزين الاتجاهين يشتغلوا: بحث بالنص عن صورة وبحث بالصورة عن نص. الـ <code>τ</code> (temperature) متعلَّمة كـ scalar وبتبدأ من 0.07.</p>
+  <h3>SigLIP: loss أحسن</h3>
+  <p>SigLIP (Zhai et al., 2023) بدّل الـ softmax بـ <b>sigmoid لكل زوج</b>:</p>
+  <div class="formula">loss = mean over pairs of log(1 + exp(−yᵢⱼ · simᵢⱼ))     y = +1 للزوج الصح، −1 لغيره</div>
+  <p>الـ loss لكل زوج لوحده بيشيل التطبيع على مستوى الـ batch اللي CLIP محتاجه، فـ SigLIP بيتدرّب كويس على batches أصغر وبيساوي CLIP أو بيتفوق عليه بنفس الداتا.</p>
+</section>
+
+<section id="d73-lab1">
+  <div class="station-head"><span class="tag">02</span><h2>معمل ١: مصفوفة التشابه والـ loss</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>شوف القطر وهو بيظهر</h3>
+      <p>الخريطة = احتمال كل صورة (صف) تتطابق مع كل نص (عمود) بعد الـ softmax على الصف. حرّك «جودة التدريب» من 0 لـ 1 وشوف القطر بيسيطر. وحرّك الـ <code>logit_scale</code> وشوف القيم بتحدّ.</p>
+      <p>على جودة 0 الـ loss قريبة من <span class="ltr">log(N) = log(6) ≈ 1.79</span>، ده نفس منطق «الـ loss لموديل عشوائي ≈ log(N)» في الكود (log(8) = 2.08 للباتش 8). الأرقام هنا توضيحية (تشابه مصطنع).</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ loss صغير لما القطر عالي، لكن لو الـ scale كبير جدًا والجودة ضعيفة، الموديل بيبقى «واثق وغلطان»، ولذلك التدريب بيبقى حساس.</div>
+    </div>
+    <div id="d73-clipmat"></div>
+  </div>
+</section>
+
+<section id="d73-zs">
+  <div class="station-head"><span class="tag">03</span><h2>Zero-shot classification: خمس خطوات</h2></div>
+  <ol class="ex">
+    <li>اكتب prompt لكل class: <span class="ltr">"a photo of a {class}"</span>.</li>
+    <li>شفّر كل الـ prompts بالـ text encoder: <span class="ltr">T</span> شكلها (C, d).</li>
+    <li>شفّر الصورة: <span class="ltr">I</span> شكلها (1, d).</li>
+    <li>التشابه = <span class="ltr">I @ Tᵀ</span> شكلها (1, C).</li>
+    <li>الـ argmax = الـ class المتوقع.</li>
+  </ol>
+  <p><b>الـ prompt engineering مهم:</b> OpenAI نشرت 80 template لـ ImageNet ("a photo of a {}"، "a blurry photo of a {}"، "a sketch of a {}"...). متوسط embeddings كل الـ templates لكل class بيدّي 1-3% زيادة في top-1، لأن كل template بيضيء جانب مختلف، والمتوسط بيدّيك «مركز» أنعم وأقوى للمفهوم.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: من التشابه للاحتمال</h3>
+      <p>أربع classes وتشابه الصورة مع كل prompt (أرقام توضيحية). الصورة أقرب لـ dog. غيّر الـ <code>logit_scale</code> وشوف الـ softmax بيحوّل فروق صغيرة في cosine لاحتمالات. وغيّر «تشابه cat» وشوف الإجابة بتتغير لما الفرق يصغر.</p>
+      <div class="note"><strong>ملاحظة:</strong> في الكود الحقيقي الـ scale = 100 (<code>100.0 * image_features @ text_features.T</code>). من غيره، فروق cosine الصغيرة (مثلًا 0.30 مقابل 0.25) هتدّيك احتمالات متقاربة جدًا.</div>
+    </div>
+    <div id="d73-zsbars"></div>
+  </div>
+</section>
+
+<section id="d73-use2">
+  <div class="station-head"><span class="tag">04</span><h2>CLIP بيظهر فين في ٢٠٢٦</h2></div>
+  <ul class="checklist">
+    <li><b>Zero-shot classification:</b> استخدام مباشر.</li>
+    <li><b>Image retrieval:</b> شفّر كل الصور مرة واحدة، وشفّر الـ query وقت الطلب.</li>
+    <li><b>Text-conditioned detection:</b> Grounding DINO وOWL-ViT بيلفّوا text tower حوالين detector.</li>
+    <li><b>Text-conditioned segmentation:</b> CLIPSeg.</li>
+    <li><b>VLMs:</b> LLaVA وQwen-VL وInternVL بيوصّلوا vision encoder من عيلة CLIP بـ LLM.</li>
+    <li><b>Text-to-image:</b> Stable Diffusion وDALL-E 3 بيشتغلوا على CLIP text embeddings.</li>
+  </ul>
+  <p><b>الفرق بين الأسماء:</b> CLIP = الأصل (OpenAI). <b>OpenCLIP</b> = إعادة تدريب مجتمعية على LAION، الافتراضي للـ open source. <b>SigLIP</b> = نفس الفكرة بـ sigmoid loss، مفضّل للشغل الجديد (<code>google/siglip-base-patch16-224</code> على Hugging Face). <b>VLM</b> (LLaVA وأخواتها) = encoder من عيلة CLIP + LLM بيجاوب أسئلة عن الصورة.</p>
+  <div class="note ai"><strong>ليه VLMs بتستخدم CLIP مش ResNet اتدرّب على ImageNet؟</strong> لأن features CLIP اتدرّبت قصاد نص، فمخرجاتها في فضاء الـ LLM يقدر يستهلكه بتكييف قليل (projection صغير). أما ResNet الـ supervised فمعندوش أي علاقة بتركيب اللغة ومحتاج طبقات ربط تقيلة.</div>
+</section>
+
+<section id="d73-clipcode">
+  <div class="station-head"><span class="tag">05</span><h2>الكود بتاع CLIP: اكتبه بإيدك</h2></div>
+  <p>من فولدر الريبو شغّل الأصلين (الأول CLIP والتاني OCR):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/18-open-vocab-clip/code/main.py
+python3 phases/04-computer-vision/19-ocr-document-understanding/code/main.py</pre></div>
+  <p>CLIP هيطبع: sanity check على باتش عشوائي (الـ loss قريبة من log(8) = 2.079)، وبعدها تدريب 100 خطوة على أزواج مصطنعة (الـ loss بتنزل، بيطبع كل 20 خطوة)، وبعدها دقة الـ zero-shot على 16 صورة (الرقم يختلف). الأرقام اللي في الأمثلة عشوائية بـ seed.</p>
+  <p><b>القاعدة:</b> افتح <code>my_clip.py</code> واكتب بإيدك.</p>
+  <h3>خطوة ١: برجين صغيرين</h3>
+  <p>CLIP الحقيقي هو ViT + transformer. هنا الأبراج MLPs صغيرة فوق features جاهزة عشان إشارة التدريب تبان على CPU:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class TwoTower(nn.Module):
+    def __init__(self, img_in=128, txt_in=64, emb=64):
+        super().__init__()
+        self.image_proj = nn.Sequential(nn.Linear(img_in, 128), nn.ReLU(), nn.Linear(128, emb))
+        self.text_proj = nn.Sequential(nn.Linear(txt_in, 128), nn.ReLU(), nn.Linear(128, emb))
+        self.logit_scale = nn.Parameter(torch.ones([]) * 2.6592)   <span class="c"># ln(1/0.07)، بتتعلّم</span>
+
+    def forward(self, img_feats, txt_feats):
+        i = F.normalize(self.image_proj(img_feats), dim=-1)        <span class="c"># L2-normalise</span>
+        t = F.normalize(self.text_proj(txt_feats), dim=-1)
+        return i, t, self.logit_scale.exp()                        <span class="c"># exp عشان تبقى موجبة</span></pre></div>
+  <h3>خطوة ٢: الـ contrastive loss</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def clip_loss(image_emb, text_emb, logit_scale):
+    N = image_emb.size(0)
+    sim = logit_scale * image_emb @ text_emb.T       <span class="c"># مصفوفة N x N</span>
+    targets = torch.arange(N, device=sim.device)     <span class="c"># القطر = الأزواج الصح</span>
+    l_i = F.cross_entropy(sim, targets)              <span class="c"># صورة -&gt; نص</span>
+    l_t = F.cross_entropy(sim.T, targets)            <span class="c"># نص -&gt; صورة</span>
+    return (l_i + l_t) / 2</pre></div>
+  <p><code>logit_scale</code> أكبر = softmax أحدّ، يعني ثقة أعلى لكن خطر عدم استقرار.</p>
+  <h3>خطوة ٣: الـ zero-shot classifier</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@torch.no_grad()
+def zero_shot_classify(model, image_feats, class_text_feats, class_names):
+    """image_feats: (N, img_in)   class_text_feats: (C, txt_in) واحد لكل class"""
+    i = F.normalize(model.image_proj(image_feats), dim=-1)
+    t = F.normalize(model.text_proj(class_text_feats), dim=-1)
+    sim = i @ t.T                                    <span class="c"># (N, C)</span>
+    pred = sim.argmax(dim=-1)                        <span class="c"># أقرب class لكل صورة</span>
+    return [class_names[p] for p in pred.tolist()]</pre></div>
+  <p>ده نفس الإجراء بالظبط مع checkpoint حقيقي.</p>
+  <h3>خطوة ٤: اختبار سلامة</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>torch.manual_seed(0)
+model = TwoTower()
+img = torch.randn(8, 128)
+txt = torch.randn(8, 64)
+i, t, scale = model(img, txt)
+loss = clip_loss(i, t, scale)
+print(f"batch size: {i.size(0)}   loss: {loss.item():.3f}")   <span class="c"># قريب من log(8) = 2.08</span></pre></div>
+  <h3>للاستخدام الحقيقي: OpenCLIP</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import open_clip
+import torch
+from PIL import Image
+
+model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")
+tokenizer = open_clip.get_tokenizer("ViT-B-32")
+
+image = preprocess(Image.open("dog.jpg")).unsqueeze(0)
+text = tokenizer(["a photo of a dog", "a photo of a cat", "a photo of a car"])
+
+with torch.no_grad():
+    image_features = model.encode_image(image)
+    text_features = model.encode_text(text)
+    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    probs = (100.0 * image_features @ text_features.T).softmax(dim=-1)   <span class="c"># 100 = logit scale</span>
+
+print(probs)</pre></div>
+</section>
+
+<!-- ============ PART B: OCR ============ -->
+<section id="d73-ocrwhy">
+  <div class="station-head"><span class="tag">06</span><h2>الجزء ٢ · OCR وفهم المستندات: التلات طبقات</h2></div>
+  <p>صور فيها نص في كل مكان: فواتير، هويات، كتب ممسوحة، فورمات، سبورات، لوحات، لقطات شاشة. استخراج <b>بيانات منظّمة</b> منها (مش بس الحروف، لكن «ده الإجمالي») من أعلى المشاكل قيمة في الـ vision التطبيقي. والمجال بيتقسم لتلات طبقات:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الطبقة</th><th>بتعمل إيه</th><th>مثال</th></tr>
+    <tr><td>١. OCR</td><td>بكسلات ← نص</td><td>"Total 42.50"</td></tr>
+    <tr><td>٢. Layout parsing</td><td>تجميع النص في مناطق (عنوان، فقرة، جدول، هامش)</td><td>Title / Table / Footnote</td></tr>
+    <tr><td>٣. Document understanding</td><td>استخراج حقول منظّمة</td><td><span class="ltr">invoice_total = $42.50</span></td></tr>
+  </table></div>
+  <p>لكل طبقة طرق كلاسيكية وحديثة، والفجوة بين «عايز النص من الصورة» و«عايز إجمالي الفاتورة» أكبر مما أغلب الفرق بتتوقع.</p>
+  <h3>الـ pipeline الكلاسيكي</h3>
+  <ul class="checklist">
+    <li><b>Text detection</b> (DB، EAST، CRAFT): مضلعات لكل سطر أو كلمة.</li>
+    <li><b>Recognition:</b> قص كل منطقة لارتفاع ثابت، وشغّل CNN + BiLSTM + CTC فيطلع تسلسل حروف.</li>
+    <li><b>Layout:</b> إعادة ترتيب القراءة (فوق لتحت ويسار ليمين في اللاتيني، مختلف في العربي والياباني).</li>
+  </ul>
+  <p>والتفاصيل: الـ detector بيطلّع box لكل سطر، بعدين <code>crop</code> لكل منطقة وبعدين الـ recognizer يطلّع نص، وأخيرًا ترتيب القراءة.</p>
+  <h3>CTC في فقرة</h3>
+  <p>الـ recognition بيطلّع تسلسل متغيّر الطول من feature map ثابتة الطول. <b>CTC</b> (Graves et al., 2006) بيخليك تدرّب من غير ما تعرف أنهي عمود ينتمي لأنهي حرف. الموديل بيطلّع توزيع على (vocab + blank) في كل خطوة زمنية، والـ CTC loss بيجمع على <b>كل المحاذاات</b> اللي بتتحوّل للنص الهدف بعد <b>دمج المتكرر وشيل الـ blank</b>.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>raw output:  h h h _ _ e e l l _ l l o _ _
+بعد الدمج وشيل الـ blank:  hello</pre></div>
+  <p>الـ blank هو اللي بيخلّي الحروف المزدوجة تتكتب: الـ «ll» في hello لازم يبقى بينهم blank (<span class="ltr">l _ l</span>)، وإلا الدمج هيحوّلهم لـ «l» واحد. وبسبب CTC اشتغل CRNN في 2015 وما زال بيدرّب أغلب موديلات OCR الإنتاجية.</p>
+</section>
+
+<section id="d73-lab3">
+  <div class="station-head"><span class="tag">07</span><h2>معمل ٣: ألعب بالـ CTC</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>ادمج المتكرر وشيل الـ blank</h3>
+      <p>اكتب تسلسل خام (الحروف بينها مسافات و<code>_</code> هو الـ blank) وشوف الـ decoder بيعمل إيه خطوة خطوة. جرّب preset «hello من غير blank» وشوف إزاي الـ «ll» بتتحوّل لـ «l» واحد، وده سبب وجود الـ blank.</p>
+      <div class="note ai"><strong>لاحظ:</strong> التسلسل الخام أطول من النص. كل حرف بياخد غالبًا أكتر من عمود، والـ blank بيفصل بين الحروف المتكررة.</div>
+    </div>
+    <div class="instrument">
+      <label>التسلسل الخام (بمسافات)<input type="text" id="d73-ctcIn" value="h h h _ _ e e l l _ l l o _ _" style="direction:ltr;width:100%"></label>
+      <div class="btns">
+        <button type="button" id="d73-p1" class="primary">hello (مع blank)</button>
+        <button type="button" id="d73-p2">hello من غير blank</button>
+        <button type="button" id="d73-p3">cat</button>
+      </div>
+      <div class="formula" id="d73-ctcOut" style="direction:ltr;text-align:left"></div>
+    </div>
+  </div>
+</section>
+
+<section id="d73-modern">
+  <div class="station-head"><span class="tag">08</span><h2>الموديلات الحديثة، والـ layout، والمقاييس</h2></div>
+  <ul class="checklist">
+    <li><b>Donut (Kim et al., 2022):</b> ViT encoder + text decoder؛ بيقرا الصورة ويطلّع JSON مباشرة. من غير text detector ولا layout module.</li>
+    <li><b>TrOCR:</b> ViT + transformer decoder لـ OCR على مستوى السطر.</li>
+    <li><b>Qwen-VL-OCR / InternVL:</b> vision-language models متظبّطة لـ OCR، الأدق في 2026 على المستندات المعقدة.</li>
+    <li><b>PaddleOCR:</b> pipeline كلاسيكي (DB + CRNN) في حزمة ناضجة، حصان الشغل في الـ open source.</li>
+  </ul>
+  <p>الموديلات end-to-end بتحتاج داتا وحوسبة أكتر، لكنها بتتخطّى تراكم الأخطاء في pipeline متعدد المراحل.</p>
+  <h3>Layout parsing</h3>
+  <p>للمستندات المنظّمة بنشغّل layout model (LayoutLMv3، أو detector متدرّب على DocLayNet) بيعلّم كل منطقة: Title، Paragraph، Figure، Table، Footnote. بعدها ترتيب القراءة = تمر على المناطق بترتيب الـ layout وتجمّع. وللفورمات بنستخدم <b>Key-Value extraction</b>: Donut للمستندات الغنية بصريًا، وLayoutLMv3 للمسح العادي، وبياخدوا الصورة والنص المكتشف ومواقعه ويتنبؤوا بأزواج key-value.</p>
+  <h3>المقاييس</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المقياس</th><th>معناه</th></tr>
+    <tr><td>CER</td><td>Levenshtein distance ÷ طول المرجع (حروف). الأقل أحسن. هدف الإنتاج &lt; 2% على المسح النضيف</td></tr>
+    <tr><td>WER</td><td>نفس الفكرة على مستوى الكلمات</td></tr>
+    <tr><td>F1 على الحقول</td><td>لمهام key-value: هل ظهر <span class="ltr">{invoice_total: 42.50}</span> صح؟</td></tr>
+    <tr><td>Edit distance على JSON</td><td>لـ end-to-end: نسخة normalised tree edit distance من ورقة Donut</td></tr>
+  </table></div>
+</section>
+
+<section id="d73-lab4">
+  <div class="station-head"><span class="tag">09</span><h2>معمل ٤: احسب الـ CER</h2></div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>المرجع مقابل توقع الموديل</h3>
+      <p>اكتب النص الصح (reference) وتوقّع الموديل (hypothesis). الأداة بتحسب Levenshtein distance (أقل عدد إضافة/حذف/استبدال) وتقسمه على طول المرجع.</p>
+      <p>جرّب "hello" مقابل "helo": حذف واحد من 5 = 20%. تذكّر إن هدف الإنتاج على مسح نضيف أقل من 2%.</p>
+    </div>
+    <div class="instrument">
+      <label>reference<input type="text" id="d73-ref" value="invoice total 42.50" style="direction:ltr;width:100%"></label>
+      <label>hypothesis<input type="text" id="d73-hyp" value="invoice tota1 42.5O" style="direction:ltr;width:100%"></label>
+      <div class="readout">
+        <div><small>edit distance</small><b id="d73-ed">0</b></div>
+        <div><small>CER</small><b id="d73-cer">0%</b></div>
+      </div>
+      <div class="verdict" id="d73-cerv"></div>
+    </div>
+  </div>
+</section>
+
+<section id="d73-ocrcode">
+  <div class="station-head"><span class="tag">10</span><h2>الكود بتاع OCR: اكتبه بإيدك</h2></div>
+  <p>الأمر التاني من الأمرين اللي فوق (ملف الـ OCR) بيدرّب TinyCRNN على strings مصطنعة. هتشوف عدد الـ params، ومعاه loss كل 40 خطوة بتنزل، وبعدها فك 3 نصوص اختبار (<code>abc7</code>، <code>xy45</code>، <code>abc2</code>) بـ <code>ok</code> أو <code>diff</code>. الأرقام بتتغير حسب الجهاز والـ seed.</p>
+  <p><b>القاعدة:</b> افتح <code>my_ocr.py</code> واكتب بإيدك.</p>
+  <h3>خطوة ١: CTC loss وgreedy decoder</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn.functional as F
+
+def ctc_loss(log_probs, targets, input_lengths, target_lengths, blank=0):
+    """log_probs: (T, N, C) log-softmax، الـ blank على index 0"""
+    return F.ctc_loss(log_probs, targets, input_lengths, target_lengths,
+                      blank=blank, reduction="mean", zero_infinity=True)
+
+def greedy_ctc_decode(log_probs, blank=0):
+    preds = log_probs.argmax(dim=-1).transpose(0, 1).cpu().tolist()   <span class="c"># أعلى class في كل خطوة</span>
+    out = []
+    for seq in preds:
+        decoded, prev = [], None
+        for idx in seq:
+            if idx != prev and idx != blank:      <span class="c"># ادمج المتكرر وشيل الـ blank</span>
+                decoded.append(idx)
+            prev = idx
+        out.append(decoded)
+    return out</pre></div>
+  <p>الـ <code>F.ctc_loss</code> بيستخدم CuDNN لو متاح. الـ greedy decoder أبسط من beam search وغالبًا في حدود 1% CER منه.</p>
+  <h3>خطوة ٢: TinyCRNN</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch.nn as nn
+
+class TinyCRNN(nn.Module):
+    def __init__(self, vocab_size=40, hidden=128, feat=32):
+        super().__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv2d(1, feat, 3, 1, 1), nn.BatchNorm2d(feat), nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Conv2d(feat, feat * 2, 3, 1, 1), nn.BatchNorm2d(feat * 2), nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Conv2d(feat * 2, feat * 4, 3, 1, 1), nn.BatchNorm2d(feat * 4), nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 1)),                 <span class="c"># بنصغّر الارتفاع بس، العرض = الزمن</span>
+            nn.Conv2d(feat * 4, feat * 4, 3, 1, 1), nn.BatchNorm2d(feat * 4), nn.ReLU(inplace=True),
+            nn.MaxPool2d((2, 1)),
+        )
+        self.rnn = nn.LSTM(feat * 4, hidden, bidirectional=True, batch_first=True)
+        self.head = nn.Linear(hidden * 2, vocab_size)
+
+    def forward(self, x):                         <span class="c"># x: (N, 1, H, W)</span>
+        f = self.cnn(x)                           <span class="c"># (N, C, H', W')</span>
+        f = f.mean(dim=2).transpose(1, 2)         <span class="c"># (N, W', C) الارتفاع اتلخّص</span>
+        h, _ = self.rnn(f)
+        return F.log_softmax(self.head(h).transpose(0, 1), dim=-1)   <span class="c"># (W', N, vocab)</span></pre></div>
+  <p>الإدخال بارتفاع ثابت (الـ CNN بيصغّر الارتفاع لـ 1) والعرض هو بُعد الزمن للـ CTC.</p>
+  <h3>خطوة ٣: OCR مصطنع</h3>
+  <p>كل حرف عمود من 6 خطوط بتكتب رقم الحرف بالـ binary. ليه؟ لو كل الحروف صندوق فاضي نفس الشكل، الموديل مش هيعرف يفرّق a من x، والـ loss هتفضل واقفة.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+GLYPHS = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+def synthetic_line(text, height=32, char_width=16):
+    W = char_width * len(text)
+    img = np.ones((height, W), dtype=np.float32)       <span class="c"># خلفية بيضا</span>
+    for i, c in enumerate(text):
+        x = i * char_width
+        code = GLYPHS.find(c) + 1                      <span class="c"># رقم الحرف</span>
+        for bit in range(6):                           <span class="c"># الحرف = 6 خطوط (binary)</span>
+            if code &gt;&gt; bit &amp; 1:
+                y = 4 + 4 * bit
+                img[y:y + 3, x + 2:x + char_width - 2] = 0.0
+    return img
+
+def build_batch(strings, vocab):
+    H = 32
+    W = 16 * max(len(s) for s in strings)
+    imgs = np.ones((len(strings), 1, H, W), dtype=np.float32)
+    target_lengths, targets = [], []
+    for i, s in enumerate(strings):
+        imgs[i, 0, :, :16 * len(s)] = synthetic_line(s)
+        ids = [vocab.index(c) for c in s]
+        targets.extend(ids)
+        target_lengths.append(len(ids))
+    return torch.from_numpy(imgs), torch.tensor(targets), torch.tensor(target_lengths)
+
+vocab = ["_"] + list("0123456789abcdefghijklmnopqrstuvwxyz")   <span class="c"># الـ blank أول واحد</span>
+imgs, targets, lengths = build_batch(["hello", "world"], vocab)
+print(f"images: {imgs.shape}   targets: {targets.shape}   lengths: {lengths.tolist()}")</pre></div>
+  <p>داتا OCR حقيقية بتضيف خطوط وضوضاء ودوران وblur وألوان، والـ pipeline هو هو.</p>
+  <h3>خطوة ٤: تدريب (مخطّط)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>model = TinyCRNN(vocab_size=len(vocab))
+opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+for step in range(400):
+    strings = ["abc" + str(step % 10)] * 4 + ["xyz" + str((step + 1) % 10)] * 4
+    imgs, targets, target_lens = build_batch(strings, vocab)
+    log_probs = model(imgs)                                           <span class="c"># (W', 8, vocab)</span>
+    input_lens = torch.full((8,), log_probs.size(0), dtype=torch.long)
+    loss = ctc_loss(log_probs, targets, input_lens, target_lens, blank=0)
+    opt.zero_grad(); loss.backward(); opt.step()</pre></div>
+  <p>الـ loss المفروض تنزل من خانتين عشرية لحوالي 0.3 خلال 400 خطوة على الداتا التافهة دي. ملف <code>main.py</code> بيشغّل نفس الـ loop على مجموعة strings بتاعته.</p>
+  <h3>للاستخدام الإنتاجي</h3>
+  <ul class="checklist">
+    <li><b>PaddleOCR:</b> ناضج وسريع ومتعدد اللغات: <div class="codebox"><button class="copy" type="button">Copy</button><pre>paddleocr.PaddleOCR(lang="en").ocr(image_path)</pre></div></li>
+    <li><b>EasyOCR:</b> Python-native متعدد اللغات على PyTorch.</li>
+    <li><b>Tesseract:</b> كلاسيكي، لسه مفيد للمستندات الممسوحة القديمة.</li>
+    <li><b>Donut أو VLM</b> للـ parsing الكامل:</li>
+  </ul>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from transformers import DonutProcessor, VisionEncoderDecoderModel
+
+processor = DonutProcessor.from_pretrained("naver-clova-ix/donut-base-finetuned-cord-v2")
+model = VisionEncoderDecoderModel.from_pretrained("naver-clova-ix/donut-base-finetuned-cord-v2")</pre></div>
+  <p>للإيصالات والفواتير والفورمات المتكررة الشكل: اظبط Donut بالـ fine-tuning. لمستندات عشوائية أو OCR مع استدلال: VLM زي Qwen-VL-OCR هو الافتراضي الحالي.</p>
+</section>
+
+<section id="d73-ex">
+  <div class="station-head"><span class="tag">11</span><h2>التمارين</h2></div>
+  <h3>CLIP</h3>
+  <ol class="ex">
+    <li><b>(سهل)</b> استخدم OpenCLIP ViT-B/32 على CIFAR-10 بـ zero-shot مع مجموعة الـ 80 template. سجّل top-1: المفروض حوالي 85-90%.
+      <details><summary>تلميح</summary>حمّل CIFAR-10 بـ torchvision، شفّر الصور بـ <code>encode_image</code>، وكل class بمتوسط embeddings الـ templates (طبّع كل واحد قبل المتوسط وبعده)، وخد argmax للـ similarity.</details></li>
+    <li><b>(متوسط)</b> قارن template واحد ("a photo of a {}") بمتوسط الـ 80 على نفس المهمة. قدّر الفرق واشرح ليه الـ templates بتساعد.
+      <details><summary>تلميح</summary>نفس الكود مرتين. الفرق المتوقع نقطة أو اتنين أو تلاتة. التفسير: كل template بيضيء جانب مختلف من النص ("blurry"، "sketch")، والمتوسط بيدّي centroid أنعم وأقل حساسية لصياغة واحدة.</details></li>
+    <li><b>(صعب)</b> ابنِ index للـ retrieval: شفّر 1000 صورة بـ CLIP، ابني FAISS index، واستعلم بوصف نصي. سجّل recall@5 لـ 20 استعلام كتبتهم بإيدك.
+      <details><summary>تلميح</summary>طبّع الـ embeddings واستخدم <code>faiss.IndexFlatIP</code> (inner product = cosine بعد التطبيع). لكل query: شفّر النص، <code>index.search(q, 5)</code>، وسجّل لو الصورة الصح (اللي حددتها يدويًا) ضمن الـ 5.</details></li>
+  </ol>
+  <h3>OCR</h3>
+  <ol class="ex">
+    <li><b>(سهل)</b> درّب TinyCRNN على أرقام عشوائية من 5 خانات لـ 500 خطوة. سجّل CER على مجموعة اختبار.
+      <details><summary>تلميح</summary>ولّد strings رقمية عشوائية بـ <code>random.choices("0123456789", k=5)</code> في كل خطوة، وبعد التدريب فك الـ greedy وقارن بالمرجع بدالة CER (زي المعمل ٤).</details></li>
+    <li><b>(متوسط)</b> بدّل greedy بـ beam search (beam_width=5). سجّل فرق الـ CER. على أي مدخلات بيكسب beam؟
+      <details><summary>تلميح وإجابة</summary>beam بيكسب لما argmax كل خطوة مش موثوق: حروف غامضة، حروف متداخلة، مسح رديء. على الخط النضيف المطبوع الموديل واثق في كل خطوة فـ greedy قريب جدًا (في حدود 1% CER) وbeam بيضيف latency من غير مكسب.</details></li>
+    <li><b>(صعب)</b> استخدم PaddleOCR على 20 إيصال، استخرج بنود الأصناف، واحسب F1 مقابل ground truth معلّم بإيدك لأزواج <span class="ltr">{item_name, price}</span>.
+      <details><summary>تلميح</summary>علّم الأزواج الصح بإيدك في JSON. من مخرج PaddleOCR (boxes + text) رتّب النص حسب y ثم x لتجمّع أسطر. لكل سطر استخرج السعر بـ regex والباقي اسم. F1 = تطابق الزوج كله (اسم وسعر) بين المتوقع والمعلّم.</details></li>
+  </ol>
+  <h3>إضافة مني</h3>
+  <ol class="ex">
+    <li><b>CLIP كـ retrieval ثنائي الاتجاه:</b> اكتب دالتين <code>text_to_image(query)</code> و<code>image_to_text(image)</code> فوق نفس الـ embeddings. ليه الاتنين بيشتغلوا من تدريب واحد؟
+      <details><summary>الإجابة</summary>لأن الـ loss متماثل (i2t + t2i) فالفضاء المشترك بيعمل الاتجاهين. كل اللي بتغيّره هو أنهي جانب هو الـ query وأنهي هو الـ gallery. الدالتين هما نفس <code>query_emb @ gallery_emb.T</code> ثم top-k.</details></li>
+    <li><b>CTC بالإيد:</b> اكتب decoder من 4 أسطر على القوائم لتسلسل <code>[1,1,0,2,2,0,2]</code> (0 = blank). إيه الناتج؟
+      <details><summary>الإجابة</summary>دمج المتكرر يدّي <span class="ltr">[1,0,2,0,2]</span>، وشيل الـ blank يدّي <span class="ltr">[1,2,2]</span>. لاحظ إن الـ blank اللي في النص هو اللي حفظ الحرفين المتكررين (2) منفصلين.</details></li>
+  </ol>
+</section>
+
+<section id="d73-extra">
+  <div class="station-head"><span class="tag">12</span><h2>إضافة مني: أخطاء شائعة وفين ده بيظهر في الـ LLMs والـ agents</h2></div>
+  <ul class="checklist">
+    <li><b>CLIP:</b> نسيان الـ L2-normalise قبل الـ cosine. الـ <code>logit_scale</code> بيتخزّن كـ log وتستخدمه بـ <code>.exp()</code>.</li>
+    <li><b>CLIP:</b> الـ zero-shot حساس لصياغة الـ prompt وأسماء الـ classes. الاسم الغامض ("crane": طائر ولا ونش؟) بيبوّظ الدقة. اكتب prompt بيحدّد السياق.</li>
+    <li><b>CLIP:</b> «احتمالات» الـ softmax نسبية بين الـ classes اللي انت كتبتها. لو الصورة مش من أي منهم، هيختار واحد برضه بثقة.</li>
+    <li><b>OCR:</b> نسيان إن الـ blank على index 0 في كل من الـ vocab والـ loss والـ decoder. عدم تطابق ده بيخلّي الـ CTC تطلّع نتايج غريبة.</li>
+    <li><b>OCR:</b> طول التسلسل الزمني (W') لازم يكون على الأقل طول النص، ولازم يزيد لو فيه حروف متكررة (محتاجة blank بينها). ولذلك <code>zero_infinity=True</code> موجود.</li>
+    <li><b>Document understanding:</b> OCR نضيف مش كفاية لو ترتيب القراءة غلط (جداول وأعمدة).</li>
+    <li><b>في الـ LLMs والـ agents:</b> CLIP-family هو العين للـ VLMs. وagent بيقرا لقطة شاشة أو فاتورة بيعتمد على VLM-OCR (وبيحتاج contract زي Pydantic على الـ JSON اللي بيطلع، زي امبارح). والـ InfoNCE في CLIP هو نفس الفكرة بتاعة الـ embedding models اللي بتشغّل الـ RAG.</li>
+  </ul>
+</section>
+
+<section id="d73-quiz">
+  <div class="station-head"><span class="tag">13</span><h2>كويز</h2></div>
+  <div class="quiz" id="d73-quizBox"></div>
+</section>
+
+<section id="d73-done">
+  <div class="station-head"><span class="tag">14</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d73-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم الـ two-tower والـ loss المتماثل في CLIP</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أعمل zero-shot classification بخمس خطوات</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه CTC محتاج blank وجرّبته في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت كود CLIP وكود OCR بإيدي وشغّلت الملفين</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل من كل جزء</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٨ من ١٢ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Shared embedding space</td><td>البحث بالنص في الصور، RAG متعدد الوسائط، الـ moderation</td></tr>
+    <tr><td>Zero-shot + templates</td><td>تصنيف من غير داتا، تقييم سريع لأي classes جديدة</td></tr>
+    <tr><td>CLIP-family encoder</td><td>LLaVA، Qwen-VL، InternVL، Stable Diffusion</td></tr>
+    <tr><td>CTC</td><td>OCR، التعرف على الكلام (speech)، التعرف على الكتابة اليدوية</td></tr>
+    <tr><td>Donut / VLM-OCR</td><td>استخراج بيانات الفواتير والإيصالات والفورمات</td></tr>
+    <tr><td>CER / WER</td><td>تقييم أي نظام OCR أو ASR</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Image Retrieval &amp; Metric Learning مع Keypoint Detection &amp; Pose Estimation.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرسين الأصليين من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F18-open-vocab-clip" target="_blank" rel="noopener">CLIP</a> و<a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F19-ocr-document-understanding" target="_blank" rel="noopener">OCR &amp; Document Understanding</a> في AI Engineering from Scratch (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/18-open-vocab-clip</span>
+  <span class="ltr">phases/04-computer-vision/19-ocr-document-understanding</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=73,$=id=>document.getElementById(id),css=AI.css,f=AI.fmt;
+const root=$('d73-roadmap').closest('.day');
+const rm=$('d73-roadmap');
+for(let i=1;i<=25;i++){const s=document.createElement('span');s.textContent=i;if(i===17)s.className='now';rm.appendChild(s)}
+
+// ---- lab 1: CLIP similarity matrix ----
+(function(){
+ const n=6;const noise=[];let s=7;const rnd=()=>{s=(s*1103515245+12345)&0x7fffffff;return s/0x7fffffff};
+ for(let i=0;i<n;i++){noise.push([]);for(let j=0;j<n;j++)noise[i].push(rnd()*2-1)}
+ const sim=(p)=>noise.map((r,i)=>r.map((v,j)=>(i===j?0.85*p.q:0)+0.3*(1-p.q)*v+0.1*v));
+ const sm=(a,sc)=>{const e=a.map(v=>Math.exp(sc*v));const t=e.reduce((x,y)=>x+y);return e.map(v=>v/t)};
+ const probs=p=>sim(p).map(r=>sm(r,p.sc));
+ AI.lab.heatmap($('d73-clipmat'),{rows:['img1','img2','img3','img4','img5','img6'],cols:['txt1','txt2','txt3','txt4','txt5','txt6'],
+  params:[{k:'q',label:'جودة التدريب (0..1)',min:0,max:1,step:0.05,v:0.1},{k:'sc',label:'logit_scale',min:1,max:100,step:1,v:14}],
+  values:p=>probs(p),fmt:2,
+  readout:p=>{const S=sim(p);const pi=S.map(r=>sm(r,p.sc));const cols=S[0].map((_,j)=>S.map(r=>r[j]));const pt=cols.map(c=>sm(c,p.sc));let li=0,lt=0;for(let i=0;i<n;i++){li+=-Math.log(pi[i][i]);lt+=-Math.log(pt[i][i])}return [['loss i→t',f(li/n,3)],['loss t→i',f(lt/n,3)],['loss',f((li+lt)/(2*n),3)],['log(6)',f(Math.log(6),3)]]},
+  note:p=>p.q<0.2?'التدريب لسه ضعيف: القيم قريبة من 1/6 والـ loss قريبة من log(6).':(p.q>0.8?'القطر بيسيطر: الأزواج الصح هي الأعلى في كل صف وعمود.':'القطر بيبدأ يظهر.')});
+})();
+
+// ---- lab 2: zero-shot bars ----
+(function(){
+ const names=['dog','cat','car','plane'];
+ const sims=p=>[0.31,p.sc2,0.12,0.08];
+ const dist=p=>{const z=sims(p).map(v=>Math.exp(p.s*v));const t=z.reduce((a,b)=>a+b);return z.map(v=>v/t)};
+ AI.lab.bars($('d73-zsbars'),{labels:names,names:['prob'],
+  params:[{k:'s',label:'logit_scale',min:1,max:100,step:1,v:100},{k:'sc2',label:'تشابه cat',min:0.05,max:0.35,step:0.01,v:0.22}],
+  values:p=>dist(p),max:1,highlight:p=>{const d=dist(p);return d.indexOf(Math.max(...d))},
+  readout:p=>{const d=dist(p);const i=d.indexOf(Math.max(...d));return [['الإجابة',names[i]],['الثقة',f(d[i],3)]]},
+  note:p=>p.s<20?'الـ scale صغيرة: الاحتمالات متقاربة حتى لو التشابه مختلف.':'الـ scale كبيرة: فرق صغير في cosine بيتحوّل لاحتمالات حادة.'});
+})();
+
+// ---- lab 3: CTC decoder ----
+(function(){
+ const inp=$('d73-ctcIn'),out=$('d73-ctcOut');
+ function run(){const toks=inp.value.trim().split(/\s+/).filter(Boolean);
+  const merged=[];toks.forEach((t,i)=>{if(i===0||t!==toks[i-1])merged.push(t)});
+  const fin=merged.filter(t=>t!=='_');
+  out.textContent='خام:        '+toks.join(' ')+'\n1) دمج المتكرر: '+merged.join(' ')+'\n2) شيل _ :     '+fin.join('')+'  <-  النتيجة';out.style.whiteSpace='pre-wrap'}
+ inp.addEventListener('input',run);
+ [['d73-p1','h h h _ _ e e l l _ l l o _ _'],['d73-p2','h e l l o'],['d73-p3','c c _ a a a _ t']].forEach(([id,v])=>$(id).addEventListener('click',()=>{inp.value=v;run()}));
+ run();
+})();
+
+// ---- lab 4: CER ----
+(function(){
+ const a=$('d73-ref'),b=$('d73-hyp');
+ function lev(s,t){const m=s.length,n=t.length;let prev=Array.from({length:n+1},(_,j)=>j);for(let i=1;i<=m;i++){const cur=[i];for(let j=1;j<=n;j++)cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+(s[i-1]===t[j-1]?0:1));prev=cur}return prev[n]}
+ function run(){const r=a.value,h=b.value;const d=lev(r,h);const c=r.length?d/r.length:0;
+  $('d73-ed').textContent=d;$('d73-cer').textContent=(c*100).toFixed(1)+'%';
+  $('d73-cerv').textContent=r.length===0?'اكتب مرجع':(c<0.02?'تحت 2%: مقبول للمسح النضيف':'فوق هدف 2% للمسح النضيف')}
+ a.addEventListener('input',run);b.addEventListener('input',run);run();
+})();
+
+AI.quiz($('d73-quizBox'),[
+["الـ contrastive loss في CLIP متماثل (صورة←نص + نص←صورة). ليه الاتجاهين؟", ["استقرار رقمي", "التماثل مطلوب من PyTorch", "لأن الـ loss لازم مجموعها صفر", "عايز الاتجاهين يشتغلوا وقت الاستخدام: بحث بالنص عن صورة وبحث بالصورة عن نص. تدريب اتجاه واحد بيضعّف دقة الاتجاه التاني"], 3, "الفضاء المشترك لازم يكون متماثل بين النوعين لأن المهام بتسأل في الاتجاهين. الـ zero-shot classification نص←صورة، والـ retrieval ممكن يمشي في أي اتجاه. التدريب باتجاه واحد بيسيب التاني ضعيف."],
+["الـ zero-shot classification بـ CLIP بيشتغل إزاي؟", ["بنشفّر prompts زي \"a photo of a dog\" لكل class، وبنشفّر الصورة، وناخد argmax للـ cosine similarity بين الصورة وكل class", "بنبحث في قاعدة صور معلّمة", "بنعمل fine-tuning للـ image encoder على الـ class", "بنشغّل classifier head متدرّب على ImageNet"], 0, "Zero-shot يعني مفيش تدريب خاص بالمهمة: التمثيلات بتسمح بمقارنة الصورة بأي وصف نصي. اكتب prompt لكل class، شفّر، cosine، argmax. الحيلة الوحيدة هي الـ prompt engineering: templates كتير لكل class."],
+["SigLIP بدّل softmax الخاص بـ CLIP بـ sigmoid لكل زوج. إيه الفايدة؟", ["دقة أحسن على COCO بس", "kernels أسرع على الـ GPU", "ذاكرة أقل", "الـ sigmoid لكل زوج مبيعتمدش على الـ batch كمقام تطبيع، فـ SigLIP بيتدرّب كويس على batches أصغر لما softmax بتاع CLIP بيجوع للسلبيات"], 3, "الـ cross-entropy المتماثل في CLIP هو softmax على الـ batch كله، فالسلبيات الفعلية = حجم الـ batch − 1 والـ batch الصغير بيجوّعه. SigLIP بياخد قرار ثنائي لكل زوج (تطابق ولا لأ) من غير تطبيع على الـ batch، فبيشتغل على batches أصغر."],
+["ممارس بلّغ 88% zero-shot على CIFAR-10 بـ CLIP ViT-B/32، و90% بنفس الموديل بـ 80 template لكل class. ليه متوسط الـ templates بيساعد؟", ["بيقلل تباين logit_scale", "بيضاعف الداتا", "الرقم 80 سحري في CLIP", "كل template بينشّط جانب مختلف من توزيع الـ text encoder، والمتوسط بيدّي centroid أنعم وأكتر ثباتًا للـ class بدل ما يعتمد على صياغة واحدة"], 3, "كل template إشارة لغوية مختلفة: \"a photo of a dog\" بتبرز جانب، \"a blurry photo of a dog\" جانب تاني، \"a sketch of a dog\" تالت. متوسط embeddings بيدّي تمثيل أنعم للمفهوم وأقل حساسية لخصوصيات prompt واحد."],
+["ليه الـ VLMs الحديثة (LLaVA، Qwen-VL، InternVL) بتستخدم vision encoder من عيلة CLIP بدل ResNet متدرّب supervised على ImageNet؟", ["ResNet مبيشوفش الألوان", "features CLIP متوافقة مع اللغة الطبيعية فالـ LLM يستهلكها بتكييف أقل، أما features ImageNet فمعندهاش علاقة بالـ captions ومحتاجة طبقات ربط تقيلة", "متطلب ترخيص", "CLIP أسرع"], 1, "الـ VLM بيوصّل vision encoder بـ LLM ويدرّب projection صغير. encoders من نوع CLIP اتدرّبت قصاد نص، فمخرجاتها في فضاء الـ LLM يقدر يستهلكه بكام طبقة linear. encoders ImageNet الـ supervised معندهاش بنية لغة طبيعية."],
+["ليه الـ OCR بيستخدم CTC loss بدل cross-entropy العادية؟", ["CTC مطلوب من PyTorch", "OCR بيحوّل تسلسل features بطول ثابت لتسلسل حروف بطول متغيّر من غير محاذاة لكل خطوة؛ والـ CTC بيجمع على كل المحاذاات اللي بتتحوّل للهدف بعد دمج المتكرر وشيل الـ blank، فتقدر تدرّب من غير توقيت لكل حرف", "cross-entropy بتعمل overflow على التسلسلات الطويلة", "CTC أسرع"], 1, "الـ recognition بيطلّع توزيع لكل خطوة زمنية، لكن النص الهدف مفيهوش محاذاة لكل خطوة. الـ CTC بيحل ده بجمع كل المحاذاات الصالحة، ولذلك الـ CRNN بيتدرّب على أزواج (صورة، نص) بس."],
+["في فك CTC، الـ blank token بيعمل إيه؟", ["بيعلّم نهاية التسلسل", "بيحشي التسلسل لطول ثابت", "بيحجب مناطق مليانة ضوضاء", "بيفصل بين الحروف المتطابقة المتجاورة، فـ \"hello\" بـ L مزدوجة تتنتج من \"h e l _ l o\"، ومن غير الـ blank الـ \"l l\" هتندمج في \"l\" واحد"], 3, "الـ blank هو آلية تمثيل الحروف المزدوجة. \"ll\" محتاجة blank بين الـ l-ين عشان خطوة دمج المتكرر تسيبهم منفصلين: \"l _ l\" بتعدّي، و\"l l\" بتندمج. من غيره CTC مش بيقدر يمثّل أي كلمة فيها حرفين متطابقين متجاورين."],
+["ليه greedy CTC decoding ساعات بيبقى أحسن (أو كفاية) من beam search على الداتا البسيطة؟", ["greedy أسهل في التنفيذ", "beam search محتاج language model", "greedy أحسن دايمًا", "لما الموديل واثق في كل خطوة (خط يد نضيف أو خطوط مطبوعة)، الـ argmax بيطلع غالبًا نفس الفائز في beam، فـ beam بيزوّد latency من غير مكسب دقة. على المدخلات الغامضة أو الضوضائية beam بيفيد"], 3, "الـ beam search بيكسب بس لما argmax كل خطوة مش موثوق: حروف غامضة، حروف متداخلة، مسح رديء. على النص المطبوع النضيف الموديل واثق في كل خطوة فـ greedy في حدود 1% CER من beam. دايمًا قيس الاتنين، لأن تكلفة الـ latency حقيقية."],
+["موديل Donut بيتخطى الـ text detection والـ character recognition الصريحين. إزاي؟", ["هو ViT encoder + text decoder متدرّب إنه يطلّع النص النهائي (غالبًا JSON) مباشرة من الصورة، فبيتعلّم التحديد والتعرف ضمنيًا من هدف التدريب", "بيعمل preprocessing بـ CNN لكشف النص", "بيشتغل على مستندات بتخطيط ثابت بس", "بيستخدم محرك OCR خارجي جوّاه"], 0, "Donut موديل end-to-end: الـ ViT encoder بيشوف المستند كله، والـ transformer decoder بيطلّع النص أو JSON autoregressively. مفيش pipeline من detector + recogniser + layout. ده بيتخطى تراكم الأخطاء، لكن محتاج داتا مدرّبة كبيرة للمهمة المحددة."],
+["لاستخراج invoice_total من إيصالات، أنهي نهج غالبًا الأفضل في 2026؟", ["OCR كلاسيكي بس هو الموثوق", "CNN منفصل لكل حقل", "Donut متظبّط (fine-tuned) أو VLM على مجموعة صغيرة معلّمة من الإيصالات المستهدفة؛ الاتنين بيتعاملوا مع الـ layout والمعنى في موديل واحد وبيعمّموا على أشكال الإيصالات أحسن من pipelines متعددة المراحل", "regex يدوي على مخرج Tesseract"], 2, "استخراج الحقول المنظّمة كان مجال LayoutLM + heuristics. الموديلات end-to-end (Donut، Qwen-VL-OCR) تخطّت المسار ده: بتاخد صورة وبتطلّع JSON مباشرة. لمجموعة صغيرة معلّمة (100-1000 إيصال)، fine-tuning Donut بيوصل لـ F1 أعلى من أي pipeline."],
+["(سؤال مني) في معمل مصفوفة التشابه، الـ loss لموديل عشوائي بباتش N=8 قريبة من إيه؟", ["0", "log(8) ≈ 2.08", "8", "log(2×8−1)"], 1, "من غير بنية متعلَّمة، كل نص متساوي الاحتمال تقريبًا لكل صورة، فالـ cross-entropy = log(N). في CLIP (متماثل) النتيجة log(N) = 2.08 لـ N=8. و log(2N−1) ده بتاع SimCLR."],
+["(سؤال مني) تسلسل CTC خام [3,3,0,3,5,5,0] (0 = blank). إيه الناتج بعد الفك؟", ["[3,5]", "[3,3,5]", "[3,3,0,3,5]", "[3,3,3,5,5]"], 1, "دمج المتكرر: [3,0,3,5,0]. شيل الـ blank: [3,3,5]. الـ blank في النص هو اللي خلّى الـ 3-ين المتتاليين يفضلوا منفصلين."]
+],8,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

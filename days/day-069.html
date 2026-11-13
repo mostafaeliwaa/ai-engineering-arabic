@@ -1,0 +1,344 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 14 · Vision Transformers (ViT)</span>
+  <h1>اليوم ٦٩: الصورة = جملة، والـ patch = كلمة</h1>
+  <p class="lede">فكرة ViT بسيطة لدرجة مستفزة: قطّع الصورة لمربعات، اعتبر كل مربع «كلمة»، وشغّل transformer عادي. النهاردة هتبني ViT صغير بإيدك: patch embedding، class token، positional embedding، وblock بـ pre-LN. وهتفهم ليه كان محتاج داتا ضخمة، وإيه اللي غيّر ده (DeiT, MAE)، وإزاي Swin وConvNeXt بيقارنوا بيه.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٤٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (PyTorch)</span>
+    <span>قبله: <b>Video + 3D</b></span>
+    <span>بعده: <b>Real-Time Edge</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — الرؤية بالكمبيوتر</span>
+    <div class="roadmap" id="d69-roadmap" aria-label="أيام الفيز الرابعة"></div>
+  </div>
+</header>
+
+<section id="d69-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <ol class="ex">
+    <li>ليه PointNet مبيتأثرش بترتيب النقط؟
+      <details><summary>الإجابة</summary>لأنه بيطبق نفس الـ MLP على كل نقطة لوحدها وبعدين بيجمّع بدالة متماثلة (max)، والـ max مبيهتمش بالترتيب.</details></li>
+    <li>ليه NeRF محتاج positional encoding؟
+      <details><summary>الإجابة</summary>لأن الـ MLP متحيز للترددات المنخفضة؛ تحويل الإحداثيات لـ sin/cos بترددات متعددة بيخليه يرسم تفاصيل دقيقة.</details></li>
+    <li>إيه الفرق بين Divided attention والـ Joint في الفيديو؟
+      <details><summary>الإجابة</summary>Joint = attention واحد على كل <span class="ltr">(t,h,w)</span> (تربيعي ومكلف). Divided = attention على الزمن وبعده attention على المكان في كل block، أرخص بكتير.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٤٥ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>15 min</b>الفكرة والمعامل</div>
+    <div><b>15 min</b>اكتب ViT بإيدك</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d69-s1">
+  <div class="station-head"><span class="tag">01</span><h2>ليه ViT مهم؟ والقصة بتاعته</h2></div>
+  <p>لمدة عشر سنين «رؤية بالكمبيوتر» كانت يعني convolution. الـ CNN عنده <b>inductive biases</b> قوية: locality (الجار يهم أكتر) وtranslation equivariance (القطة قطة في أي مكان). محدش كان متخيل إننا نقدر نستغنى عنهم. وبعدين Dosovitskiy وآخرون (2020) أثبتوا إن transformer عادي على patches مفرودة، من غير أي convolution (غير الـ patchify)، بيجاري أو بيغلب أحسن CNNs <b>على نطاق كبير</b>.</p>
+  <p>الـ «لكن»: ViT على ImageNet-1k لوحدها خسر قدام ResNet. أما ViT المتدرّب مسبقًا على ImageNet-21k أو JFT-300M ثم fine-tuned على ImageNet-1k فغلبه. الاستنتاج: الـ transformer مفيهوش priors مفيدة، بس بيتعلمها لو معاه داتا كفاية. بعدين DeiT وMAE وDINO أثبتوا إن بوصفة تدريب مظبوطة (augmentation قوي، self-supervised pretraining، distillation) الـ ViT بيتدرب كويس على داتا صغيرة.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ CNN طالب إدّوه كتاب قواعد جاهز (المكان والجيران). الـ ViT طالب إدّوه ورق فاضي: بياخد وقت أطول ويحتاج أمثلة أكتر، بس لما يتعلم ممكن يطلع قواعد أحسن من الكتاب.</div>
+  <p>في 2026 الـ CNN لسه منافس على الأجهزة الصغيرة (ConvNeXt أقواها)، لكن الـ transformers بتسيطر على الباقي: segmentation (Mask2Former, SegFormer)، detection (DETR, RT-DETR)، multimodal (CLIP, SigLIP)، فيديو (VideoMAE, VJEPA). شكل الـ ViT block هو اللي لازم تعرفه.</p>
+</section>
+
+<section id="d69-s2">
+  <div class="station-head"><span class="tag">02</span><h2>الـ pipeline: سبع خطوات</h2></div>
+  <p>Patches ← tokens ← attention ← classifier. وكل variant (DeiT، Swin، ConvNeXt، MAE) بيغيّر خطوة أو اتنين ويسيب الباقي.</p>
+  <div id="d69-flow"></div>
+
+  <h3>١) Patch embedding: الـ conv السري</h3>
+  <p>Kernel حجمه 16 وstride 16، فصورة <span class="ltr">224×224</span> بتتحول لـ grid <span class="ltr">14×14</span> من patches كل واحدة <span class="ltr">16×16</span>، وكل واحدة بتتحول لـ embedding بحجم 768. الـ conv الواحد ده بيقطّع وبيعمل projection خطي في نفس الوقت.</p>
+  <div class="formula">Input:  (3, 224, 224)
+Conv (3 → 768, k=16, s=16, بدون padding):  (768, 14, 14)
+Flatten:  (196, 768)</div>
+  <p>196 patch = 196 token. بُعد الـ token: 768 (ViT-B)، 1024 (ViT-L)، 1280 (ViT-H).</p>
+
+  <h3>٢) Class token</h3>
+  <p>vector واحد متعلَّم بيتحط في أول التسلسل: <span class="ltr">tokens = [CLS; patch₁; …; patch₁₉₆]</span> فالشكل <span class="ltr">(197, 768)</span>. بعد N blocks، خرج الـ <code>[CLS]</code> بيمثل الصورة كلها، والـ classifier بيقرا الـ vector ده بس.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ CLS زي «المقرر» في اجتماع: الكل بيتكلم، وهو بيسمع الكل (لأن الـ attention بيخليه يشوف كل الـ tokens) وفي الآخر بيكتب الملخص.</div>
+
+  <h3>٣) Positional embedding</h3>
+  <p>الـ transformer مفيهوش إحساس بالمكان. فبنضيف vector متعلَّم لكل token: <span class="ltr">tokens = tokens + pos_embed</span> (برضه <span class="ltr">(197, 768)</span>). هو parameter في الموديل والـ training بيعلّمه بنية الصورة 2D. بدايل sinusoidal 2D موجودة لكن نادرًا ما بتتستخدم.</p>
+
+  <h3>٤) الـ Encoder block</h3>
+  <div class="formula">x = x + MSA(LN(x))
+x = x + MLP(LN(x))
+MLP = Linear(d→4d) → GELU → Linear(4d→d)</div>
+  <p>ViT-B/16 فيه 12 block، كل واحد 12 head، والمجموع 86 مليون بارامتر.</p>
+
+  <h3>ليه Pre-LN؟</h3>
+  <p>الـ transformers الأولى استخدمت post-LN (<span class="ltr">x = LN(x + sublayer(x))</span>) وصعب تتدرب أعمق من 6–8 طبقات من غير warmup. الـ pre-LN (<span class="ltr">x = x + sublayer(LN(x))</span>) بيدرّب شبكات أعمق بثبات من غير warmup. كل ViT وكل LLM حديث بيستخدم pre-LN.</p>
+  <div class="note ai"><strong>لاحظ:</strong> في pre-LN الـ residual path «نضيف» (مفيهوش LN)، فالـ gradient بيعدي مباشرة. ده نفس فكرة identity اللي شفناها في Phase 1.</div>
+</section>
+
+<section id="d69-s3">
+  <div class="station-head"><span class="tag">03</span><h2>حجم الـ patch: السرعة ضد التفاصيل</h2></div>
+  <ul class="checklist">
+    <li><b>16×16</b> ← 196 token: المعيار.</li>
+    <li><b>32×32</b> ← 49 token: أسرع بس تفاصيل أقل.</li>
+    <li><b>8×8</b> ← 784 token: أدق لكن الـ attention تربيعي فالتكلفة بتنفجر.</li>
+  </ul>
+  <p>SwinV2 بيستخدم patches 4×4 داخل نوافذ هرمية.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: عدد الـ tokens وتكلفة الـ attention</h3>
+      <p>غيّر حجم الصورة وحجم الـ patch. شوف عدد الـ tokens، وعدد أزواج الـ attention (<span class="ltr">(tokens+1)²</span>، مع الـ CLS). لما الـ patch يتصغّر للنص، الـ tokens بتتضاعف 4 مرات والـ attention تقريبًا 16 مرة.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ image size لازم تقبل القسمة على patch size (الكود فيه <code>assert</code>). الأعمدة هنا بتتقارن على مقياس نسبي.</div>
+    </div>
+    <div id="d69-lab1"></div>
+  </div>
+</section>
+
+<section id="d69-s4">
+  <div class="station-head"><span class="tag">04</span><h2>وصفة DeiT: ViT على ImageNet-1k لوحدها</h2></div>
+  <p>الـ ViT الأصلي احتاج JFT-300M. DeiT (Touvron 2020) وصل بـ ViT-B لـ 81.8% top-1 على ImageNet-1k لوحدها بأربع تغييرات:</p>
+  <ol class="ex">
+    <li><b>Augmentation تقيل:</b> RandAugment، Mixup، CutMix، Random Erasing.</li>
+    <li><b>Stochastic depth:</b> بنرمي blocks كاملة عشوائيًا في التدريب.</li>
+    <li><b>Repeated augmentation:</b> نفس الصورة 3 مرات في الـ batch.</li>
+    <li><b>Distillation من CNN teacher</b> (اختياري، بيرفع الدقة أكتر).</li>
+  </ol>
+  <p>كل وصفة ViT حديثة نازلة من DeiT.</p>
+</section>
+
+<section id="d69-s5">
+  <div class="station-head"><span class="tag">05</span><h2>Swin ضد ConvNeXt</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th></th><th>الفكرة</th><th>الـ prior</th></tr>
+    <tr><td><b>ViT</b></td><td>attention عالمي على كل الـ patches</td><td>مفيش تقريبًا</td></tr>
+    <tr><td><b>Swin</b> (2021)</td><td>attention جوه نوافذ محلية، والـ blocks بالتناوب بتزحزح النافذة عشان المعلومات تتخلط بين النوافذ</td><td>locality (زي الـ CNN) مع الـ attention</td></tr>
+    <tr><td><b>ConvNeXt</b> (2022)</td><td>CNN معاد تصميمه بنفس قرارات Swin: depthwise convs، LayerNorm، GELU، inverted bottleneck</td><td>conv backbone</td></tr>
+  </table></div>
+  <p>ConvNeXt أثبت إن الفجوة مش «attention ضد convolution» بل «وصفة تدريب حديثة + معمارية». في 2026 الاتنين (ConvNeXt-V2 وSwin-V2) جاهزين للإنتاج، والاختيار حسب الـ inference stack (ConvNeXt بيتcompile أحسن للـ edge) والـ pretraining corpus.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: ليه Swin أرخص؟</h3>
+      <p>صورة 224×224 بـ patches 4×4 = 3136 token. attention كامل = حوالي 9.8 مليون زوج لكل طبقة. Swin بيحصره في نوافذ (عادةً 7×7 = 49 token) فبيبقى <span class="ltr">tokens × window²</span> تقريبًا. غيّر حجم النافذة وشوف.</p>
+    </div>
+    <div id="d69-lab2"></div>
+  </div>
+</section>
+
+<section id="d69-s6">
+  <div class="station-head"><span class="tag">06</span><h2>MAE: pretraining من غير labels</h2></div>
+  <p>Masked Autoencoder (He 2022): خبّي <b>75%</b> من الـ patches عشوائيًا، خلّي الـ encoder يشوف الـ 25% الباقيين بس، وخلّي decoder صغير يعيد بناء الـ patches المخبية من خرج الـ encoder. بعد الـ pretraining ارمي الـ decoder واعمل fine-tune للـ encoder.</p>
+  <p>MAE بيخلّي ViT قابل للتدريب على ImageNet-1k لوحدها، وبيوصل لـ SOTA، وهو دلوقتي الوصفة الافتراضية للـ self-supervised.</p>
+  <div class="note"><strong>تشبيه:</strong> لعبة أحجية: بتشوف ربع القطع بس وبتتخيل الباقي. عشان تنجح لازم تفهم الصورة كلها مش بس تنسخ، وده اللي بيعلّم الـ encoder features مفيدة.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: خطوات الـ MAE</h3>
+      <p>دوس «التالي» وشوف الـ 14×14 patches: الأصلية، بعد إخفاء 75%، اللي بيشوفه الـ encoder (ومحتاج حسبة أقل بكتير!)، وإعادة البناء.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ encoder بيشوف 49 token بس من 196، فالـ attention عنده تقريبًا 16× أرخص. ده سر كفاءة MAE في التدريب.</div>
+    </div>
+    <div id="d69-lab3"></div>
+  </div>
+</section>
+
+<section id="d69-code">
+  <div class="station-head"><span class="tag">07</span><h2>الكود خطوة خطوة (اكتبه بإيدك!)</h2></div>
+  <div class="note"><strong>نصيحة:</strong> اكتب كل سطر بنفسك. الزرار Copy للمراجعة بس.</div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/04-computer-vision/14-vision-transformers/code/main.py</pre></div>
+
+  <p><b>الخطوة ١: Patch embedding.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+
+class PatchEmbedding(nn.Module):
+    def __init__(self, in_channels=3, patch_size=16, dim=192, image_size=64):
+        super().__init__()
+        assert image_size % patch_size == 0              <span class="c"># لازم يقبل القسمة</span>
+        self.proj = nn.Conv2d(in_channels, dim, kernel_size=patch_size, stride=patch_size)
+        self.num_patches = (image_size // patch_size) ** 2
+
+    def forward(self, x):
+        x = self.proj(x)                      <span class="c"># (N, dim, H/p, W/p)</span>
+        return x.flatten(2).transpose(1, 2)   <span class="c"># (N, num_patches, dim)</span></pre></div>
+  <p>conv واحد + flatten + transpose = كل خطوة «صورة ← tokens».</p>
+
+  <p><b>الخطوة ٢: الـ block.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Block(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4, dropout=0.0):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
+        self.ln2 = nn.LayerNorm(dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, dim * mlp_ratio),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * mlp_ratio, dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        h = self.ln1(x)                                           <span class="c"># pre-LN</span>
+        a, _ = self.attn(h, h, h, need_weights=False)             <span class="c"># self-attention: Q=K=V=h</span>
+        x = x + a                                                 <span class="c"># residual</span>
+        x = x + self.mlp(self.ln2(x))                             <span class="c"># residual تاني</span>
+        return x</pre></div>
+  <p>في الدرس الأصلي بيكتب <code>self.ln1(x)</code> تلات مرات في نداء الـ attention؛ تخزينها في <code>h</code> أنضف وبيدّي نفس النتيجة.</p>
+
+  <p><b>الخطوة ٣: الـ ViT.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class ViT(nn.Module):
+    def __init__(self, image_size=64, patch_size=16, in_channels=3,
+                 num_classes=10, dim=192, depth=6, num_heads=3, mlp_ratio=4):
+        super().__init__()
+        self.patch = PatchEmbedding(in_channels, patch_size, dim, image_size)
+        num_patches = self.patch.num_patches
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, dim))
+        self.blocks = nn.ModuleList([Block(dim, num_heads, mlp_ratio) for _ in range(depth)])
+        self.ln = nn.LayerNorm(dim)
+        self.head = nn.Linear(dim, num_classes)
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+
+    def forward(self, x):
+        x = self.patch(x)
+        cls = self.cls_token.expand(x.size(0), -1, -1)    <span class="c"># نسخة من CLS لكل صورة</span>
+        x = torch.cat([cls, x], dim=1)                    <span class="c"># CLS في الأول</span>
+        x = x + self.pos_embed
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.ln(x[:, 0])                              <span class="c"># خرج CLS بس</span>
+        return self.head(x)
+
+vit = ViT(image_size=64, patch_size=16, num_classes=10, dim=192, depth=6, num_heads=3)
+x = torch.randn(2, 3, 64, 64)
+print(f"output: {vit(x).shape}")
+print(f"params: {sum(p.numel() for p in vit.parameters()):,}")</pre></div>
+  <p>المتوقع: <span class="ltr">output: torch.Size([2, 10])</span> وحوالي 2.8 مليون بارامتر (ViT-B الحقيقي 86M بنفس الكلاس مع <span class="ltr">dim=768, depth=12, num_heads=12</span>).</p>
+
+  <p><b>الخطوة ٤: فحص سريع.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>logits = vit(torch.randn(1, 3, 64, 64))
+print(f"logits: {logits}")
+print(f"probs:  {logits.softmax(-1)}")   <span class="c"># مجموعهم = 1</span></pre></div>
+
+  <p><b>الاستخدام الحقيقي: timm.</b></p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import timm
+model = timm.create_model("vit_base_patch16_224", pretrained=True, num_classes=10)</pre></div>
+  <p>الـ <code>timm</code> هو الافتراضي للـ vision transformers في 2026 (ViT، DeiT، Swin، ConvNeXt، MaxViT، MViT…). وللـ multimodal: <code>transformers</code> بيشيل CLIP وSigLIP وBLIP-2 وLLaVA، وكلهم الـ image encoder فيهم هو ViT.</p>
+</section>
+
+<section id="d69-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> اطبع شكل كل tensor وسيط في forward الـ ViT الصغير. أكّد: دخل <span class="ltr">(N,3,64,64)</span> ← patches <span class="ltr">(N,16,192)</span> ← مع CLS <span class="ltr">(N,17,192)</span> ← دخل الـ classifier <span class="ltr">(N,192)</span> ← خرج <span class="ltr">(N,num_classes)</span>.
+      <details><summary>تلميح / إجابة</summary>حط <code>print(x.shape)</code> بعد كل سطر في <code>forward</code>. 64/16 = 4، فـ 4×4 = 16 patch، +1 CLS = 17.</details></li>
+    <li><b>(متوسط)</b> اعمل fine-tune لـ timm ViT-S/16 مدرّب مسبقًا على داتا synthetic-CIFAR من Lesson 4، وقارن بـ ResNet-18 على نفس الداتا: وقت التدريب والدقة.
+      <details><summary>تلميح / إجابة</summary><code>timm.create_model('vit_small_patch16_224', pretrained=True, num_classes=10)</code> وكبّر الصور لـ 224 (أو استخدم <code>img_size=</code>). ابدأ بـ linear probe (جمّد الـ backbone) وبعدين fine-tune بـ lr صغير. ViT عادةً أبطأ للـ epoch لكن دقته أعلى لما الـ pretraining قوي.</details></li>
+    <li><b>(صعب)</b> نفّذ MAE pretraining للـ ViT الصغير: اخفي 75% من الـ patches، درّب الـ encoder + decoder صغير يعيد بناء المخبّي. قيّم linear-probe accuracy قبل وبعد.
+      <details><summary>تلميح / إجابة</summary>اعمل <code>perm = torch.randperm(num_patches)</code>، وخد أول 25% للـ encoder (من غير CLS أو معاه). الـ decoder بياخد الـ tokens المشفّرة + mask tokens في أماكن المخبّي مع positional embedding. الـ loss MSE على المخبّي بس. لازم تلاقي linear-probe أحسن بعد الـ pretraining.</details></li>
+    <li><b>تمرين إضافي مني (عملي):</b> اكتب دالة <code>count_params(dim, depth, patch, img, classes)</code> تحسب بارامترات الـ ViT بالورقة (patch conv، blocks، pos، cls، head) وتأكد إنها بتساوي <code>sum(p.numel())</code> للـ ViT الصغير ولـ ViT-B.
+      <details><summary>إجابة</summary>لكل block: attention = <span class="ltr">4·d² + 4·d</span> (in_proj + out_proj)، الـ MLP = <span class="ltr">8·d² + 5·d</span>، وLayerNormين = <span class="ltr">4·d</span>. بعد الجمع لـ ViT-B (d=768, depth=12) هتقرّب من 86 مليون.</details></li>
+  </ol>
+</section>
+
+<section id="d69-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: أخطاء شائعة وفين بتظهر في الـ LLMs والـ agents</h2></div>
+  <ul class="checklist">
+    <li><b>تغيير حجم الصورة بعد التدريب:</b> الـ <code>pos_embed</code> متعلَّم لعدد patches ثابت. لو دخلت صورة بحجم مختلف هيحصل shape mismatch؛ الحل interpolate للـ positional embedding (أو إعادة التدريب). ده أشهر bug في porting (والـ skill بتاع الدرس بيفحصه).</li>
+    <li><b>نسيان الـ CLS:</b> لو الـ pos_embed شكله <span class="ltr">(1, N, d)</span> بدل <span class="ltr">(1, N+1, d)</span> الـ cat هيفشل أو هتضيّع token.</li>
+    <li><b>Dropout والـ eval:</b> لا تنسَ <code>model.eval()</code> وقت الاختبار.</li>
+    <li><b>في الـ LLMs متعددة الوسائط:</b> LLaVA وCLIP وغيرهم بيحوّلوا الصورة لـ patch tokens بنفس الطريقة، وبيعدّوها للـ LLM كـ «كلمات»، فكل صورة بتاكل مئات الـ tokens من الـ context. patch size أكبر = tokens أقل = تكلفة أقل.</li>
+    <li><b>في الـ agents:</b> agent بيقرا screenshots (computer use) بيعدّي الصورة على ViT encoder؛ دقة النص الصغير بتتأثر بحجم الـ patch.</li>
+    <li><b>نفس الكتلة:</b> الـ block هنا (pre-LN + MSA + MLP) هو بالظبط block الـ GPT. الفرق في الـ masking (causal) والـ tokenisation.</li>
+  </ul>
+</section>
+
+<section id="d69-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d69-quizBox"></div>
+</section>
+
+<section id="d69-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d69-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الـ pipeline السبع خطوات من الذاكرة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه بنقول patch = token وليه الـ attention تربيعي</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم دور الـ CLS والـ positional embedding</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم pre-LN وفرقه عن post-LN</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الـ ViT بإيدي وشغّلته</label></li>
+    <li><label><input type="checkbox" data-ck="6"> فاهم DeiT وSwin وConvNeXt وMAE في جملة لكل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Patch embedding</td><td>CLIP، SigLIP، LLaVA، VideoMAE</td></tr>
+    <tr><td>CLS token</td><td>BERT، classification heads، CLIP image embedding</td></tr>
+    <tr><td>Pre-LN</td><td>GPT، LLaMA وكل LLM حديث</td></tr>
+    <tr><td>Windowed attention</td><td>Swin، sliding-window attention في LLMs طويلة السياق</td></tr>
+    <tr><td>Masked pretraining</td><td>MAE، BERT (نفس الفكرة على النص)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Real-Time Vision & Edge Deployment: إزاي تحوّل الموديلات دي لحاجة بتجري على موبايل أو كاميرا في ميلي ثانية.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F14-vision-transformers" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/14-vision-transformers</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=69,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d69-roadmap').closest('.day');
+const rm=$('d69-roadmap');
+for(let i=57;i<=81;i++){const s=document.createElement('span');s.textContent=i-56;s.title='يوم '+i;if(i===N)s.className='now';rm.appendChild(s)}
+
+// flow
+L.flow($('d69-flow'),{height:300,
+ nodes:[{id:'i',label:'Image 3×224×224',x:0,y:.1},{id:'p',label:'Patch embed conv16 s16',x:.34,y:.1},{id:'c',label:'+ CLS + pos embed',x:.68,y:.1},{id:'e',label:'N × encoder blocks',x:1,y:.1},{id:'h',label:'MLP head',x:1,y:.9},{id:'o',label:'logits',x:.5,y:.9}],
+ edges:[['i','p'],['p','c'],['c','e'],['e','h'],['h','o']],
+ steps:[{active:['i'],text:'الصورة بحجم 224×224.'},{active:['p'],edges:[['i','p']],text:'conv بـ kernel=stride=16 ← 14×14 patches ← 196 token بحجم 768.'},{active:['c'],edges:[['p','c']],text:'بنضيف CLS في الأول (197 token) وبعدين positional embedding متعلَّم.'},{active:['e'],edges:[['c','e']],text:'12 block: x = x + MSA(LN(x)) ثم x = x + MLP(LN(x)).'},{active:['h','o'],edges:[['e','h'],['h','o']],text:'بناخد خرج CLS بس، ونمرره على classifier.'}]});
+
+// Lab 1
+L.bars($('d69-lab1'),{
+ labels:['8','16','32'],
+ names:['tokens','attention pairs ÷ 100'],colors:['a','b'],
+ params:[{k:'img',label:'حجم الصورة',min:64,max:448,step:32,v:224}],
+ values:p=>{const t=[8,16,32].map(s=>Math.pow(Math.floor(p.img/s),2));return [t,t.map(x=>(x+1)*(x+1)/100)]},
+ readout:p=>[8,16,32].map(s=>['patch '+s,Math.pow(Math.floor(p.img/s),2)+' tokens / '+Math.pow(Math.pow(Math.floor(p.img/s),2)+1,2).toLocaleString()+' pairs']),
+ note:p=>'الأعمدة نسبية؛ الأرقام الدقيقة في الـ readout. (بنستخدم floor لو الصورة مش مقسومة بالظبط.)'
+});
+
+// Lab 2
+L.calc($('d69-lab2'),{
+ params:[{k:'grid',label:'tokens في الضلع',min:14,max:112,step:14,v:56},{k:'win',label:'حجم النافذة',min:2,max:14,step:1,v:7}],
+ compute:p=>{const t=p.grid*p.grid,full=t*t,win=t*p.win*p.win;return [['tokens',t.toLocaleString()],['full attention pairs',full.toLocaleString()],['window attention pairs',win.toLocaleString()],['النسبة',(full/win).toFixed(0)+'× أرخص']]},
+ note:p=>'الـ full بيتربّع مع عدد الـ tokens؛ الـ window بيزيد خطيًا.'
+});
+
+// Lab 3: MAE stepper
+const G=14;const maskSet=new Set();const rnd=(()=>{let s=7;return()=>{s=(s*16807)%2147483647;return s/2147483647}})();
+const ids=Array.from({length:G*G},(_,i)=>i);for(let i=ids.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));[ids[i],ids[j]]=[ids[j],ids[i]]}
+ids.slice(0,Math.round(G*G*.75)).forEach(i=>maskSet.add(i));
+function pic(r,c){const x=c/G,y=r/G;const sun=Math.hypot(x-.75,y-.25)<.14;const hill=y>0.6+0.1*Math.sin(x*6);return sun?[240,200,60]:(hill?[60,150,80]:[110,170,230])}
+L.stepper($('d69-lab3'),{height:260,
+ steps:[{title:'1 · الصورة',text:'196 patch (14×14).'},{title:'2 · إخفاء 75%',text:'147 patch مخبية، 49 باقية.'},{title:'3 · الـ encoder',text:'الـ encoder بيشوف الـ 49 اللي باقيين بس ← حسبة أرخص.'},{title:'4 · إعادة البناء',text:'decoder صغير بياخد tokens مشفّرة + mask tokens ويعيد بناء الباقي (تقريبي).'}],
+ draw:(ctx,W,H,i)=>{const cs=Math.min((W-20)/G,(H-20)/G);const ox=(W-cs*G)/2,oy=(H-cs*G)/2;
+  for(let r=0;r<G;r++)for(let c=0;c<G;c++){const k=r*G+c,m=maskSet.has(k);let col=pic(r,c);
+   if(i===1&&m)col=[90,90,90];
+   if(i===2){if(m)continue}
+   if(i===3&&m){col=col.map(v=>Math.round(v*.8+40))}
+   ctx.fillStyle='rgb('+col.join(',')+')';ctx.fillRect(ox+c*cs,oy+r*cs,cs-1,cs-1)}}});
+
+// Quiz
+AI.quiz($('d69-quizBox'),[
+ ['إزاي الـ ViT بيحوّل الصورة لتسلسل tokens؟',['conv بـ kernel=stride=patch_size يقطّع الصورة لـ patches ويعمل projection خطي لكل واحدة مرة واحدة','بيفرد الصورة كلها في vector واحد','بيشغّل CNN ويستخدم الـ feature map','بيرتب البكسلات'],0,'الطبقة الأولى conv بـ 16/16: صورة 224 تبقى 14×14 patches بحجم 768.'],
+ ['إيه هو الـ [CLS] token وليه محتاجينه؟',['placeholder لبيانات ناقصة','قيمة بكسل خاصة','dropout mask','vector متعلَّم بيتحط في أول التسلسل، وبعد N طبقات خرجه بيلخّص الصورة كلها ويدخل الـ classifier'],3,'زي BERT: الـ self-attention بيخلّي CLS يشوف كل الـ tokens.'],
+ ['ليه ViT الأصلي احتاج JFT-300M لكن DeiT لأ؟',['DeiT بيستخدم attention مختلف','الورقة كانت غلط','ViT priors أضعف من الـ CNN فبيعمل overfit بداتا قليلة؛ DeiT استخدم augmentation قوي وstochastic depth وdistillation اختياري','ViT بايظ من غير JFT'],2,'مفيش locality ولا translation equivariance جاهزين، فلازم يتعلمهم من داتا أو من وصفة تدريب قوية.'],
+ ['Pre-LN مقابل Post-LN: أنهي بيستخدمه الـ transformers الحديثة وليه؟',['Post-LN لأنه أبسط','ولا واحد','Pre-LN: بيدرّب شبكات أعمق بثبات من غير warmup','متطابقين'],2,'Post-LN كان محتاج warmup وlr صغير بعد ~6 طبقات.'],
+ ['Swin بيحل أنهي مشكلة؟',['BatchNorm','overfitting للـ texture','vanishing gradients','الـ full attention تكلفته O((H·W)²)؛ Swin بيحصر الـ attention في نوافذ محلية (مثلًا 7×7)، والـ blocks بالتناوب بتزحزح النافذة عشان المعلومات تتخلط'],3,'3136 token ← 9.8M pair؛ داخل نافذة 49 ← حوالي 150 ألف pair لكل نافذة ×64 نافذة.'],
+ ['(مني) صورة 224 وpatch 16: لو غيرت الـ patch لـ 8، أنهي صح؟',['tokens تتضاعف مرتين','tokens ×4 والـ attention تقريبًا ×16','مفيش تغيير','tokens ÷ 4'],1,'196→784 token (×4)، والـ attention تربيعي ← ×16 تقريبًا.'],
+ ['(مني) ليه الـ MAE encoder أرخص في التدريب؟',['بيستخدم patches أكبر','بيشوف 25% من الـ patches بس','بيستخدم 8-bit','بيتخطى الـ attention'],1,'الـ masked tokens مبتدخلش الـ encoder، فالتكلفة بتنزل جدًا (الـ attention تقريبًا ÷16).']
+],5);
+AI.checklist(N,root);
+})();
+</script>
