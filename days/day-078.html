@@ -1,0 +1,320 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 25 · Vision-Language Models — The ViT-MLP-LLM Pattern</span>
+  <h1>اليوم ٧٨: الـ VLM = عين (ViT) + مترجم (projector) + دماغ (LLM)</h1>
+  <p class="lede">النهاردة هتفهم النمط اللي كل VLM في 2026 بيمشي عليه: <b>ViT → MLP projector → LLM</b>. هتشوف الـ DeepStack، ومراحل التدريب، والـ LoRA، وإزاي بتقيس الهلوسة بالـ <b>CMER</b>، وتكتب بإيدك الـ projector وحساب الـ CMER.</p>
+  <div class="meta"><span>الوقت: <b>~٧٥ دقيقة</b></span><span>اللغة: <b>Python</b></span><span>قبله: <b>SAM 3 & Open-Vocabulary Segmentation</b></span><span>بعده: <b>Monocular Depth & Geometry Estimation</b></span></div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 days</span>
+    <div class="roadmap" id="d78-roadmap" aria-label="خريطة الفيز"></div>
+  </div>
+</header>
+
+<section id="d78-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+<li>إيه اللي SAM 3 بيرجّعه لما تدّيله «yellow school bus»؟
+      <details><summary>الإجابة</summary>كل الـ instances المطابقة، كل واحد بـ mask وinstance ID، في forward pass واحد.</details></li>
+<li>إيه شغلة الـ presence head؟
+      <details><summary>الإجابة</summary>بيحسب احتمال إن المفهوم موجود في الصورة أصلًا، منفصل عن مكانه، فيقلل الـ false positives.</details></li>
+<li>ليه ممكن نختار Grounded SAM 2 بدل SAM 3؟
+      <details><summary>الإجابة</summary>عشان نبدّل الـ detector بحسب الدومين أو الرخصة أو نتحكم في الـ threshold، لأن SAM 3 monolithic.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 دقايق</b>التسخين</div>
+    <div><b>15 دقيقة</b>المشكلة + المعمارية + معمل ١ و٢</div>
+    <div><b>15 دقيقة</b>DeepStack، مراحل التدريب، العيلات</div>
+    <div><b>15 دقيقة</b>الـ CMER + معمل ٣ + الكود</div>
+    <div><b>15 دقيقة</b>التمارين، الإضافة، الكويز</div>
+  </div>
+</section>
+
+<section id="d78-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: CLIP بيقيس التشابه، مش بيجاوب</h2></div>
+
+  <p>CLIP (الدرس اللي فات في الفيز) بيديك فضاء مشترك للصور والنصوص، وده كفاية للـ zero-shot classification والـ retrieval. بس هو <b>مش بيولّد نص</b>، بيقيس تشابه بس. مينفعش تسأله «فيه كام عربية حمرا في الصورة؟».</p>
+  <p>الـ <b>Vision-Language Models</b> (Qwen3-VL، InternVL3.5، LLaVA-Next، GLM-4.6V) بتربط encoder من عيلة CLIP بـ language model كامل. الموديل بيشوف صورة + سؤال ويولّد إجابة. في 2026 الـ VLMs المفتوحة المصدر بتنافس GPT-5 وGemini-2.5-Pro على benchmarks زي MMMU وMMBench وDocVQA وChartQA وMathVista وOSWorld.</p>
+  <div class="note"><strong>تشبيه:</strong> CLIP زي حد بيقولك «الصورة دي قريبة من كلمة قطة» وبس. الـ VLM زي صاحبك اللي بتبعتله صورة وتسأله أي سؤال وهو يرد بكلام.</div>
+  <p>التركيبة التلاتة (ViT + projector + LLM) هي المعيار. الفرق بين الموديلات في: أنهي ViT، أنهي projector، أنهي LLM، داتا التدريب، ووصفة الـ alignment. لما تفهم النمط، تبديل أي مكوّن بقى ميكانيكي.</p>
+
+</section>
+<section id="d78-arch">
+  <div class="station-head"><span class="tag">02</span><h2>معمارية ViT-MLP-LLM</h2></div>
+
+  <ol class="ex">
+    <li><b>Vision encoder:</b> ViT متدرب قبل كده (CLIP-L/14، SigLIP، DINOv3 أو نسخة متعدلة). بيطلّع patch tokens.</li>
+    <li><b>Projector:</b> مودول صغير (MLP من 2 لـ 4 layers، أو Q-former) بيحوّل vision tokens لبُعد الـ embedding بتاع الـ LLM. هنا بيحصل أغلب الـ fine-tuning.</li>
+    <li><b>LLM:</b> decoder-only (Qwen3، Llama، Mistral، GLM، InternLM). بيقرا vision + text tokens بالترتيب ويولّد نص.</li>
+  </ol>
+  <div class="formula">Image (H×W×3) → ViT → (N, d_vit) → Projector → (N, d_llm) ┐
+Text → tokenizer → (M, d_llm) ─────────────────────────────────┴→ concat → LLM → answer</div>
+  <p>الـ 3 مكونات ممكن يتدربوا كلهم نظريًا. عمليًا الـ ViT والـ LLM بيفضلوا مجمدين أغلب الوقت والـ projector هو اللي بيتدرب: قدر قليل من الباراميترات بإشارة كبيرة، وتكلفة رخيصة.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ ViT مترجم بيحوّل الصورة لكلمات «شبه لغوية»، الـ projector مراجع بيظبط لهجتها على لغة الـ LLM، والـ LLM هو اللي بيفكر ويكتب. معظم التدريب بيروح للمراجع.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: رحلة الصورة جوه الـ VLM</h3>
+      <p>دوس «التالي» وشوف كل خطوة: مين شغال وبيطلع إيه.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ LLM مبيعرفش إن الـ tokens دي جت من صورة. هو شايف صفوف في نفس الـ embedding space زي أي كلمة.</div>
+    </div>
+    <div class="instrument"><div id="d78-flow"></div></div>
+  </div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: كام token بتاكل الصورة؟</h3>
+      <p>صورة <b>بتتقسم لـ patches</b>: عدد الـ tokens = (الضلع ÷ حجم الـ patch)². حرّك الأرقام وشوف الصورة بتاخد كام من الـ context، وكام باراميتر في projector من طبقتين.</p>
+      <div class="note ai"><strong>لاحظ:</strong> دقة أعلى = tokens أكتر بشكل تربيعي. ده السبب إن الصور الكبيرة والـ OCR بياكلوا context بسرعة. الأرقام هنا حسابات مبسطة من المعادلة، مش بتعبّر عن موديل بعينه.</div>
+    </div>
+    <div class="instrument"><div id="d78-calc"></div></div>
+  </div>
+
+</section>
+<section id="d78-deepstack">
+  <div class="station-head"><span class="tag">03</span><h2>DeepStack: ليه آخر layer مش كفاية</h2></div>
+
+  <p>الـ projection العادي بياخد features آخر layer في الـ ViT بس. <b>DeepStack</b> (Qwen3-VL) بياخد features من <b>أعماق مختلفة</b> ويرصّها فوق بعض. الطبقات العميقة فيها دلالة عالية المستوى («ده chart»)، والضحلة فيها تفاصيل مكانية وملمس («العمود اللي عند x=120 أحمر»). تغذية الـ LLM بالاتنين بتقفل الفجوة بين «إيه اللي في الصورة» و«فين بالظبط»، وده مهم في الـ GUI agents والـ dense captioning.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيل توصف مكان بخريطة جوجل «زووم أوت» بس (حي كامل) أو «زووم إن» بس (رقم شقة). الاتنين مع بعض بيوصّلوك.</div>
+
+</section>
+<section id="d78-stages">
+  <div class="station-head"><span class="tag">04</span><h2>التدريب على ٣ مراحل + LoRA</h2></div>
+
+  <ol class="ex">
+    <li><b>Alignment:</b> تجمّد ViT وLLM وتدرب الـ projector بس على أزواج صورة-caption. بيتعلّم يترجم من فضاء الصورة لفضاء اللغة.</li>
+    <li><b>Pre-training:</b> تفك كل حاجة وتدرب على داتا ضخمة (500 مليون+ زوج صورة-نص متداخلة). بيبني المعرفة البصرية.</li>
+    <li><b>Instruction tuning:</b> fine-tune على ثلاثيات (صورة، سؤال، إجابة) منتقاة. بيعلّمه المحادثة وشكل المهام، وده اللي بيحوّله من «LM واعي بالصور» لمساعد قابل للاستخدام.</li>
+  </ol>
+  <p>أغلب الـ LoRA fine-tunes بتستهدف المرحلة ٣ بداتا صغيرة.</p>
+  <h3>Fine-tuning بـ LoRA / QLoRA</h3>
+  <p>Fine-tune كامل لـ VLM بحجم 70B بره قدرة أغلب الفرق. <b>LoRA</b> (rank 16-64) على طبقات الـ attention والـ projector، أو <b>QLoRA</b> بأوزان أساس 4-bit، بتتحط على A100 / H100 واحد. التكلفة: 5,000-50,000 مثال، من 100 لـ 5,000 دولار compute، من 2 لـ 10 ساعات تدريب.</p>
+
+</section>
+<section id="d78-models">
+  <div class="station-head"><span class="tag">05</span><h2>مقارنة العيلات (أوائل 2026)</h2></div>
+
+  <div class="tablewrap"><table>
+    <tr><th>الموديل</th><th>Params</th><th>Vision encoder</th><th>LLM</th><th>Context</th><th>نقطة قوة</th></tr>
+    <tr><td>Qwen3-VL-235B-A22B (MoE)</td><td>235B (22B active)</td><td>ViT مخصص + DeepStack</td><td>Qwen3</td><td>256K</td><td>SOTA عام، GUI agent</td></tr>
+    <tr><td>Qwen3-VL-30B-A3B (MoE)</td><td>30B (3B active)</td><td>ViT مخصص + DeepStack</td><td>Qwen3</td><td>256K</td><td>MoE أصغر</td></tr>
+    <tr><td>Qwen3-VL-8B (dense)</td><td>8B</td><td>ViT مخصص</td><td>Qwen3</td><td>128K</td><td>الافتراضي dense للإنتاج</td></tr>
+    <tr><td>InternVL3.5-38B</td><td>38B</td><td>InternViT-6B</td><td>Qwen3 + GPT-OSS</td><td>128K</td><td>قوي في MMBench / MMVet</td></tr>
+    <tr><td>InternVL3.5-241B-A28B</td><td>241B (28B active)</td><td>InternViT-6B</td><td>Qwen3</td><td>128K</td><td>ينافس GPT-4o</td></tr>
+    <tr><td>LLaVA-Next 72B</td><td>72B</td><td>SigLIP</td><td>Llama-3</td><td>32K</td><td>مفتوح وسهل الـ fine-tune</td></tr>
+    <tr><td>GLM-4.6V</td><td>~70B</td><td>مخصص</td><td>GLM</td><td>64K</td><td>مفتوح، OCR قوي</td></tr>
+    <tr><td>MiniCPM-V-2.6</td><td>8B</td><td>SigLIP</td><td>MiniCPM</td><td>32K</td><td>مناسب للـ edge</td></tr>
+  </table></div>
+  <h3>Visual agents</h3>
+  <p>Qwen3-VL-235B بيوصل لأعلى أداء عالمي على <b>OSWorld</b>: benchmark للـ <b>visual agents</b> اللي بتشغّل واجهات (desktop، mobile، web). الموديل بيشوف screenshot، يفهم الـ UI، ويطلّع actions (click، type، scroll). مع الـ tools بيقفل الدايرة على مهام الديسكتوب الشائعة، وده اللي ورا أغلب عروض «AI PC» في 2026.</p>
+  <h3>الوقت في الفيديو</h3>
+  <p>الـ VLM محتاج يعرف <b>إمتى</b> الفريم في الفيديو. Qwen3-VL طوّر من T-RoPE (temporal rotary position embeddings) لـ <b>text-based time alignment</b>: tokens نصية صريحة بالـ timestamp متداخلة مع الفريمات. الموديل بيشوف <span class="ltr">&lt;timestamp 00:32&gt;</span> قبل الفريم وبيقدر يفكر في العلاقات الزمنية.</p>
+
+</section>
+<section id="d78-cmer">
+  <div class="station-head"><span class="tag">06</span><h2>مشكلة الـ alignment: الهلوسة وCMER</h2></div>
+
+  <p>حوالي <b>12%</b> من أزواج صورة-نص في أي داتا مجمّعة من الويب فيها وصف <b>مش متأسس بالكامل</b> على الصورة. الـ VLM اللي بيتدرب على كده بيتعلم يهلوس: يألّف أجسام، يقرا أرقام غلط، يخترع علاقات. في الإنتاج ده أكبر نمط فشل.</p>
+  <p>Skywork.ai قدّمت <b>Cross-Modal Error Rate (CMER)</b>:</p>
+  <div class="formula">CMER = نسبة الـ outputs اللي الـ text confidence فيها عالي لكن image-text similarity (بـ checker من عيلة CLIP) واطي</div>
+  <p>CMER عالي = الموديل بيقول كلام بثقة وهو مش موجود في الصورة. مراقبة الـ CMER كـ KPI إنتاج قلّلت الهلوسة بحوالي <b>35%</b> في نشرهم. الحيلة مش «صلّح الموديل» بل «وجّه الـ outputs عالية الـ CMER لمراجعة بشرية».</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: اصطاد الهلوسة بنفسك</h3>
+      <p>كل نقطة output: المحور الأفقي = image-text similarity، والرأسي = text confidence. المنطقة المضللة هي «واثق وغلطان». حرّك الحدّين وشوف الـ CMER بيتغير.</p>
+      <div class="note ai"><strong>لاحظ:</strong> رفع حدّ الـ similarity بيمسك هلوسات أكتر لكنه بيزوّد الإنذارات الكدابة. اختيار الحدود قرار تشغيلي، مش رياضي.</div>
+    </div>
+    <div class="instrument"><div id="d78-sc"></div></div>
+  </div>
+  <h3>الضعف المكاني</h3>
+  <p>الـ VLMs الحالية بتجيب 50-60% على benchmarks التفكير المكاني (فوق/تحت، يمين/شمال، عدّ، مسافة). لو حالتك معتمدة على «أنهي جسم فوق أنهي» اعمل validation قوي، فالأداء العام تحت البشر. البدائل الأفضل للمهام المكانية البحتة: keypoint/pose estimator متخصص، أو depth model (وده درس بكرة)، أو detection مع post-processing لهندسة الـ boxes.</p>
+
+</section>
+<section id="d78-build">
+  <div class="station-head"><span class="tag">07</span><h2>الكود: اكتب الـ projector والـ CMER بإيدك</h2></div>
+
+  <h3>الخطوة ١: الـ Projector</h3>
+  <p>الجزء اللي هتدرّبه أكتر. MLP بـ GELU: الداخل <span class="ltr">(N_patches, d_vit)</span> والخارج <span class="ltr">(N_patches, d_llm)</span>. الـ LLM بيعامل كل صف كأنه token عادي.</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+
+
+class Projector(nn.Module):
+    def __init__(self, vit_dim=768, llm_dim=4096, hidden=4096):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(vit_dim, hidden),   # من فضاء الـ ViT
+            nn.GELU(),
+            nn.Linear(hidden, llm_dim),   # لفضاء الـ LLM
+        )
+
+    def forward(self, x):
+        return self.net(x)</pre></div>
+  <h3>الخطوة ٢: تجميع الـ VLM</h3>
+  <p>الهيكل المفاهيمي (الكود الحقيقي بيستخدم <span class="ltr">transformers</span>). الـ placeholder token <span class="ltr">&lt;image&gt;</span> في النص بيتبدّل بـ embeddings الصورة الحقيقية، نفس النمط في LLaVA وQwen-VL وInternVL.</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>class MinimalVLM(nn.Module):
+    def __init__(self, vit, projector, llm, image_token_id):
+        super().__init__()
+        self.vit = vit
+        self.projector = projector
+        self.llm = llm
+        self.image_token_id = image_token_id  # placeholder في النص
+
+    def forward(self, image, input_ids, attention_mask):
+        vision_tokens = self.vit(image)                     # (B, N_patches, d_vit)
+        vision_embeds = self.projector(vision_tokens)       # (B, N_patches, d_llm)
+        text_embeds = self.llm.get_input_embeddings()(input_ids)  # (B, M, d_llm)
+        merged = self._merge(text_embeds, vision_embeds, input_ids)
+        return self.llm(inputs_embeds=merged, attention_mask=attention_mask)
+
+    def _merge(self, text_embeds, vision_embeds, input_ids):
+        out = text_embeds.clone()
+        expected = vision_embeds.size(1)
+        for b in range(input_ids.size(0)):
+            positions = (input_ids[b] == self.image_token_id).nonzero(as_tuple=True)[0]
+            if len(positions) != expected:
+                raise ValueError(
+                    f"batch item {b} has {len(positions)} image tokens but vision_embeds has {expected} patches."
+                    " Every sample in the batch must be pre-padded to the same number of image placeholder tokens.")
+            out[b, positions] = vision_embeds[b]
+        return out</pre></div>
+  <h3>الخطوة ٣: حساب الـ CMER</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch.nn.functional as F
+
+
+def cross_modal_error_rate(image_emb, text_emb, text_confidence,
+                           sim_threshold=0.25, conf_threshold=0.8):
+    image_emb = F.normalize(image_emb, dim=-1)
+    text_emb = F.normalize(text_emb, dim=-1)
+    sim = (image_emb * text_emb).sum(dim=-1)        # cosine similarity
+    high_conf_low_sim = (text_confidence &gt; conf_threshold) &amp; (sim &lt; sim_threshold)
+    return high_conf_low_sim.float().mean().item()</pre></div>
+  <p>اعتبر الـ CMER KPI إنتاج: راقبه لكل endpoint ولكل نوع prompt ولكل عميل. ارتفاعه معناه إن الموديل بدأ يهلوس على توزيع مدخلات معين.</p>
+  <h3>الخطوة ٤: Toy VLM قابل للتشغيل</h3>
+  <p>ToyVLM بياخد features «ViT مزيفة» وبيتنبأ بـ class، ويثبت إن نمط الـ projector بيتدرب. الملف الأصلي فيه كمان <span class="ltr">deepstack_features</span> (بتعمل <span class="ltr">torch.cat</span> لـ features من عدة أعماق) ومحاكاة CMER. من أول الـ repo:</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/25-vision-language-models/code/main.py</pre></div>
+  <p><b>اللي متوقع تشوفه:</b> قسم الـ toy بيبدأ بـ <span class="ltr">train 170, val 30</span> (5 classes × 40 عينة، 85% تدريب) وبيطبع <span class="ltr">ce</span> و<span class="ltr">val_acc</span> كل 30 خطوة، والـ <span class="ltr">ce</span> المفروض ينزل. قسم DeepStack هيطلّع <span class="ltr">3 layers of (4, 16, 32) -&gt; deepstack (4, 16, 96)</span> (3 × 32 = 96 channel). وقسم CMER هيطبع <span class="ltr">CMER = ...</span> والملف نفسه بيتوقعها حوالي 0.5 (4 هلوسات من 8).</p>
+  <h3>الخطوة ٥: الاستخدام الحقيقي (مرجع، محتاج GPU)</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>from transformers import AutoProcessor, AutoModelForVision2Seq
+import torch
+from PIL import Image
+
+model_id = "Qwen/Qwen3-VL-8B-Instruct"
+processor = AutoProcessor.from_pretrained(model_id)
+model = AutoModelForVision2Seq.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto")
+
+messages = [{
+    "role": "user",
+    "content": [
+        {"type": "image", "image": Image.open("plot.png")},
+        {"type": "text", "text": "What does this chart show?"},
+    ],
+}]
+inputs = processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors="pt").to("cuda")
+generated = model.generate(**inputs, max_new_tokens=256)
+answer = processor.decode(generated[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)</pre></div>
+  <p>الـ <span class="ltr">apply_chat_template</span> بيخبّي تحويل الـ <span class="ltr">&lt;image&gt;</span> placeholder والموديل بيعمل الـ merge جوه.</p>
+  <h3>٣ طرق استخدام في الإنتاج</h3>
+  <ul class="checklist">
+    <li><b>Hosted API:</b> OpenAI Vision، Anthropic Claude Vision، Google Gemini Vision. صفر infra، لكن اعتماد على المورد.</li>
+    <li><b>Open-source self-host:</b> Qwen3-VL أو InternVL3.5 عبر <span class="ltr">transformers</span> و<span class="ltr">vllm</span>. تحكم كامل، جهد أولي أكبر.</li>
+    <li><b>Fine-tune على الدومين:</b> Qwen2.5-VL-7B أو LLaVA-1.6-7B بـ LoRA على 5k-50k مثال، وتخدم بـ <span class="ltr">vllm</span> أو <span class="ltr">TGI</span>.</li>
+  </ul>
+
+</section>
+<section id="d78-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+
+  <ol class="ex">
+<li><b>(سهل)</b> شغّل ٣ prompts («what is this?»، «count the objects»، «describe the scene») على أي VLM مفتوح، على ٥ صور. قيّم كل إجابة بإيدك: صح / جزئي / هلوسة. احسب معدل شبيه بالـ CMER.
+      <details><summary>الإجابة</summary><b>تلميح:</b> الجدول: ١٥ إجابة. المعدل = عدد الهلوسات ÷ 15. لاحظ إن «count the objects» غالبًا هو اللي هيهلوس أكتر (ضعف مكاني وعدّ).</details></li>
+<li><b>(متوسط)</b> اعمل LoRA (rank 16) على Qwen2.5-VL-3B أو LLaVA-1.6-7B بـ 500 صورة من دومين مستهدف مع captions. قارن accuracy بأسلوب MMBench قبل وبعد.
+      <details><summary>الإجابة</summary><b>تلميح:</b> حط 50 صورة على جنب كـ test ومتدرّبش عليها. اضبط LoRA على الـ attention والـ projector زي ما الدرس قال، وقارن zero-shot بالـ fine-tuned على نفس الـ 50.</details></li>
+<li><b>(صعب)</b> بدّل الـ image encoder بـ DINOv3 بدل SigLIP/CLIP الافتراضي. درّب الـ projector بس (LLM وDINOv3 مجمدين). قيس هل مهام الـ dense (العدّ، التفكير المكاني) اتحسنت.
+      <details><summary>الإجابة</summary><b>تلميح:</b> الـ <span class='ltr'>vit_dim</span> هيتغير فالـ projector لازم يتعمل من الأول بالأبعاد الجديدة. DINOv3 متدرب self-supervised من غير نص، فالـ projector محتاج داتا alignment أكتر. قارن بنفس الـ test set.</details></li>
+<li><b>تمرين مني · احسب الـ tokens:</b> صورة 448×448 وحجم patch 14. كام token؟ ولو حطيت 4 صور كده في سؤال واحد، كام token للصور بس؟
+      <details><summary>الإجابة</summary>(448 ÷ 14)² = 32² = <b>1024 token</b> للصورة الواحدة، و4 صور = <b>4096 token</b> قبل أي نص. استخدم معمل ٢ تتأكد. ده بيفسر ليه الدقة العالية بتاكل الـ context.</details></li>
+  </ol>
+
+</section>
+<section id="d78-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: حدس، أخطاء شائعة، وفين بتظهر</h2></div>
+
+  <ul class="checklist">
+    <li><b>عدد الـ image tokens لازم يطابق:</b> لو الـ placeholders في النص مش بعدد الـ patches بالظبط، الـ <span class="ltr">_merge</span> بيرمي ValueError. أول إيرور هتقابله لما تبني VLM بإيدك.</li>
+    <li><b>متدرّبش كل حاجة مرة واحدة:</b> لو فكّيت ViT وLLM من أول يوم والـ projector لسه عشوائي، الـ gradients العشوائية هتبوّظ أوزان متدربة كويس. ابدأ alignment بالـ projector بس.</li>
+    <li><b>الثقة العالية ≠ الصح:</b> الـ text confidence وحده مبيثبتش إن الإجابة متأسسة على الصورة. لازم مقياس خارجي (زي similarity من CLIP) عشان تمسك الهلوسة.</li>
+    <li><b>«الـ VLM مش بيعدّ»:</b> مش مشكلة prompt. الضعف المكاني حقيقي (50-60%). للعدّ الدقيق استخدم detector وعدّ الـ boxes بنفسك.</li>
+    <li><b>فين بيظهر في الـ agents:</b> VLM + tools = visual agent: screenshot ← الموديل يقرر action ← tool call للماوس/الكيبورد ← screenshot جديد. نفس حلقة الـ agent العادية بس بالعين.</li>
+  </ul>
+
+</section>
+
+<section id="d78-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d78-quizBox"></div>
+</section>
+
+<section id="d78-done">
+  <div class="station-head"><span class="tag">✓</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d78-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم ViT + projector + LLM ودور كل واحد</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم DeepStack وليه بيحسّن الـ grounding</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم مراحل التدريب التلاتة وليه LoRA مناسب</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم الـ CMER وقدرت أجرّبه في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الـ Projector وشغلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Projector</td><td>كل VLM: Qwen3-VL، InternVL، LLaVA</td></tr>
+    <tr><td>DeepStack</td><td>grounding دقيق، GUI agents، dense captioning</td></tr>
+    <tr><td>Alignment/Pre-train/Instruct</td><td>وصفة تدريب أي VLM</td></tr>
+    <tr><td>LoRA / QLoRA</td><td>تخصيص VLM على دومينك بتكلفة صغيرة</td></tr>
+    <tr><td>CMER</td><td>مراقبة الهلوسة في الإنتاج وتوجيه المراجعة البشرية</td></tr>
+    <tr><td>Visual agents</td><td>OSWorld، أتمتة الـ GUI، عروض AI PC</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Monocular Depth: إزاي تطلّع مسافة كل pixel من صورة واحدة، وتحوّلها لـ 3D.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F25-vision-language-models" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/25-vision-language-models</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=78,$=id=>document.getElementById(id),css=AI.css,L=AI.lab;
+const root=$('d78-roadmap').closest('.day');
+const rm=$('d78-roadmap');
+for(let i=57;i<=81;i++){const s=document.createElement('span');s.textContent=i-56;if(i===N)s.className='now';rm.appendChild(s)}
+
+L.flow($('d78-flow'),{height:300,nodes:[
+ {id:'img',label:'Image',x:0,y:.2},{id:'vit',label:'ViT encoder',x:.25,y:.2},{id:'proj',label:'Projector',x:.5,y:.2},
+ {id:'txt',label:'Text prompt',x:0,y:.8},{id:'tok',label:'Tokenizer',x:.25,y:.8},{id:'llm',label:'LLM',x:.75,y:.5},{id:'out',label:'Answer',x:1,y:.5}],
+ edges:[['img','vit'],['vit','proj','(N, d_vit)'],['proj','llm','(N, d_llm)'],['txt','tok'],['tok','llm','(M, d_llm)'],['llm','out']],
+ steps:[
+ {active:['img','vit'],edges:[['img','vit']],text:'الـ ViT بيقسم الصورة لـ patches ويطلّع token لكل patch بُعده d_vit.'},
+ {active:['vit','proj'],edges:[['vit','proj']],text:'الـ projector (MLP) بيحوّل كل token لبُعد d_llm.'},
+ {active:['txt','tok'],edges:[['txt','tok']],text:'النص بيتحول لـ tokens عادية بنفس بُعد d_llm.'},
+ {active:['proj','tok','llm'],edges:[['proj','llm'],['tok','llm']],text:'الـ vision tokens والـ text tokens بيتدمجوا (الـ placeholder بيتبدّل) ويدخلوا الـ LLM.'},
+ {active:['llm','out'],edges:[['llm','out']],text:'الـ LLM بيولّد الإجابة token ورا token.'}]});
+L.calc($('d78-calc'),{params:[{k:'s',label:'ضلع الصورة (px)',min:112,max:1344,step:14,v:448},{k:'ps',label:'حجم الـ patch',min:8,max:32,step:2,v:14},{k:'vd',label:'d_vit',min:256,max:1536,step:128,v:768},{k:'ld',label:'d_llm',min:1024,max:8192,step:512,v:4096},{k:'n',label:'عدد الصور',min:1,max:8,step:1,v:1}],
+ compute:p=>{const g=Math.floor(p.s/p.ps),t=g*g;const proj=p.vd*p.ld+p.ld+p.ld*p.ld+p.ld;return [['patches لكل صورة',g+'×'+g+' = '+t],['tokens للصور كلها',t*p.n],['باراميترات projector (طبقتين، hidden=d_llm)',(proj/1e6).toFixed(1)+' M']]},
+ note:p=>'عدد الـ tokens = (الضلع ÷ patch)² لكل صورة. حساب مبسط.'});
+// scatter CMER
+const pts=[[.62,.95,0],[.55,.9,0],[.48,.88,0],[.4,.92,0],[.7,.85,0],[.32,.78,0],[.3,.6,0],[.45,.5,0],[.12,.95,1],[.08,.9,1],[.18,.87,1],[.2,.92,1],[.05,.8,1],[.22,.55,1]];
+L.scatter($('d78-sc'),{x:[0,1],y:[0,1],points:pts,classes:{0:'a',1:'b'},add:true,
+ params:[{k:'st',label:'حد الـ similarity',min:0.05,max:0.6,step:0.01,v:0.25},{k:'ct',label:'حد الـ confidence',min:0.5,max:0.99,step:0.01,v:0.8}],
+ overlay:(ctx,F,pts,p)=>{ctx.save();ctx.globalAlpha=.15;ctx.fillStyle=AI.css('--bad')||'#c00';ctx.fillRect(F.X(0),F.Y(1),F.X(p.st)-F.X(0),F.Y(p.ct)-F.Y(1));ctx.restore();ctx.strokeStyle=AI.css('--muted')||'#888';ctx.strokeRect(F.X(0),F.Y(1),F.X(p.st)-F.X(0),F.Y(p.ct)-F.Y(1))},
+ readout:(pts,p)=>{const bad=pts.filter(q=>q[0]<p.st&&q[1]>p.ct).length;return [['outputs',pts.length],['واثق وغلطان',bad],['CMER',(pts.length?bad/pts.length:0).toFixed(3)]]},
+ note:(pts,p)=>'المجموعة الأولى outputs سليمة (similarity عالي) والتانية هلوسات مصطنعة (similarity واطي). اضغط على الرسم تضيف نقطة (x similarity, y confidence).'});
+
+AI.quiz($('d78-quizBox'),[["في نمط ViT-MLP-LLM، أنهي مكوّن بيتدرب غالبًا وباقي المكونات مجمدة في مرحلة الـ alignment؟", ["كلهم دايمًا مع بعض", "الـ vision encoder", "الـ LLM", "الـ projector (الـ MLP بين الـ ViT والـ LLM): بيحوّل vision tokens لفضاء الـ embedding بتاع الـ LLM وبياخد أغلب إشارة الربط"], 3, "الوصفة المعتادة: درّب الـ projector الأول والباقي مجمد، وبعدين اختياريًا فك كل حاجة للـ pre-training والـ instruction tuning. الـ projector صغير فبيستحمل عبء الجسر بين النوعين."], ["DeepStack (في Qwen3-VL) بيعمل إيه؟", ["بيضاعف عمق الـ LLM", "بيستخدم آخر layer في الـ ViT بس", "بيرص features من أعماق مختلفة في الـ ViT قبل الـ projection، فالـ LLM يشوف الدلالة (طبقات عميقة) والتفاصيل المكانية (طبقات ضحلة)", "نظام quantisation معين"], 2, "الـ VLMs العادية بتسقط آخر layer بس. DeepStack بياخد عدة أعماق ويرصّها ويسقطها: العميقة للدلالة والضحلة للمكان والملمس، وده بيحسن المهام اللي محتاجة تحديد دقيق."], ["VLM في الإنتاج ثقته عالية في النص لكنه بيوصف أجسام مش موجودة. أنهي مقياس بيمسك ده؟", ["زمن توليد الـ token", "الدقة على MMMU", "Cross-Modal Error Rate (CMER): نسبة الـ outputs ذات الـ confidence العالي والـ image-text cosine similarity الواطي", "الـ perplexity"], 2, "CMER مقياس alignment للإنتاج بيمسك نمط الهلوسة الكلاسيكي. راقبه لكل endpoint ونوع prompt. Skywork.ai قلّلت الهلوسة ~35% لما خلّته KPI أساسي."], ["ليه الـ VLMs الحديثة بتستخدم SigLIP أو encoders مخصصة بدل ResNet متدرب على ImageNet؟", ["SigLIP فيه باراميترات أكتر", "ResNet مبيطلّعش tokens", "SigLIP أسرع", "encoders نمط CLIP/SigLIP متدربة مع النص، فمخرجاتها قريبة من فضاء اللغة، والـ projector بيشتغل أقل والموديل بيفكر أحسن في المفاهيم المشتركة"], 3, "التدريب بالنص بيحط الـ encoder في فضاء متوافق مع اللغة. ResNet من غير نص محتاج projectors أكبر وداتا أكتر للربط."], ["Qwen3-VL-235B-A22B بيجيب أعلى النتايج على OSWorld. إيه هو OSWorld وده معناه إيه؟", ["benchmark لـ agents بتشغّل واجهات الديسكتوب: تحدد الأزرار وتقرا حالة الـ UI وتطلّع actions، ونتايج Qwen3-VL معناها إن الـ VLMs بقت صالحة كـ visual agents", "benchmark لتقدير الـ pose", "benchmark تركيبي", "benchmark لأسئلة الفيديو"], 0, "OSWorld بيختبر هل الموديل يقدر يشغّل ديسكتوب بالـ screenshots. النتايج العالية معناها إن نمط «الـ VLM يقرا الشاشة ويقرر ويضغط» بقى عملي."], ["(سؤال مني) الـ projector بيحوّل (N, 768) لـ (N, 4096). إيه معنى الـ 4096؟", ["عدد الـ patches", "بُعد الـ embedding بتاع الـ LLM، عشان الـ vision tokens تبقى في نفس فضاء الـ text tokens", "عدد الـ classes", "حجم الـ context"], 1, "d_llm هو بُعد الـ embedding اللي الـ LLM بيشتغل بيه. لازم vision tokens تتحول ليه عشان تتحط جنب text tokens."], ["(سؤال مني) صورة 224×224 وـ patch 16. كام vision token؟", ["14", "196", "224", "3136"], 1, "(224 ÷ 16)² = 14² = 196 token."]],4,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

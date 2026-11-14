@@ -1,0 +1,546 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lessons 20–21 · Image Retrieval &amp; Metric Learning + Keypoint Detection &amp; Pose Estimation</span>
+  <h1>اليوم ٧٤: تشكّل فضاء الـ embeddings، وبعدين تدوّر على النقط اللي في الصورة</h1>
+  <p class="lede">النهاردة درسين في يوم واحد. الأول: إزاي تدوّر على صور شبه بعض (<b>retrieval</b>) وإزاي تدرّب الـ encoder إن المسافات في فضاء الـ embedding تبقى بتعني حاجة (<b>metric learning</b>، triplet loss، FAISS، recall@K). التاني: إزاي تلاقي مفاصل الجسم أو أي نقط مهمة في الصورة (<b>keypoints</b>) بالـ <b>heatmaps</b>، وإيه الفرق بين top-down وbottom-up.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (PyTorch + NumPy)</span>
+    <span>قبله: <b>CLIP + OCR</b></span>
+    <span>بعده: <b>3D Gaussian Splatting</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — Computer Vision · 28 lesson</span>
+    <div class="roadmap" id="d74-roadmap" aria-label="دروس فيز الرؤية بالكمبيوتر"></div>
+  </div>
+</header>
+
+<section id="d74-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كان الـ CLIP والـ OCR. جاوب في دماغك الأول وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>الـ CLIP بيتدرب إزاي، وليه ينفع يصنّف صور لفئات عمره ما شافها؟
+      <details><summary>الإجابة</summary>عنده برجين (two towers): image encoder وtext encoder، بيتدربوا مع بعض بحيث الصورة وجملة وصفها يقعوا في نفس النقطة تقريبًا في فضاء مشترك. فتقدر تكتب اسم أي فئة كجملة وتقارن بالـ cosine similarity وتاخد الأعلى (zero-shot).</details></li>
+    <li>إيه مراحل الـ OCR الكلاسيكي؟
+      <details><summary>الإجابة</summary>detect (تلاقي صناديق النص) ← recognise (تقرا الحروف جوه كل صندوق، CRNN + CTC) ← layout (ترتب النتيجة وتفهم التنسيق). والمستوى الأعلى هو document understanding: تطلّع حقول زي «إجمالي الفاتورة».</details></li>
+    <li>الفرق بين OCR وlayout parsing وdocument understanding؟
+      <details><summary>الإجابة</summary>OCR يحوّل البكسلات لنص. الـ layout يجمّع النص في مناطق (عنوان، جدول، فقرة). الـ document understanding يطلّع حقول مهيكلة ذات معنى من الـ layout.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>30 min</b>درس Retrieval: المفاهيم + معملين</div>
+    <div><b>25 min</b>درس Keypoints: المفاهيم + معملين</div>
+    <div><b>20 min</b>اكتب الكود وشغّل الدرسين</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- ================= PART 1: RETRIEVAL ================= -->
+<section id="d74-p1">
+  <div class="station-head"><span class="tag">01</span><h2>الجزء الأول: Image Retrieval &amp; Metric Learning</h2></div>
+  <div class="note"><strong>الفكرة في جملة:</strong> نظام البحث بيرتّب المرشحين حسب <b>مسافة</b> في فضاء الـ embedding. والـ metric learning هو إنك تشكّل الفضاء ده بحيث المسافات تعني اللي انت عايزه.</div>
+
+  <h3>المشكلة: الـ retrieval في كل حتة</h3>
+  <p>اكتشاف الصور المكررة، البحث العكسي عن صورة، «دوّرلي على منتجات شبه دي»، التعرف على نفس الشخص في كاميرات مختلفة (person re-ID)، مطابقة المنتجات في الـ e-commerce. السؤال دايمًا واحد: <i>«معايا صورة، رتّبلي الكتالوج كله حسب الشبه»</i>.</p>
+  <p>في القرار شيئين بيشكّلوا النظام كله:</p>
+  <ol class="ex">
+    <li><b>الـ embedding:</b> أنهي موديل بيحوّل الصورة لمتجه. في ٢٠٢٦ الاختيار الجاهز هو DINOv2 (أو CLIP/SigLIP).</li>
+    <li><b>الـ index:</b> إزاي تلاقي أقرب الجيران بسرعة لما الكتالوج ملايين. الاختيار الجاهز هو FAISS.</li>
+  </ol>
+  <p>الاتنين بقوا حاجة جاهزة، فالجزء الصعب الحقيقي هو: <b>إيه اللي معناه «شبه» في تطبيقك؟</b> وبعدين تشكّل الفضاء عشان المسافات تطابق ده. الشغلانة دي هي الـ metric learning: صغيرة لكن تأثيرها كبير.</p>
+
+  <h3>شكل النظام</h3>
+  <p>الكتالوج كله بيعدي على الـ encoder مرة واحدة (offline) وبيتبني منه index. وقت السؤال: الـ query (صورة أو نص) بتعدي على نفس الـ encoder، وبتطلع embedding، والـ index بيرجّع أقرب k مرشح.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: تتبّع الـ pipeline</h3>
+      <p>دوس «الخطوة الجاية» وشوف مين اللي شغال في كل مرحلة. لاحظ إن الـ encoder <b>لازم يبقى نفسه</b> للكتالوج وللـ query، وإلا الفضاءين مش هيتطابقوا.</p>
+      <div class="note ai"><strong>لاحظ:</strong> بناء الـ index بيحصل مرة، لكن البحث بيحصل مع كل query. عشان كده الـ index هو اللي بيتحسب له حساب السرعة.</div>
+    </div>
+    <div class="instrument"><div id="d74-l1"></div></div>
+  </div>
+
+  <h3>أربع عائلات من الـ losses</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الـ Loss</th><th>بيحتاج إيه</th><th>مميزاته</th><th>عيوبه</th></tr>
+    <tr><td>Contrastive</td><td>(anchor, positive) + negatives</td><td>بسيط، بيشتغل مع أي label لزوج</td><td>بطيء في التقارب من غير negatives كتير</td></tr>
+    <tr><td>Triplet</td><td>(anchor, positive, negative)</td><td>سهل الفهم، تتحكم في الـ margin مباشرة</td><td>الـ hard-triplet mining غالي</td></tr>
+    <tr><td>NT-Xent / InfoNCE</td><td>أزواج + negatives بتتجاب من الـ batch</td><td>بيكبر مع الـ batch الكبير</td><td>محتاج batch كبير أو momentum queue</td></tr>
+    <tr><td>Proxy-based (ProxyNCA)</td><td>الـ class labels بس</td><td>سريع ومستقر ومفيش mining</td><td>ممكن يعمل overfit على الـ proxies في داتا صغيرة</td></tr>
+  </table></div>
+  <p>نصيحة الدرس: في أغلب الاستخدامات ابدأ بـ backbone جاهز، ومتضيفش fine-tune بالـ metric learning غير لو الـ embeddings الجاهزة وحشة على الـ test set بتاعك.</p>
+
+  <h3>Triplet loss: اسحب وادفع</h3>
+  <div class="formula">L = max( 0 , ‖f(a) − f(p)‖² − ‖f(a) − f(n)‖² + margin )</div>
+  <p>عندك ٣ صور: <b>anchor</b> (الأساس)، <b>positive</b> (نفس الحاجة)، <b>negative</b> (حاجة تانية). الـ loss بيشدّ الـ anchor ناحية الـ positive وبيزقّه بعيد عن الـ negative، بشرط يسيب <b>فجوة</b> اسمها margin.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيل طابور في مدرسة: الطالب (anchor) لازم يقف جنب صاحبه (positive) وبعيد عن اللي بيضايقه (negative) بمسافة أمان (margin). لو هو أصلًا بعيد عن المضايق بمسافة كفاية، المدرّس (الـ loss) مش هيتدخل، والـ loss بيبقى صفر.</div>
+  <p>النقطة المهمة: <b>الـ triplets السهلة</b> (الـ negative أصلًا بعيد) loss بتاعها صفر، يعني مبتعلّمش الشبكة حاجة. بس الـ <b>hard triplets</b> هي اللي بتعلّم. وفيه نوع اسمه <b>semi-hard mining</b>: الـ negative يكون أبعد من الـ positive لكن لسه جوه حدود الـ margin. ده وصفة FaceNet من ٢٠١٦ ولسه هي الأشهر.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: متى الـ triplet loss يتحرك؟</h3>
+      <p>المحور الأفقي هو <span class="ltr">d(a,n)</span>: مسافة الـ anchor للـ negative. الخط هو الـ loss. ثبّت <span class="ltr">d(a,p)</span> وغيّر الـ margin.</p>
+      <ol class="ex">
+        <li>خلّي d(a,n) أكبر بكتير من d(a,p)+margin. الـ loss بيبقى صفر (triplet سهل، مفيش gradient).</li>
+        <li>دخّل الـ negative جوه المنطقة الحمرا بين d(a,p) وd(a,p)+margin. ده الـ semi-hard، والـ loss موجب وgradient بيشتغل.</li>
+        <li>لو d(a,n) أصغر من d(a,p) بتبقى الـ hard negative: أعلى loss.</li>
+      </ol>
+    </div>
+    <div class="instrument"><div id="d74-l2"></div></div>
+  </div>
+
+  <h3>Cosine ضد L2: الاتنين نفس الحاجة لو عملت normalize</h3>
+  <ul class="checklist">
+    <li><b>Cosine:</b> الزاوية بين المتجهين. بيحتاج الـ embeddings تبقى <b>L2-normalised</b> (طولها ١).</li>
+    <li><b>L2:</b> المسافة الإقليدية. بيشتغل على خام أو normalised، بس غالبًا بيتجوز مع normalised + squared L2.</li>
+  </ul>
+  <div class="formula">‖a − b‖² = 2 − 2·cos(a, b)      لما ‖a‖ = ‖b‖ = 1</div>
+  <p>يعني كل ما الـ cosine يكبر، المسافة تصغر بالظبط بنفس الترتيب. اختار الاتفاقية اللي تطابق طريقة تدريب الـ embedding، لأن الخلط بينهم بيغيّر معنى «الأقرب» من غير ما تحس.</p>
+
+  <h3>Recall@K: المقياس القياسي</h3>
+  <div class="formula">recall@K = نسبة الـ queries اللي فيها match صح واحد على الأقل في أول K نتيجة</div>
+  <p>اعرض recall@1 و@5 و@10 جنب بعض. لو recall@10 فوق ٠.٩٥ وrecall@1 تحت ٠.٥ يبقى الفضاء شكله سليم (الصح غالبًا في أول ١٠) لكن الترتيب جوه الـ ١٠ مش ثابت. الحل: fine-tune أطول أو خطوة <b>re-ranking</b> (موديل تاني بيقيّم كل مرشح مع الـ query).</p>
+  <p>وفيه فرق في اللي بتقيسه: لو بتكتشف صور مكررة، الـ <b>precision@K</b> أهم لأن كل false positive غلطة المستخدم هيشوفها. ولو بحث بصري (visual search) فالـ recall@K هو إشارة المنتج.</p>
+
+  <h3>FAISS في فقرة</h3>
+  <p>مكتبة Facebook AI Similarity Search: المعيار لأقرب الجيران. تلات اختيارات للـ index:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الـ Index</th><th>بيعمل إيه</th><th>إمتى</th></tr>
+    <tr><td><code>IndexFlatIP</code> / <code>IndexFlatL2</code></td><td>brute force، دقيق ١٠٠٪، من غير تدريب</td><td>لحد حوالي ١M vector</td></tr>
+    <tr><td><code>IndexIVFFlat</code></td><td>يقسّم لـ K خلية ويدوّر في أقرب خلايا بس. تقريبي وسريع، محتاج داتا تدريب</td><td>حوالي ١٠M</td></tr>
+    <tr><td><code>IndexHNSW</code></td><td>مبني على graph، الأسرع لـ queries كتير، حجمه كبير</td><td>queries كتير</td></tr>
+  </table></div>
+  <p>لـ ١٠٠ ألف vector غالبًا <code>IndexFlatIP</code> على cosine. لـ ١٠ مليون <code>IndexIVFFlat</code>. لـ ١٠٠ مليون وفوق بتجمع مع product quantisation (<code>IndexIVFPQ</code>).</p>
+  <div class="note ai"><strong>ليه IP على cosine؟</strong> لأن inner product على متجهات normalised = cosine بالظبط. عشان كده الدرس بيقول: normalise الأول، وبعدين <code>IndexFlatIP</code>.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: الـ index هياخد كام ذاكرة؟</h3>
+      <p>الـ <code>IndexFlat</code> بيخزن كل vector كامل. غيّر عدد الصور وبُعد الـ embedding وشوف الذاكرة (float32 = ٤ بايت للرقم). وبعدين جرّب الـ IVF (عدد الخلايا اللي بتبحث فيها) وشوف الشغل اللي بيتوفر.</p>
+      <div class="note"><strong>ملاحظة:</strong> الأرقام هنا حسبة بسيطة من الـ shape (N × d × 4 بايت) ونسبة الخلايا. مش قياس لـ FAISS الحقيقي، لكن الفكرة بتوضح ليه flat بيقف عند مرحلة معينة.</div>
+    </div>
+    <div class="instrument"><div id="d74-l3"></div></div>
+  </div>
+
+  <h3>Instance-level ضد Category-level</h3>
+  <p>نفس الاسم لمشكلتين مختلفتين:</p>
+  <ul class="checklist">
+    <li><b>Category-level:</b> «لاقيلي قطط». التشابه على مستوى الفئة، والـ CLIP/DINOv2 الجاهزين شغالين كويس.</li>
+    <li><b>Instance-level:</b> «لاقيلي <i>المنتج ده بالظبط</i>». لازم تفرّق بين حاجات شبه بعض جدًا من نفس الفئة. الـ embeddings الجاهزة بتقصّر هنا، والـ fine-tune بالـ metric learning هو اللي بيفرق.</li>
+  </ul>
+  <p>اسأل نفسك الأول: أنا بحل أنهي واحدة؟ قبل ما تختار الموديل.</p>
+
+  <h3>الـ stack المستخدم في ٢٠٢٦</h3>
+  <ul class="checklist">
+    <li><b>DINOv2 + FAISS:</b> بحث بصري عام، شغال جاهز.</li>
+    <li><b>CLIP + FAISS:</b> لما الـ queries نص (لأن الـ text والـ image في نفس الفضاء).</li>
+    <li><b>DINOv2 متعمله fine-tune + FAISS:</b> instance-level، face re-ID، موضة، e-commerce.</li>
+    <li><b>Milvus / Weaviate / Qdrant:</b> قواعد بيانات vectors مبنية فوق FAISS أو HNSW.</li>
+  </ul>
+  <p>وصفة SOTA للـ instance retrieval: backbone من DINOv2، تضيف embedding head، تعمل fine-tune بـ triplet أو InfoNCE على أزواج متعلّمة بالـ instance، وتفهرس في FAISS.</p>
+</section>
+
+<!-- ================= PART 2: KEYPOINTS ================= -->
+<section id="d74-p2">
+  <div class="station-head"><span class="tag">02</span><h2>الجزء التاني: Keypoint Detection &amp; Pose Estimation</h2></div>
+  <div class="note"><strong>الفكرة في جملة:</strong> الـ pose هو مجموعة نقط مترتبة (keypoints). وكاشف الـ keypoints هو في الأصل <b>heatmap regressor</b>. الباقي تفاصيل تنظيمية.</div>
+
+  <h3>المشكلة</h3>
+  <p>المهمة بتتخبى تحت أسماء كتير: pose الإنسان (١٧ مفصل)، face landmarks (٦٨ أو ٤٧٨ نقطة)، اليد (٢١ نقطة)، pose الحيوانات، pose الأجسام للروبوتات، علامات تشريحية في الطب. كلهم نفس الهيكل: <b>لاقي K نقطة محددة على الجسم وطلّع إحداثياتها (x, y)</b>.</p>
+  <p>الاستخدامات: motion capture، تطبيقات اللياقة، تحليل الرياضة، التحكم بالإيماءات، الأنيميشن، AR try-on، وإمساك الأشياء بالروبوت. الـ 2D ناضج، والـ 3D (مفاصل في إحداثيات العالم من كاميرا واحدة) لسه حدود البحث.</p>
+  <p>السؤال الهندسي هو الـ scale: شخص واحد في صورة واحدة مشكلة ٢٠ ملي ثانية. لكن ناس كتير في زحمة بـ ٣٠ fps مشكلة تانية بمعماريات تانية.</p>
+
+  <h3>Top-down ضد Bottom-up</h3>
+  <ul class="checklist">
+    <li><b>Top-down:</b> تكتشف الأشخاص الأول (person boxes)، تقص كل واحد، وتشغّل موديل keypoints على كل crop (HRNet، ViTPose). الأدق، لكن التكلفة بتزيد خطيًا مع عدد الناس.</li>
+    <li><b>Bottom-up:</b> pass واحد على الصورة بيطلّع كل الـ keypoints + association field، وبعدين تجمّعهم لأشخاص (greedy matching). الوقت ثابت مهما كان عدد الناس (OpenPose، HigherHRNet).</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> Top-down زي مدرّس بيصحح كراسة كل طالب لوحده: دقيق بس كل ما الفصل يكبر بياخد وقت. Bottom-up زي مدرّس بيجمع كل الإجابات الصح من كل الكراريس في ورقة واحدة، وبعدين يوزّعها على أصحابها.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: التكلفة مع عدد الناس</h3>
+      <p>الأرقام دي افتراضات تعليمية من عندي (مش قياسات حقيقية): وقت الـ detector، ووقت الـ keypoint model لكل شخص، ووقت الـ pass الواحد بتاع bottom-up. غيّرهم وشوف نقطة التقاطع اللي عندها bottom-up يبقى أسرع.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ top-down خط بيطلع مع عدد الناس. الـ bottom-up شبه أفقي (فيه شوية تكلفة grouping). فمهما كان الـ top-down أدق، في الزحمة الكبيرة بتخسر في السرعة.</div>
+    </div>
+    <div class="instrument"><div id="d74-l4"></div></div>
+  </div>
+
+  <h3>Heatmap regression: ليه مش (x, y) على طول؟</h3>
+  <p>بدل ما الشبكة تطلّع رقمين (x, y)، بتطلّع <b>صورة H×W لكل keypoint</b> فيها نقطة مضيئة (Gaussian blob) في مكان النقطة الحقيقية:</p>
+  <div class="formula">target[k, y, x] = exp( −((x − cx_k)² + (y − cy_k)²) / (2σ²) )</div>
+  <p>وقت الاستدلال: الـ argmax لكل heatmap هو مكان الـ keypoint.</p>
+  <p>ليه ده أحسن: (١) الـ feature map في الـ CNN أصلًا مكانية، فمخرج مكاني يتماشى معاها، وتقليل مكانين لرقمين بيضيّع السياق المكاني. (٢) الـ Gaussian بيعمل تنظيم (regularise): غلطة صغيرة في المكان بتدي loss صغير مش loss صفر أو ضخم، يعني سطح الـ loss ناعم.</p>
+  <div class="note"><strong>تشبيه:</strong> بدل ما تقول للشبكة «الكنز في (٣٢، ٤٠)»، بتقولها «ارسمي خريطة حرارة، وأسخن نقطة هي الكنز». لو غلطت بكام بكسل، الخريطة لسه قريبة من الصح.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٥: ارسم الـ Gaussian target</h3>
+      <p>حرّك مكان النقطة (cx, cy) وغيّر σ. لاحظ إن σ الصغير بيعمل قمة حادة (دقيقة لكن الـ loss قاسي)، والكبير بيعمل بقعة واسعة (سهل التعلم لكن أقل دقة).</p>
+      <ol class="ex">
+        <li>خلّي σ = ١: قمة نقطة تقريبًا.</li>
+        <li>خلّي σ = ٤: قمة عريضة، والـ argmax لسه في المركز.</li>
+      </ol>
+    </div>
+    <div class="instrument"><div id="d74-l5"></div></div>
+  </div>
+
+  <h3>Sub-pixel localisation</h3>
+  <p>الـ argmax بيدي إحداثيات صحيحة (integer). عشان دقة أقل من بكسل: تعمل parabola fit حوالين الـ argmax، أو تزحزح الـ argmax ناحية الجار الأعلى:</p>
+  <div class="formula">dx = 0.25 · (hm[y, x+1] − hm[y, x−1])      dy = 0.25 · (hm[y+1, x] − hm[y−1, x])</div>
+  <p>ده اللي الكود بيعمله بالظبط. القمة الحقيقية غالبًا بين خليتين، والـ argmax بيقربها لأقرب خلية (غلطة لحد ٠.٥ بكسل). الخطوة دي إجبارية في الرياضة والتحليل الطبي.</p>
+
+  <h3>Part Affinity Fields (PAFs)</h3>
+  <p>حيلة OpenPose للـ association في bottom-up. لكل زوج keypoints متوصلين (زي الكتف اليسار ← الكوع اليسار) بتتوقع <b>field من قناتين</b> بيمثل المتجه الوحدة (unit vector) اللي بيشاور من واحدة للتانية. عشان تربط كتف بكوع: تجمّع قيم الـ PAF على الخط اللي بينهم (line integral)، والزوج اللي ليه أعلى integral هو اللي يتوصل.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>لكل توصيلة (limb):
+  قنوات الـ PAF: 2  (unit vector x, y)
+  Line integral: مجموع على نقط العينة من (PAF · اتجاه_الخط)
+  integral أعلى = ربط أقوى</pre></div>
+  <p>أنيقة وبتكبر لأي زحمة من غير crop لكل شخص.</p>
+
+  <h3>COCO keypoints والمقاييس</h3>
+  <p>الداتا القياسية لـ pose الجسم: ١٧ keypoint لكل شخص. المقاييس: <b>PCK</b> (نسبة الـ keypoints الصح) و<b>OKS</b> (Object Keypoint Similarity). الـ OKS هو نظير الـ IoU للـ keypoints، وCOCO mAP@OKS هو اللي بيتعرض. بيستخدم مسافات الـ keypoints موزونة بتباين كل keypoint في الـ annotation.</p>
+
+  <h3>2D ضد 3D</h3>
+  <ul class="checklist">
+    <li><b>2D pose:</b> إحداثيات الصورة. مستوى الإنتاج (MediaPipe، HRNet، ViTPose).</li>
+    <li><b>3D pose:</b> إحداثيات العالم/الكاميرا. لسه بحث نشط. طرق: ترفع توقعات 2D لـ 3D بـ MLP صغير (VideoPose3D)، أو regression مباشر من الصورة (PyMAF، MHFormer)، أو multi-view للـ ground truth (CMU Panoptic).</li>
+  </ul>
+
+  <h3>الـ stack في الإنتاج</h3>
+  <ul class="checklist">
+    <li><b>MediaPipe Pose:</b> من Google، بيشتغل على WebGL والموبايل بـ latency أقل من ١٠ ملي ثانية حسب الدرس.</li>
+    <li><b>MMPose (OpenMMLab):</b> كود بحثي شامل بكل معماريات SOTA وأوزان جاهزة.</li>
+    <li><b>YOLOv8-pose:</b> الأسرع لـ multi-person pose في forward pass واحد.</li>
+    <li><b>transformers HumanDPT / PoseAnything:</b> مناهج أحدث vision-language لـ pose مفتوح المفردات (أي جسم، أي مجموعة keypoints).</li>
+  </ul>
+</section>
+
+<!-- ================= CODE ================= -->
+<section id="d74-code">
+  <div class="station-head"><span class="tag">03</span><h2>الكود: اكتبه بإيدك</h2></div>
+  <p>اكتب كل بلوك بنفسك (متعملش copy/paste كله) وشغّله. محتاج <code>torch</code> و<code>numpy</code>. الكود الأصلي في الـ repo تحت <span class="ltr">phases/04-computer-vision/20-image-retrieval-metric/code/main.py</span> و<span class="ltr">.../21-keypoint-pose/code/main.py</span>.</p>
+
+  <h3>درس ٢٠: Retrieval</h3>
+  <h4>خطوة ١: Triplet loss</h4>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def triplet_loss(anchor, positive, negative, margin=0.2):
+    d_ap = F.pairwise_distance(anchor, positive, p=2)   <span class="c"># مسافة anchor-positive</span>
+    d_an = F.pairwise_distance(anchor, negative, p=2)   <span class="c"># مسافة anchor-negative</span>
+    return F.relu(d_ap - d_an + margin).mean()          <span class="c"># relu = max(0, ...)</span></pre></div>
+  <p>سطر واحد فعليًا. بيشتغل على embeddings normalised أو خام.</p>
+
+  <h4>خطوة ٢: Semi-hard mining</h4>
+  <p>لكل anchor: أصعب positive من نفس الفئة، وnegative «semi-hard»: أبعد من الـ positive بس جوه الـ margin. (ملحوظة: نسخة الـ repo النهائية بتضيف سطر الـ margin boundary اللي في الآخر.)</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def semi_hard_negatives(emb, labels, margin=0.2):
+    dist = torch.cdist(emb, emb)                         <span class="c"># مصفوفة كل المسافات</span>
+    same_class = labels[:, None] == labels[None, :]
+    N = emb.size(0)
+
+    positives = dist.clone()
+    positives[~same_class] = float("-inf")               <span class="c"># استبعد الفئات التانية</span>
+    positives.fill_diagonal_(float("-inf"))              <span class="c"># استبعد نفسه</span>
+    pos_idx = positives.argmax(dim=1)                    <span class="c"># أبعد positive = الأصعب</span>
+
+    <span class="c"># Semi-hard: d_ap &lt; d_an &lt; d_ap + margin</span>
+    semi_hard = dist.clone()
+    semi_hard[same_class] = float("inf")
+    d_ap = dist[torch.arange(N), pos_idx].unsqueeze(1)
+    semi_hard[dist &lt;= d_ap] = float("inf")               <span class="c"># أقرب من الـ positive: لأ</span>
+    semi_hard[dist &gt;= d_ap + margin] = float("inf")      <span class="c"># بعد الـ margin: لأ</span>
+    neg_idx = semi_hard.argmin(dim=1)
+
+    fallback = semi_hard[torch.arange(N), neg_idx] == float("inf")
+    if fallback.any():                                   <span class="c"># لو مفيش semi-hard: خد الأصعب</span>
+        hardest = dist.clone()
+        hardest[same_class] = float("inf")
+        neg_idx = torch.where(fallback, hardest.argmin(dim=1), neg_idx)
+    return pos_idx, neg_idx</pre></div>
+
+  <h4>خطوة ٣: Recall@K</h4>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def recall_at_k(query_emb, gallery_emb, query_labels, gallery_labels, k=1):
+    sim = query_emb @ gallery_emb.T                      <span class="c"># inner product = cosine (لأنها normalised)</span>
+    _, top_k = sim.topk(k, dim=-1)
+    matches = (gallery_labels[top_k] == query_labels[:, None]).any(dim=-1)
+    return matches.float().mean().item()</pre></div>
+
+  <h4>خطوة ٤: نجمّعهم ونتدرب على داتا تجريبية</h4>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Encoder(nn.Module):
+    def __init__(self, in_dim=128, emb_dim=64):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(in_dim, 128), nn.ReLU(),
+                                 nn.Linear(128, emb_dim))
+    def forward(self, x):
+        return F.normalize(self.net(x), dim=-1)          <span class="c"># L2-normalise في الآخر</span>
+
+torch.manual_seed(0)
+num_classes, dim = 6, 128
+protos = F.normalize(torch.randn(num_classes, dim), dim=-1)   <span class="c"># نموذج لكل فئة</span>
+
+def sample(bs=48):
+    labels = torch.randint(0, num_classes, (bs,))
+    x = protos[labels] + 0.15 * torch.randn(bs, dim)     <span class="c"># النموذج + ضوضاء</span>
+    return x, labels
+
+enc = Encoder(in_dim=dim, emb_dim=64)
+opt = torch.optim.Adam(enc.parameters(), lr=3e-3)
+
+for step in range(200):
+    x, y = sample(48)
+    emb = enc(x)
+    pos_idx, neg_idx = semi_hard_negatives(emb, y)
+    loss = triplet_loss(emb, emb[pos_idx], emb[neg_idx])
+    opt.zero_grad(); loss.backward(); opt.step()
+    if step % 40 == 0:
+        print(f"step {step:3d}  triplet {loss.item():.4f}")
+
+enc.eval()
+with torch.no_grad():
+    gx, gy = sample(200); g_emb = enc(gx)                <span class="c"># gallery</span>
+    qx, qy = sample(50);  q_emb = enc(qx)                <span class="c"># queries</span>
+    for k in [1, 5, 10]:
+        print(f"  recall@{k}: {recall_at_k(q_emb, g_emb, qy, gy, k=k):.3f}")</pre></div>
+  <p>أو شغّل الملف الجاهز من جذر الـ repo:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/20-image-retrieval-metric/code/main.py</pre></div>
+  <details><summary>الناتج المتوقع</summary><p>هتشوف سطور <code>step ... triplet ...</code> كل ٤٠ خطوة (الـ loss بينزل مع التدريب)، وبعدين <code>recall@1</code> و<code>recall@5</code> و<code>recall@10</code>. الأرقام بالظبط مش مكتوبة في الدرس، لكن بعد كام مية خطوة الـ clusters بتتكون واحد لكل فئة، فالـ recall المفروض يقرب من ١.٠ على الداتا السهلة دي.</p></details>
+
+  <h3>درس ٢١: Keypoints</h3>
+  <h4>خطوة ١: هدف الـ Gaussian heatmap</h4>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def gaussian_heatmap(size, cx, cy, sigma=2.0):
+    yy, xx = np.meshgrid(np.arange(size), np.arange(size), indexing="ij")
+    return np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma ** 2)).astype(np.float32)
+
+hm = gaussian_heatmap(64, 32, 32, sigma=2.0)
+print(f"peak: {hm.max():.3f} at ({hm.argmax() % 64}, {hm.argmax() // 64})")</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">peak: 1.000 at (32, 32)</pre></details>
+
+  <h4>خطوة ٢: راس keypoints صغير (U-Net الشكل)</h4>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class TinyKeypointNet(nn.Module):
+    def __init__(self, num_keypoints=4, base=16):
+        super().__init__()
+        self.down1 = nn.Sequential(nn.Conv2d(3, base, 3, 2, 1), nn.ReLU(inplace=True))
+        self.down2 = nn.Sequential(nn.Conv2d(base, base * 2, 3, 2, 1), nn.ReLU(inplace=True))
+        self.mid   = nn.Sequential(nn.Conv2d(base * 2, base * 2, 3, 1, 1), nn.ReLU(inplace=True))
+        self.up1 = nn.ConvTranspose2d(base * 2, base, 2, 2)           <span class="c"># يكبّر x2</span>
+        self.up2 = nn.ConvTranspose2d(base, num_keypoints, 2, 2)      <span class="c"># يكبّر x2 وبقناة لكل keypoint</span>
+
+    def forward(self, x):
+        h1 = self.down1(x); h2 = self.down2(h1); h3 = self.mid(h2)
+        return self.up2(self.up1(h3))      <span class="c"># (N,3,H,W) -&gt; (N,K,H,W)</span></pre></div>
+
+  <h4>خطوة ٣: استخراج الإحداثيات (argmax + sub-pixel)</h4>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def heatmap_to_coords(heatmaps):                 <span class="c"># (N,K,H,W) -&gt; (N,K,2)</span>
+    N, K, H, W = heatmaps.shape
+    idx = heatmaps.reshape(N, K, -1).argmax(dim=-1)
+    ys = (idx // W).float()
+    xs = (idx % W).float()
+    return torch.stack([xs, ys], dim=-1)
+
+def subpixel_refine(heatmaps):
+    N, K, H, W = heatmaps.shape
+    coords = heatmap_to_coords(heatmaps)
+    refined = coords.clone()
+    for n in range(N):
+        for k in range(K):
+            x, y = int(coords[n, k, 0]), int(coords[n, k, 1])
+            if 0 &lt; x &lt; W - 1 and 0 &lt; y &lt; H - 1:      <span class="c"># مش على الحافة</span>
+                hm = heatmaps[n, k]
+                refined[n, k, 0] = x + 0.25 * (hm[y, x + 1] - hm[y, x - 1])
+                refined[n, k, 1] = y + 0.25 * (hm[y + 1, x] - hm[y - 1, x])
+    return refined</pre></div>
+
+  <h4>خطوة ٤: داتا تجريبية وتدريب</h4>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_synthetic_sample(size=64, rng=None):
+    rng = rng or np.random.default_rng()
+    img = np.ones((3, size, size), dtype=np.float32)              <span class="c"># خلفية بيضا</span>
+    kps = rng.integers(10, size - 10, size=(4, 2))                <span class="c"># ٤ نقط عشوائية</span>
+    for cx, cy in kps:
+        img[:, cy - 2:cy + 2, cx - 2:cx + 2] = 0.0                <span class="c"># مربع أسود صغير</span>
+    hms = np.stack([gaussian_heatmap(size, cx, cy) for cx, cy in kps])
+    return img, hms, kps.astype(np.float32)
+
+torch.manual_seed(0); rng = np.random.default_rng(0)
+model = TinyKeypointNet(num_keypoints=4)
+opt = torch.optim.Adam(model.parameters(), lr=3e-3)
+
+for step in range(200):
+    batch = [make_synthetic_sample(rng=rng) for _ in range(16)]
+    imgs = torch.from_numpy(np.stack([b[0] for b in batch]))
+    hms  = torch.from_numpy(np.stack([b[1] for b in batch]))
+    pred = model(imgs)
+    pred = F.interpolate(pred, size=hms.shape[-2:], mode="bilinear", align_corners=False)
+    loss = F.mse_loss(pred, hms)                                  <span class="c"># MSE على الـ heatmaps</span>
+    opt.zero_grad(); loss.backward(); opt.step()
+    if step % 40 == 0:
+        print(f"step {step:3d}  mse {loss.item():.4f}")
+
+model.eval()
+with torch.no_grad():
+    ev = [make_synthetic_sample(rng=rng) for _ in range(8)]
+    imgs = torch.from_numpy(np.stack([b[0] for b in ev]))
+    gt   = torch.from_numpy(np.stack([b[2] for b in ev]))
+    pred = F.interpolate(model(imgs), size=(64, 64), mode="bilinear", align_corners=False)
+    l2_int = (heatmap_to_coords(pred) - gt).norm(dim=-1).mean().item()
+    l2_sub = (subpixel_refine(pred) - gt).norm(dim=-1).mean().item()
+    print(f"mean L2 error (argmax):    {l2_int:.3f} px")
+    print(f"mean L2 error (subpixel):  {l2_sub:.3f} px")</pre></div>
+  <p>أو الملف الجاهز:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/21-keypoint-pose/code/main.py</pre></div>
+  <details><summary>الناتج المتوقع</summary><p>سطور <code>step ... mse ...</code> كل ٤٠ خطوة (الـ mse بينزل)، وبعدها متوسط خطأ L2 بالبكسل للـ argmax وللـ sub-pixel. الأرقام الدقيقة مش في الدرس. الدرس بيتوقع إن الـ sub-pixel يحسّن لو الـ heatmap المتوقعة ناعمة، فقارن الرقمين بنفسك وسجّل الفرق.</p></details>
+  <div class="note ai"><strong>انتبه:</strong> اكتب الكود بإيدك. لو شغّلت الملف الجاهز بس هتحس إنك فهمت وانت ما فهمتش. غيّر الـ σ أو الـ margin وشوف إيه اللي بيتغير.</div>
+</section>
+
+<!-- ================= EXERCISES ================= -->
+<section id="d74-ex">
+  <div class="station-head"><span class="tag">04</span><h2>التمارين</h2></div>
+  <h3>درس ٢٠</h3>
+  <ol class="ex">
+    <li><b>(سهل)</b> شغّل المثال التجريبي، وارسم الـ embeddings بـ PCA قبل التدريب وبعده وشوف الـ ٦ clusters بتتكون.
+      <details><summary>تلميح</summary>خد <code>enc(x)</code> لـ ٣٠٠ عينة قبل التدريب وبعده، وطبّق <code>sklearn.decomposition.PCA(n_components=2)</code>، وارسم scatter ملوّن بالـ label. قبل التدريب الألوان متخلطة (الـ encoder عشوائي)، وبعده مجموعات منفصلة.</details></li>
+    <li><b>(متوسط)</b> ضيف ProxyNCA loss: «proxy» متعلَّم واحد لكل فئة، وcross-entropy على الـ cosine similarity. قارن سرعة التقارب مع الـ triplet على نفس الداتا.
+      <details><summary>تلميح</summary>اعمل <code>nn.Parameter(torch.randn(num_classes, emb_dim))</code> وnormalise له، واحسب <code>logits = emb @ F.normalize(proxies).T / temperature</code> وبعدين <code>F.cross_entropy(logits, y)</code>. ملحوظة: الـ temperature هنا اختيار مني وملهاش قيمة محددة في الدرس. لاحظ إن مفيش mining خالص.</details></li>
+    <li><b>(صعب)</b> خد ١٠٠٠ صورة من ImageNet validation، اعمل لها embed بـ DINOv2 من HuggingFace، ابني FAISS flat index، واحسب recall@{1, 5, 10} ضد نفس الصور كـ queries (المفروض ١.٠) وضد split تاني محجوز.
+      <details><summary>تلميح</summary>الـ queries نفس الصور يعني كل صورة هي أقرب جار لنفسها فالـ recall لازم ١.٠، ودي طريقة تتأكد بيها إن الـ pipeline سليم. normalise الـ embeddings، واستخدم <code>faiss.IndexFlatIP(d)</code>، <code>index.add(x)</code>، <code>index.search(q, k)</code>. محتاج تحمّل نماذج من الإنترنت، فاعملها على جهازك مش في أي بيئة مقفولة.</details></li>
+  </ol>
+  <h3>درس ٢١</h3>
+  <ol class="ex">
+    <li><b>(سهل)</b> درّب الموديل الصغير على داتا الـ ٤ نقط وسجّل متوسط خطأ L2 بعد ٢٠٠ خطوة.
+      <details><summary>تلميح</summary>الـ main.py بيطبعه بالفعل. جرّب كمان تزوّد الخطوات لـ ٥٠٠ وشوف الخطأ بيقل قد إيه.</details></li>
+    <li><b>(متوسط)</b> ضيف sub-pixel refinement بـ parabola fit وقارن الدقة مع الـ integer argmax.
+      <details><summary>تلميح</summary>على المحور x: لو القيم عند x-1 وx وx+1 هي a وb وc فالإزاحة <span class="ltr">dx = 0.5·(a − c)/(a − 2b + c)</span> (قمة الـ parabola). نفس الشي على y. قارنها بالـ <code>0.25·(c − a)</code> اللي في الكود. حاجة واحدة: حط حماية للمقام لو يساوي صفر.</details></li>
+    <li><b>(صعب)</b> اعمل داتا فيها شخصين (نمطين من الـ ٤ نقط في كل صورة)، ودرّب bottom-up بـ PAFs تتوقع كل keypoint يخص أنهي instance، وقيّم بالـ OKS.
+      <details><summary>تلميح</summary>ابدأ بتمرين أبسط: حدّد «وصلات» ثابتة (مثلًا ١→٢ و٢→٣ و٣→٤). لكل وصلة اعمل target بقناتين: في البكسلات القريبة من الخط اللي بين النقطتين حط unit vector اتجاهه، وصفر في الباقي. وقت الاستدلال: لكل زوج مرشحين اعمل line integral بـ ١٠ نقط عينة على الخط وخد الأعلى. ده مشروع كبير، فخده على مراحل.</details></li>
+    <li><b>إضافة مني · اعرف أنهي pipeline تختار</b>: عندك تطبيق لياقة على موبايل بشخص واحد قدام الكاميرا وتطبيق مراقبة ملعب بـ ٣٠ لاعب. أنهي top-down وأنهي bottom-up؟ ولو احتجت دقة مفاصل عالية في الملعب تعمل إيه؟
+      <details><summary>الإجابة</summary>تطبيق اللياقة: top-down (أو MediaPipe) لأن شخص واحد = تكلفة قليلة ودقة أعلى. الملعب بـ ٣٠ لاعب: bottom-up عشان الوقت شبه ثابت. لو محتاج دقة أعلى: ممكن تجرب top-down بـ detector سريع وموديل keypoints مع batching لكل الـ crops في pass واحد على الـ GPU، وقيس الاتنين بنفسك على الـ latency والدقة بدل ما تفترض.</details></li>
+  </ol>
+</section>
+
+<!-- ================= EXTRA ================= -->
+<section id="d74-extra">
+  <div class="station-head"><span class="tag">05</span><h2>إضافة مني: اللي الدرسين ما قالوهوش، وفين بتظهر في الـ LLMs</h2></div>
+  <ul class="checklist">
+    <li><b>الـ retrieval هو قلب الـ RAG:</b> لما بتعمل RAG بتحوّل المستندات لـ embeddings وتخزنها في vector DB (نفس فكرة FAISS) وتجيب أقرب chunks للسؤال. الفرق إن الـ embedding نصي بدل صوري. وكل اللي اتعلمته عن normalise وcosine وrecall@K ينطبق بالحرف.</li>
+    <li><b>فخ الـ normalise:</b> لو نسيت تعمل L2-normalise قبل <code>IndexFlatIP</code>، الـ inner product هيرتّب بالاتجاه مضروب في الطول، والصور اللي embeddings بتاعتها أطول هتغلب. ده خطأ هادي: الكود يشتغل وبيطلع نتايج غلط.</li>
+    <li><b>الـ label leakage في الـ evaluation:</b> لو نفس الصورة (أو نسخة منها) في الـ gallery والـ queries، الـ recall هيبان مثالي. اقسم الداتا بحيث الـ queries مش في الـ gallery (إلا لو بتعمل sanity check زي التمرين الصعب).</li>
+    <li><b>الـ triplet loss بيتوقف لوحده:</b> لما معظم الـ triplets تبقى سهلة الـ loss ينزل لقرب الصفر. ده مش دايمًا «تعلّم كمّل»، ممكن يكون الـ mining مش لاقي حاجة تعلّم. راقب نسبة الـ triplets اللي loss بتاعها أكبر من صفر.</li>
+    <li><b>الـ heatmap size:</b> لو الـ heatmap أصغر من الصورة (stride ٤ مثلًا) فكل خلية بتمثل ٤ بكسل، وبرضه محتاج تحوّل الإحداثيات لمقياس الصورة الأصلية وتضرب في الـ stride. الـ sub-pixel بيقلل الغلطة هنا.</li>
+    <li><b>فين بيظهر في الـ LLMs والـ agents:</b> الـ keypoints والـ pose بتتحول لنص أو أرقام وتدخل في VLMs لفهم الأفعال (الشخص بيجري ولا واقف). والـ retrieval بالـ embeddings هو ذاكرة الـ agents: بيحفظوا تجارب سابقة ويدوّروا عليها بالتشابه.</li>
+    <li><b>ProxyNCA ضد triplet في الواقع:</b> لو عدد الفئات صغير وعندك labels فئات، الـ proxy أسهل وأثبت. لو الفئات ملايين (كل منتج فئة) أو الـ labels أزواج بس، رجع للـ triplet أو InfoNCE.</li>
+  </ul>
+</section>
+
+<!-- ================= QUIZ ================= -->
+<section id="d74-quiz">
+  <div class="station-head"><span class="tag">06</span><h2>كويز</h2></div>
+  <div class="quiz" id="d74-quizBox"></div>
+</section>
+
+<section id="d74-done">
+  <div class="station-head"><span class="tag">07</span><h2>خلصت؟ اتأكد</h2></div>
+  <ul class="checklist" id="d74-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم ليه الـ triplets السهلة مبتعلّمش والـ semi-hard هي الأنفع</label></li>
+    <li><label><input type="checkbox" data-ck="2"> أقدر أشرح إزاي cosine وL2 نفس الترتيب لما أعمل normalise</label></li>
+    <li><label><input type="checkbox" data-ck="3"> كتبت triplet_loss وrecall_at_k بإيدي وشغّلتهم</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم ليه الـ heatmap أحسن من regression مباشر، وفرق top-down عن bottom-up</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت heatmap_to_coords وsubpixel_refine وشغّلت الـ training</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٩ من ١٢ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Embedding + cosine/IP</td><td>البحث بالصور، الـ RAG، الـ semantic search، ذاكرة الـ agents</td></tr>
+    <tr><td>Triplet / InfoNCE</td><td>CLIP (InfoNCE)، face recognition (FaceNet)، person re-ID</td></tr>
+    <tr><td>FAISS / HNSW</td><td>Milvus وWeaviate وQdrant وأي vector DB</td></tr>
+    <tr><td>Recall@K + re-ranking</td><td>محركات البحث وصور الـ photos، وطبقة الـ reranker في RAG</td></tr>
+    <tr><td>Heatmap regression</td><td>pose، face landmarks، landmarks طبية، وحتى بعض كاشفات الأجسام</td></tr>
+    <tr><td>Top-down / bottom-up + PAFs</td><td>MediaPipe، YOLOv8-pose، OpenPose، تحليل الرياضة</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> 3D Gaussian Splatting من الصفر: إزاي تعيد بناء مشهد ثلاثي الأبعاد من صور بآلاف الـ Gaussians.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرسين الأصليين من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F20-image-retrieval-metric" target="_blank" rel="noopener">Lesson 20</a> و<a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F21-keypoint-pose" target="_blank" rel="noopener">Lesson 21</a> من AI Engineering from Scratch (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/20-image-retrieval-metric + 21-keypoint-pose</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=74,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d74-roadmap').closest('.day');
+
+// roadmap
+const rm=$('d74-roadmap');
+for(let i=1;i<=28;i++){const s=document.createElement('span');s.textContent=i;if(i===20||i===21)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: retrieval pipeline ----
+L.flow($('d74-l1'),{height:300,
+ nodes:[{id:'cat',label:'Catalogue',x:0.02,y:0.15},{id:'enc',label:'Encoder',x:0.38,y:0.5},{id:'idx',label:'FAISS index',x:0.7,y:0.15},{id:'q',label:'Query',x:0.02,y:0.85},{id:'top',label:'Top-k',x:0.98,y:0.6}],
+ edges:[['cat','enc','كل الصور'],['enc','idx','build'],['q','enc','نفس الـ encoder'],['enc','top','embedding'],['idx','top','nearest']],
+ steps:[
+  {active:['cat','enc'],edges:[['cat','enc']],text:'<b>١.</b> الكتالوج كله بيعدي على الـ encoder مرة واحدة (offline).'},
+  {active:['enc','idx'],edges:[['enc','idx']],text:'<b>٢.</b> الـ embeddings بتتحط في index (FAISS) عشان البحث السريع.'},
+  {active:['q','enc'],edges:[['q','enc']],text:'<b>٣.</b> وقت السؤال: الـ query بتعدي على <b>نفس</b> الـ encoder.'},
+  {active:['enc','idx','top'],edges:[['enc','top'],['idx','top']],text:'<b>٤.</b> الـ index بيرجّع أقرب k مرشح حسب cosine أو L2.'}]});
+
+// ---- Lab 2: triplet loss ----
+L.plot($('d74-l2'),{x:[0,3],y:[0,2.2],height:300,
+ params:[{k:'dap',label:'d(a,p)',min:0.1,max:1.5,step:0.05,v:0.6},{k:'m',label:'margin',min:0.05,max:1.0,step:0.05,v:0.3},{k:'dan',label:'d(a,n)',min:0,max:3,step:0.05,v:0.7}],
+ curves:[{f:(x,p)=>Math.max(0,p.dap-x+p.m),label:'loss',color:'a'}],
+ marks:p=>[{x:p.dan,y:Math.max(0,p.dap-p.dan+p.m),label:'n',color:'bad'},{x:p.dap,y:0,label:'d(a,p)',color:'ok'},{x:p.dap+p.m,y:0,label:'+margin',color:'muted'}],
+ readout:p=>{const l=Math.max(0,p.dap-p.dan+p.m);const kind=p.dan<=p.dap?'hard':(p.dan<p.dap+p.m?'semi-hard':'easy');return [['loss',l.toFixed(3)],['النوع',kind]]},
+ note:p=>{const k=p.dan<=p.dap?'الـ negative أقرب من الـ positive: أصعب حالة':(p.dan<p.dap+p.m?'semi-hard: جوه الـ margin، الـ loss بيعلّم':'easy: بعيد كفاية، loss = 0 ومفيش gradient');return k}});
+
+// ---- Lab 3: index memory ----
+L.calc($('d74-l3'),{
+ params:[{k:'n',label:'N (ألف صورة)',min:10,max:100000,step:10,v:1000},{k:'d',label:'d (البُعد)',min:64,max:2048,step:64,v:768},{k:'cells',label:'IVF cells',min:16,max:16384,step:16,v:1024},{k:'probe',label:'nprobe',min:1,max:256,step:1,v:8}],
+ compute:p=>{const n=p.n*1000;const bytes=n*p.d*4;const gb=bytes/1e9;const frac=Math.min(1,p.probe/p.cells);const vis=Math.round(n*frac);
+  return [['Flat: الذاكرة (GB)',gb.toFixed(2)],['Flat: vectors بيتقارنوا لكل query',n.toLocaleString('en')],['IVF: نسبة الخلايا المفتوحة',(frac*100).toFixed(2)+'%'],['IVF: vectors بيتقارنوا (تقريبًا)',vis.toLocaleString('en')]]},
+ note:p=>{const n=p.n*1000;return n>1e6?'فوق ~١M: الـ flat بقى تقيل، فكّر في IVF أو HNSW':'تحت ~١M: IndexFlatIP كفاية وبيدي نتيجة دقيقة'}});
+
+// ---- Lab 4: top-down vs bottom-up cost ----
+L.plot($('d74-l4'),{x:[1,40],y:'auto',height:300,
+ params:[{k:'det',label:'detector (ms)',min:5,max:40,step:1,v:15},{k:'per',label:'كل شخص (ms)',min:1,max:20,step:1,v:6},{k:'bu',label:'bottom-up pass (ms)',min:10,max:120,step:1,v:60}],
+ curves:[{f:(x,p)=>p.det+p.per*x,label:'top-down',color:'a'},{f:(x,p)=>p.bu+0.5*x,label:'bottom-up',color:'b'}],
+ marks:p=>{const x=(p.bu-p.det)/(p.per-0.5);return (x>1&&x<40)?[{x:x,y:p.det+p.per*x,label:'التقاطع',color:'bad'}]:[]},
+ readout:p=>{const x=(p.bu-p.det)/(p.per-0.5);return [['عدد الناس عند التقاطع',x>0?x.toFixed(1):'—'],['top-down مع ٣٠',(p.det+p.per*30)+' ms'],['bottom-up مع ٣٠',(p.bu+15)+' ms']]},
+ note:p=>'أرقام افتراضية للتعلم (bottom-up هنا بيزيد ٠.٥ms لكل شخص كتكلفة grouping). المقارنة الحقيقية لازم تتقاس.'});
+
+// ---- Lab 5: Gaussian heatmap ----
+L.heatmap($('d74-l5'),{rows:Array.from({length:15},(_,i)=>String(i)),cols:Array.from({length:15},(_,i)=>String(i)),fmt:1,
+ params:[{k:'cx',label:'cx',min:0,max:14,step:0.5,v:7},{k:'cy',label:'cy',min:0,max:14,step:0.5,v:7},{k:'sigma',label:'σ',min:0.5,max:5,step:0.1,v:2}],
+ values:p=>{const g=[];for(let y=0;y<15;y++){const r=[];for(let x=0;x<15;x++)r.push(Math.exp(-((x-p.cx)**2+(y-p.cy)**2)/(2*p.sigma*p.sigma)));g.push(r)}return g},
+ readout:p=>[['peak عند',`(${p.cx}, ${p.cy})`],['σ',p.sigma]],
+ note:p=>p.sigma<1.2?'σ صغير: قمة حادة جدًا':(p.sigma>3.5?'σ كبير: بقعة عريضة، تحديد أقل دقة':'σ متوسط: توازن كويس')});
+
+// ---- quiz ----
+AI.quiz($('d74-quizBox'),[
+ ['لمنتج بحث بصري الـ queries فيه نص والـ gallery صور، أنهي backbone تختار الأول؟',['موديل CLIP أو SigLIP لأنهم بيتعلموا فضاء نص-صورة مشترك فالـ cosine بين النص والصورة بيبقى له معنى من غير تدريب','ResNet-50 متدرب بـ supervision','واصف ORB يدوي','موديل DINOv2 self-supervised'],0,'الـ retrieval بـ text queries محتاج embeddings النص والصورة فيها في نفس الفضاء، والـ CLIP/SigLIP بيتدربوا بالـ contrastive loss بالظبط عشان كده. الـ ImageNet features وDINOv2 صور بس.'],
+ ['يعني إيه «semi-hard mining» في تدريب الـ triplet loss؟',['لكل anchor تختار negative أبعد من الـ positive لكن لسه جوه الـ margin: الـ negatives السهلة مفيش لها gradient والأصعب ممكن يهزوا التدريب، فالـ semi-hard هي النقطة الحلوة','تعدين عملات رقمية لجمع أمثلة التدريب','تستخدم أصعب negatives ممكنة بس','تختار triplets عشوائية'],0,'الـ gradient للـ triplet loss موجود بس لما d(a,n) أقل من d(a,p)+margin. الـ easy negatives بعيدة أصلًا فمفيش gradient، والـ hardest ممكن يخرّب التدريب. الـ semi-hard بين d(a,p) وd(a,p)+margin هو الأنفع. FaceNet قدّمت الوصفة دي ٢٠١٥ ولسه هي الافتراضية.'],
+ ['نظام الـ retrieval عندك طلّع recall@10 = 0.95 لكن recall@1 = 0.42. تستنتج إيه؟',['الموديل عامل overfitting','فيه data leakage من الـ gallery للـ queries','التقييم نفسه بايظ','الفضاء بنيته سليمة (الصح غالبًا في أول ١٠) لكن الترتيب جوه الـ ١٠ مش ثابت. re-ranking (cross-encoder أو scorer تاني) أو fine-tune أطول هيصلّح recall@1 من غير ما يضر recall@10'],3,'الفرق بين recall@K وrecall@1 بيقولك فين المعلومة. recall@10 عالي مع recall@1 واطي يعني البحث تقريبًا صح لكن الموديل مش واثق في ترتيب أول كام نتيجة. الحل في الإنتاج: re-ranking: موديل منفصل بيقيّم كل مرشح في الـ top-K مقابل الـ query.'],
+ ['حساب cosine similarity على embeddings مش normalised مش cosine فعلًا. إيه اللي بيغلط؟',['الـ matmul بيعمل overflow','بيخلط الاتجاه بالطول: cos(a,b) صح بس لما الاتنين L2-normalised. من غير ده، المتجهات طويلة الـ norm بتتفوق بغض النظر عن الاتجاه فالترتيب بيتشوه ناحية المتجهات الأطول','PyTorch بيطلّع error','مفيش مشكلة'],1,'cos(a,b) = (a·b)/(‖a‖·‖b‖). من غير normalise بتاخد inner product خام، بيرتّب بالاتجاه مضروبًا في الطول. في الـ embeddings العادية الأطوال بتتفاوت ٢-٣ مرات، وده لوحده بيسيطر على الترتيب. دايمًا اعمل L2-normalise قبل الـ cosine أو قبل الفهرسة في IndexFlatIP.'],
+ ['بين instance-level retrieval («لاقي العربية دي بالظبط») وcategory-level («لاقي عربيات»)، أنهي محتاجة metric-learning fine-tuning؟',['Instance-level. الـ DINOv2 والـ CLIP الجاهزين بيفرّقوا الفئات كويس لكن مش instances شبه بعض من نفس الفئة. triplet أو contrastive fine-tune على أزواج (نفس الـ instance، instance تاني) بيشد الـ embedding حوالين كل instance','الاتنين محتاجين نفس كمية الـ fine-tuning','Category-level','ولا واحدة'],0,'الـ category-level هو اللي الموديلات الجاهزة بتعمله: القطط جنب القطط. الـ instance-level (نفس العربية، نفس الوش، نفس SKU) محتاج metric learning لأن منتجين شبه بعض بيبانوا قريبين في الفضاء العام. الـ fine-tune بيقلل المسافة جوه الـ instance ويكبّرها بين الـ instances.'],
+ ['ليه موديلات الـ pose بتتوقع heatmaps بدل (x, y) مباشرة؟',['الـ heatmaps أرخص في الحساب','الـ regression المباشر بيطلّع NaN','الـ heatmaps مطلوبة في مقياس COCO','البنية المكانية لـ conv feature map بتتماشى مع مخرج مكاني، والـ Gaussian target بيدي سطح loss ناعم بيتحمل أخطاء التحديد الصغيرة، بينما الـ regression المباشر هش وبيضيّع السياق المكاني'],3,'الـ regression بـ MSE بيطلب من الشبكة تختزل موقع 2D لرقمين وتفقد تماشي الـ feature map اللي الـ CNN بيستفيد منه. الـ heatmap بيدي loss لكل بكسل ناعم حوالين المكان الحقيقي وبيحافظ على الـ spatial priors. التحسن كبير لدرجة إن كل موديلات الـ pose الحديثة بتستخدمه.'],
+ ['top-down ضد bottom-up في pose: مين بيكبر أحسن مع حجم الزحمة ولماذا؟',['بيكبروا بنفس الشكل','الـ top-down مبيكبرش أبدًا','الـ bottom-up، لأنه pass واحد على الصورة وبعدين بيجمّع الـ keypoints فالوقت ثابت مهما كان عدد الناس','الـ top-down، لأن كل شخص ليه موديل سريع لوحده'],2,'الـ top-down بيشغّل موديل keypoints لكل شخص بعد الـ detector، فالتكلفة بتزيد خطيًا مع عدد الناس. الـ bottom-up (OpenPose، HigherHRNet) بيطلّع كل الـ keypoints وحقول الربط في pass واحد وبعدين يجمّع: وقت ثابت مع الزحمة. الـ trade-off: الـ top-down أدق لكل شخص، والـ bottom-up أسرع في الزحمة.'],
+ ['إيه هي Part Affinity Fields؟',['تقنية data augmentation','نوع من الـ loss functions','خوارزمية scheduling','حقول من قناتين بتمثل unit vector من keypoint للتانية؛ تجميع الـ PAF على الخط بين مرشحين بيقولك لو النقطتين لنفس الـ instance، وده بيسمح بالربط bottom-up من غير detection لكل شخص'],3,'لكل زوج keypoints متوصل (limb) بتتوقع field من قناتين (مركبات x وy للمتجه الوحدة). عشان تربط كتف بكوع بتعمل integral على الخط بينهم؛ الأعلى = ربط أقوى. ده بيحوّل الـ pose لمشكلة matching ثنائية بتتحل في وقت polynomial.'],
+ ['ليه الـ sub-pixel refinement حوالين الـ argmax بيحسّن دقة الـ keypoints؟',['بيمنع الـ overfitting','بيعمل normalise للمخرج','الـ integer argmax بيقرّب لأقرب خلية؛ parabola fit أو الإزاحة dx = 0.25*(hm[y,x+1] - hm[y,x-1]) بترجّع موضع القمة المستمر، وغالبًا بتقلل خطأ L2 للنصف في الـ keypoints المتوقعة بوضوح','بيعمل smooth للـ heatmap'],2,'الـ heatmap الكويسة ليها قمة Gaussian ناعمة ومركزها غالبًا بين خليتين. الـ integer argmax بيضيّع المعلومة دي (لحد ٠.٥ بكسل). الـ parabola أو الـ first-difference offset بيرجّعها. في الرياضة والـ landmarks الطبية الخطوة دي إجبارية.'],
+ ['الـ OKS (Object Keypoint Similarity) هو نظير أنهي مقياس في object detection؟',['cross-entropy loss','وقت الاستدلال','الـ IoU: الاتنين بيقيسوا التطابق الهندسي بين التوقع والـ ground truth، والـ OKS بيستخدم مسافات الـ keypoints موزونة بتباين كل keypoint؛ وCOCO بتعرض mAP@OKS 0.5:0.95 للـ pose','دقة التصنيف'],2,'الـ OKS من ٠ لـ ١ زي الـ IoU وبيحدد لو التوقع بيطابق pose الـ ground truth عند مستوى صرامة معين. كل keypoint ليه variance (COCO بتنشرها) بيحدد وزنه: النقط الثابتة زي الأنف والعين بتوزن أكتر من الرسغ اللي بيتعلّم بدقة أقل.'],
+ ['(سؤال مني) ليه بنعمل L2-normalise للـ embeddings قبل IndexFlatIP؟',['عشان الـ index يشتغل أسرع بس','لأن inner product على متجهات طولها ١ يساوي cosine بالظبط، فالترتيب بيبقى بالاتجاه بس','عشان الـ embeddings تبقى أقل في البُعد','لأن FAISS بيرفض أي متجه غير normalised'],1,'cos = a·b/(‖a‖‖b‖). لو الطولين ١ يبقى cos = a·b، فـ IndexFlatIP (inner product) بيدي ترتيب الـ cosine. من غير normalise الطول بيتدخل في الترتيب.'],
+ ['(سؤال مني) في الـ triplet loss، لو الـ loss وصل لقرب الصفر بسرعة والـ recall لسه ضعيف، أنهي تفسير الأرجح؟',['الشبكة وصلت لأحسن نتيجة ممكنة','الـ triplets المختارة معظمها سهلة (الـ mining مش لاقي negatives صعبة) فمفيش gradient مفيد','الـ learning rate صغير أوي بس','الـ recall مش مرتبط بالـ loss'],1,'الـ loss صفر لما d(a,n) أكبر من d(a,p)+margin. لو الـ batch معظمه سهل أو الـ mining ضعيف، الـ loss ينزل من غير ما الفضاء يتحسن على الحالات الصعبة. زوّد الـ batch أو حسّن الـ mining وراقب نسبة الـ triplets النشطة.']
+],9,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+})();
+</script>

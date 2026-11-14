@@ -1,0 +1,412 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 45 · Gradient Clipping and Mixed Precision</span>
+  <h1>اليوم ٤٧٣: حزامين الأمان: gradient clipping وmixed precision من غير ما التدريب ينهار</h1>
+  <p class="lede">النهاردة بنبني الجزء اللي من غيره ما فيش تدريب production: <b>gradient clipping</b> على global L2 norm، وloop بـ <b>autocast + GradScaler</b> بيكتشف NaN وInf ويعمل <b>skip</b> نضيف للـ step ويسجّل الـ scaling factor. ده مشروع (capstone) فاليوم مقسوم لـ milestones كل واحد وله check.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (PyTorch)</span>
+    <span>قبله: <b>Cosine LR with Linear Warmup</b></span>
+    <span>بعده: <b>Phase 19 · Lesson 46</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — مشاريع التخرج (دروس ٤٠–٥٠ من ٨٧)</span>
+    <div class="roadmap" id="d473-roadmap" aria-label="دروس مشاريع التخرج"></div>
+  </div>
+</header>
+
+<section id="d473-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ schedule؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>الـ schedule عنده ٣ مناطق. إيه هما؟
+      <details><summary>الإجابة</summary>warmup خطي من 0 لـ <span class="ltr">lr_max</span>، وبعدين cosine decay من <span class="ltr">lr_max</span> لـ <span class="ltr">lr_min</span>، وبعد <span class="ltr">total_steps</span> الـ lr بيثبت على <span class="ltr">lr_min</span> (floor).</details></li>
+    <li>ليه بنسجّل gradient L2 norm جنب الـ lr؟
+      <details><summary>الإجابة</summary>لأنه نص صحة التدريب التاني: الـ divergence بيبان كـ spike في الـ norm قبل الـ loss، والـ peak العالي بيبان كـ norm فاضل عالي بعد الـ warmup.</details></li>
+    <li>ليه الـ <span class="ltr">global_step</span> هو محور الـ schedule؟
+      <details><summary>الإجابة</summary>لأنه monotonic وبيتحفظ في الـ checkpoint، فالتدريب المستأنف بيكمل من المكان الصح، بعكس counter محلي أو epoch.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>10 min</b>التسخين + المشكلة</div>
+    <div><b>25 min</b>clipping وGradScaler والترتيب الصح</div>
+    <div><b>35 min</b>الكود milestone-ي</div>
+    <div><b>20 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d473-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلتين</h2></div>
+  <p><b>المشكلة ١: batch واحد سيء.</b> التدريب شغال نضيف من إمبارح، وفجأة الـ loss curve بتروح عمودي عند step 8,217. السبب batch واحد الـ gradient norm بتاعه 4,200، يعني عشرين ضعف أعلى peak قبله. من غير clipping الـ optimizer بينفّذ step يمسح كل اللي الموديل اتعلمه في الساعة اللي فاتت. ومع global L2 clip على norm = 1.0، نفس الـ batch بيساهم بـ update طوله 1، والـ loss بيفضل على خطه، والـ run بيعيش.</p>
+  <p><b>المشكلة ٢: الـ FP16 مداه ضيق.</b> الـ mixed precision بيزوّد الـ throughput 2–3× لأنه بيحسب الـ forward ومعظم الـ backward بـ FP16. التمن: الـ exponent range ضيق. gradient عادي ممكن يعمل overflow في FP16 فيبقى <b>Inf</b>، والـ Inf بيتحوّل لـ <b>NaN</b> في الطبقات اللي بعده، والـ NaN بيخلّي كل الـ weights NaN في الـ optimizer step الجاي.</p>
+  <div class="note"><strong>تشبيه:</strong> clipping زي <b>مُحدّد السرعة</b> في العربية: مهما دُست بنزين، ما تعديش حد معيّن. والـ GradScaler زي <b>مكبّر صوت</b> قدام ميكروفون ضعيف: بتكبّر الإشارة الصغيرة (الـ gradients الصغيرة اللي كانت هتضيع في FP16) وبعدين بتصغّرها تاني. ولو الصوت اتشوّه (Inf)، بتشيل الـ step ده وتخفّض الـ volume.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الـ clipping على spike</h3>
+      <p>٨ steps، واحد فيهم spike. حرّك حجم الـ spike والـ <span class="ltr">max_norm</span> وشوف الـ norm قبل وبعد الـ clip.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ steps العادية (norm أقل من الحد) بتفضل زي ما هي. الـ spike بس هو اللي بيتقصّ لـ <span class="ltr">max_norm</span>. الصيغة: <span class="ltr">scale = max_norm / (pre_clip + 1e-12)</span> وبتتضرب في كل الـ gradients، فالاتجاه ما بيتغيّرش وطوله بس هو اللي بيتحدد.</div>
+    </div>
+    <div class="instrument"><div id="d473-lab1"></div></div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d473-clip">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Global L2 norm والـ clipping</h2></div>
+  <p>الـ global L2 norm هو الطول الإقليدي للـ gradient vector <b>كله مدموج</b>، مش norm لكل parameter لوحده. في PyTorch ده <code>torch.nn.utils.clip_grad_norm_(parameters, max_norm)</code>، والدالة بترجّع <b>الـ norm قبل الـ clip</b>، وده ضروري عشان نسجّل القيمة الطبيعية والقيمة بعد القص، ونشخّص حالة «إحنا بنقصّ في كل step».</p>
+  <div class="formula">pre_clip  = sqrt( Σ over all params  Σ grad² )
+if pre_clip &lt;= max_norm:  no change      (post_clip = pre_clip)
+else:  grads *= max_norm / pre_clip    (post_clip = max_norm)</div>
+  <div class="note"><strong>تشبيه:</strong> تخيّل سهم (gradient) طوله 4,200. clipping بيقصّره لطول 1 <b>من غير ما يغيّر اتجاهه</b>. الموديل لسه ماشي في الاتجاه الصح بس بخطوة محسوبة.</div>
+  <p>و<span class="ltr">max_norm = 1.0</span> هو الـ default الحديث لتدريب اللغة. الحد ده بيتحط في نفس الـ config بتاع الـ schedule (درس 44). الحدود الأكبر بتخلّي الموديل يتعافى من batches صعبة فعلًا، والأصغر بتحدد أسوأ حالة على حساب loss curve أكتر ضوضاء.</p>
+</section>
+
+<!-- STATION 3 -->
+<section id="d473-amp">
+  <div class="station-head"><span class="tag">03</span><h2>autocast وGradScaler</h2></div>
+  <p><b><span class="ltr">torch.amp.autocast(device_type)</span></b> هو الـ context manager اللي بيشغّل العمليات المؤهلة (معظم الـ matmul-class) بـ FP16. و<b><span class="ltr">torch.amp.GradScaler(device_type)</span></b> بيضرب الـ loss في معامل كبير قبل الـ backward ويقسم الـ gradients على نفس المعامل قبل الـ optimizer step. الاتنين مصمّمين مع بعض: استخدام واحد من غير التاني بيبقى configuration error.</p>
+  <h3>إزاي الـ scaler بيضبط المعامل</h3>
+  <ul class="checklist">
+    <li>لو لقى Inf أو NaN في الـ gradients بعد الـ unscale: <b>بيتخطى الـ step</b> ويخفّض المعامل للنص.</li>
+    <li>لو آخر N steps كانوا سليمين: <b>بيضاعف</b> المعامل.</li>
+    <li>على مدى التدريب المعامل بيلاقي أعلى قيمة يسمح بيها مدى FP16.</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> أنت بتبعت طرد بالبريد وبتزوّد الغلاف الواقي (scale) طالما الطرد بيوصل سليم. أول ما طرد يوصل مكسور (Inf) بتقلّل الغلاف للنص وتجرّب تاني، وبعد كام طرد سليم بتزوّد تاني. بتدوّر على أكتر غلاف مفيد من غير ما تضيّع شحن.</div>
+  <div class="note ai"><strong>على الـ CPU:</strong> الدرس بيستخدم CPU autocast لأنه اللي بيشتغل في CI. الـ GradScaler على CPU مجرد stub (الـ CPU autocast أصلًا بيستخدم BF16 ومش محتاج loss scaling)، بس الـ call sites موجودة عشان الـ wiring يطابق GPU loop بالظبط. في الكود فعلًا: <span class="ltr">GradScaler(device_type, enabled=(device_type == "cuda"))</span> والـ <span class="ltr">amp_dtype</span> الافتراضي هو <span class="ltr">bfloat16</span> على CPU و<span class="ltr">float16</span> غيره. الانتقال للـ GPU = غيّر <span class="ltr">device_type="cpu"</span> لـ <span class="ltr">"cuda"</span>.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: ليه محتاجين loss scaling أصلًا؟</h3>
+      <p>اختار حجم gradient صغير وعامل scale. الـ FP16 بيقدر يمثّل أرقام تقريبًا بين <span class="ltr">6e-8</span> و<span class="ltr">65504</span> (أرقام عامة عن FP16، مش من الدرس). تحت الحد الأدنى بتبقى 0 (underflow)، وفوق الأقصى بتبقى Inf (overflow).</p>
+      <div class="note ai"><strong>لاحظ:</strong> gradient صغير جدًا من غير scale بيضيع (يتحوّل لصفر). ومعاه scale مناسب بيدخل المدى. ولو الـ scale كبير زيادة، يعدّي 65504 ويبقى Inf. وده بالظبط اللي الـ scaler بيتجاوب معاه بـ skip وخفض المعامل.</div>
+    </div>
+    <div class="instrument"><div id="d473-lab2"></div></div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d473-order">
+  <div class="station-head"><span class="tag">04</span><h2>الترتيب الصح: أهم سطر النهاردة</h2></div>
+  <p>لو clip قبل unscale، الـ threshold بيتطبّق على gradients <b>مضروبة في الـ scale</b>. الترتيب الصح الوحيد:</p>
+  <div class="formula">1. scaler.scale(loss).backward()
+2. scaler.unscale_(optimizer)
+3. clip_grad_norm_(...)
+4. scaler.step(optimizer)
+5. scaler.update()</div>
+  <p>أي ترتيب تاني بيطلّع loop بايظ بصمت. والـ <span class="ltr">update()</span> بيتنادى في <b>كل step حتى لو skip</b>: على step سليم بيزوّد الـ counter وممكن يضاعف المعامل، وعلى step متخطّى بيخفّضه للنص ويصفّر الـ counter. نسيان الـ <span class="ltr">update()</span> على مسار الـ skip هو البج اللي بيطلّع «الـ scaling factor ما اتغيّرش أبدًا».</p>
+  <h3>اكتشاف NaN وInf في مكانين</h3>
+  <ol class="ex">
+    <li><b>الـ loss نفسه</b> قبل الـ backward بـ <span class="ltr">torch.isfinite</span>. الـ loss غير المنتهي ما بيطلّعش gradients مفيدة، فبنتخطاه من غير ما ندخل الـ optimizer.</li>
+    <li><b>الـ gradients</b> بعد <span class="ltr">scaler.unscale_(optimizer)</span> بـ <span class="ltr">has_non_finite_grad(...)</span>.</li>
+  </ol>
+  <p>الاتنين مع بعض بيغطّوا فشل الـ forward وفشل الـ backward.</p>
+  <div class="note ai"><strong>تفصيلة دقيقة في الكود:</strong> مسار «الـ loss غير منتهي» بيتخطى <b>من غير</b> ما ينادي <span class="ltr">scaler.update()</span>، لأننا ما نادّيناش <span class="ltr">scaler.scale(loss).backward()</span> في الـ step ده، ونداء <span class="ltr">update()</span> هنا هيكسر ترتيب الـ API المطلوب من GradScaler. أما مسار «الـ gradient غير منتهي» فبينادي <span class="ltr">update()</span>. ده مش تناقض مع «update كل step»: القاعدة تنطبق على الـ steps اللي عدّت من <span class="ltr">scale().backward()</span>.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: الـ step الكامل بالترتيب (مع مسار الـ skip)</h3>
+      <p>دوس «التالي». بنمشي في <span class="ltr">AmpTrainState.step</span> من الـ forward لحد الـ log.</p>
+    </div>
+    <div class="instrument"><div id="d473-lab3"></div></div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d473-scale">
+  <div class="station-head"><span class="tag">05</span><h2>الـ scaling factor كـ diagnostic</h2></div>
+  <p>في كل step الـ loop بيقرا <span class="ltr">scaler.get_scale()</span> وبيسجّله جنب الـ lr والـ gradient norm. تشخيص الدرس:</p>
+  <ul class="checklist">
+    <li><b>run سليم:</b> المعامل بيطلع بقوى الـ 2 لحد ما يثبت قرب <span class="ltr">2^17</span> أو <span class="ltr">2^18</span>.</li>
+    <li><b>run مريض:</b> المعامل بيتذبذب بين عالي ومنخفض، وده معناه إن gradients الموديل أحيانًا جوه المدى وأحيانًا بره.</li>
+  </ul>
+  <p>من غير التسجيل ده التشخيص مستحيل. والـ CSV الكامل: <span class="ltr">step, lr, grad_l2_pre_clip, grad_l2_post_clip, loss, skipped, skip_reason, scaler_scale</span>.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: الـ scale بيتحرك إزاي</h3>
+      <p>محاكاة مبسطة (مش الـ PyTorch الحقيقي): المعامل بيبدأ عند <span class="ltr">2^k</span> وبيتضاعف كل <i>growth interval</i> steps سليمة، وبيتخفّض للنص عند كل skip وبيصفّر الـ counter. المحور الرأسي هو <span class="ltr">log2(scale)</span>.</p>
+      <div class="note ai"><strong>ملاحظة مني:</strong> قيم الـ growth interval الحقيقية في PyTorch أكبر بكتير (بتتعدّى الآلاف حسب ما أعرفه من الـ docs، راجع التوثيق)، استخدمنا أرقام صغيرة عشان نشوف الحركة في ٦٠ step.</div>
+    </div>
+    <div class="instrument"><div id="d473-lab4"></div></div>
+  </div>
+</section>
+
+<!-- STATION 6 -->
+<section id="d473-prod">
+  <div class="station-head"><span class="tag">06</span><h2>٤ أنماط production + قواعد الاستخدام</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>النمط</th><th>الفكرة</th></tr>
+    <tr><td>Skip counter كـ alert مش log</td><td>كام skip في الـ run طبيعي. مئات الـ skips في الـ epoch = alert جاد: الموديل في regime مش قادر FP16 يشيله. الدرس بيتابع rolling skip rate على ١٠٠٠ step، وفي production يعمل page فوق 5%.</td></tr>
+    <tr><td>الـ clip threshold في الـ config</td><td><span class="ltr">max_norm = 1.0</span> default حديث. اعمل sweep على موديل صغير، وحطه في نفس الـ YAML/JSON بتاع الـ schedule.</td></tr>
+    <tr><td>الـ norm log في CSV مع الـ schedule</td><td>الأعمدة الثمانية في ملف واحد، عشان المراجع يشوف schedule + gradient + scale + skip في صف واحد.</td></tr>
+    <tr><td><span class="ltr">scaler.update()</span> كل step</td><td>حتى على الـ skip (للمسار اللي عدّى backward)، وإلا المعامل ما بيتغيّرش.</td></tr>
+  </table></div>
+  <h3>قواعد الاستخدام</h3>
+  <ul class="checklist">
+    <li><b>الـ autocast device يطابق الـ optimizer device:</b> <span class="ltr">"cuda"</span> للـ GPU و<span class="ltr">"cpu"</span> للـ CPU. الخلط بيطلّع type error صامت: loss curve شكلها تمام والموديل مش بيتعلم.</li>
+    <li><b>فحص الـ loss قبل الـ backward:</b> <span class="ltr">torch.isfinite(loss).all()</span> عملية reduction واحدة رخيصة، وتوفّر step كامل لو الـ loss NaN. اعملها دايمًا.</li>
+    <li><b><span class="ltr">zero_grad(set_to_none=True)</span>:</b> بيحط الـ gradients على <span class="ltr">None</span> بدل الصفر، فالـ optimizer يتخطى الحساب للـ param groups اللي ما اتأثرتش. تحسين throughput مجاني وبيقلل مساحة البجات.</li>
+  </ul>
+</section>
+
+<!-- STATION 7: code -->
+<section id="d473-code">
+  <div class="station-head"><span class="tag">07</span><h2>الكود: milestones، كل واحد وله check</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+pip install torch
+python3 phases/19-capstone-projects/45-gradient-clipping-amp/code/main.py
+<span class="c"># المتوقع: exit code صفر، وlog لكل step بصف مكتوب عليه STEP أو SKIP، وعلى الأقل صف واحد SKIP</span></pre></div>
+  <p><b>القاعدة:</b> افتح <code>my_amp.py</code> واكتب بإيدك. الـ Copy للمقارنة بس. الكود مقتطف من <code>code/main.py</code>.</p>
+
+  <h3>Milestone 1: فحص NaN/Inf وحساب الـ norm</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math, torch
+
+def has_non_finite_grad(parameters):
+    for param in parameters:
+        if param.grad is None:
+            continue
+        if not torch.isfinite(param.grad.detach()).all().item():
+            return True                     <span class="c"># لقينا NaN أو Inf</span>
+    return False
+
+def compute_global_l2_norm(parameters):
+    squared_sum = 0.0
+    for param in parameters:
+        if param.grad is None:
+            continue
+        squared_sum += float(param.grad.detach().pow(2).sum().item())
+    return math.sqrt(squared_sum)           <span class="c"># norm واحد لكل الـ gradients</span></pre></div>
+  <p><b>Check:</b> حط <span class="ltr">float("inf")</span> في gradient واحد وتأكد إن <code>has_non_finite_grad</code> بترجّع True. وقارن <code>compute_global_l2_norm</code> بـ <code>clip_grad_norm_(params, float("inf"))</code>.</p>
+
+  <h3>Milestone 2: الـ clip بيرجّع (pre, post)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def clip_global_l2_norm(parameters, max_norm):
+    if max_norm &lt;= 0:
+        raise ValueError("max_norm must be positive")
+    pre_clip = compute_global_l2_norm(parameters)
+    if not math.isfinite(pre_clip):
+        return pre_clip, pre_clip           <span class="c"># NaN/Inf: ما نقصّش، الـ loop هيتخطى</span>
+    if pre_clip &lt;= max_norm:
+        return pre_clip, pre_clip           <span class="c"># مفيش حاجة تتقصّ</span>
+    scale = max_norm / (pre_clip + 1e-12)
+    for param in parameters:
+        if param.grad is not None:
+            param.grad.detach().mul_(scale) <span class="c"># in-place</span>
+    return pre_clip, max_norm</pre></div>
+  <p><b>Check (ده تمرين ٣):</b> لما الـ norm الأصلي أقل من <span class="ltr">max_norm</span> الاتنين لازم يتساووا ومفيش gradient اتغيّر. ولما يكون أكبر، <code>compute_global_l2_norm</code> بعد القص لازم يطلع <span class="ltr">≈ max_norm</span>.</p>
+
+  <h3>Milestone 3: AmpTrainState.__init__</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class AmpTrainState:
+    def __init__(self, model, lr=1e-2, max_norm=DEFAULT_MAX_NORM,
+                 device_type=DEFAULT_DEVICE, weight_decay=0.01, amp_dtype=None):
+        self.model, self.max_norm, self.device_type = model, max_norm, device_type
+        self.optimizer = torch.optim.AdamW(model.parameters(), lr=lr,
+                                           weight_decay=weight_decay)
+        <span class="c"># الـ scaler شغال بس على CUDA؛ على CPU هو stub</span>
+        self.scaler = torch.amp.GradScaler(device_type, enabled=(device_type == "cuda"))
+        if amp_dtype is None:
+            amp_dtype = torch.bfloat16 if device_type == "cpu" else torch.float16
+        self.amp_dtype = amp_dtype
+        self.global_step = 0
+        self._log, self._skip_log = [], []</pre></div>
+
+  <h3>Milestone 4: الـ step الكامل (الجزء الأهم)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def step(self, inputs, targets, gradient_corruptor=None):
+    self.model.train()
+    self.optimizer.zero_grad(set_to_none=True)
+
+    with torch.amp.autocast(device_type=self.device_type, dtype=self.amp_dtype):
+        predictions = self.model(inputs)
+        loss = self._loss_fn(predictions, targets)
+
+    if not torch.isfinite(loss).all().item():        <span class="c"># فحص ١: الـ loss</span>
+        return self._record_skip(reason="non_finite_loss", update_scaler=False)
+
+    self.scaler.scale(loss).backward()               <span class="c"># ١</span>
+    if gradient_corruptor is not None:
+        gradient_corruptor(self.model)               <span class="c"># للاختبار بس: بنحقن Inf</span>
+    self.scaler.unscale_(self.optimizer)             <span class="c"># ٢</span>
+
+    if has_non_finite_grad(self.model.parameters()): <span class="c"># فحص ٢: الـ gradients</span>
+        self.scaler.update()                         <span class="c"># يخفّض المعامل</span>
+        ...                                          <span class="c"># سجّل SKIP (non_finite_grad) وزوّد global_step</span>
+        return record
+
+    pre, post = clip_global_l2_norm(list(self.model.parameters()), self.max_norm)  <span class="c"># ٣</span>
+    self.scaler.step(self.optimizer)                 <span class="c"># ٤</span>
+    self.scaler.update()                             <span class="c"># ٥</span>
+    ...                                              <span class="c"># سجّل STEP فيه pre/post والـ scaler.get_scale()</span>
+    return record</pre></div>
+  <p>(النقط «...» هي بناء <span class="ltr">StepLog</span> و<span class="ltr">SkipLog</span> وإضافتهم للقوايم. اكتبهم بنفسك بعد ما تفتح الأصل وتشوف حقولهم.) <b>Check:</b> شغّل ٢٠ step وحقن Inf في step 5 باستخدام <code>inject_inf_into_first_grad</code>: لازم صف واحد على الأقل يبقى <span class="ltr">SKIP</span> وسببه <span class="ltr">non_finite_grad</span>، والباقي <span class="ltr">STEP</span>، والـ <span class="ltr">global_step</span> بيزيد في الحالتين.</p>
+
+  <h3>Milestone 5: الـ rolling skip rate والـ CSV</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def rolling_skip_rate(log, window=1000):
+    if window &lt;= 0:
+        raise ValueError("window must be positive")
+    rates, skipped = [], []
+    for row in log:
+        skipped.append(1 if row.skipped else 0)
+        if len(skipped) &gt; window:
+            skipped = skipped[-window:]          <span class="c"># نافذة متحركة</span>
+        rates.append(sum(skipped) / len(skipped))
+    return rates</pre></div>
+  <p>والـ <span class="ltr">write_step_log_csv</span> بيكتب الأعمدة الثمانية. <b>Check:</b> اكتب CSV من ٢٠ step وتأكد إن الـ header بالترتيب اللي فوق، وإن صف الـ skip فيه <span class="ltr">skipped=True</span> وسبب الـ skip.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d473-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li>استبدل حقن الـ Inf الاصطناعي بـ loss spike حقيقي (اضرب target بتاع batch واحد في 1e8) وتأكد إن مسار الـ skip بيشتغل.
+      <details><summary>تلميح</summary>اضرب <span class="ltr">targets</span> في step واحد. الـ MSE هيطلع ضخم جدًا. شوف هل الـ loss نفسه Inf (فيطلع <span class="ltr">non_finite_loss</span>)، ولا الـ gradient هو اللي Inf (فيطلع <span class="ltr">non_finite_grad</span>)، ولا الاتنين لسه منتهيين بس الـ norm ضخم فيتقصّ. الحالة التالتة مهمة: مش كل spike بيبقى skip، ساعات بيتقصّ بس.</details></li>
+    <li>أضف mode <span class="ltr">--bf16</span> يبدّل الـ autocast لـ BF16 بدل FP16. BF16 مداه أوسع من FP16 وبيحتاج loss scaling نادرًا؛ اتأكد إن الـ skip rate بينزل لصفر على نفس الـ demo.
+      <details><summary>تلميح</summary>مرّر <span class="ltr">amp_dtype=torch.bfloat16</span> للـ constructor. (على CPU هو الـ default أصلًا في الكود، فجرّب كمان تقارن بـ <span class="ltr">torch.float16</span> لو الـ build بتاعك بيدعمها على CPU.) اقتباس الـ trade-off: FP16 بيفضّل دقة الـ mantissa على المدى، وBF16 العكس.</details></li>
+    <li>أضف unit test إن الـ clip wrapper بيرجّع الـ norm قبل وبعد القص صح لما مفيش قص.
+      <details><summary>تلميح</summary>اعمل model صغير، <code>loss.backward()</code>، واحسب الـ norm. استدعي <code>clip_global_l2_norm(params, max_norm=1e9)</code> وتأكد إن الـ pre والـ post متساويين وإن الـ gradients ما اتغيّرتش (قارن نسخ منها قبل وبعد). بعدين جرّب <span class="ltr">max_norm</span> أصغر من الـ norm وتأكد إن <span class="ltr">post == max_norm</span>.</details></li>
+    <li>أضف rolling skip-rate وflag يفشّل الـ run لو الـ rate عدّى threshold لمدة ١٠٠ step متتالية.
+      <details><summary>تلميح</summary>استخدم <span class="ltr">rolling_skip_rate</span> وعدّاد «كام step ورا بعض الـ rate فيهم فوق الحد». لما يوصل ١٠٠ ارمي exception أو اخرج بـ exit code غير صفر. جرّب بـ threshold 5% (القيمة اللي الدرس بيذكرها كـ alert) وبـ simulation بتحقن Inf بشكل متكرر.</details></li>
+    <li>اربط الـ loop يكتب الـ CSV القانوني (الأعمدة الثمانية) وتأكد إنه بيفضل سليم بعد Ctrl-C بعمل flush بعد كل صف.
+      <details><summary>تلميح</summary>افتح الملف بـ <code>open(path, "w", newline="")</code> واكتب كل صف مباشرة، وبعد كل صف <code>f.flush()</code> (ولو عايز ضمان أقوى <code>os.fsync(f.fileno())</code>). جرّب توقّف الـ script في النص بـ Ctrl-C وافتح الملف: الصفوف اللي اتكتبت لازم تكون كاملة.</details></li>
+    <li><b>تمرين مني · احسب بإيدك:</b> gradient vector فيه ٣ parameters: <span class="ltr">g1 = [3, 4]</span> و<span class="ltr">g2 = [12]</span>. احسب الـ global L2 norm، وبعد clip على <span class="ltr">max_norm = 6.5</span> قيمة كل gradient.
+      <details><summary>الإجابة</summary>norm = sqrt(9 + 16 + 144) = sqrt(169) = <b>13</b>. بما إنها أكبر من 6.5 فالـ scale = 6.5/13 = 0.5. النتيجة: <span class="ltr">g1 = [1.5, 2]</span> و<span class="ltr">g2 = [6]</span>. والـ norm الجديد = sqrt(2.25 + 4 + 36) = sqrt(42.25) = 6.5 ✓.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d473-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: أخطاء، وفين ده بيظهر في الـ LLMs</h2></div>
+  <ul class="checklist">
+    <li><b>clip قبل unscale:</b> بتقصّ gradients مضروبة في scale كبير، فالـ threshold بقى بلا معنى. دايمًا unscale أول.</li>
+    <li><b>تنسى إن norm = NaN/Inf مش بيتقصّ:</b> الـ <span class="ltr">clip_global_l2_norm</span> في الدرس بيرجّع الـ norm زي ما هو في الحالة دي. الـ skip هو اللي بيحمي الـ weights، مش الـ clipping.</li>
+    <li><b>«إحنا بنقصّ في كل step»:</b> لو <span class="ltr">grad_l2_pre_clip</span> فوق <span class="ltr">max_norm</span> في معظم الـ steps، يبقى الـ clip بقى جزء من الـ optimizer فعليًا والـ lr الفعلي أصغر من المخطط. شوف الـ lr أو الـ initialization.</li>
+    <li><b>الـ skip rate بدل الـ skip الواحد:</b> الـ skip النادر طبيعي (الـ scaler بيجرّب مداه). الـ rate العالي هو الإنذار.</li>
+    <li><b>BF16 بدل FP16 لما الـ skips كتير:</b> المدى الأوسع بيشيل صنف الـ overflow كله، على حساب دقة أقل في الـ mantissa.</li>
+    <li><b>فين بيظهر:</b> تدريب أي LLM كبير على GPU تقريبًا بيستخدم mixed precision (غالبًا BF16 في الأجهزة الحديثة) وgradient clipping عند 1.0. وأول حاجة بتبصّ عليها لما run ينهار هي الـ grad norm والـ skip log.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d473-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d473-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d473-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d473-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم global L2 clipping وبقدر أحسبه بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="2"> بحفظ ترتيب scale → backward → unscale_ → clip → step → update</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الفرق بين skip الـ loss وskip الـ gradient</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ step وشفت صف SKIP في الـ demo</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Global L2 clip (max_norm=1.0)</td><td>معظم تدريب LLMs</td></tr>
+    <tr><td>autocast + GradScaler</td><td>تدريب FP16 على GPU</td></tr>
+    <tr><td>Skip on NaN/Inf</td><td>الحماية من batch أو overflow واحد</td></tr>
+    <tr><td>Scaling factor logging</td><td>تشخيص الـ runs اللي بتتذبذب</td></tr>
+    <tr><td>Rolling skip rate</td><td>alerts في بنية التدريب</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> الدرس اللي بعده في Phase 19 (Lesson 46). كمّل بنفس الأسلوب.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F45-gradient-clipping-amp" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/45-gradient-clipping-amp</span>
+</footer>
+
+<script>
+(function(){
+const N=473,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d473-roadmap').closest('.day');
+const rm=$('d473-roadmap');
+for(let i=40;i<=50;i++){const s=document.createElement('span');s.textContent=i;if(i===45)s.className='now';rm.appendChild(s)}
+
+// Lab 1
+L.bars($('d473-lab1'),{
+  labels:['s1','s2','s3','s4','s5','s6','s7','s8'],
+  names:['pre-clip','post-clip'],colors:['a','b'],
+  params:[{k:'spike',label:'spike norm',min:2,max:50,step:1,v:42},{k:'mx',label:'max_norm',min:0.5,max:5,step:0.5,v:1}],
+  values:p=>{const pre=[0.8,1.1,0.9,p.spike,1.0,0.7,0.9,1.2];return [pre,pre.map(v=>v<=p.mx?v:p.mx)]},
+  readout:p=>[['spike → clipped to',Math.min(p.spike,p.mx).toFixed(2)],['scale applied',(p.spike<=p.mx?1:p.mx/p.spike).toFixed(4)]],
+  note:p=>p.spike<=p.mx?'ما فيش قص: الـ norm تحت الحد':'الـ spike اتقصّ والاتجاه ما اتغيّرش'
+});
+
+// Lab 2
+L.calc($('d473-lab2'),{
+  params:[
+    {k:'ge',label:'gradient = 10^x',min:-10,max:-2,step:1,v:-8},
+    {k:'sc',label:'scale = 2^k',min:0,max:24,step:1,v:16}
+  ],
+  compute:p=>{
+    const g=Math.pow(10,p.ge),s=Math.pow(2,p.sc),v=g*s,
+    st=v>65504?'overflow → Inf':(g<5.96e-8?'underflow → 0':'تمام (في المدى)'),
+    st2=(g*s)>65504?'overflow → Inf':((g*s)<5.96e-8?'underflow → 0':'تمام (في المدى)'),
+    noscale=g<5.96e-8?'يضيع (0)':'تمام';
+    return [['gradient',g.toExponential(1)],['scale',s.toLocaleString()],['gradient × scale',v.toExponential(2)],['من غير scale',noscale],['بالـ scale',st2]];
+  },
+  note:p=>{const g=Math.pow(10,p.ge)*Math.pow(2,p.sc);return g>65504?'الـ scale كبير زيادة: Inf → الـ scaler هيتخطى الـ step ويخفّض المعامل':(Math.pow(10,p.ge)<5.96e-8&&g>=5.96e-8?'الـ scale أنقذ gradient كان هيضيع':'')}
+});
+
+// Lab 3
+L.flow($('d473-lab3'),{
+  nodes:[
+    {id:'f',label:'forward (autocast)',x:0,y:.12},{id:'c',label:'loss finite?',x:.5,y:.12},{id:'b',label:'scale(loss).backward',x:1,y:.12},
+    {id:'u',label:'unscale_',x:1,y:.5},{id:'g',label:'grads finite?',x:.5,y:.5},{id:'k',label:'clip',x:0,y:.5},
+    {id:'s',label:'scaler.step',x:0,y:.88},{id:'x',label:'SKIP + log',x:1,y:.88},{id:'up',label:'scaler.update',x:.5,y:.88}
+  ],
+  edges:[['f','c','loss'],['c','b','yes'],['b','u','FP16 grads'],['u','g','fp32 grads'],['g','k','yes'],['k','s','clipped'],['s','up','step'],['g','x','NaN/Inf'],['x','up','halve']],
+  steps:[
+    {active:['f'],text:'forward وحساب الـ loss جوه autocast. الـ loss بيتحسب بدقة أعلى.'},
+    {active:['f','c'],edges:[['f','c']],text:'لو الـ loss مش finite: SKIP من غير backward ومن غير scaler.update().'},
+    {active:['c','b'],edges:[['c','b']],text:'loss سليم: scaler.scale(loss).backward().'},
+    {active:['b','u'],edges:[['b','u']],text:'scaler.unscale_(optimizer): الـ gradients ترجع لقيمها الحقيقية.'},
+    {active:['u','g'],edges:[['u','g']],text:'نفحص الـ gradients بـ has_non_finite_grad.'},
+    {active:['g','x','up'],edges:[['g','x'],['x','up']],text:'لو فيه NaN/Inf: سجّل SKIP، وscaler.update() يخفّض المعامل للنص.'},
+    {active:['g','k','s','up'],edges:[['g','k'],['k','s'],['s','up']],text:'لو سليم: clip_global_l2_norm، بعدين scaler.step وscaler.update (ممكن يضاعف)، وبنسجّل STEP مع pre/post والـ scale.'}
+  ]
+});
+
+// Lab 4
+function simScale(p){
+  const out=[];let k=p.k0,clean=0;
+  for(let i=0;i<60;i++){
+    out.push(k);
+    if(i===p.s1||i===p.s2){k=Math.max(0,k-1);clean=0}
+    else{clean++;if(clean>=p.g){k++;clean=0}}
+  }
+  return out;
+}
+L.plot($('d473-lab4'),{
+  x:[0,59],y:[8,22],
+  params:[
+    {k:'k0',label:'start log2(scale)',min:10,max:18,step:1,v:15},
+    {k:'g',label:'growth interval',min:2,max:15,step:1,v:8},
+    {k:'s1',label:'skip #1 at step',min:0,max:59,step:1,v:20},
+    {k:'s2',label:'skip #2 at step',min:0,max:59,step:1,v:21}
+  ],
+  curves:[{f:(x,p)=>simScale(p)[Math.min(59,Math.max(0,Math.round(x)))],label:'log2(scale)',color:'a'}],
+  marks:p=>[{x:p.s1,y:simScale(p)[p.s1],label:'skip'},{x:p.s2,y:simScale(p)[p.s2],label:'skip'}],
+  readout:p=>[['final log2(scale)',simScale(p)[59]],['final scale',Math.pow(2,simScale(p)[59]).toLocaleString()]],
+  note:p=>p.s1===p.s2?'الاتنين على نفس الـ step: skip واحد بس':'كل skip بينزّل log2(scale) بواحد وبيصفّر عدّاد الـ steps السليمة'
+});
+
+AI.quiz($('d473-quizBox'),[
+ ['إيه المشكلة اللي بيحلها global L2 gradient clipping؟',['batch واحد سيء ممكن يرفع الـ gradient norm بأوامر قدر؛ الـ clipping بيحدد أسوأ optimizer step فـ batch واحد ما يقدرش يمسح ساعات تعلّم','انحراف الـ vocabulary','بطء التدريب','إعادة تشغيل عشوائية'],0,'الـ clipping هو حزام الأمان اللي بيمنع batch مزعج من تخريب الـ loss curve.'],
+ ['إيه الترتيب الصح لعمليات GradScaler في الـ step؟',['scaler.scale(loss).backward(); scaler.unscale_(optimizer); clip_grad_norm_; scaler.step(optimizer); scaler.update()','backward, step, scale, update','أي ترتيب؛ الـ scaler بيعيد الترتيب داخليًا','step, scale, unscale, backward, update'],0,'القص على gradients غير مضروبة في scale، بين unscale_ وstep؛ وupdate بيتنادى دايمًا.'],
+ ['إيه اللي بيعمله scaler.update() على step اتخطّى؟',['بيقفل الـ run','مفيش','بيخفّض المعامل للنص ويصفّر عدّاد الـ steps السليمة؛ نسيانه على مسار الـ skip هو البج اللي بيطلّع «الـ scaling factor ما اتغيّرش»','بيضاعف المعامل'],2,'الـ scaler بيضبط معامله حسب نسبة الـ skip للـ clean على الـ steps الأخيرة.'],
+ ['ليه فحص إن الـ loss finite ضروري حتى مع GradScaler؟',['لأن GradScaler بطيء','ده ديكور','PyTorch بيطلبه','GradScaler بيتعامل مع overflow الـ backward، لكن loss مش finite ما بيطلّعش gradients مفيدة؛ التخطي قبل الـ backward بيوفّر حساب وبيمنع تلويث حالة الـ scaler'],3,'فحص الـ loss بيغطي فشل الـ forward، والـ scaler بيغطي فشل الـ backward.'],
+ ['إيه الإشارة الـ production في الـ rolling skip rate؟',['اعمل page على أي skip','كام skip في الـ run طبيعي؛ مئات الـ skips في الـ epoch (فوق حوالي 5% rolling) alert جاد إن الموديل في regime مش قادر FP16 يشيله','الـ skip rate ملهوش لازمة','page على الـ skips المتتالية بس'],1,'التنبيه بالـ rate بيصطاد أنماط فشل صامتة ما بتصطادهاش pages على skip نادر.'],
+ ['ليه نتحول من FP16 لـ BF16 autocast لما الـ skips تتكرر؟',['BF16 مداه (exponent) أوسع من FP16 وبيحتاج loss scaling نادرًا؛ الـ skip rate عادةً بينزل لصفر على نفس الموديل','BF16 أبطأ فبيتخطى أقل','BF16 أحدث','تقليد'],0,'FP16 بيفضّل دقة الـ mantissa على المدى، وBF16 بيعمل العكس، فبيشيل صنف الـ overflow.'],
+ ['(سؤال مني) gradients = [3,4] و[12]. الـ global L2 norm؟',['19','13','sqrt(19)','7'],1,'sqrt(9+16+144) = sqrt(169) = 13.'],
+ ['(سؤال مني) الـ norm الأصلي 13 والـ max_norm = 6.5. بعد القص إيه اللي بيحصل للـ gradients؟',['كل واحد بيتضرب في 0.5 فالاتجاه بيفضل زي ما هو والـ norm الجديد 6.5','بتتصفّر','كل واحد بيتقصّ لـ 6.5','الـ norm بيبقى 13 برضه'],0,'scale = max_norm / pre_clip = 0.5، بيتطبّق على كل الـ gradients فالاتجاه ما يتغيّرش.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+})();
+</script>
+</div>

@@ -1,0 +1,456 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 46 · Gradient Accumulation</span>
+  <h1>اليوم ٤٧٤: تدرّب بـ batch كبير على كارت صغير</h1>
+  <p class="lede">الكارت بتاعك بيشيل ٣٢ مثال بس قبل ما يقول Out of Memory، وانت عايز batch فعّال ٥١٢. الحل القديم الجديد: <b>Gradient Accumulation</b>. تشغّل backward كذا مرة، تسيب الـ gradients تتجمّع جوه <span class="ltr">param.grad</span>، وتعمل <span class="ltr">optimizer.step()</span> مرة واحدة بس. النهاردة هتفهم ليه لازم تقسم الـ loss على عدد الخطوات، وهتشوف الإثبات بالكود، وهتفهم فكرة sync-on-last-step اللي بتوفر شبكة الـ cluster.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (PyTorch)</b></span>
+    <span>قبله: <b>Gradient Clipping and Mixed Precision</b></span>
+    <span>بعده: <b>Checkpoint Save and Resume</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects</span>
+    <div class="roadmap" id="d474-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d474-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه اللي بيعمله الـ gradient clipping بالظبط لما الـ global L2 norm يعدّي الحد؟
+      <details><summary>الإجابة</summary>بيحسب norm واحد لكل الـ gradients مع بعض، ولو أكبر من <span class="ltr">max_norm</span> بيصغّر كل الـ gradients بنفس النسبة. الاتجاه بيفضل زي ما هو والحجم بس هو اللي بيتقص، فالـ batch الشاذ مش بيمسح اللي الموديل اتعلمه.</details></li>
+    <li>إيه الترتيب الصح لخطوات الـ mixed precision مع الـ clipping؟
+      <details><summary>الإجابة</summary><span class="ltr">scaler.scale(loss).backward()</span> ← <span class="ltr">scaler.unscale_(optimizer)</span> ← <span class="ltr">clip_grad_norm_</span> ← <span class="ltr">scaler.step(optimizer)</span> ← <span class="ltr">scaler.update()</span>. لازم الـ unscale قبل الـ clip عشان الـ threshold يتطبّق على الـ gradients الحقيقية مش المضروبة في الـ scale.</details></li>
+    <li>الـ GradScaler بيعمل إيه لما يلاقي Inf أو NaN في الـ gradients؟
+      <details><summary>الإجابة</summary>بيعدّي الـ optimizer step (skip) وبينصّف الـ scaling factor. ولو عدّت N خطوات نضيفة بيضاعفه. كده الـ factor بيلاقي أعلى قيمة يسمح بيها مدى الـ FP16.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين اللي فوق</div>
+    <div><b>20 min</b>المشكلة + العقد (contract) بتاع الـ accumulation + المعمل ١ و٢</div>
+    <div><b>10 min</b>sync-on-last-step + المعمل ٣</div>
+    <div><b>35 min</b>الكود خطوة خطوة وتشغيله</div>
+    <div><b>20 min</b>التمارين + إضافتي + الكويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d474-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الـ batch اللي مش هيدخل الكارت</h2></div>
+  <p>عايز تدرّب بـ effective batch = <span class="ltr">512</span> لأن الـ loss curve بتبقى أنعم، والـ optimizer step بيبقى منطقي أكتر على المقياس ده. بس الكارت اللي قدامك بيشيل <span class="ltr">32</span> مثال قبل ما يضرب Out of Memory. مينفعش تكبّر الكارت ولا تصغّر الموديل.</p>
+  <p>الحيلة اللي الناس بتستخدمها من ٢٠١٧ ومبطلتش: شغّل <b>١٦ backward pass</b> ورا بعض، سيب الـ gradients تتجمع جوه الـ parameter buffers، ولما العدّاد يوصل للهدف اعمل <span class="ltr">optimizer.step()</span> مرة واحدة.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيّل إنك بتحسب متوسط درجات ٥١٢ طالب، بس الفصل بيشيل ٣٢ بس. بتاخد ١٦ دفعة، كل دفعة بتجمع درجاتها في دفتر واحد (<span class="ltr">param.grad</span>) من غير ما تمسح الدفتر، وفي الآخر بتقسم على العدد الكلي. لو نسيت القسمة هتطلع بمتوسط أكبر ١٦ مرة من الحقيقي.</div>
+  <p>الخطر هنا: الـ cross entropy لـ ١٦ micro-batch لو اتجمعوا بالسذاجة = ١٦ ضعف الـ loss بتاع batch واحد كبير. الاتجاه صح بس <b>الحجم غلط</b>، والـ optimizer step بيطلع ١٦ مرة أكبر من اللازم. العلاج سطر قسمة واحد... وسهل جدًا تنساه.</p>
+  <div class="formula">effective_batch = micro_batch × accum_steps × world_size</div>
+  <p>على جهاز واحد (زي الدرس ده) الـ <span class="ltr">world_size = 1</span> يعني <span class="ltr">effective_batch = micro_batch × accum_steps</span>. و<span class="ltr">world_size</span> هو عدد الـ GPUs/processes في التدريب الموزّع.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: الـ batch الفعّال</h3>
+      <p>اضبط الـ micro batch وعدد الـ accumulation steps وعدد الأجهزة، وشوف الـ effective batch، وكمية الذاكرة اللي بتحتاجها فعلًا (بتتحدد بالـ micro batch بس!)، وإزاي الـ learning rate المقترح بيتغير لو طبّقت linear scaling rule.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الذاكرة بتتبع الـ <b>micro batch</b> بس. أنت بتبدّل الوقت (أكتر forward/backward) مقابل الذاكرة، مفيش حاجة ببلاش.</div>
+    </div>
+    <div class="instrument"><div id="d474-lab1"></div></div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d474-contract">
+  <div class="station-head"><span class="tag">02</span><h2>العقد: أربع قواعد قصيرة</h2></div>
+  <p>الشكل العام للحلقة: صفّر الـ grads، وبعدين لكل micro-batch اعمل forward + backward بـ loss مقسوم، وفي الآخر خطوة optimizer واحدة.</p>
+  <ol class="ex">
+    <li><b>اقسم الـ loss على <span class="ltr">accum_steps</span> قبل <span class="ltr">backward()</span> في كل micro-batch.</b> PyTorch بيجمع الـ gradients جوه <span class="ltr">param.grad</span> تلقائيًا، فالقسمة بترجّع المجموع لنفس المقياس اللي كان هيطلع من backward واحد على الـ batch الكبير.</li>
+    <li><b>الـ optimizer step مرة واحدة بس لكل effective batch</b>، بعد آخر backward. لو عملت step في النص بتبوّظ كل الـ parameters اللي باقي التدريب معتمد عليها.</li>
+    <li><b>الـ optimizer state بيتقدّم مرة لكل effective step</b> (الـ momentum وAdam moments). لو اتحدّث مع كل micro-batch فالـ moving averages هتشوف التردد غلط وهتستهلك الـ schedule بسرعة.</li>
+    <li><b>على الـ cluster:</b> الـ micro-batches غير الأخيرة بتتلف في سياق <span class="ltr">no_sync</span> بيتخطى الـ gradient all-reduce، والأخيرة بس بتعمل reduce للـ gradient المتجمّع كله مرة واحدة بدل N مرة.</li>
+  </ol>
+  <div>
+    <div class="note"><strong>الشكل:</strong> <span class="ltr">zero grads → [micro 1: forward + scaled backward] → [micro 2: ...] → ... → [micro N: forward + scaled backward + sync] → optimizer.step() → next effective step</span></div>
+  </div>
+
+  <h3>الإثبات بالكود (equivalence)</h3>
+  <p>الاتنين دول بيطلّعوا نفس الـ gradient (لحد أخطاء الجمع العشرية):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># (أ) batch كبير مرة واحدة</span>
+loss = criterion(model(x_full), y_full)
+loss.backward()
+opt.step()
+
+<span class="c"># (ب) n قطع صغيرة، كل loss مقسوم على n</span>
+for x, y in chunks(x_full, y_full, n):
+    scaled = criterion(model(x), y) / n
+    scaled.backward()
+opt.step()</pre></div>
+  <p>ليه ده صح رياضيًا؟ الـ loss بتاع الـ batch الكبير هو <b>متوسط</b> الـ losses. وgradient المتوسط = متوسط الـ gradients. لو كل chunk فيه نفس عدد الأمثلة فمتوسط الـ chunks = المتوسط الكلي، يعني <span class="ltr">Σ (1/n)·grad_i</span> بالظبط. ومحتاج إن الـ chunks بنفس الحجم، لأن لو حجمهم مختلف الـ loss المتوسط لكل chunk بيدّي وزن غلط للأمثلة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: الخطأ الصامت</h3>
+      <p>الـ gradient الحقيقي للـ batch الكبير بنسبة <b>١</b>. حرّك عدد الـ accumulation steps وشوف حجم الـ gradient اللي الـ optimizer بيشوفه في الحالتين: مع القسمة ومن غيرها.</p>
+      <div class="note ai"><strong>لاحظ:</strong> من غير القسمة مفيش إيرور ولا NaN. التدريب بيشتغل بس بخطوات أكبر N مرة، والـ loss ممكن يتذبذب أو ينفجر. ده نوع الـ bug اللي بيضيّع أسبوع.</div>
+    </div>
+    <div class="instrument"><div id="d474-lab2"></div></div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d474-sync">
+  <div class="station-head"><span class="tag">03</span><h2>Sync-on-last-step: وفّر الشبكة</h2></div>
+  <p>على جهاز واحد الـ accumulation مجرد حسابات. لكن مع <b>DistributedDataParallel (DDP)</b> كل <span class="ltr">backward()</span> بيعمل <b>all-reduce</b> للـ gradients بين كل الأجهزة، يعني بيبعت ويستقبل أحجام ضخمة على الشبكة. لو عندك ١٦ micro-batch فعملت ١٦ all-reduce، وكلهم ملهمش لازمة إلا الأخير، لأن الـ gradients لسه بتتجمع.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيّل ١٦ موظف كل واحد بيكتب مسودة تقرير، ومحتاجين يوزعوا نسخة على الكل. بدل ما يوزعوا بعد كل سطر، بيكتبوا التقرير كله الأول وبعدين يوزعوه مرة واحدة.</div>
+  <p>الحل: لف كل الـ micro-batches <b>ما عدا الأخير</b> في <span class="ltr">no_sync()</span> (دي بتاعة DDP)، والأخير بيعمل reduce للمجموع كله مرة واحدة.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: مين بيتكلم مع الشبكة؟</h3>
+      <p>اضغط «التالي» وشوف كل micro-batch بيعمل إيه. بعدها جرّب الحاسبة اللي تحت عشان تشوف عدد الـ all-reduce من غير <span class="ltr">no_sync</span> ومعاه.</p>
+    </div>
+    <div class="instrument"><div id="d474-lab3"></div><div id="d474-lab3b" style="margin-top:12px"></div></div>
+  </div>
+
+  <h3>التكلفة: مفيش غدا ببلاش</h3>
+  <p>كل micro-batch بيكلّف forward + backward واحد. الـ accumulation بيبدّل <b>الذاكرة بالوقت</b>. لما بتضاعف <span class="ltr">accum_steps</span> بتضاعف الوقت اللي بياخده الـ optimizer step الواحد. اللي بيتغيّر هو <b>تباين (variance) تقدير الـ gradient</b>: في نفس الوقت الكلي بتعمل خطوات أقل، بس كل خطوة متوسطة على عيّنات أكتر. الأدبيات بتعتبر الـ large batch والـ small batch مسألتين تحسين مختلفتين، والدرس هنا ميكانيكي مش إحصائي.</p>
+  <p>ولما تدوّر على الـ throughput (عدد الأمثلة في الثانية) هتلاقيه بيوصل لحد الجهاز وبيثبت، وبتلاقي <b>عدد الـ optimizer steps في الثانية</b> هو اللي بينزل. ده اللي منحنى <span class="ltr">outputs/accum-curve.json</span> بيوريه.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: الـ noise والـ steps</h3>
+      <p>بنفترض إن الـ noise بتاع الـ gradient بيقل مع <span class="ltr">1/√B</span> (قاعدة إحصائية عامة)، وإن وقت الـ step بيزيد خطيًا مع <span class="ltr">accum_steps</span>. حرّك الـ accumulation وشوف إن الـ noise بينزل بس بتكلفة عدد الـ steps.</p>
+    </div>
+    <div class="instrument"><div id="d474-lab4"></div></div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d474-use">
+  <div class="station-head"><span class="tag">04</span><h2>إزاي بيتستخدم في الحقيقة</h2></div>
+  <p>في الـ production الـ accumulation كله وراء مقبض واحد:</p>
+  <div class="formula">accumulation_steps = effective_batch // (micro_batch * world_size)</div>
+  <p>ثلاث أنماط شغّالة في الواقع:</p>
+  <ul>
+    <li><b>الـ micro-batch</b> بيتختار ليملا ذاكرة الجهاز. أصغر من كده بيضيّع دورات الـ accelerator، وأكبر منه بيكراش.</li>
+    <li><b>الـ effective batch</b> بيتختار من الـ learning rate schedule. الـ batch الكبير محتاج learning rate أكبر وwarmup، وده اللي اسمه <b>linear scaling rule</b> (من ٢٠١٧).</li>
+    <li><b>عدد الـ accumulation</b> هو الجسر بين الاتنين، والمقبض الوحيد اللي تقدر تغيّره وقت التشغيل من غير ما تعيد كتابة الـ data loader.</li>
+  </ul>
+</section>
+
+<!-- STATION 5: CODE -->
+<section id="d474-code">
+  <div class="station-head"><span class="tag">05</span><h2>الكود خطوة خطوة</h2></div>
+  <p>الأول شغّل الأصل من جذر الريبو عشان تشوف الناتج، وبعدين اكتب الخطوات دي <b>بإيدك</b> في ملف جديد (مثلًا <code>my_accum.py</code>). متعملش Copy غير لو اتزنقت. محتاج <code>pip install torch</code>.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/46-gradient-accumulation/code/main.py
+<span class="c"># الاستكشاف: غيّر الـ sweep والخطوات</span>
+python3 phases/19-capstone-projects/46-gradient-accumulation/code/main.py --micro-batch 4 --accum-grid 1,2,4,8 --num-steps 25 --no-write</pre></div>
+  <p><b>الناتج المتوقع:</b> الأول بيطبع الـ equivalence check كـ JSON فيه <span class="ltr">max_grad_diff</span> و<span class="ltr">max_param_diff</span> (أرقام صغيرة جدًا، تحت <span class="ltr">1e-4</span>) و<span class="ltr">params_init_match: true</span>، وبعدين <span class="ltr">equivalence holds. running sweep...</span> وجدول بالأعمدة <span class="ltr">eff_batch, accum, micro, sps, median_ms, syncs, loss</span>، وفي الآخر مسار ملف <span class="ltr">accum-curve.json</span>. الأرقام الفعلية للسرعة بتختلف من جهاز لجهاز. الـ exit code بيكون صفر.</p>
+
+  <h3>خطوة ١: الموديل والداتا الاصطناعية</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+from torch import nn
+
+def synthetic_batch(batch_size, in_dim, out_dim, gen):
+    x = torch.randn(batch_size, in_dim, generator=gen)           <span class="c"># مدخلات عشوائية</span>
+    target = torch.randint(0, out_dim, (batch_size,), generator=gen)  <span class="c"># labels عشوائية</span>
+    return x, target
+
+def make_model(in_dim, hidden, out_dim):
+    return nn.Sequential(                                        <span class="c"># MLP صغير بـ GELU</span>
+        nn.Linear(in_dim, hidden), nn.GELU(),
+        nn.Linear(hidden, hidden), nn.GELU(),
+        nn.Linear(hidden, out_dim),
+    )</pre></div>
+
+  <h3>خطوة ٢: أدوات الـ grads</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+
+def global_grad_norm(model):                  <span class="c"># الـ L2 norm لكل الـ grads مع بعض</span>
+    total = 0.0
+    for p in model.parameters():
+        if p.grad is None:
+            continue
+        total += float(p.grad.detach().pow(2).sum().item())
+    return math.sqrt(total)
+
+def zero_grads(model):                        <span class="c"># صفّر من غير ما تمسح الـ tensor</span>
+    for p in model.parameters():
+        if p.grad is not None:
+            p.grad.detach_()
+            p.grad.zero_()
+
+def loss_scaled_for_accum(logits, target, accum_steps, loss_fn):
+    raw = loss_fn(logits, target)
+    return raw / accum_steps                  <span class="c"># ← السطر اللي الناس بتنساه</span></pre></div>
+
+  <h3>خطوة ٣: الـ no_sync context (stand-in)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class _NoSyncCtx:
+    def __init__(self, model):
+        self.model = model
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False                          <span class="c"># مبيبلعش الإيرورات</span>
+
+def no_sync_context(model):
+    <span class="c"># في DDP الحقيقي: return model.no_sync()</span>
+    <span class="c"># هنا على process واحد مفيش collective نتخطاه، بس الشكل زي الـ cluster</span>
+    return _NoSyncCtx(model)</pre></div>
+
+  <h3>خطوة ٤: خطوة optimizer واحدة من N micro-batches</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def train_one_optimizer_step(model, optimizer, micro_batches, loss_fn,
+                             *, no_sync_until_last, sync_counter):
+    accum_steps = len(micro_batches)
+    zero_grads(model)                         <span class="c"># نبدأ بـ grads نضيفة</span>
+    total = 0.0
+    for i, (x, y) in enumerate(micro_batches):
+        is_last = i == accum_steps - 1
+        if no_sync_until_last and not is_last:
+            with no_sync_context(model):      <span class="c"># مفيش all-reduce هنا</span>
+                loss = loss_scaled_for_accum(model(x), y, accum_steps, loss_fn)
+                loss.backward()
+        else:
+            loss = loss_scaled_for_accum(model(x), y, accum_steps, loss_fn)
+            loss.backward()
+            sync_counter[0] += 1              <span class="c"># الأخير بس هو اللي بيـ sync</span>
+        total += float(loss.detach().item()) * accum_steps   <span class="c"># نرجّع الـ loss الحقيقي للـ log</span>
+    grad_norm = global_grad_norm(model)
+    optimizer.step()                          <span class="c"># مرة واحدة بس!</span>
+    return total / accum_steps, grad_norm</pre></div>
+  <p>اللاحظة المهمة: الـ <span class="ltr">sync_counter</span> بيزيد <b>مرة واحدة</b> لكل effective step مش N مرة. ده اللي الـ sweep بيسجّله في عمود <span class="ltr">syncs</span>.</p>
+
+  <h3>خطوة ٥: اختبار التكافؤ (equivalence_check)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def equivalence_check(in_dim=32, hidden=48, out_dim=8,
+                      big_batch=16, accum_steps=4, lr=0.1, seed=7):
+    micro = big_batch // accum_steps
+    torch.manual_seed(seed)
+    gen = torch.Generator(); gen.manual_seed(seed)
+    x, y = synthetic_batch(big_batch, in_dim, out_dim, gen)
+    loss_fn = nn.CrossEntropyLoss()
+
+    <span class="c"># الموديل الأول: batch كبير مرة واحدة</span>
+    torch.manual_seed(seed)
+    m_full = make_model(in_dim, hidden, out_dim)
+    opt_full = torch.optim.SGD(m_full.parameters(), lr=lr)
+    zero_grads(m_full)
+    loss_fn(m_full(x), y).backward()
+    full_grads = [p.grad.detach().clone() for p in m_full.parameters()]
+    opt_full.step()
+
+    <span class="c"># الموديل التاني: نفس الـ seed، بس 4 قطع و loss / 4</span>
+    torch.manual_seed(seed)
+    m_acc = make_model(in_dim, hidden, out_dim)
+    opt_acc = torch.optim.SGD(m_acc.parameters(), lr=lr)
+    zero_grads(m_acc)
+    for cx, cy in zip(torch.split(x, micro), torch.split(y, micro)):
+        (loss_fn(m_acc(cx), cy) / accum_steps).backward()
+    acc_grads = [p.grad.detach().clone() for p in m_acc.parameters()]
+    opt_acc.step()
+
+    return max(float((a - b).abs().max()) for a, b in zip(full_grads, acc_grads))</pre></div>
+  <p>لاحظ إن الاتنين بيبدأوا من نفس الـ weights (نفس الـ seed قبل <span class="ltr">make_model</span>) ونفس الداتا. الفرق الوحيد هو طريقة الحساب. النسخة الأصلية بتقارن كمان الـ parameters بعد الـ step وبتتأكد إن الـ init متطابق.</p>
+
+  <h3>خطوة ٦: منحنى الـ throughput</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import time
+def run_config(effective_batch, accum_steps, *, in_dim, hidden, out_dim,
+               num_steps, lr, seed):
+    micro_batch = effective_batch // accum_steps
+    torch.manual_seed(seed)
+    gen = torch.Generator(); gen.manual_seed(seed)
+    model = make_model(in_dim, hidden, out_dim)
+    opt = torch.optim.SGD(model.parameters(), lr=lr)
+    loss_fn = nn.CrossEntropyLoss()
+    sync_counter, losses, step_ms = [0], [], []
+    t_start = time.perf_counter()
+    for _ in range(num_steps):
+        t0 = time.perf_counter()
+        mbs = [synthetic_batch(micro_batch, in_dim, out_dim, gen)
+               for _ in range(accum_steps)]
+        loss, _ = train_one_optimizer_step(model, opt, mbs, loss_fn,
+                      no_sync_until_last=True, sync_counter=sync_counter)
+        step_ms.append((time.perf_counter() - t0) * 1000)
+        losses.append(loss)
+    total = time.perf_counter() - t_start
+    sps = num_steps * effective_batch / total       <span class="c"># samples per second</span>
+    step_ms.sort()
+    return sps, step_ms[len(step_ms)//2], sync_counter[0], sum(losses)/len(losses)</pre></div>
+  <p>الأصل بيلف على قائمة <span class="ltr">accum_grid</span> (الافتراضي <span class="ltr">1,2,4,8,16</span>) بـ micro batch ثابت (٤)، ويكتب النتيجة في JSON بـ schema اسمها <span class="ltr">accum-curve.v1</span>. لاحظ إن <span class="ltr">median_ms</span> هيزيد تقريبًا خطيًا مع الـ accumulation.</p>
+  <div class="note ai"><strong>جرّب بنفسك:</strong> بعد ما تكتب الخطوات، شغّل الـ equivalence من غير القسمة على <span class="ltr">accum_steps</span> وشوف الـ <span class="ltr">max_grad_diff</span> بيبقى كبير إزاي، وشغّله بيها وشوفه بيرجع لضوضاء الأرقام العشرية.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d474-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li>شغّل الـ sweep بـ <span class="ltr">--num-steps 100</span> وارسم samples/sec ضد الـ effective batch. إمتى المنحنى بيفرد؟
+      <details><summary>تلميح / إجابة</summary>خزّن الناتج في <span class="ltr">accum-curve.json</span> وارسمه بـ matplotlib. المتوقع إن الـ samples/sec يرتفع شوية في الأول (overhead الـ Python بيتوزع على عدد أكبر من الأمثلة) وبعدين يثبت قرب حد الجهاز. الـ <span class="ltr">median_step_ms</span> هو اللي بيكبر خطيًا. أرقامك هتختلف عن أرقام غيرك حسب الجهاز.</details></li>
+    <li>ضيف نسخة غلط (من غير القسمة) وبيّن الفرق في الـ parameters عند الخطوة الأولى مقارنة بالمرجع.
+      <details><summary>تلميح / إجابة</summary>اعمل نسخة تالتة من الموديل بنفس الـ seed، وفي الحلقة اعمل <span class="ltr">loss_fn(model(cx), cy).backward()</span> من غير <span class="ltr">/ accum_steps</span>. هتلاقي الـ gradient أكبر بالظبط <span class="ltr">accum_steps</span> مرة، فالـ parameter بتتحرك <span class="ltr">accum_steps</span> مرة أكتر مع SGD العادي. قارن <span class="ltr">(p_wrong - p_init)</span> مع <span class="ltr">(p_ref - p_init)</span>.</details></li>
+    <li>غيّر SGD لـ AdamW وتأكد إن حالة الـ optimizer بتتقدم مرة لكل effective step مش لكل micro-batch.
+      <details><summary>تلميح / إجابة</summary>بعد كل <span class="ltr">optimizer.step()</span> اقرأ <span class="ltr">opt.state[p]["step"]</span> لأي parameter. لو عملت ٤ micro-batches لكل step وشغّلت ١٠ خطوات لازم يبقى ١٠ مش ٤٠. لو شفت ٤٠ يبقى انت بتنده <span class="ltr">step()</span> جوه الحلقة الصغيرة.</details></li>
+    <li>حط <span class="ltr">DistributedDataParallel</span> حقيقي ووجّه <span class="ltr">no_sync_context</span> لـ method بتاعتها. تأكد إن <span class="ltr">sync_calls</span> بينزل بـ N-1 لكل effective batch.
+      <details><summary>تلميح / إجابة</summary>محتاج <span class="ltr">torchrun</span> وprocess group (ممكن backend <span class="ltr">gloo</span> على CPU بـ ٢ processes). لفّ الموديل بـ <span class="ltr">DDP(model)</span> واستبدل جسم <span class="ltr">no_sync_context</span> بـ <span class="ltr">return model.no_sync()</span>. عدّ مرات الـ all-reduce بـ hook أو بقياس الوقت.</details></li>
+    <li>عدّل الـ equivalence check عشان يقارن تقسيمتين مختلفتين (٢×٨ ضد ٤×٤) واشرح أي tolerance محتاج تخففه.
+      <details><summary>تلميح / إجابة</summary>الجمع في الـ floating point مش associative، فترتيب جمع الـ chunks بيدّي فروق صغيرة جدًا. التقسيمات المختلفة بتغيّر الترتيب فيزيد الفرق شوية، بس لازم يفضل عند مستوى الضوضاء (حوالي <span class="ltr">1e-6</span> مثلًا). لو الفرق كبير فاعرف إن في bug مش tolerance.</details></li>
+    <li><b>تمرين إضافي مني:</b> اكتب اختبار صغير يتأكد إن عدد الـ <span class="ltr">optimizer.step()</span> بعد ٢٠ micro-batch و<span class="ltr">accum_steps=5</span> هو ٤ بالظبط.
+      <details><summary>تلميح / إجابة</summary>لف الـ optimizer في كلاس صغير بيزوّد عدّاد في <span class="ltr">step()</span> وبيندهها الأصلية. شغّل <span class="ltr">train_one_optimizer_step</span> ٤ مرات بـ ٥ micro-batches وقارن <span class="ltr">counter == 4</span>. وجرّب كمان الحالة اللي فيها <span class="ltr">accum_steps</span> مش بتقسم عدد الـ batches وشوف تعمل إيه في الباقي.</details></li>
+  </ol>
+</section>
+
+<!-- OWN ADDITION -->
+<section id="d474-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني (مش في الدرس الأصلي)</h2></div>
+  <div class="note ai"><strong>القسم ده من عندي</strong> عشان يكمّل الصورة. مش جزء من docs الدرس.</div>
+  <ul>
+    <li><b>الـ loss المتوسط مش المجموع:</b> الـ <span class="ltr">CrossEntropyLoss</span> الافتراضي بيعمل <span class="ltr">reduction="mean"</span>، وده اللي بيخلّي القسمة على N صح. لو الـ loss عندك <span class="ltr">reduction="sum"</span> فالمعادلة بتتغير: اقسم على العدد الكلي للأمثلة مش على عدد الـ chunks.</li>
+    <li><b>الـ chunks المتفاوتة (الـ padding في اللغة):</b> في الـ LLMs الـ micro-batches بتبقى بعدد tokens مختلف (بسبب الـ padding). لو قسمت على <span class="ltr">accum_steps</span> بس، الـ chunk اللي فيه tokens أقل بياخد وزن زيادة. التطبيقات الجدّية بتقسم على عدد الـ tokens الفعلي في الـ effective batch كله.</li>
+    <li><b>الـ BatchNorm بيتلخبط:</b> لأنه بيحسب إحصائياته على الـ micro-batch مش الـ effective batch. الـ LayerNorm (اللي في الـ Transformers) مبيتأثرش، وده سبب إن الـ accumulation سهل مع الـ LLMs.</li>
+    <li><b>مع الـ gradient clipping (درس امبارح):</b> اعمل الـ clip <b>بعد آخر backward وقبل الـ step</b> على الـ gradient المتجمّع كله، مش على كل micro-batch. لو استخدمت GradScaler كمان فالـ unscale يتعمل مرة واحدة قبل الـ clip، برضه بعد الـ accumulation كله. (الدرس بيشاور على issue في الـ PyTorch عن تفاعل الاتنين.)</li>
+    <li><b>الـ dropout والـ randomness:</b> كل micro-batch بياخد dropout mask مختلفة، وده طبيعي. اختبار التكافؤ بيشتغل لأن الموديل اللي في الدرس مفيهوش dropout.</li>
+    <li><b>خطأ شائع:</b> نسيان <span class="ltr">zero_grads()</span> في أول كل effective step، فالـ gradients بتتراكم عبر steps كمان. وخطأ تاني: عدّ الـ steps في الـ scheduler مع كل micro-batch بدل كل effective step، فالـ learning rate بيتحرك أسرع N مرة.</li>
+    <li><b>في الـ LLMs:</b> التدريب بـ batch من مئات الآلاف من الـ tokens بيتعمل بالـ accumulation مع الـ data parallel. المقبض ده هو اللي بيربط الـ checkpoint بتاع درس بكرة (الـ step counter لازم يعدّ effective steps مش micro-batches).</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d474-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d474-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d474-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d474-checklist">
+    <li><label><input type="checkbox" data-ck="1"> بقدر أحسب effective batch من micro_batch وaccum_steps وworld_size</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه الـ loss بتتقسم على accum_steps وشفت الخطأ الصامت في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم إن الـ optimizer.step() بيحصل مرة واحدة والـ state بيتقدم مرة واحدة</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم no_sync وليه بيوفر N-1 all-reduce</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود بإيدي وشغّلت الـ equivalence check والـ sweep</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Loss / accum_steps</td><td>أي trainer بيدعم gradient_accumulation_steps</td></tr>
+    <tr><td>Effective batch</td><td>تدريب الـ LLMs بـ batch كبير على كروت محدودة</td></tr>
+    <tr><td>no_sync / sync-on-last</td><td>DDP وFSDP (درس ٤٧٦ بعد بكرة)</td></tr>
+    <tr><td>Linear scaling rule + warmup</td><td>ضبط الـ learning rate لما الـ batch يكبر</td></tr>
+    <tr><td>Throughput curve</td><td>قرار اختيار الـ micro batch قبل التدريب الطويل</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Checkpoint Save and Resume. هتتعلم تحفظ كل حاجة (الموديل، الـ optimizer، الـ scheduler، الـ RNG) بشكل atomic عشان لو الجهاز اتقفل في النص التدريب يكمّل من نفس النقطة بالظبط.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F46-gradient-accumulation" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/46-gradient-accumulation</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=474,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d474-roadmap').closest('.day');
+
+// roadmap (lesson numbers of phase 19)
+const rm=$('d474-roadmap');
+for(let i=1;i<=87;i++){const s=document.createElement('span');s.textContent=i;if(i===46)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: effective batch ----
+L.calc($('d474-lab1'),{
+  params:[
+    {k:'micro',label:'micro batch',min:1,max:64,step:1,v:32},
+    {k:'accum',label:'accum steps',min:1,max:32,step:1,v:16},
+    {k:'world',label:'world size (GPUs)',min:1,max:8,step:1,v:1},
+    {k:'base',label:'LR الأساسي عند batch 256 (×1e-4)',min:1,max:30,step:1,v:10}
+  ],
+  compute:p=>{
+    const eff=p.micro*p.accum*p.world;
+    return [
+      ['effective batch',eff],
+      ['أمثلة في الذاكرة لكل جهاز (micro)',p.micro],
+      ['backward passes لكل step (لكل جهاز)',p.accum],
+      ['وقت الـ step نسبةً لـ accum=1',p.accum+'×'],
+      ['LR بعد linear scaling',(p.base*1e-4*eff/256).toExponential(2)]
+    ];
+  },
+  note:p=>{
+    const eff=p.micro*p.accum*p.world;
+    return eff>=512?'الـ batch كبير: ركّز على الـ warmup والـ LR scaling، والذاكرة لسه تابعة لـ micro بس.':'الـ batch صغير نسبيًا، ممكن مفيش داعي للـ accumulation أصلًا.';
+  }
+});
+
+// ---- Lab 2: silent bug ----
+L.bars($('d474-lab2'),{
+  labels:['مع القسمة','من غير قسمة'],
+  params:[{k:'n',label:'accum steps',min:1,max:16,step:1,v:16}],
+  values:p=>[1,p.n],
+  names:['حجم الـ gradient (الصح = 1)'],
+  colors:['a'],
+  max:16,
+  highlight:p=>p.n>1?1:0,
+  readout:p=>[['الخطوة من غير قسمة',p.n+'× أكبر'],['الخطوة مع القسمة','1× (صح)']],
+  note:p=>p.n===1?'مع accum=1 مفيش فرق، عشان كده الـ bug مبيظهرش في الاختبار الصغير.':'من غير ‎/ '+p.n+'‎ الـ optimizer بياخد خطوات '+p.n+' مرة أكبر من اللازم.'
+});
+
+// ---- Lab 3: sync-on-last-step flow ----
+L.flow($('d474-lab3'),{
+  nodes:[
+    {id:'m1',label:'micro 1',x:0,y:0.2},
+    {id:'m2',label:'micro 2',x:0.33,y:0.2},
+    {id:'m3',label:'micro 3',x:0.66,y:0.2},
+    {id:'m4',label:'micro 4',x:1,y:0.2},
+    {id:'g',label:'param.grad (مجموع)',x:0.5,y:0.55},
+    {id:'ar',label:'all-reduce',x:0.15,y:0.9},
+    {id:'opt',label:'optimizer.step',x:0.85,y:0.9}
+  ],
+  edges:[['m1','g','+ grad/4'],['m2','g','+ grad/4'],['m3','g','+ grad/4'],['m4','g','+ grad/4'],['g','ar','مرة واحدة'],['ar','opt']],
+  steps:[
+    {active:['m1','g'],edges:[['m1','g']],text:'micro 1 داخل no_sync: backward بيضيف على param.grad بس من غير أي كلام مع الشبكة.'},
+    {active:['m2','g'],edges:[['m2','g']],text:'micro 2: نفس الحكاية، الـ gradient بيتجمّع محليًا.'},
+    {active:['m3','g'],edges:[['m3','g']],text:'micro 3: لسه محليًا. لحد دلوقتي صفر all-reduce.'},
+    {active:['m4','g','ar'],edges:[['m4','g'],['g','ar']],text:'micro 4 (الأخير): بيخرج من no_sync، والـ backward بتاعه بيعمل all-reduce للمجموع كله مرة واحدة.'},
+    {active:['ar','opt'],edges:[['ar','opt']],text:'دلوقتي بس optimizer.step() بيتنده، مرة واحدة لكل effective batch.'}
+  ]
+});
+L.calc($('d474-lab3b'),{
+  params:[{k:'n',label:'accum steps',min:1,max:32,step:1,v:16},{k:'mb',label:'حجم الـ gradients (MB)',min:10,max:2000,step:10,v:500}],
+  compute:p=>[
+    ['all-reduce من غير no_sync',p.n],
+    ['all-reduce مع no_sync',1],
+    ['بيانات على الشبكة من غيرها (MB)',p.n*p.mb],
+    ['بيانات مع no_sync (MB)',p.mb],
+    ['اللي اتوفّر',((1-1/p.n)*100).toFixed(0)+'%']
+  ],
+  note:p=>'الأرقام مبسطة: حجم الـ all-reduce الفعلي بيعتمد على الخوارزمية والـ topology.'
+});
+
+// ---- Lab 4: noise vs steps ----
+L.plot($('d474-lab4'),{
+  x:[1,64],y:[0,1.05],
+  params:[{k:'micro',label:'micro batch',min:1,max:8,step:1,v:4},{k:'acc',label:'accum steps',min:1,max:8,step:1,v:2}],
+  curves:[
+    {f:(x,p)=>1/Math.sqrt(x),label:'noise ∝ 1/√B',color:'a'},
+    {f:(x,p)=>(p.micro*1)/x,label:'steps/sec نسبيًا (1/accum)',color:'b',dash:1}
+  ],
+  marks:p=>{const B=p.micro*p.acc;return [{x:Math.min(B,64),y:1/Math.sqrt(B),label:'B='+B,color:'ok'}]},
+  readout:p=>{const B=p.micro*p.acc;return [['effective batch',B],['noise نسبةً لـ B=1',(1/Math.sqrt(B)).toFixed(2)],['steps/sec نسبةً لـ accum=1',(1/p.acc).toFixed(2)]]},
+  note:p=>'كل ما الـ batch يكبر الـ noise ينزل بسرعة أقل فأقل، بس الـ steps/sec بتنزل بنفس معدل الـ accumulation.'
+});
+
+// ---- Quiz ----
+AI.quiz($('d474-quizBox'),[
+ ['إيه هي معادلة الـ effective batch اللي بيعبّر عنها الـ gradient accumulation؟',['effective_batch = micro_batch / accum_steps','effective_batch = world_size بس','effective_batch = micro_batch + accum_steps','effective_batch = micro_batch * accum_steps'],3,'الـ micro batch هو اللي بيدخل الذاكرة، وaccum_steps هي عدد الـ forward + backward اللي بتتجمع في نفس الـ buffer قبل step واحدة. (ومع التدريب الموزع تتضرب كمان في world_size.)'],
+ ['ليه لازم نقسم الـ loss على accum_steps قبل backward في كل micro-batch؟',['عشان الـ loss curve تبقى أحلى','عشان نتجنب الـ NaN','ده مطلوب للـ mixed precision بس','لأن PyTorch بيجمع الـ gradients في param.grad تلقائيًا، فمن غير القسمة الـ gradient المتجمّع بيبقى N مرة أكبر والـ optimizer step بتبقى أعنف N مرة'],3,'الـ buffer عبارة عن مجموع. القسمة على 1/N في كل micro-batch بترجّع المجموع لنفس المقياس اللي كان هيطلع من backward واحد على الـ batch الكبير.'],
+ ['إمتى بيشتغل الـ optimizer step جوه حلقة الـ accumulation؟',['مش بيشتغل أبدًا، الـ optimizer بيتغير','مرتين في كل نافذة للأمان','بعد كل micro batch','بعد آخر micro batch في نافذة الـ accumulation بس'],3,'لو عملت step في النص بتبوّظ كل parameter باقي التدريب معتمد عليها. الـ step بتحصل مرة واحدة لكل effective batch.'],
+ ['الـ no_sync context بيلف إيه في تشغيل multi-GPU حقيقي؟',['الـ data loader','الـ micro batches غير الأخيرة، فالـ gradient all-reduce بيحصل بعد آخر backward بس بدل N مرة','الـ optimizer step','الـ forward pass'],1,'الـ no_sync بتاعة DDP بتتخطى الـ gradient collective. لما تلف كل الـ micro batches ما عدا الأخير، N collectives لكل effective step بتبقى واحدة.'],
+ ['الـ equivalence_check في main.py بيأكّد إيه؟',['إن الـ loss بيتقارب','إن الـ gradients أصفار','إن backward واحد على batch كبير وbackward مقسّم لـ accum_steps chunks بـ loss / N بيدّوا نفس الـ gradient buffer ونفس الـ parameters بعد الـ step، لحد tolerance صغيرة','إن الـ throughput ثابت'],2,'حد الـ assertion هو max-abs-diff أقل من 1e-4. من غير الـ loss scaling الفرق بينفجر، ومعاه بيبقى عند ضوضاء الأرقام العشرية.'],
+ ['وانت بتقرا منحنى الـ throughput ضد الـ effective batch، إيه اللي بيثبت وإيه اللي بيزيد؟',['الـ throughput بيزيد لأن الموديل بيبقى أسرع','الاتنين بيزيدوا خطيًا مع accum','الـ samples/sec بتثبت قرب حد الجهاز، ووقت الـ optimizer step الواحد بيزيد خطيًا مع accum_steps، فاللي بينزل هو عدد الـ optimizer steps في الثانية','الـ samples/sec بتنزل مع الـ batch الكبير'],2,'كل micro batch بيكلّف نفس الـ forward + backward. الـ accumulation بيشتري تنعيم إحصائي لكل step مش سرعة خام، والمنحنى فحص واقع ضد الفولكلور.'],
+ ['(سؤال مني) في الـ LLMs الـ micro-batches بتبقى فيها عدد tokens مختلف بسبب الـ padding. القسمة على accum_steps بس بتبقى فيها مشكلة إيه؟',['مفيش مشكلة أبدًا','الـ chunk اللي فيه tokens أقل بياخد وزن أكبر من اللازم لكل token','الـ loss بتبقى NaN','الـ optimizer بيتجاهل أول chunk'],1,'القسمة على عدد الـ chunks بتفترض إن الـ chunks متساوية. لو الـ tokens متفاوتة الأدق إنك تجمع الـ loss كمجموع وتقسم على إجمالي الـ tokens الفعلي في الـ effective batch كله.'],
+ ['(سؤال مني) نسيت zero_grads() في أول كل effective step. إيه اللي هيحصل؟',['مفيش حاجة، PyTorch بيصفّرها لوحده','الـ gradients بتتراكم عبر الـ steps كمان، فكل step بتتأثر بـ gradients الـ steps اللي فاتت','الـ training بيقف بإيرور','الـ loss بيتقسم على اتنين'],1,'الـ backward بيجمع دايمًا في param.grad ومبيمسحش. لو مصفّرتش، الـ gradients القديمة بتفضل مع الجديدة. لازم تصفّر مرة لكل effective step.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+})();
+</script>

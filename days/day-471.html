@@ -1,0 +1,413 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 43 · HDF5 Tokenized Corpus</span>
+  <h1>اليوم ٤٧١: حوّل الـ corpus لـ HDF5 يقدر الـ trainer يقرا منه بسرعة السلك</h1>
+  <p class="lede">امبارح الداتا نزلت على الديسك. النهاردة بنحوّلها لـ <b>tokens</b> ونحطها في ملفات <b>HDF5</b> بتتكبر (resizable) ومقسومة لـ chunks، وبعدين نبني <b>sliding-window dataloader</b> يطلّع sequences بطول ثابت. ده مشروع (capstone) فاليوم مقسوم لـ milestones وفي كل milestone فيه check تتأكد بيه.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (h5py + NumPy)</span>
+    <span>قبله: <b>Large Corpus Downloader</b></span>
+    <span>بعده: <b>Cosine LR with Linear Warmup</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — مشاريع التخرج (دروس ٤٠–٥٠ من ٨٧)</span>
+    <div class="roadmap" id="d471-roadmap" aria-label="دروس مشاريع التخرج"></div>
+  </div>
+</header>
+
+<section id="d471-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ downloader؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>الـ download اتقطع عند 41%. إزاي تكمّله من غير ما تبدأ من الأول؟
+      <details><summary>الإجابة</summary>بتبعت HTTP <span class="ltr">Range</span> request من آخر byte offset اتأكدنا إنه سليم (verified)، والـ offset ده لازم يتخزن على الديسك عشان يعيش بعد ما البروسيس يموت. لو الـ offset والملف اختلفوا ولو بـ byte واحد، الملف هيبقى فيه garbage.</details></li>
+    <li>ليه الـ exact-hash dedup مش كفاية؟
+      <details><summary>الإجابة</summary>لأن النسخ شبه المتطابقة (نفس المقال بـ footer مختلف، نفس الكود بـ license header مختلف) هاشها مختلف. الحل: <b>MinHash + LSH</b> بيخلي الـ near-duplicates يقعوا في نفس الـ bucket.</details></li>
+    <li>الـ downloader بيطلّع إيه في الآخر وبيستخدمه مين؟
+      <details><summary>الإجابة</summary>بيطلّع shards مضغوطة/متنضفة + <b>shard manifest</b> (content hash، الحجم، عدد الـ documents، وحكم الـ dedup). وده بالظبط اللي درس النهاردة هيحوّله لـ tokens: كل source shard بيطلع منه HDF5 shard واحد.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>10 min</b>التسخين + ليه HDF5 أصلًا</div>
+    <div><b>25 min</b>الـ concepts: resizable، sharded، chunked، window</div>
+    <div><b>35 min</b>اكتب الكود milestone-ي وشغّله</div>
+    <div><b>20 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d471-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: ليه JSONL بيموت تحت الـ trainer؟</h2></div>
+  <p>تدريب LLM حقيقي بيقرا tokens بمئات الآلاف من العينات في الثانية، من عشرات الـ workers. الـ JSONL على الديسك بيقع من أول <b>cold-cache page fault</b>، لأن:</p>
+  <ul class="checklist">
+    <li>الـ JSON parser بطيء.</li>
+    <li>حدود الـ documents مش «قابلة للعنونة»: عشان توصل لـ «العينة رقم 4,217,884» لازم تمسح الملف من الأول.</li>
+    <li>حتى Parquet (بيضغط كويس) مش مناسب، لأن الـ trainer مش عايز أعمدة. عايز <b>stream مسطّح من الـ tokens</b> مع وصول عشوائي بتكلفة <span class="ltr">O(1)</span>.</li>
+  </ul>
+  <div class="note"><strong>تشبيه:</strong> JSONL زي كتاب مفيهوش فهرس ولا أرقام صفحات: عشان تلاقي الجملة لازم تقلّب من الغلاف. HDF5 المقسوم لـ chunks زي كتاب مترقّم الصفحات ومقسوم لكراريس ثابتة الحجم: تقول «هات من الصفحة 3,200,000 لـ 3,208,192» وتفتح على طول.</div>
+  <p>HDF5 بيدّيك dataset <b>integer-only، resizable، chunked</b>. الـ trainer بيطلب <span class="ltr">tokens[3_200_000 : 3_208_192]</span> وHDF5 بينسخ الـ slice من الـ page cache لـ NumPy array جديد. التكلفة: file handle واحد + chunk واحد في الـ cache لكل worker.</p>
+  <p>المشكلة الحقيقية في الـ <b>write side</b>: الـ resizable datasets سهل تستخدمها غلط.</p>
+  <div class="tablewrap"><table>
+    <tr><th>اللي بتعمله</th><th>النتيجة</th></tr>
+    <tr><td>كتبت document واحد في كل مرة وعملت resize لكل واحد</td><td>الملف بيتفتّت (fragmented) لدرجة إنه ما ينفعش</td></tr>
+    <tr><td>كتبت كل الـ documents في resize واحد</td><td>لو البروسيس مات، الـ shard كله راح</td></tr>
+    <tr><td><b>buffer-then-extend</b> بحجم الـ chunk + sharded write</td><td>الكتابة contiguous ومتحاذية مع الـ chunks، وأي crash بيخسّرك shard واحد بالكتير</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d471-resizable">
+  <div class="station-head"><span class="tag">02</span><h2>Resizable HDF5 بالطريقة الصح: buffer ثم extend</h2></div>
+  <p>الـ dataset بيتعمل بـ <code>maxshape=(None,)</code> (يعني «ممكن يكبر لأي طول») و<code>chunks=(chunk_size,)</code> (حجم ثابت). الكتابة بتمشي كده:</p>
+  <ol class="ex">
+    <li>بتجمّع الـ tokens في <b>buffer</b> في الذاكرة طوله <span class="ltr">chunk_size</span>.</li>
+    <li>لما الـ buffer يتملي بالظبط: <code>resize</code> للـ dataset بمقدار <span class="ltr">chunk_size</span> بالظبط، وتكتب الـ buffer في المدى الجديد.</li>
+    <li>في آخر الـ shard: الباقي (residual buffer) بيتكتب في مدى أخير جزئي.</li>
+  </ol>
+  <p>كل كتابة contiguous ومتحاذية مع الـ chunk ما عدا الأخيرة. والأخيرة دي بالذات ممكن تسيب خانات فاضية، عشان كده الـ reader لازم يتقصّ عند <span class="ltr">token_count</span> المسجّل في الـ attributes (نشرحها في القسم الجاي).</p>
+  <div class="formula">number_of_resizes = ceil(total_tokens / chunk_size)     ← بدل total_tokens (واحد لكل token!)</div>
+  <div class="note"><strong>تشبيه:</strong> بتنقل عفش بالعربية. تحمّل العربية للآخر (buffer ممتلي) وتروح رحلة، أحسن ما تعمل رحلة لكل كرسي. وماتستناش لحد ما كل الشقة تتحمّل في رحلة واحدة، لأن لو العربية اتعطلت في النص كل حاجة راحت.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: كام resize هتعمل؟</h3>
+      <p>غيّر عدد الـ tokens وحجم الـ chunk. شوف الفرق بين الكتابة token-by-token والكتابة بالـ buffer، وكام token هيفضل في الـ residual buffer آخر الـ shard.</p>
+      <div class="note ai"><strong>لاحظ:</strong> لما الـ chunk كبير جدًا، عدد الـ resizes بيقل أكتر، بس الـ buffer بياخد ذاكرة أكتر وكمان الـ granularity بتاع الـ flush بيكبر. الـ trade-off موجود.</div>
+    </div>
+    <div class="instrument"><div id="d471-lab1"></div></div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d471-sharded">
+  <div class="station-head"><span class="tag">03</span><h2>Sharded write، و<span class="ltr">shards.json</span>، و<span class="ltr">token_count</span> في الـ attributes</h2></div>
+  <p><b>ملف HDF5 واحد = single point of failure.</b> فالـ pipeline بيكتب shards بالتوازي: كل input shard (من درس 42) بيطلّع HDF5 output shard واحد (1:1). ده بيخلي الـ resume والـ recovery من الفشل الجزئي بسيطين.</p>
+  <p>ملف <span class="ltr">shards.json</span> هو الـ index: لكل shard بيسجّل المسار (path)، عدد الـ tokens، عدد الـ documents، و<b>sha256</b> على bytes الـ tokens. الـ trainer بيقراه مرة واحدة عند البداية، بيحسب منه الـ <b>global offsets</b>، وبيتحقق منه الـ corpus. ومش بيلمس الـ directory listing أبدًا.</p>
+  <p><b>ليه <span class="ltr">token_count</span> attribute مش الـ shape؟</b> لأن آخر chunk ممكن يبقى نصف مليان (حجم الـ chunk مش بيقسم حدود الـ document). لو الـ reader مشي لآخر الـ dataset هيدخل على tokens أصفار (zero-padded) والموديل يتعلّم يتوقع صفر. فبنخزّن الرقم الحقيقي كـ attribute ونخلي الـ reader يقف عنده.</p>
+  <div class="note ai"><strong>سيناريو:</strong> الـ shard فيه 10,000 token حقيقي وchunk=4096. الـ dataset هيبقى حجمه 10,000 (لأن آخر write كان حجمه الفعلي، في كود الدرس) لكن في تصميم تاني ممكن يتملي لـ 12,288. الـ attribute <span class="ltr">token_count=10000</span> هي الحقيقة في الحالتين.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: ماشي في الـ pipeline خطوة خطوة</h3>
+      <p>دوس «التالي» وشوف كل مرحلة: JSONL، tokenize، buffer، resize، write، close، <span class="ltr">shards.json</span>، وبعدين الـ window.</p>
+    </div>
+    <div class="instrument"><div id="d471-lab2"></div></div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d471-read">
+  <div class="station-head"><span class="tag">04</span><h2>القراءة: chunked read و<span class="ltr">swmr</span></h2></div>
+  <p>وقت التدريب، كل worker بيفتح نصيبه من ملفات HDF5 بـ <code>swmr=True</code> وبيطلب <span class="ltr">tokens[start:stop]</span>. h5py <b>مش بيعمل memory-map</b> للملف: بيقرا chunks كاملة عن طريق الـ HDF5 chunk cache والـ OS page cache، وبعدين ينسخ الـ hyperslab المطلوب بس. الـ worker ما بيحمّلش الملف كله أبدًا: الـ slice بيتنسخ في الـ batch buffer، وبعدها في tensor الـ training الـ pinned-memory وقت الـ batch. الـ hot path فيه syscall واحد لكل انتقال chunk، والباقي RAM.</p>
+  <div class="note"><strong>تنبيه على الاسم:</strong> الكلاس في الكود اسمه <span class="ltr">MmapTokenStore</span> بس الدرس نفسه بيقول إن الاسم للراحة؛ هو بيقرا chunks مش mmap.</div>
+  <h3>SWMR: Single-Writer-Multiple-Reader</h3>
+  <p>عشان الـ readers يقروا بأمان والـ writer بيكتب: الـ writer يفتح الملف بـ <code>libver="latest"</code>، يعمل كل الـ datasets الأول، وبعدين يفعّل <code>file.swmr_mode = True</code>، وبعد كل resize يعمل <code>dataset.flush()</code>. الـ readers يفتحوا بـ <code>swmr=True</code>. لو نسيت <code>libver="latest"</code> أو فعّلت SWMR بعد تغييرات هيكلية، تجيلك أخطاء «file is locked».</p>
+  <div class="note ai"><strong>انتبه (ممكن يلخبطك):</strong> كويز الدرس بيقول إن <span class="ltr">swmr=True</span> بتتفتح على جنب الـ <b>reader</b> مش الـ writer. بس كود الـ writer في الدرس بيفعّل <span class="ltr">file.swmr_mode = True</span> بعد إنشاء الـ dataset (ده الجزء الخاص بالـ writer من البروتوكول). الاتنين صح: الـ writer بيحتاج <span class="ltr">libver="latest"</span> + تفعيل الـ mode، والـ readers بيفتحوا بـ <span class="ltr">swmr=True</span>. الجملة اللي تحفظها: «الـ reader بيفتح swmr=True، والـ writer بيفتح latest ويفعّل الـ mode بعد ما يكمّل الهيكل».</div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d471-window">
+  <div class="station-head"><span class="tag">05</span><h2>الـ Sliding-window dataloader وقواعد الـ packing</h2></div>
+  <p>الـ dataloader هو الوحيد اللي يعرف طول الـ training sequence. بيختار <b>start index عشوائي</b> في الـ global token stream، بيقرا <span class="ltr">window_size + 1</span> token، وبيرجّع:</p>
+  <div class="formula">input = tokens[:-1]       target = tokens[1:]      ← إزاحة بواحد (next-token prediction)</div>
+  <p>حدود الـ documents <b>مش مفروضة</b>: الـ window ممكن يعدّي على documentين، مع <span class="ltr">boundary_token_id</span> صريح بينهم عشان الموديل يتعلّم يستخدم الفاصل. ده الـ packing القياسي. وده كمان اللي المبتدئ بينساه، فيطلع corpus فيه 8% boundary tokens و92% نص طبيعي (مثال الدرس).</p>
+  <div class="note"><strong>تشبيه:</strong> فكّر في شريط فيلم طويل ملزوق فيه مشاهد كتير. بتقص منه شرائح بطول ثابت. الـ boundary token هو «علامة القطع» بين المشاهد، من غيرها الموديل هيفتكر إن الجملة الأولى في مشهد بتكمّل آخر جملة في اللي قبله.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: window، input، target</h3>
+      <p>حرّك الـ window على stream صغير فيه boundary token (الرقم 0 بالأحمر). شوف الـ input والـ target كإزاحة بواحد.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ target دايمًا هو الـ input متزاح خانة. وآخر token في الـ window بيظهر في الـ target بس، وأول token في الـ input بيظهر في الـ input بس.</div>
+    </div>
+    <div class="instrument"><div id="d471-lab3"></div></div>
+  </div>
+  <h3>معمل ٤: الـ chunk ولا الـ window؟</h3>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <p>الـ trainer بيقرا <span class="ltr">window_size + 1</span> token لكل عينة. المنحنى بيوريك <b>متوسط عدد الـ chunks اللي كل عينة بتلمسها</b> حسب نسبة حجم الـ chunk للـ window. الدرس بيقول: «اضبط الـ chunk على مضاعف للـ window، وإلا الـ throughput بينقص للنص لأن كل عينة بتلمس chunkين».</p>
+      <div class="note ai"><strong>ملاحظة مني:</strong> الصيغة اللي في المعمل تقريب بسيط (بفرض start عشوائي موزع بانتظام)، هدفها تديك الإحساس بالاتجاه، مش رقم قياس حقيقي. القياس الحقيقي هو تمرين ٤ تحت.</div>
+    </div>
+    <div class="instrument"><div id="d471-lab4"></div></div>
+  </div>
+</section>
+
+<!-- STATION 6: production -->
+<section id="d471-prod">
+  <div class="station-head"><span class="tag">06</span><h2>٤ أنماط production</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>النمط</th><th>الفكرة</th></tr>
+    <tr><td>Chunk size = الـ read المعتاد</td><td>خلّي الـ chunk مضاعف لـ <span class="ltr">window_size</span> عشان القراءات تبقى page-cache aligned. لو مش متطابقين، كل عينة بتلمس chunkين والـ throughput بينقص للنص.</td></tr>
+    <tr><td>Token count في الـ attributes</td><td>الـ reader يقف عند <span class="ltr">token_count</span> الحقيقي، مش آخر الـ dataset.</td></tr>
+    <tr><td>sha256 لكل shard</td><td>الـ trainer يتحقق من كل الـ shards بالتوازي قبل البداية. الـ hash الغلط بيوقّف التدريب بدري، مش في epoch ٣ بعد ١٦ ساعة.</td></tr>
+    <tr><td><span class="ltr">swmr=True</span> + <span class="ltr">libver="latest"</span></td><td>الـ writer يعمل كل الـ datasets قبل ما يفعّل SWMR، وبعدها يعمل <span class="ltr">flush()</span> بعد كل resize.</td></tr>
+  </table></div>
+  <p>وفي الاستخدام الفعلي: <b>HDF5 واحد لكل source shard</b>، و<b>boundary token</b> جزء من الـ vocab وهو الـ token الوحيد اللي بيحقنه الـ dataloader (والـ loss ممكن يعمله mask لو عايز الموديل يتجاهله)، و<b><span class="ltr">shards.json</span> هو مصدر الحقيقة</b>: shard جديد = اكتب الـ HDF5، احسب الـ sha256، أضف entry.</p>
+</section>
+
+<!-- STATION 7: code -->
+<section id="d471-code">
+  <div class="station-head"><span class="tag">07</span><h2>الكود: ٥ milestones، كل واحد وله check</h2></div>
+  <p>الأول جهّز البيئة وشغّل الدرس زي ما هو عشان تشوف شكل الخرج:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+pip install h5py numpy
+python3 phases/19-capstone-projects/43-hdf5-tokenized-corpus/code/main.py
+<span class="c"># المتوقع: الـ script يخلص بـ exit code صفر ويطبع checksum لكل batch</span></pre></div>
+  <p><b>القاعدة:</b> افتح ملف جديد <code>my_hdf5.py</code> واكتب الخطوات دي بإيدك. متعملش Copy غير لو اتزنقت وعايز تقارن بالأصل. الكود اللي تحت مقتطف ومبسّط من <code>code/main.py</code>.</p>
+
+  <h3>Milestone 1: الـ Tokenizer (byte-level)</h3>
+  <p>Vocabulary بسيط: <span class="ltr">0</span> = boundary token، و<span class="ltr">1..256</span> = bytes (مزاحة بواحد عشان 0 محجوز). مش BPE حقيقي، بس كفاية نشوف القصة.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>BOUNDARY_TOKEN_ID = 0
+
+class Tokenizer:
+    BYTE_OFFSET = 1            <span class="c"># نزيح كل byte بواحد عشان 0 يفضل للـ boundary</span>
+    def __init__(self):
+        self.vocab_size = 257  <span class="c"># 256 byte + boundary</span>
+
+    def encode(self, text):
+        if not text:
+            return []
+        return [self.BYTE_OFFSET + b for b in text.encode("utf-8")]
+
+    def decode(self, ids):
+        data = [int(i) - self.BYTE_OFFSET for i in ids if int(i) &gt;= self.BYTE_OFFSET]
+        return bytes(data).decode("utf-8", errors="replace")</pre></div>
+  <p><b>Check:</b> <code>Tokenizer().decode(Tokenizer().encode("أهلا hi"))</code> لازم يرجّع النص الأصلي. جرّب كمان نص عربي: الحروف العربية بتاخد أكتر من token لأن كل حرف 2 bytes في UTF-8.</p>
+
+  <h3>Milestone 2: الـ HDF5ShardWriter (buffer ثم extend)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import hashlib, h5py, numpy as np
+
+class HDF5ShardWriter:
+    def __init__(self, path, chunk_size=4096):
+        self.path, self.chunk_size = path, chunk_size
+        self._buffer = []                 <span class="c"># الـ tokens اللي لسه ما اتكتبوش</span>
+        self._token_count = 0
+        self._document_count = 0
+        self._hasher = hashlib.sha256()   <span class="c"># هاش على bytes الـ tokens</span>
+
+    def __enter__(self):
+        self._file = h5py.File(self.path, "w", libver="latest")
+        self._dataset = self._file.create_dataset(
+            "tokens", shape=(0,), maxshape=(None,),   <span class="c"># يكبر بلا حدود</span>
+            chunks=(self.chunk_size,), dtype=TOKEN_DTYPE)
+        self._file.swmr_mode = True       <span class="c"># بعد ما الـ dataset اتعمل</span>
+        return self
+
+    def add_document(self, token_ids):
+        self._document_count += 1
+        for t in token_ids:
+            self._buffer.append(int(t))
+            if len(self._buffer) &gt;= self.chunk_size:
+                self._flush_buffer(final=False)
+
+    def _flush_buffer(self, final):
+        size = len(self._buffer) if final else self.chunk_size
+        chunk = np.asarray(self._buffer[:size], dtype=TOKEN_DTYPE)
+        new_total = self._token_count + size
+        self._dataset.resize((new_total,))                 <span class="c"># resize بالظبط بحجم الـ chunk</span>
+        self._dataset[self._token_count:new_total] = chunk # اكتب في المدى الجديد
+        self._dataset.flush()                              <span class="c"># عشان الـ readers يشوفوا</span>
+        self._hasher.update(chunk.tobytes())
+        self._token_count = new_total
+        self._buffer = self._buffer[size:]
+
+    def __exit__(self, *exc):
+        if self._buffer:
+            self._flush_buffer(final=True)                 <span class="c"># الباقي</span>
+        self._dataset.attrs["token_count"] = self._token_count
+        self._dataset.attrs["document_count"] = self._document_count
+        self._dataset.attrs["sha256"] = self._hasher.hexdigest()
+        self._file.close()</pre></div>
+  <p>(<span class="ltr">TOKEN_DTYPE</span> معرّف في أول الملف الأصلي. افتح الأصل وشوف نوعه.)</p>
+  <p><b>Check:</b> اكتب shard فيه 10,000 token بـ chunk=4096 ثم افتحه بـ h5py: <code>f["tokens"].attrs["token_count"]</code> لازم تساوي 10000 وتتأكد إن <code>len(f["tokens"])</code> بيطابقها في الكود ده. وشغّل الكتابة مرتين: الـ sha256 لازم يبقى نفسه (deterministic).</p>
+
+  <h3>Milestone 3: الـ pipeline و<span class="ltr">shards.json</span></h3>
+  <p>الـ <span class="ltr">ShardedTokenizationPipeline</span> بياخد documents لكل shard، بيرميها على writer، وبيكتب الـ index. الفكرة (مبسطة):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def write_shard(self, shard_id, documents):
+    path = self.output_dir / f"{shard_id}.h5"
+    with HDF5ShardWriter(path, self.chunk_size) as w:
+        for doc in documents:
+            w.add_document(self.tokenizer.encode(doc))
+            w.add_boundary()           <span class="c"># فاصل بعد كل document</span>
+    return w.result(shard_id)          <span class="c"># path, token_count, document_count, sha256 ...</span></pre></div>
+  <p><b>Check:</b> بعد ما تكتب shardين، افتح <span class="ltr">shards.json</span>: لازم تلاقي entry لكل shard فيها <span class="ltr">token_count</span> و<span class="ltr">sha256</span>.</p>
+
+  <h3>Milestone 4: الـ token store و<span class="ltr">get_slice</span></h3>
+  <p>الـ store بيفتح كل الـ shards، بيحسب الـ global offsets من الـ index، ويديك API واحد: <code>get_slice(start, stop)</code> بيرجّع NumPy array حتى لو الـ slice بيعدّي على shardين. اكتبها بنفسك: الفكرة إنك تحسب offset تراكمي لكل shard وتقصّ آخر shard عند <span class="ltr">token_count</span>.</p>
+  <p><b>Check:</b> <code>store.get_slice(0, store.total_tokens)</code> لازم يساوي دمج الـ shards بالترتيب، وطوله = مجموع الـ token_counts.</p>
+
+  <h3>Milestone 5: الـ SlidingWindowDataloader</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class SlidingWindowDataloader:
+    def __init__(self, store, window_size=128, batch_size=4, seed=0):
+        self.store, self.window_size, self.batch_size = store, window_size, batch_size
+        self._random = random.Random(seed)             <span class="c"># seed ثابت = نفس الـ batches</span>
+        self._max_start = store.total_tokens - window_size - 1
+
+    def _sample_window(self):
+        start = self._random.randint(0, self._max_start)
+        chunk = self.store.get_slice(start, start + self.window_size + 1)
+        return chunk[:-1], chunk[1:]                   <span class="c"># input و target (إزاحة بواحد)</span>
+
+    def __iter__(self):
+        while True:
+            inputs  = np.empty((self.batch_size, self.window_size), dtype=TOKEN_DTYPE)
+            targets = np.empty((self.batch_size, self.window_size), dtype=TOKEN_DTYPE)
+            for row in range(self.batch_size):
+                inputs[row], targets[row] = self._sample_window()
+            yield inputs, targets</pre></div>
+  <p>(القيمة الافتراضية للـ window في الأصل اسمها <span class="ltr">DEFAULT_WINDOW_SIZE</span>. افتح الأصل وشوفها.) <b>Check:</b> كل batch شكله <span class="ltr">(batch_size, window_size)</span> للـ input والـ target، و<code>targets[:, :-1] == inputs[:, 1:]</code> دايمًا.</p>
+  <div class="note ai"><strong>الـ demo الأصلي:</strong> بيبني corpus صغير في الذاكرة، يـtokenize في shardين، يفتحهم للقراءة، يشغّل الـ dataloader لـ ١٠ batches ويطبع الشكل والـ checksum.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d471-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li>أضف flag <span class="ltr">--compression gzip</span> للـ writer وقِس تكلفة الـ throughput على الـ demo corpus. دافع عن الـ default اللي تختاره.
+      <details><summary>تلميح</summary>في h5py: <code>create_dataset(..., compression="gzip")</code>. قِس الوقت بـ <code>time.perf_counter()</code> وحجم الملف بـ <code>os.path.getsize</code> في الحالتين. الـ trade-off: حجم أقل على الديسك مقابل CPU لفك الضغط في كل قراءة. القراءة هي الـ hot path، فالأغلب إن الـ default الأحسن هو «من غير ضغط» لو الديسك سريع.</details></li>
+    <li>أضف seed حتمي للـ dataloader وتأكد إن تشغيلين بنفس الـ seed بيطلّعوا نفس الـ batches.
+      <details><summary>تلميح</summary>الكود الأصلي فيه <code>random.Random(seed)</code> فعلًا. اكتب test: اعمل dataloaderين بنفس الـ seed، خد ٥ batches من كل واحد، وقارن بـ <code>np.array_equal</code>. وبعدين جرّب seed مختلف وتأكد إنهم بيختلفوا.</details></li>
+    <li>أضف mode <span class="ltr">--validate</span> بيقرا كل shard، يحسب الـ sha256 على الـ tokens من جديد ويقارنه بـ <span class="ltr">shards.json</span>. الـ CI يشغّله قبل التدريب.
+      <details><summary>تلميح</summary>اقرا <code>f["tokens"][:token_count]</code> (متنساش القص عند <span class="ltr">token_count</span>)، واعمل <code>hashlib.sha256(arr.tobytes()).hexdigest()</code>. لازم يطابق اللي اتسجّل. جرّب تبوّظ byte في ملف وتتأكد إن الـ validate بيفشل.</details></li>
+    <li>قارن throughput الـ dataloader لما الـ chunk = الـ window ونصه وضعفه. اكتب تقرير عن تأثير الـ page cache.
+      <details><summary>تلميح</summary>ثبّت الـ seed والـ batch size وعدد الـ batches. شغّل كل إعداد مرتين: الأولى بتسخّن الـ cache والتانية هي اللي بتقيسها. اعمل نفس القياس بعد تفريغ الـ cache لو تقدر. توقّع (من الدرس) إن الـ chunk الأصغر من الـ window هيبقى الأبطأ.</details></li>
+    <li>أضف flag <span class="ltr">--max-document-tokens</span> بيقصّ الـ documents الطويلة جدًا وقت الكتابة. دافع عن الـ trade-off ضد القرار وقت القراءة.
+      <details><summary>تلميح</summary>القص وقت الكتابة بيوفّر مساحة وبيبسّط الـ reader، بس بيرمي داتا للأبد (ما تقدرش تغيّر رأيك من غير ما تعيد الـ tokenization). القرار وقت القراءة مرن، بس بيدفع تكلفة قراءة tokens مش هتستخدمها.</details></li>
+    <li><b>تمرين مني · مشروع صغير كامل:</b> اعمل script <span class="ltr">build_corpus.py</span> بياخد مجلد JSONL، يشغّل الـ pipeline، يكتب <span class="ltr">shards.json</span>، يعمل <span class="ltr">--validate</span>، ويطبع جدول: shard، tokens، documents، نسبة الـ boundary tokens من الإجمالي.
+      <details><summary>الإجابة المقترحة</summary>نسبة الـ boundary = عدد الـ documents ÷ عدد الـ tokens (لأن فيه boundary واحد لكل document). لو النسبة عالية (مثلًا documents قصيرة جدًا) يبقى تدريبك بيصرف قدر ملحوظ من الـ tokens على الفواصل. اطبع تحذير لو عدّت نسبة اخترتها (مثلًا 5%).</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d471-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: أخطاء، وفين ده بيظهر في الـ LLMs</h2></div>
+  <ul class="checklist">
+    <li><b>تنسى <span class="ltr">flush()</span> بعد كل resize:</b> الـ readers (SWMR) ممكن يشوفوا حجم الـ dataset من غير البيانات اللي اتكتبت. الدرس بيعملها بعد كل write.</li>
+    <li><b>تحسب الطول من <span class="ltr">len(dataset)</span> بدل <span class="ltr">token_count</span>:</b> لو ملفك فيه padding في آخر chunk، الموديل هيتعلّم أصفار. دايمًا اقصّ عند الـ attribute.</li>
+    <li><b>الـ boundary token في الـ loss:</b> قرّر صراحة: الموديل يتعلّم يتوقعه (يتعلم الفاصل) ولا الـ loss يعمله mask؟ المهم تقرّر بوعي.</li>
+    <li><b>الـ seed بيتعمل لكل worker:</b> لو كل الـ workers بنفس الـ seed هيطلعوا نفس الـ windows. في التدريب الحقيقي الـ seed لازم يتوزع حسب الـ worker/rank.</li>
+    <li><b>الـ dtype بيفرق في الحجم:</b> لو الـ vocab أقل من 65,536 تقدر تخزّن uint16 بدل int32 وتوفّر نص الحجم. وفي مشروعك لازم الـ dtype يكفي أكبر token id.</li>
+    <li><b>فين بيظهر:</b> أي pretraining حقيقي (نصوص مرصوصة packed في stream طويل بيتقطع لـ sequences بطول الـ context) بيعتمد على نفس الفكرة، وعشان كده كل الـ loaders الكبيرة بتكتب tokens في binary shards ثابتة بدل JSON.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d471-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d471-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d471-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d471-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم ليه JSONL مش مناسب للـ trainer وHDF5 مناسب</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم buffer-then-extend وجرّبته في معمل ١</label></li>
+    <li><label><input type="checkbox" data-ck="3"> كتبت الـ Tokenizer والـ Writer ونجح الـ check بتاعهم</label></li>
+    <li><label><input type="checkbox" data-ck="4"> الـ dataloader بيطلّع input/target مزاحين بواحد</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Chunked integer dataset</td><td>تخزين token streams لـ pretraining بأي حجم</td></tr>
+    <tr><td>Sharding + <span class="ltr">shards.json</span></td><td>تحقق من الـ corpus، resume، والتوزيع على workers</td></tr>
+    <tr><td>Sliding window + shift-by-one</td><td>next-token prediction في كل LLM</td></tr>
+    <tr><td>Boundary token</td><td>الفاصل بين documents مرصوصين في نفس الـ sequence</td></tr>
+    <tr><td>sha256 لكل shard</td><td>اكتشاف الداتا الفاسدة قبل ما التدريب يبدأ</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Cosine LR with Linear Warmup: الـ schedule اللي بيستهلك الـ dataloader ده وبيحدد الـ learning rate في كل خطوة.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F43-hdf5-tokenized-corpus" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/43-hdf5-tokenized-corpus</span>
+</footer>
+
+<script>
+(function(){
+const N=471,$=id=>document.getElementById(id),css=AI.css,L=AI.lab;
+const root=$('d471-roadmap').closest('.day');
+const rm=$('d471-roadmap');
+for(let i=40;i<=50;i++){const s=document.createElement('span');s.textContent=i;if(i===43)s.className='now';rm.appendChild(s)}
+
+// Lab 1: resizes
+L.calc($('d471-lab1'),{
+  params:[
+    {k:'tokens',label:'total tokens',min:10000,max:2000000,step:10000,v:500000},
+    {k:'chunk',label:'chunk size',min:512,max:65536,step:512,v:4096}
+  ],
+  compute:p=>{
+    const full=Math.floor(p.tokens/p.chunk),res=p.tokens%p.chunk,rs=Math.ceil(p.tokens/p.chunk);
+    return [['resizes (token-by-token)',p.tokens.toLocaleString()],['resizes (buffered)',rs.toLocaleString()],['full chunks',full.toLocaleString()],['residual tokens (final write)',res.toLocaleString()],['reduction ×',(p.tokens/rs).toFixed(0)]];
+  },
+  note:p=>p.tokens%p.chunk===0?'الـ shard بيخلص على حدود chunk بالظبط، مفيش residual':'آخر write جزئي: لازم token_count attribute يقول الطول الحقيقي'
+});
+
+// Lab 2: pipeline flow
+L.flow($('d471-lab2'),{
+  nodes:[
+    {id:'j',label:'JSONL docs',x:0,y:.15},{id:'t',label:'Tokenize',x:.33,y:.15},{id:'b',label:'Buffer',x:.66,y:.15},{id:'r',label:'Resize+Write',x:1,y:.15},
+    {id:'c',label:'Close+attrs',x:1,y:.85},{id:'s',label:'shards.json',x:.5,y:.85},{id:'w',label:'Window loader',x:0,y:.85}
+  ],
+  edges:[['j','t','docs'],['t','b','ids'],['b','r','chunk full'],['r','b','next'],['r','c','end'],['c','s','sha256'],['s','w','offsets']],
+  steps:[
+    {active:['j'],text:'بنبدأ من documents نصية (JSONL) جاية من الـ downloader.'},
+    {active:['j','t'],edges:[['j','t']],text:'الـ tokenizer بيحوّل النص لـ ids (byte-level هنا).'},
+    {active:['t','b'],edges:[['t','b']],text:'الـ ids بتتجمع في buffer في الذاكرة بحجم الـ chunk.'},
+    {active:['b','r'],edges:[['b','r']],text:'لما الـ buffer يمتلي بالظبط: resize بحجم الـ chunk، اكتب، flush، حدّث الـ sha256.'},
+    {active:['r','c'],edges:[['r','c']],text:'آخر الـ shard: اكتب الـ residual، وسجّل token_count وdocument_count وsha256 كـ attributes.'},
+    {active:['c','s'],edges:[['c','s']],text:'ضيف entry للـ shard في shards.json.'},
+    {active:['s','w'],edges:[['s','w']],text:'الـ trainer بيقرا shards.json، بيحسب الـ global offsets، والـ dataloader بيسحب windows عشوائية.'}
+  ]
+});
+
+// Lab 3: sliding window
+const stream=[5,9,12,0,7,3,8,0,14,2,6,11,0,4,10,1,13,0,9,5];
+L.stepper($('d471-lab3'),{
+  height:230,
+  steps:[0,2,5,8,11].map(s=>({title:'start = '+s,text:'الـ window بياخد 9 tokens من الـ index '+s+': أول 8 هم الـ input وآخر 8 هم الـ target (إزاحة بواحد).'})),
+  draw:(ctx,W,H,i)=>{
+    const start=[0,2,5,8,11][i],win=8,cw=Math.min(30,(W-20)/stream.length),x0=10,ink=css('--ink');
+    ctx.font='12px JetBrains Mono, monospace';ctx.textAlign='center';
+    function row(y,from,to,col,label){
+      ctx.fillStyle=ink;ctx.textAlign='left';ctx.fillText(label,x0,y-6);ctx.textAlign='center';
+      for(let k=from;k<to;k++){const x=x0+(k)*cw;
+        ctx.globalAlpha=.25;ctx.fillStyle=stream[k]===0?css('--bad'):col;ctx.fillRect(x,y,cw-2,24);ctx.globalAlpha=1;
+        ctx.strokeStyle=stream[k]===0?css('--bad'):col;ctx.strokeRect(x,y,cw-2,24);
+        ctx.fillStyle=ink;ctx.fillText(stream[k],x+cw/2-1,y+16);}
+    }
+    row(40,0,stream.length,css('--muted'),'stream (0 = boundary)');
+    ctx.strokeStyle=css('--ok');ctx.lineWidth=2;ctx.strokeRect(x0+start*cw-2,36,(win+1)*cw+2,32);ctx.lineWidth=1;
+    row(110,start,start+win,css('--vec-a'),'input = tokens[:-1]');
+    row(175,start+1,start+win+1,css('--vec-b'),'target = tokens[1:]');
+  }
+});
+
+// Lab 4: chunk vs window
+L.plot($('d471-lab4'),{
+  x:[0.25,8],y:[1,6],
+  params:[{k:'win',label:'window_size',min:128,max:4096,step:128,v:2048}],
+  curves:[{f:(x,p)=>1+p.win/(x*p.win),label:'chunks touched per sample',color:'a'}],
+  marks:p=>[{x:1,y:1+p.win/p.win,label:'chunk = window'},{x:2,y:1.5,label:'chunk = 2×window'}],
+  readout:p=>[['window',p.win],['chunk = window → chunks/sample ≈',(1+p.win/p.win).toFixed(2)],['chunk = 2×window → ≈',(1+0.5).toFixed(2)]],
+  note:p=>'لما الـ start عشوائي، chunk = window معناها العينة غالبًا بتلمس chunkين (≈2). كل ما الـ chunk يكبر نسبة للـ window المتوسط بيقرّب من 1. ولو الـ start متحاذي مع حدود الـ chunk بيبقى 1 بالظبط.'
+});
+
+// quiz
+AI.quiz($('d471-quizBox'),[
+ ['ليه نخزّن الـ tokenized corpus في HDF5 chunked وresizable بدل JSONL؟',['لأن HDF5 لوجو أصغر','لأن JSONL deprecated','لأسباب عشوائية','HDF5 بيدّي قراءات chunked وinteger-only ومناسبة للـ cache مع وصول عشوائي O(1)، وJSONL بيحط الـ parser على كل قراءة في الـ hot path'],3,'الـ dataloader عايز stream مسطّح من الـ tokens بـ slices قابلة للعنونة، وHDF5 بيدّيك ده بشكل native.'],
+ ['إيه القاعدة الصح لضبط الـ chunk بالنسبة لـ window_size؟',['أكبر chunk يدخل في الـ RAM','دايمًا chunk=1','خلّي الـ chunk مضاعف لـ window_size عشان كل عينة تقع في chunk أو اتنين والقراءات تفضل page-cache aligned','chunk بطول الـ document'],2,'الـ chunks غير المتطابقة بتنقّص الـ throughput للنص لأن كل عينة بتعدّي على chunkين بدل واحد.'],
+ ['ليه token_count بيتخزن كـ attribute ومش بيتستنتج من shape الـ dataset؟',['لأن آخر chunk ممكن يبقى نصف مليان؛ من غير الـ attribute الـ reader هيعدّي نهاية الحقيقة لـ tokens أصفار والموديل يتعلم يتوقع صفر','لأن قراءة الـ shape بطيئة','لأن الـ attributes إجبارية','لأنها حلوة'],0,'الـ chunked layout أحيانًا بيسيب خانات في الآخر، والـ attribute بيحمل الحقيقة.'],
+ ['إيه اللي بتحققه الـ writer لما يعمل buffer للـ tokens لحد chunk_size قبل كل resize؟',['الكتابة contiguous ومتحاذية مع الـ chunk، فمفيش fragmentation زي اللي بيحصل مع resize لكل token','بتقلل حجم الـ vocabulary','بتسرّع sha256','بتوفر شوية CPU cycles'],0,'buffer-then-extend بحجم الـ chunk هو الطريقة الوحيدة اللي بتخلي chunks الـ HDF5 contiguous على الديسك.'],
+ ['ليه swmr=True بيتفتح على جنب الـ reader مش الـ writer (حسب كويز الدرس)؟',['أمان','تفضيل عشوائي','أداء','وضع Single-Writer-Multiple-Reader بيخلّي الـ workers يشاركوا الملف بأمان؛ الـ writer مش محتاج mode خاص عشان بيكتب shard واحد في كل process'],3,'خلط الـ modes هو أشهر سبب لأخطاء «file is locked». وللتوضيح: كود الـ writer بيحتاج libver="latest" ويفعّل swmr_mode بعد ما يخلّص هيكل الملف.'],
+ ['الـ boundary token id موجود عشان يوضّح إيه؟',['الضغط','حدود حجم الـ vocabulary','داتا عشوائية','حدود الـ documents جوه الـ window المرصوص، فالموديل مش بيتدرب بصمت على دمج documents مع بعض'],3,'من غير boundary صريح الموديل بيتعلم الحدود كـ noise؛ ومعاه الحدود بتبقى فاصل مفيد.'],
+ ['(سؤال مني) الـ window بياخد window_size + 1 token من الـ stream. ليه +1؟',['عشان الـ boundary','لأن الـ input والـ target كل واحد بطول window_size ومزاحين بواحد، فمحتاجين window_size+1 tokens مصدر','عشان الـ padding','عشان الـ sha256'],1,'input = tokens[:-1] وtarget = tokens[1:]، يعني كل واحد window_size token من window_size+1 مصدر.'],
+ ['(سؤال مني) الـ trainer قرا آخر الـ dataset بدل ما يقف عند token_count وفيه padding أصفار. العَرَض؟',['الـ loss هيبقى NaN دايمًا','الموديل بيتعلم يتوقع الصفر (الـ padding) بشكل مصطنع ويبوّظ الإحصائيات','مفيش أي أثر','الملف هيتحذف'],1,'الأصفار بتتحسب كـ داتا حقيقية، فالموديل بيشوف نمط مش موجود في النص.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+})();
+</script>
+</div>

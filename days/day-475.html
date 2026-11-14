@@ -1,0 +1,492 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 47 · Checkpoint Save and Resume</span>
+  <h1>اليوم ٤٧٥: التدريب اتقطع؟ كمّل من نفس النقطة بالظبط</h1>
+  <p class="lede">تخيّل تدريب ماشي ١١ ساعة والـ cluster يعمل reboot. من غير checkpoint تبدأ من الصفر. وحتى لو الـ weights اتحفظت، من غير حالة الـ optimizer وحالة الـ RNG الـ loss curve هتبقى منحنى تاني خالص. النهاردة هتبني: حفظ كامل للحالة، <b>atomic save</b> (الملف مبيبوظش حتى لو الجهاز اتقفل في النص)، <b>sharded checkpoint</b> بـ sha256 لكل shard، و<b>resume</b> في نص الـ epoch بنفس الـ loss بالظبط.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (PyTorch)</b></span>
+    <span>قبله: <b>Gradient Accumulation</b></span>
+    <span>بعده: <b>Distributed DDP and FSDP</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects</span>
+    <div class="roadmap" id="d475-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d475-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه المعادلة اللي بتحسب الـ effective batch؟
+      <details><summary>الإجابة</summary><span class="ltr">effective_batch = micro_batch × accum_steps × world_size</span>. وعلى جهاز واحد الـ world_size = 1.</details></li>
+    <li>ليه بنقسم الـ loss على <span class="ltr">accum_steps</span> في كل micro-batch؟
+      <details><summary>الإجابة</summary>لأن PyTorch بيجمع الـ gradients في <span class="ltr">param.grad</span>. من غير القسمة المجموع بيطلع N مرة أكبر، والـ optimizer بياخد خطوات أكبر من اللازم.</details></li>
+    <li>الـ optimizer بيعمل step كام مرة في نافذة الـ accumulation؟ وليه ده يهم الـ checkpoint النهاردة؟
+      <details><summary>الإجابة</summary>مرة واحدة بس بعد آخر micro-batch. وعشان كده الـ <span class="ltr">step</span> اللي بنحفظه في الـ checkpoint لازم يعدّ effective steps، والـ optimizer state بيتقدم بنفس العدّ.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين اللي فوق</div>
+    <div><b>20 min</b>المشكلة + الخمس سلال (buckets) + المعمل ١</div>
+    <div><b>15 min</b>الـ atomic save + المعمل ٢</div>
+    <div><b>10 min</b>الـ sharded + الـ resume + المعمل ٣ و٤</div>
+    <div><b>25 min</b>الكود خطوة خطوة وتشغيله</div>
+    <div><b>15 min</b>التمارين + إضافتي + الكويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d475-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: التدريب بياخد ١٨ ساعة والـ scheduler بيدّيك ٤ بس</h2></div>
+  <p>عندك job تدريب مفروض ياخد ١٨ ساعة. الـ scheduler بتاع الـ cluster بيحدد لكل allocation أقصى ٤ ساعات، يعني التدريب أصلًا سلسلة من jobs بتكمّل بعض. وفجأة الـ cluster بيعمل reboot في الساعة ١١ عشان حد وافق على kernel upgrade. من غير checkpoints بتبدأ من الصفر.</p>
+  <p>ومن غير <b>resume</b> صح بتخسر كمان الـ optimizer state اللي اتعلّمه في أول ١١ ساعة. حتى لو الـ weights نجت، الـ AdamW moments راحت، والـ step اللي بعدها بتتحرك في اتجاه التدريب كان عدّاه من بدري.</p>
+  <div class="note"><strong>تشبيه:</strong> لعبة فيديو طويلة. الـ save الصح بيحفظ مكانك، وصحتك، ومخزونك، والـ seed بتاع الأعداء العشوائيين. لو حفظت المكان بس، هتلاقي نفسك في نفس الغرفة بس بعدو مختلف، وبنص صحة. نفس الفكرة: الـ weights لوحدها مش كفاية.</div>
+  <p>الـ artifact الصح ملف واحد فيه كل اللي محتاجه عشان تكمّل: parameters الموديل، حالة الـ optimizer، حالة الـ scheduler، تاريخ الـ loss (للرسم)، عدّادات الـ step والـ epoch والـ batch-in-epoch، وحالة الـ RNG لكل مصدر عشوائية.</p>
+
+  <h3>الخمس سلال (state buckets)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>السلة</th><th>ليه مهمة</th></tr>
+    <tr><td>Model</td><td>الـ weights والـ buffers. دي «الموديل نفسه».</td></tr>
+    <tr><td>Optimizer</td><td>الـ momentum والـ adaptive moments. من غيرهم الـ step الجاية مسألة تحسين مختلفة.</td></tr>
+    <tr><td>Scheduler</td><td>إحنا فين على منحنى الـ learning rate. الـ cosine بالذات بيهتم.</td></tr>
+    <tr><td>Train counters</td><td>step وepoch وbatch-in-epoch، ومعاهم تاريخ الـ loss اللي بيرسم الـ dashboard.</td></tr>
+    <tr><td>RNG state</td><td>الحتمية (determinism) للـ dropout وخلط الداتا وأي sampling جوه الموديل.</td></tr>
+  </table></div>
+  <p>وبيتضاف حقلين صغيرين: <span class="ltr">wall_saved_at</span> (وقت الحفظ) و<span class="ltr">schema</span> (اسم نسخة الصيغة، زي <span class="ltr">ckpt.v1</span>) وده الـ hook اللي بتعمل بيه migration بعدين من غير ما تكسر الـ runs القديمة.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: إيه اللي بيتحفظ؟</h3>
+      <p>اضغط «التالي» وشوف كل سلة بتدخل الـ payload. الـ checkpoint هو الـ payload ده بعد ما يتكتب بشكل atomic.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ RNG state ليه سلة لوحده، لأن الـ seed بس مش بيحفظ «إحنا وصلنا فين» في سلسلة الأرقام العشوائية.</div>
+    </div>
+    <div class="instrument"><div id="d475-lab1"></div></div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d475-atomic">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Atomic Save: الكتابة على ملف مؤقت وبعدين rename</h2></div>
+  <p>لو كتبت الـ checkpoint على اسم الملف النهائي مباشرة، وجهاز اتقفل وانت في النص، الملف هيبقى نص مكتوب (corrupt) والـ resume هيقرا زبالة. الحل: اكتب في <b>ملف مؤقت</b> في نفس الفولدر، وبعدين <span class="ltr">os.replace</span> يبدّله باسم الملف النهائي. الـ rename atomic على أنظمة POSIX: يا إما حصل كله يا إما ما حصلش.</p>
+  <div class="note"><strong>تشبيه:</strong> بدل ما تمسح السبورة وتكتب عليها قدام الناس (ولو الكهربا اتقطعت هيفضل نص الكلام)، اكتب على ورقة جنب السبورة، ولما تخلص بدّل الورقة بالسبورة في حركة واحدة.</div>
+  <p>قاعدتين:</p>
+  <ol class="ex">
+    <li><b>الملف المؤقت في نفس الفولدر</b> بتاع الهدف، عشان الـ rename يفضل جوه نفس الـ file system. الـ rename بين أجهزة تخزين مختلفة <b>مش atomic</b>.</li>
+    <li><b>اسم المؤقت unique لكل محاولة</b>، عشان لو اتنين writers اشتغلوا مع بعض ميدوسوش على بعض.</li>
+  </ol>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: الكراش في كل نقطة</h3>
+      <p>اضغط «التالي» وشوف إيه حالة ملف <span class="ltr">ckpt.pt</span> لو الجهاز وقع في كل مرحلة، مع الكتابة المباشرة ومع الـ atomic.</p>
+    </div>
+    <div class="instrument"><div id="d475-lab2"></div></div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d475-resume">
+  <div class="station-head"><span class="tag">03</span><h2>الـ Resume في نص الـ epoch</h2></div>
+  <p>resume اللي بيرجع لأول الـ epoch اللي بعده بيضيّع من دقايق لأيام. الحل: عدّادات <span class="ltr">(epoch, batch_in_epoch)</span> + حالة الـ RNG. بعد التحميل الحلقة بتعدّي الـ batches اللي اتاخدت فعلًا في الـ epoch الحالي (fast-forward للـ generator) وتكمّل من <span class="ltr">batch_in_epoch</span>. والاختبار في الدرس: الـ loss بعد الـ resume لازم يطابق الـ baseline اللي ما اتقطعش بفرق أقل من <span class="ltr">1e-4</span>.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: إيه اللي يحصل لو نسيت سلة؟</h3>
+      <p>الخط الأزرق baseline لتدريب ما اتقطعش. الأخضر هو التدريب بعد الـ resume. حرّك نقطة القطع، وغيّر <b>mode</b>: ٠ = حفظت كل حاجة، ١ = نسيت الـ RNG، ٢ = نسيت الـ optimizer state.</p>
+      <p><em>المنحنيات هنا شكل توضيحي بنظري (مش بيانات تدريب حقيقية).</em> الفكرة اللي الدرس بيقولها بالأرقام: لو نسيت RNG بتشوف منحنى مختلف، ولو نسيت optimizer state الفرق بيبقى كبير.</p>
+    </div>
+    <div class="instrument"><div id="d475-lab3"></div></div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d475-shard">
+  <div class="station-head"><span class="tag">04</span><h2>الـ Sharded Checkpoint للموديلات الكبيرة</h2></div>
+  <p>لما الموديل يكبر، الـ payload في ملف واحد بيبقى تقيل في التحميل، صعب في الفحص، ومؤلم لو الـ network share سكت في نص القراءة. الحل: قسّم الـ state لـ <b>shards</b> واكتب <b>index</b> صغير يربطهم. الـ index بيسجل عدد الـ shards وsha256 لكل shard وsha256 للـ meta. الـ loader بيفشل بصوت عالي لو أي hash اتغير. والـ shards ممكن تقع على أقراص مختلفة، والـ meta صغيرة وبتتقرأ الأول.</p>
+  <div class="formula">index.json ← [model.shard-000.pt, model.shard-001.pt, ... , meta.pt (optimizer + scheduler + counters + rng)]</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: حجم الـ checkpoint والـ shards</h3>
+      <p>اختار عدد parameters الموديل (بالمليار) وعدد الـ shards. بنفترض weights بـ fp32 (٤ بايت) وAdamW بيخزّن momentum تقدير أول وتاني لكل parameter (٢ × ٤ بايت). الأرقام تقريبية ومبسطة، من غير النسخ الإضافية أو الـ mixed precision.</p>
+    </div>
+    <div class="instrument"><div id="d475-lab4"></div></div>
+  </div>
+
+  <h3>أربعة أنماط لازم تطبّقها</h3>
+  <ul>
+    <li><b>حمّل بـ <span class="ltr">weights_only=True</span>.</b> ملف <span class="ltr">.pt</span> هو pickle، وفك pickle من مصدر مش موثوق بـ <span class="ltr">weights_only=False</span> بيشغّل أي كود الملف يطلبه. الـ weights-only loader بيقبل tensors وcontainers بدائية بس. وعشان كده الـ RNG بيتحفظ كـ lists عادية.</li>
+    <li><b>الـ schema نص جوه الـ payload.</b> الـ migrations بتتفرع عليه.</li>
+    <li><b>sha256 لكل shard.</b> تحميل اتقطع صامت هو أسوأ نوع bug: الـ loader بيفشل بدري أو بيفشل متأخر.</li>
+    <li><b>الـ cadence أمين:</b> احفظ كل N steps وكل دقيقة wallclock، أيهما أقصر. وإلا الـ step الطويلة اللي بتكراش بتضيّع نافذة شغل كاملة.</li>
+  </ul>
+  <div class="note ai"><strong>تحذير أمان من الدرس:</strong> استخدم PyTorch ٢.٦ أو أحدث. قبله كان فيه bypass معروف للـ <span class="ltr">weights_only=True</span> (CVE-2025-32434)، فالضمان اللي الدرس معتمد عليه صحيح من ٢.٦ فصاعدًا. وفحوصات السلامة بتعمل <span class="ltr">raise ValueError</span> مش <span class="ltr">assert</span> لأن <span class="ltr">python -O</span> بيشيل الـ asserts.</div>
+</section>
+
+<!-- STATION 5: CODE -->
+<section id="d475-code">
+  <div class="station-head"><span class="tag">05</span><h2>الكود خطوة خطوة</h2></div>
+  <p>شغّل الأصل الأول من جذر الريبو، وبعدين اكتب الخطوات <b>بإيدك</b> في ملف جديد <code>my_ckpt.py</code>. محتاج <code>pip install torch numpy</code> (ومن الأحسن torch ٢.٦+).</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/47-checkpoint-save-resume/code/main.py
+<span class="c"># أو بتغيير الإعدادات:</span>
+python3 phases/19-capstone-projects/47-checkpoint-save-resume/code/main.py --total-steps 24 --interrupt-at 10 --sharded --num-shards 3</pre></div>
+  <p><b>الناتج المتوقع:</b> بيطبع <span class="ltr">running resume demo (single file checkpoint)</span> وبعده JSON فيه <span class="ltr">interrupt_at</span> و<span class="ltr">total_steps</span> و<span class="ltr">max_loss_diff_after_resume</span> (المفروض صفر أو ضوضاء عشرية، والـ assert عند <span class="ltr">1e-4</span>). وبعدين نفس الحاجة للـ sharded، وفي الآخر <span class="ltr">wrote .../outputs/resume-demo.json</span>. الـ checkpoints نفسها بتتكتب في فولدر مؤقت بيتمسح لوحده.</p>
+
+  <h3>خطوة ١: حالة التدريب وإعادة الإنتاج</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import random, numpy as np, torch
+from dataclasses import dataclass, field
+from torch import nn
+
+@dataclass
+class TrainState:                             <span class="c"># العدّادات + تاريخ الـ loss</span>
+    step: int
+    epoch: int
+    batch_in_epoch: int
+    losses: list = field(default_factory=list)
+
+def seed_everything(seed):                    <span class="c"># كل مصادر العشوائية</span>
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+def make_optimizer_and_scheduler(model, lr, total_steps):
+    opt = torch.optim.AdamW(model.parameters(), lr=lr)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
+    return opt, sched</pre></div>
+
+  <h3>خطوة ٢: التقاط واستعادة حالة الـ RNG</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def capture_rng_state():
+    name, keys, pos, has_gauss, cached = np.random.get_state()
+    state = {
+        "python": random.getstate(),
+        "numpy": (name, keys.tolist(), int(pos), int(has_gauss), float(cached)),
+        "torch_cpu": torch.get_rng_state().tolist(),     <span class="c"># lists مش tensors، عشان weights_only</span>
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda"] = [s.tolist() for s in torch.cuda.get_rng_state_all()]
+    return state
+
+def tuple_from_nested(obj):                   <span class="c"># الـ lists بترجع tuples زي ما python محتاج</span>
+    if isinstance(obj, list):
+        return tuple(tuple_from_nested(x) for x in obj)
+    return obj
+
+def restore_rng_state(state):
+    if state.get("python") is not None:
+        random.setstate(tuple_from_nested(state["python"]))
+    if state.get("numpy") is not None:
+        np.random.set_state(tuple_from_nested(state["numpy"]))
+    if state.get("torch_cpu") is not None:
+        torch.set_rng_state(torch.tensor(state["torch_cpu"], dtype=torch.uint8))
+    if state.get("torch_cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(
+            [torch.tensor(s, dtype=torch.uint8) for s in state["torch_cuda"]])</pre></div>
+
+  <h3>خطوة ٣: الـ atomic save</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import os, tempfile
+from pathlib import Path
+
+def atomic_save(payload, path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False, dir=str(path.parent),      <span class="c"># نفس الفولدر = نفس الـ file system</span>
+        prefix=path.name + ".", suffix=".tmp")   <span class="c"># اسم unique لكل محاولة</span>
+    tmp_path = Path(tmp.name)
+    tmp.close()
+    try:
+        torch.save(payload, tmp_path)            <span class="c"># اكتب على المؤقت</span>
+        os.replace(tmp_path, path)               <span class="c"># بدّل في خطوة واحدة atomic</span>
+    finally:
+        if tmp_path.exists():                    <span class="c"># نظّف لو حصل فشل قبل الـ rename</span>
+            tmp_path.unlink()
+    return path</pre></div>
+  <p>والنسخة للـ JSON (<span class="ltr">atomic_write_json</span>) بنفس الفكرة بالظبط بس بتكتب بـ <span class="ltr">json.dump</span> في ملف نصي. استخدمها للـ <span class="ltr">index.json</span>.</p>
+
+  <h3>خطوة ٤: save_checkpoint و load_checkpoint</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import time
+CHECKPOINT_SCHEMA = "ckpt.v1"
+
+def save_checkpoint(model, optimizer, scheduler, state, out_path):
+    payload = {
+        "schema": CHECKPOINT_SCHEMA,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "state": {"step": state.step, "epoch": state.epoch,
+                  "batch_in_epoch": state.batch_in_epoch,
+                  "losses": list(state.losses)},
+        "rng": capture_rng_state(),
+        "wall_saved_at": time.time(),
+    }
+    atomic_save(payload, out_path)
+    return payload
+
+def load_checkpoint(path, model, optimizer, scheduler):
+    payload = torch.load(path, map_location="cpu", weights_only=True)  <span class="c"># آمن</span>
+    if not str(payload.get("schema", "")).startswith("ckpt"):
+        raise ValueError(f"unknown schema {payload.get('schema')}")    <span class="c"># مش assert</span>
+    model.load_state_dict(payload["model"])
+    optimizer.load_state_dict(payload["optimizer"])
+    scheduler.load_state_dict(payload["scheduler"])
+    restore_rng_state(payload["rng"])
+    s = payload["state"]
+    return TrainState(int(s["step"]), int(s["epoch"]),
+                      int(s["batch_in_epoch"]), list(s["losses"]))</pre></div>
+
+  <h3>خطوة ٥: الـ sharding (round-robin) + hashes</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import hashlib
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 &lt;&lt; 16), b""):   <span class="c"># قراية بـ 64KB</span>
+            h.update(chunk)
+    return h.hexdigest()
+
+def shard_keys_by_prefix(state_dict, num_shards):
+    keys = sorted(state_dict.keys())
+    shards = {i: [] for i in range(num_shards)}
+    for i, k in enumerate(keys):
+        shards[i % num_shards].append(k)         <span class="c"># توزيع دوّار</span>
+    return shards</pre></div>
+  <p>و<span class="ltr">save_sharded_checkpoint</span> بتعمل: لكل shard ملف <span class="ltr">model.shard-000.pt</span> بـ <span class="ltr">atomic_save</span>، وتسجل الـ sha256. بعدين <span class="ltr">meta.pt</span> فيه الـ optimizer والـ scheduler والعدّادات والـ RNG وقايمة الـ shards. وآخر حاجة <span class="ltr">index.json</span> فيه <span class="ltr">num_shards</span> و<span class="ltr">meta_sha256</span>. في الـ loader:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def load_sharded_checkpoint(ckpt_dir, model, optimizer, scheduler):
+    index = json.loads((ckpt_dir / "index.json").read_text())
+    meta_path = ckpt_dir / "meta.pt"
+    if file_sha256(meta_path) != index["meta_sha256"]:
+        raise ValueError("meta sha mismatch")                 <span class="c"># فشل بدري</span>
+    meta = torch.load(meta_path, map_location="cpu", weights_only=True)
+    root = ckpt_dir.resolve()
+    merged = {}
+    for shard in meta["shards"]:
+        p = (ckpt_dir / shard["path"]).resolve()
+        if not p.is_relative_to(root):                        <span class="c"># حماية من path traversal</span>
+            raise ValueError("shard path escapes the checkpoint directory")
+        if file_sha256(p) != shard["sha256"]:
+            raise ValueError(f"shard sha mismatch: {shard['path']}")
+        merged.update(torch.load(p, map_location="cpu", weights_only=True)["tensors"])
+    model.load_state_dict(merged)                             <span class="c"># دمج بعد التحقق من الكل</span>
+    optimizer.load_state_dict(meta["optimizer"])
+    scheduler.load_state_dict(meta["scheduler"])
+    restore_rng_state(meta["rng"])
+    s = meta["state"]
+    return TrainState(int(s["step"]), int(s["epoch"]),
+                      int(s["batch_in_epoch"]), list(s["losses"]))</pre></div>
+
+  <h3>خطوة ٦: التدريب مع fast-forward والـ resume demo</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def train_until(model, optimizer, scheduler, loss_fn, state, *, stop_step,
+                batches_per_epoch, batch_size, in_dim, out_dim):
+    while state.step &lt; stop_step:
+        gen = torch.Generator()
+        gen.manual_seed(12345 + state.epoch)              <span class="c"># generator ثابت لكل epoch</span>
+        for _ in range(state.batch_in_epoch):             <span class="c"># fast-forward: استهلك اللي فات</span>
+            torch.randn(batch_size, in_dim, generator=gen)
+            torch.randint(0, out_dim, (batch_size,), generator=gen)
+        while state.batch_in_epoch &lt; batches_per_epoch and state.step &lt; stop_step:
+            x = torch.randn(batch_size, in_dim, generator=gen)
+            y = torch.randint(0, out_dim, (batch_size,), generator=gen)
+            optimizer.zero_grad()
+            loss = loss_fn(model(x), y)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            state.losses.append(float(loss.item()))
+            state.step += 1
+            state.batch_in_epoch += 1
+        if state.batch_in_epoch &gt;= batches_per_epoch:
+            state.epoch += 1
+            state.batch_in_epoch = 0
+    return state</pre></div>
+  <p>الـ demo بيعمل: تدريب موديل <span class="ltr">m1</span> لحد <span class="ltr">interrupt_at</span>، يحفظ، يكمّل لحد النهاية ويسجل الـ losses (baseline). بعدين بيبني موديل جديد <span class="ltr">m2</span>، يحمّل الـ checkpoint، يكمّل، ويقارن <span class="ltr">max |loss_full − loss_resumed|</span> بعد نقطة القطع. المفروض يطلع صفر أو ضوضاء عشرية.</p>
+  <div class="note ai"><strong>جرّب بنفسك:</strong> بعد ما يشتغل، علّق سطر <span class="ltr">restore_rng_state(...)</span> وشوف الفرق، وبعدين علّق <span class="ltr">optimizer.load_state_dict</span> وشوف الفرق الأكبر. ده بيثبّت ليه كل سلة مهمة.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d475-ex">
+  <div class="station-head"><span class="tag">06</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li>استبدل الـ round-robin بتقسيم حسب مجموعة الـ parameters (الطبقات اللي بتنتهي بـ <span class="ltr">.weight</span> ضد <span class="ltr">.bias</span>). إمتى كل تقسيم أفضل؟
+      <details><summary>تلميح / إجابة</summary>الـ round-robin بيدّي shards متساوية تقريبًا في الحجم، فأحسن للتوازي في القراءة. التقسيم حسب النوع أو الطبقة بيخلّي تحميل جزء معيّن بس (مثلًا الـ embedding أو آخر طبقات) سهل، وأحسن لو عايز تحمّل أو تعدّل جزء من الموديل. الـ weights أكبر بكتير من الـ biases فالتقسيم بالنوع هيطلع shards غير متوازنة.</details></li>
+    <li>وسّع الـ save loop عشان يحتفظ بآخر K checkpoints ويمسح الأقدم. إيه الـ K المناسب لو الـ disk صغير؟
+      <details><summary>تلميح / إجابة</summary>سمّي الملفات بالـ step (<span class="ltr">ckpt-000100.pt</span>) واحذف الأقدم بعد نجاح الحفظ الجديد، مش قبله. K=2 هو الحد الأدنى الآمن (لو آخر واحد اتبوّظ تلاقي اللي قبله). على disk صغير اختار K حسب حجم الـ checkpoint (الدرس مفيهوش رقم محدد).</details></li>
+    <li>ضيف flag بـ <span class="ltr">--ckpt-every-seconds</span> يعمل save كل فترة زمنية مش بس كل عدد steps.
+      <details><summary>تلميح / إجابة</summary>خزّن <span class="ltr">last_save = time.monotonic()</span> وفي نهاية كل step اسأل: <span class="ltr">if step % N == 0 or time.monotonic() - last_save &gt; S</span>. استخدم <span class="ltr">monotonic</span> مش <span class="ltr">time.time</span> عشان تغيير ساعة النظام مياثرش.</details></li>
+    <li>اكتب مسار تحقق يشتغل في البداية: يمسح كل الـ checkpoints في الفولدر ويقول مين فيهم corrupt.
+      <details><summary>تلميح / إجابة</summary>لكل <span class="ltr">index.json</span> قارن الـ sha256 المسجل بالـ sha256 الفعلي لكل shard والـ meta. واللي مش بيحمّل بـ <span class="ltr">torch.load(weights_only=True)</span> يتعلّم كـ corrupt. اطبع القايمة ومتمسحش حاجة تلقائيًا.</details></li>
+    <li>اكتب <span class="ltr">migrate_v1_to_v2</span> تضيف حقل جديد للـ payload وتغيّر الـ schema، وخلّي الـ load يقبل النسختين.
+      <details><summary>تلميح / إجابة</summary>في <span class="ltr">load_checkpoint</span>: <span class="ltr">if schema == "ckpt.v1": payload = migrate_v1_to_v2(payload)</span> قبل أي استخدام. الـ migration تضيف الحقل بقيمة افتراضية وتغيّر <span class="ltr">payload["schema"] = "ckpt.v2"</span>. والتحقق الحالي بيستخدم <span class="ltr">startswith("ckpt")</span> فلازم تتأكد إنه لسه بيقبل الاتنين.</details></li>
+    <li><b>تمرين إضافي مني:</b> اعمل اختبار «قتل التدريب في النص»: شغّل التدريب في process منفصل، اقتله (<span class="ltr">kill -9</span>) في وقت عشوائي أثناء الحفظ، وبعدين تأكد إن آخر <span class="ltr">ckpt.pt</span> لسه يتحمّل بنجاح.
+      <details><summary>تلميح / إجابة</summary>استخدم <span class="ltr">subprocess.Popen</span> وحلقة بتحفظ كل step. اقتل الـ process بعد <span class="ltr">random.uniform(0.5, 2)</span> ثانية، وكرّر ٢٠ مرة. في كل مرة حاول <span class="ltr">load_checkpoint</span>: لازم دايمًا ينجح (يا القديم يا الجديد) ومفيش مرة corrupt. جرّب نفس الاختبار بكتابة مباشرة على الاسم النهائي وشوف الفرق.</details></li>
+  </ol>
+</section>
+
+<!-- OWN ADDITION -->
+<section id="d475-extra">
+  <div class="station-head"><span class="tag">07</span><h2>إضافة مني (مش في الدرس الأصلي)</h2></div>
+  <div class="note ai"><strong>القسم ده من عندي</strong> عشان يكمّل الصورة. مش جزء من docs الدرس.</div>
+  <ul>
+    <li><b>الـ fsync والمتانة:</b> الـ <span class="ltr">os.replace</span> بيضمن الـ atomicity (كل أو لا شيء)، بس مش بيضمن إن البيانات اتكتبت فعليًا على القرص لو الكهربا قطعت بعد الـ rename. الدرس بيشاور على توثيق <span class="ltr">fsync</span> في الـ Linux kernel. في الأنظمة الجدّية بيتعمل fsync للملف وللفولدر قبل وبعد الـ rename.</li>
+    <li><b>الـ step لازم يعدّ effective steps:</b> لو بتستخدم gradient accumulation (درس امبارح) فالـ <span class="ltr">state.step</span> يتزوّد بعد كل <span class="ltr">optimizer.step()</span> مش مع كل micro-batch، وإلا الـ scheduler هيرجع لمكان غلط.</li>
+    <li><b>الـ DataLoader الحقيقي:</b> مثال الدرس بيبني generator لكل epoch. في الواقع لو عندك shuffle بـ sampler لازم تحفظ حالته أو تستخدم seed مبني على (seed + epoch) وتعمل skip لعدد الـ batches، وإلا الـ resume هيشوف ترتيب داتا مختلف.</li>
+    <li><b>الـ mixed precision:</b> لو بتستخدم <span class="ltr">GradScaler</span> (درس ٤٧٣) احفظ كمان <span class="ltr">scaler.state_dict()</span> عشان الـ scaling factor ميرجعش لقيمته الأولى.</li>
+    <li><b>التوازي:</b> في التدريب على كذا GPU عادةً rank واحد (٠) هو اللي بيكتب الـ checkpoint الكامل أو كل rank بيكتب shard بتاعه (وده الـ FSDP في درس ٤٧٦). المهم مفيش اتنين يكتبوا في نفس الملف.</li>
+    <li><b>أخطاء شائعة:</b> تحفظ الـ model بس وتنسى الـ optimizer، تحمّل بـ <span class="ltr">weights_only=False</span> من مصدر مش موثوق، تكتب على الاسم النهائي مباشرة، تنسى تحفظ الـ scheduler فيتحرك الـ LR للبداية، وتفتكر إن <span class="ltr">seed_everything</span> بعد التحميل بيكفي بدل استعادة الـ RNG.</li>
+    <li><b>في الـ LLMs والـ agents:</b> نفس الفكرة بتظهر في أي job طويل: حفظ حالة الـ agent بين الخطوات (الـ messages + الـ tool results + الـ step counter) بشكل atomic عشان لو العملية اتقفلت تكمّل من آخر خطوة سليمة.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d475-quiz">
+  <div class="station-head"><span class="tag">08</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d475-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d475-done">
+  <div class="station-head"><span class="tag">09</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d475-checklist">
+    <li><label><input type="checkbox" data-ck="1"> بقدر أسمّي الخمس سلال اللي بتتحفظ في الـ checkpoint وليه كل واحدة مهمة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم الـ atomic save: ملف مؤقت في نفس الفولدر + os.replace</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه الـ RNG state مش بس الـ seed، وليه (epoch, batch_in_epoch)</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم الـ sharded layout والـ sha256 والـ index.json</label></li>
+    <li><label><input type="checkbox" data-ck="5"> فاهم weights_only=True وليه torch ٢.٦+</label></li>
+    <li><label><input type="checkbox" data-ck="6"> كتبت الكود بإيدي وشغّلت الـ demo (single وsharded)</label></li>
+    <li><label><input type="checkbox" data-ck="7"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="8"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Checkpoint كامل (model + optimizer + scheduler + RNG)</td><td>أي trainer حقيقي: Hugging Face Trainer، Lightning، وسكريبتات التدريب الكبيرة</td></tr>
+    <tr><td>Atomic write</td><td>قواعد البيانات، ملفات الـ config، حفظ حالة الـ agents</td></tr>
+    <tr><td>Sharded + index + hashes</td><td>تحميل الموديلات الكبيرة (ملفات weights متقسمة)</td></tr>
+    <tr><td>weights_only</td><td>تحميل موديلات من مصادر خارجية بأمان</td></tr>
+    <tr><td>Mid-epoch resume</td><td>الـ jobs الطويلة على clusters بـ time limits</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Distributed Data Parallel and FSDP from Scratch. هتشوف إزاي الـ gradients بتتوزع بين الأجهزة، وإزاي الـ FSDP بيقسّم الـ parameters نفسها.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F47-checkpoint-save-resume" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/47-checkpoint-save-resume</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=475,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d475-roadmap').closest('.day');
+
+const rm=$('d475-roadmap');
+for(let i=1;i<=87;i++){const s=document.createElement('span');s.textContent=i;if(i===47)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: payload buckets ----
+L.flow($('d475-lab1'),{
+  nodes:[
+    {id:'m',label:'model',x:0,y:0.1},
+    {id:'o',label:'optimizer',x:0.5,y:0.1},
+    {id:'s',label:'scheduler',x:1,y:0.1},
+    {id:'c',label:'counters + losses',x:0.1,y:0.55},
+    {id:'r',label:'RNG state',x:0.9,y:0.55},
+    {id:'p',label:'payload',x:0.5,y:0.55},
+    {id:'f',label:'ckpt.pt (atomic)',x:0.5,y:0.95}
+  ],
+  edges:[['m','p'],['o','p'],['s','p'],['c','p'],['r','p'],['p','f','atomic write']],
+  steps:[
+    {active:['m','p'],edges:[['m','p']],text:'الأول model.state_dict(): الـ weights والـ buffers.'},
+    {active:['o','p'],edges:[['o','p']],text:'optimizer.state_dict(): الـ momentum وAdam moments. من غيرهم الـ step الجاية مختلفة.'},
+    {active:['s','p'],edges:[['s','p']],text:'scheduler.state_dict(): مكانك على منحنى الـ learning rate.'},
+    {active:['c','p'],edges:[['c','p']],text:'step وepoch وbatch_in_epoch وتاريخ الـ losses، عشان تكمّل من النقطة الصح وترسم الـ dashboard.'},
+    {active:['r','p'],edges:[['r','p']],text:'RNG: python وnumpy وtorch CPU وtorch CUDA، مش بس الـ seed.'},
+    {active:['p','f'],edges:[['p','f']],text:'الـ payload كله يتكتب في ملف مؤقت وبعدين os.replace. ده الـ checkpoint.'}
+  ]
+});
+
+// ---- Lab 2: crash points ----
+const A=['كتابة مباشرة على ckpt.pt','atomic (tmp ثم rename)'];
+const crashSteps=[
+ {title:'قبل الكتابة',text:'الجهاز اتقفل قبل ما يبدأ الحفظ. الاتنين: <b>ckpt.pt القديم سليم</b>. (بتخسر شغل آخر فترة بس.)',d:[0,0]},
+ {title:'في نص الكتابة',text:'الكتابة المباشرة: <b>ckpt.pt نص مكتوب = corrupt</b> والـ resume هيقرا زبالة. الـ atomic: الكتابة كانت على ملف .tmp، فـ <b>ckpt.pt القديم لسه سليم</b>.',d:[2,0]},
+ {title:'بعد الكتابة وقبل الـ rename',text:'الكتابة المباشرة خلصت فعلًا. الـ atomic: الـ tmp جاهز بس ckpt.pt لسه القديم (سليم). الـ tmp بيتنضف بعدين.',d:[1,0]},
+ {title:'بعد الـ rename',text:'الاتنين: <b>ckpt.pt الجديد سليم</b>. الـ rename حصل في خطوة واحدة.',d:[1,1]}
+];
+const stateName=['قديم سليم','جديد سليم','corrupt ❌','جديد سليم ✓'];
+L.stepper($('d475-lab2'),{
+  steps:crashSteps,
+  height:210,
+  draw:(ctx,W,H,i,step)=>{
+    const css=AI.css,ok=css('--ok'),bad=css('--bad'),ink=css('--ink');
+    ctx.font='13px sans-serif';ctx.textAlign='center';
+    [0,1].forEach(r=>{
+      const y=24+r*95,s=step.d[r];
+      ctx.fillStyle=ink;ctx.fillText(A[r],W/2,y);
+      const col=(s===2)?bad:(s===0||s===3||s===1)?ok:ok;
+      ctx.strokeStyle=col;ctx.lineWidth=2;ctx.strokeRect(W/2-90,y+10,180,34);
+      ctx.fillStyle=col;ctx.fillText('ckpt.pt: '+stateName[s],W/2,y+32);
+      if(r===1&&i>=1&&i<3){ctx.fillStyle=css('--muted');ctx.fillText('ckpt.pt.xxxx.tmp (مؤقت)',W/2,y+64)}
+    });
+  }
+});
+
+// ---- Lab 3: resume curves (illustrative) ----
+const base=x=>1.9*Math.exp(-x/9)+0.35;
+const noise=x=>0.09*Math.sin(x*12.9898)*Math.cos(x*4.1414);
+L.plot($('d475-lab3'),{
+  x:[0,30],y:[0,2.4],
+  params:[
+    {k:'cut',label:'نقطة القطع (step)',min:3,max:25,step:1,v:10},
+    {k:'mode',label:'mode (0=كله، 1=من غير RNG، 2=من غير optimizer)',min:0,max:2,step:1,v:0}
+  ],
+  curves:[
+    {f:(x)=>base(x),label:'baseline',color:'a'},
+    {f:(x,p)=>{
+      if(x<=p.cut)return base(x);
+      if(p.mode===0)return base(x);
+      if(p.mode===1)return base(x)+noise(x);
+      return base(x)+0.9*Math.exp(-(x-p.cut)/4);
+    },label:'بعد الـ resume',color:'ok',dash:1}
+  ],
+  marks:p=>[{x:p.cut,y:base(p.cut),label:'قطع',color:'bad'}],
+  readout:p=>[['mode',['كله محفوظ','من غير RNG','من غير optimizer'][p.mode]],['max diff (توضيحي)',p.mode===0?'≈ 0':p.mode===1?'صغير بس مش صفر':'كبير']],
+  note:p=>p.mode===0?'الخطين فوق بعض: ده العقد اللي الدرس بيختبره (فرق أقل من 1e-4).':p.mode===1?'نفس الموديل والداتا لكن dropout وshuffle مختلفين، فالمنحنى مش هو.':'من غير moments الـ AdamW الـ step الأولى بتقفز في اتجاه غلط وبعدين تهدى.'
+});
+
+// ---- Lab 4: checkpoint sizes ----
+L.calc($('d475-lab4'),{
+  params:[
+    {k:'B',label:'parameters (مليار)',min:0.1,max:70,step:0.1,v:7},
+    {k:'sh',label:'عدد الـ shards',min:1,max:64,step:1,v:16}
+  ],
+  compute:p=>{
+    const model=p.B*4, opt=p.B*8, total=model+opt;
+    return [
+      ['حجم الـ model (GB، fp32)',model.toFixed(1)],
+      ['حجم الـ optimizer (GB، AdamW)',opt.toFixed(1)],
+      ['إجمالي الـ checkpoint (GB)',total.toFixed(1)],
+      ['حجم الـ shard الواحد من الـ model (GB)',(model/p.sh).toFixed(2)],
+      ['عدد الملفات (shards + meta + index)',p.sh+2]
+    ];
+  },
+  note:p=>'الـ optimizer state أكبر من الـ weights بمرتين في الحساب ده (٢ moments لكل parameter). ودي سبب إن الـ resume من غير optimizer state مكلّف جدًا.'
+});
+
+// ---- Quiz ----
+AI.quiz($('d475-quizBox'),[
+ ['أنهي مجموعة بتوصف checkpoint تدريب كامل أحسن؟',['أي حاجة torch.save تقدر تعمل لها serialize','الـ weights بس','حالة الموديل، حالة الـ optimizer، حالة الـ scheduler، عدّادات الـ step، تاريخ الـ loss، وحالة الـ RNG للـ python وnumpy وtorch CPU وtorch CUDA','تاريخ الـ loss بس'],2,'الـ resume لازم يمشي في نفس المسار. من غير optimizer moments ومكان الـ scheduler وحالة الـ RNG الـ loss بعد الـ resume بيبقى منحنى مختلف.'],
+ ['ليه الـ saver بيكتب على ملف مؤقت وبعدين rename بدل ما يكتب على الاسم النهائي مباشرة؟',['I/O أسرع','الـ rename داخل نفس الفولدر على POSIX هو atomic، فالكراش في نص الكتابة بيسيب الملف السليم القديم بدل ملف نص مكتوب','عشان يشيل التكرار','عشان يتخطى fsync'],1,'atomic_save بتنده os.replace من ملف مؤقت في نفس الفولدر. الـ rename بين أجهزة تخزين مختلفة مش atomic، عشان كده المؤقت لازم يبقى في فولدر الهدف.'],
+ ['ليه الـ sharded checkpoint بيخزّن sha256 لكل shard في index.json؟',['عشان الـ loader يكتشف shard مقطوع أو متلاعب بيه وقت التحميل بدل ما يدمج state_dict بايظ في صمت','لأن torch بتطلبه','للـ SEO','عشان يضغط الملف'],0,'load_sharded_checkpoint بيقارن hash كل shard (وكمان الـ meta) بالمسجل وبيعمل raise قبل الدمج لو في اختلاف. التلف الصامت أسوأ أنواع الفشل.'],
+ ['إزاي الـ resume بيكمّل من المكان الصح جوه الـ epoch؟',['بيستخدم قاعدة بيانات خاصة','بيقفز لحد الـ epoch اللي بعده','بيبدأ دايمًا من step 0','TrainState بيسجل (epoch, batch_in_epoch) والـ RNG بيتستعاد، فالـ loader بيعدّي الـ generator على الـ batches اللي اتاخدت قبل ما يكمّل'],3,'من غير (epoch, batch_in_epoch) بتنط لحد حدود الـ epoch وبتضيّع شغل. ومن غير RNG بتشوف batches مختلفة. الاتنين مطلوبين.'],
+ ['حقل الـ schema في الـ payload بيديك إيه؟',['hook للـ migration: لما الصيغة تتغير بتزوّد نص الـ schema والـ loader يتصرف حسبه بدل ما يكسر الـ runs القديمة','مفيش حاجة','ضغط','اسم ملف حلو'],0,'الدرس بيستخدم ckpt.v1، والنسخة الجاية تبقى ckpt.v2 مع migrate function. من غير الحقل تطوير الصيغة بيستلزم كسر.'],
+ ['وانت بتقرا ملخص الـ resume demo، قيمة max_loss_diff_after_resume قريبة من صفر معناها إيه؟',['مفيش فايدة منها','إن الـ disk سريع','إن الموديل كويس','إن مسار الـ loss بعد الـ resume بيطابق الـ baseline اللي ما اتقطعش لحد ضوضاء الأرقام العشرية، يعني الـ RNG state والـ optimizer state اتستعادوا بأمانة'],3,'لو نسيت الـ RNG بتشوف فرق مش صفر. لو نسيت الـ optimizer state الفرق بيبقى ضخم. الرقم القريب من صفر هو العقد.'],
+ ['(سؤال مني) ليه بنحفظ RNG state مش بس الـ seed الأصلي؟',['لأن الـ seed بيتغير كل step لوحده','الـ seed بيحدد بداية السلسلة العشوائية بس، لكن بعد آلاف الاستدعاءات السلسلة بتكون في موضع تاني، والـ state هو اللي بيحدد الموضع ده بالظبط','مفيش فرق، التنين زي بعض','عشان الملف يبقى أكبر'],1,'seed_everything بترجّعك لأول السلسلة. لكن بعد ١١ ساعة تدريب الـ dropout والـ shuffle استهلكوا ملايين الأرقام، والـ state هو اللي بيرجّعك لنفس النقطة بالظبط.'],
+ ['(سؤال مني) كتبت الـ checkpoint بـ torch.save على الاسم النهائي مباشرة وفجأة الكهربا قطعت في النص. إيه اللي هيحصل غالبًا؟',['الملف السليم القديم هيفضل موجود','الملف هيتحمّل عادي','هتلاقي ملف ناقص أو بايظ، وغالبًا الـ load هيفشل أو يدّي state غلط، والقديم السليم اتمسح','Windows هيصلّحه تلقائيًا'],2,'الكتابة على الاسم النهائي بتستبدل المحتوى القديم قبل ما الجديد يكمل، فالكراش بيسيبك من غير نسخة سليمة. ده بالظبط اللي الـ atomic save بيمنعه.']
+],6,()=>{const c=root.querySelector('input[data-ck="8"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+})();
+</script>

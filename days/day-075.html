@@ -1,0 +1,470 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 22 · 3D Gaussian Splatting from Scratch</span>
+  <h1>اليوم ٧٥: المشهد كله سحابة من ملايين الـ Gaussians</h1>
+  <p class="lede">النهاردة هتفهم ليه الـ <b>3D Gaussian Splatting (3DGS)</b> خد مكان الـ NeRF في الإنتاج. كل Gaussian فيه إيه، إزاي بيتعمله <b>rasterise</b> بدل ray marching، معادلة الـ <b>alpha compositing</b> اللي هي نفسها معادلة NeRF، وإزاي الـ <b>densification</b> بتزوّد التفاصيل. وبعدين هتبني بإيدك نسخة 2D كاملة بتتدرب بالـ backprop، وتشوف إزاي بتتحول لـ 3D.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (PyTorch)</span>
+    <span>قبله: <b>Image Retrieval + Pose</b></span>
+    <span>بعده: <b>Diffusion Transformers &amp; Rectified Flow</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — Computer Vision · 28 lesson</span>
+    <div class="roadmap" id="d75-roadmap" aria-label="دروس فيز الرؤية بالكمبيوتر"></div>
+  </div>
+</header>
+
+<section id="d75-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كان الـ retrieval والـ keypoints. جاوب في دماغك وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>ليه الـ triplet loss بتاعت الـ negatives السهلة مبتعلّمش حاجة؟
+      <details><summary>الإجابة</summary>لأن الـ loss = <span class="ltr">max(0, d(a,p) − d(a,n) + margin)</span>. لو الـ negative بعيد بالفعل (أبعد من d(a,p)+margin) الـ loss صفر ومفيش gradient. الـ semi-hard هي اللي جوه الـ margin.</details></li>
+    <li>الـ cosine similarity والـ L2 distance إمتى بيدّوا نفس ترتيب «الأقرب»؟
+      <details><summary>الإجابة</summary>لما الـ embeddings تبقى L2-normalised: <span class="ltr">‖a−b‖² = 2 − 2·cos(a,b)</span>.</details></li>
+    <li>ليه الـ pose models بتتوقع heatmap بـ Gaussian target؟
+      <details><summary>الإجابة</summary>لأن الـ conv feature map مكانية فبتتماشى مع مخرج مكاني، والـ Gaussian بيدي loss ناعم بيتحمل أخطاء التحديد الصغيرة. ولاحظ إن النهاردة هنستخدم الـ Gaussians تاني بس بدور مختلف خالص: كـ primitives بنرسم بيها.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>25 min</b>المفاهيم: الـ Gaussian، الـ projection، الـ alpha</div>
+    <div><b>20 min</b>المعامل التفاعلية</div>
+    <div><b>30 min</b>اكتب كود الـ 2D splatting وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d75-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: ليه سبنا الـ NeRF؟</h2></div>
+  <p>الـ <b>NeRF</b> بيخزن المشهد كأوزان MLP. كل بكسل بيتحسب بمئات استدعاءات للـ MLP على طول شعاع (ray). النتيجة: التدريب ساعات، والـ rendering ثواني، والأوزان <b>مينفعش تتعدل</b>. لو عايز تحرك كرسي جوه المشهد لازم تعيد التدريب كله.</p>
+  <p>الـ <b>3D Gaussian Splatting</b> (Kerbl, Kopanas, Leimkühler, Drettakis، SIGGRAPH 2023) غيّر كل ده: المشهد <b>مجموعة صريحة (explicit)</b> من Gaussians ثلاثية الأبعاد. الـ rendering هو GPU rasterisation بـ ١٠٠+ fps، والتدريب دقايق، والتعديل مباشر: حرّك مجموعة Gaussians وانت كده حرّكت الكرسي.</p>
+  <p>حسب الدرس، في ٢٠٢٦ مجموعة Khronos اعتمدت امتداد glTF للـ Gaussian splats، وOpenUSD 26.03 فيه schema للـ Gaussian splats، وZillow وApartments.com بيعرضوا العقارات بيه، ومعظم أبحاث الـ 3D reconstruction الجديدة هي نسخ من فكرة الـ 3DGS.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ NeRF زي إنك تحفظ لوحة في دماغ رسام: عشان تشوف أي نقطة لازم تسأله. الـ 3DGS زي مجموعة ضخمة من بقع ألوان شفافة معلقة في الهوا: تقدر تمسك أي بقعة وتحركها، والرسم بيتجمع بإنك تبص عليها من زاوية الكاميرا.</div>
+</section>
+
+<section id="d75-gauss">
+  <div class="station-head"><span class="tag">02</span><h2>الـ Gaussian الواحد شايل إيه؟</h2></div>
+  <p>الـ 3D Gaussian هو «بقعة» بارامترية في الفراغ لها:</p>
+  <div class="tablewrap"><table>
+    <tr><th>الخاصية</th><th>الرمز / الشكل</th><th>معناها</th></tr>
+    <tr><td>position</td><td><span class="ltr">μ (3,)</span></td><td>المركز في إحداثيات العالم</td></tr>
+    <tr><td>rotation</td><td><span class="ltr">q (4,)</span></td><td>quaternion وحدة بيمثل الاتجاه</td></tr>
+    <tr><td>scale</td><td><span class="ltr">s (3,)</span></td><td>log-scale لكل محور (بيتعمله exp وقت الـ render)</td></tr>
+    <tr><td>opacity</td><td><span class="ltr">α (1,)</span></td><td>بعد sigmoid، بين ٠ و١</td></tr>
+    <tr><td>SH coefficients</td><td><span class="ltr">c_lm : 3·(L+1)²</span></td><td>اللون اللي بيتغير مع اتجاه النظر</td></tr>
+  </table></div>
+  <p>الـ rotation مع الـ scale بيبنوا الـ covariance (3×3) اللي هي <b>شكل</b> الـ Gaussian في الفراغ:</p>
+  <div class="formula">Σ = R · S · Sᵀ · Rᵀ</div>
+  <div class="note"><strong>تشبيه:</strong> الـ Gaussian زي بيضة شفافة ضبابية: الـ <b>S</b> بيقول طولها وعرضها وعمقها، والـ <b>R</b> بيلفها، والـ μ بيحطها في مكانها، والـ α بيقول قد إيه هي معتمة.</div>
+
+  <h3>Spherical Harmonics (SH) في فقرة</h3>
+  <p>لون الـ Gaussian مش ثابت: اللمعة (specular) بتتغير حسب زاوية النظر. اللون دالة <span class="ltr">c(direction)</span> على الكرة. الـ <b>Spherical harmonics</b> هي أساس فورييه للكرة. لو قطعتها عند الدرجة L بتاخد <span class="ltr">(L+1)²</span> دالة أساس لكل قناة لون. وقت الـ render بتحسب اللون لزاوية جديدة بـ dot product بين المعاملات المتعلَّمة والأساس مقيّم عند اتجاه النظر.</p>
+  <ul class="checklist">
+    <li>درجة ٠: معامل واحد = لون ثابت.</li>
+    <li>درجة ٣: ١٦ معامل لكل قناة = كفاية لتظليل Lambertian وspecular وانعكاس خفيف. ده الافتراضي في أبحاث الـ 3DGS حسب الدرس.</li>
+  </ul>
+  <p>بدرجة ٣ ده ١٦ معامل × ٣ قنوات = <b>٤٨ رقم</b> للون لوحده.</p>
+
+  <h3>كام حجم المشهد؟</h3>
+  <p>المشهد بيبقى فيه ١–٥ مليون Gaussian، وكل واحد حوالي ٦٠ رقم (٣ + ٤ + ٣ + ١ + ٤٨ + شوية إضافات). جرّب الحسبة في المعمل ٤.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: حجم المشهد بالذاكرة</h3>
+      <p>غيّر عدد الـ Gaussians ودرجة الـ SH. الحسبة: (٣ + ٤ + ٣ + ١ + ٣·(L+1)² + إضافات) × ٤ بايت لكل Gaussian.</p>
+      <div class="note ai"><strong>لاحظ:</strong> اللون (SH) هو أغلب الأرقام. تقليل الدرجة من ٣ لـ ٠ بيقلل الحجم كتير على حساب اللمعة.</div>
+    </div>
+    <div class="instrument"><div id="d75-l4"></div></div>
+  </div>
+</section>
+
+<section id="d75-raster">
+  <div class="station-head"><span class="tag">03</span><h2>Rasterisation مش ray marching</h2></div>
+  <p>خمس خطوات كلها GPU-friendly، ومفيش MLP لكل بكسل:</p>
+  <ol class="ex">
+    <li><b>Project:</b> اسقط كل Gaussian ثلاثي على الشاشة (حسب الـ camera extrinsics وintrinsics).</li>
+    <li><b>Tiles:</b> وزّعهم على بلاطات (tiles) من الشاشة، ١٦×١٦ بكسل.</li>
+    <li><b>Sort:</b> رتّبهم بالعمق في كل tile.</li>
+    <li><b>Alpha-composite:</b> امزجهم من الأمام للخلف.</li>
+    <li><b>Pixel colour:</b> ده لون البكسل.</li>
+  </ol>
+  <p>حسب الدرس: كرت RTX 3080 Ti بيرسم ٦ مليون splat بـ ١٤٧ fps.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: مشوار الـ Gaussian من العالم للبكسل</h3>
+      <p>دوس «الخطوة الجاية» وشوف الخمس مراحل. الفكرة المهمة: كل مرحلة <b>differentiable</b>، فتقدر ترجع بالـ gradient لكل بارامتر.</p>
+      <div class="note ai"><strong>لاحظ:</strong> مفيش مرحلة بتسأل شبكة عصبية. الشبكة اتبدلت بملايين البارامترات الصريحة، والتدريب هو gradient descent عليهم هم.</div>
+    </div>
+    <div class="instrument"><div id="d75-l1"></div></div>
+  </div>
+
+  <h3>خطوة الـ Projection</h3>
+  <p>الـ Gaussian ثلاثي الأبعاد في موضع <span class="ltr">μ</span> بـ covariance <span class="ltr">Σ</span> بيتحول لـ Gaussian ثنائي على الشاشة في <span class="ltr">μ'</span> بـ covariance <span class="ltr">Σ'</span> (٢×٢):</p>
+  <div class="formula">μ' = project(μ)
+Σ' = J · W · Σ · Wᵀ · Jᵀ          (2 × 2)</div>
+  <ul class="checklist">
+    <li><b>W:</b> تحويل الكاميرا (دوران + إزاحة).</li>
+    <li><b>J:</b> الـ Jacobian للـ perspective projection عند <span class="ltr">μ'</span>.</li>
+  </ul>
+  <p>الـ footprint للـ Gaussian على الشاشة عبارة عن <b>ellipse</b> محاوره هي الـ eigenvectors لـ <span class="ltr">Σ'</span>. كل بكسل جوه الشكل ده بياخد مساهمة موزونة بـ:</p>
+  <div class="formula">exp( −0.5 · (p − μ')ᵀ · Σ'⁻¹ · (p − μ') )</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: شكل الـ Gaussian ثنائي الأبعاد</h3>
+      <p>غيّر <span class="ltr">σx</span> وσy (الـ scale) وزاوية الدوران θ. الـ heatmap هي قيمة <span class="ltr">exp(−0.5·d)</span> لكل بكسل حيث d هي الـ quadratic form. ده بالظبط اللي <code>eval_2d_gaussian</code> بتحسبه في الكود.</p>
+      <ol class="ex">
+        <li>خلّي σx = σy: دايرة.</li>
+        <li>زوّد σx وقلّل σy: ellipse ممدودة أفقيًا.</li>
+        <li>لف θ: الـ ellipse بتلف حوالين مركزها. ده دور الـ R.</li>
+      </ol>
+      <div class="note"><strong>ملاحظة:</strong> هنا بنحسب الـ d بدوران المحاور بدل ما نعكس مصفوفة: بيدي نفس النتيجة لـ <span class="ltr">Σ = R·diag(σ²)·Rᵀ</span>.</div>
+    </div>
+    <div class="instrument"><div id="d75-l2"></div></div>
+  </div>
+</section>
+
+<section id="d75-alpha">
+  <div class="station-head"><span class="tag">04</span><h2>قاعدة الـ Alpha Compositing</h2></div>
+  <p>لبكسل واحد، الـ Gaussians اللي بتغطيه بتترتب بالعمق، واللون بيتمزج بنفس معادلة أي rasteriser بيدعم الشفافية من الثمانينات:</p>
+  <div class="formula">C_pixel = Σᵢ αᵢ · Tᵢ · cᵢ
+Tᵢ = Πⱼ&lt;ᵢ (1 − αⱼ)             ← الـ transmittance لحد i
+αᵢ = opacityᵢ · exp(−0.5 · dᵀ Σ'⁻¹ d)   ← مساهمة محلية
+cᵢ = eval_SH(SHᵢ, view_direction)     ← اللون حسب زاوية النظر</div>
+  <p>المعادلة دي <b>هي نفس معادلة الـ volumetric render بتاعة NeRF</b>، بس على مجموعة صريحة متفرقة من الـ Gaussians بدل عينات كثيفة على الشعاع. وده سبب إن الجودة قريبة: الاتنين بيعملوا integration لنفس معادلة الـ radiance field.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيل ٣ ورقات سيلوفان ملونة فوق بعض. الورقة الأمامية بتاخد حصتها الأول، واللي باقي من الضوء (الـ T) بيعدي للي وراها. لو الأمامية معتمة جدًا (α قريب من ١) الباقي مبيبانش.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: امزج ٣ Gaussians على بكسل واحد</h3>
+      <p>رتبهم من الأمام للخلف (١ هو الأقرب للكاميرا). كل واحد ليه α وسطوع (٠ أسود … ١ أبيض). شوف الـ weight لكل واحد = <span class="ltr">αᵢ·Tᵢ</span> واللون النهائي.</p>
+      <ol class="ex">
+        <li>خلّي α١ = ٠.٩٥: كل اللون تقريبًا من الأول، والباقي مبيبانش.</li>
+        <li>خلّي α١ = ٠.١: الـ T لسه قريب من ١، فالتاني والتالت يساهموا.</li>
+      </ol>
+    </div>
+    <div class="instrument"><div id="d75-l3"></div></div>
+  </div>
+
+  <h3>ليه ده كله differentiable؟</h3>
+  <p>كل خطوة (projection، tile assignment، alpha compositing، SH evaluation) differentiable بالنسبة لبارامترات الـ Gaussians. لو عندك صورة ground-truth، احسب loss على البكسلات، اعمل backprop عبر الـ rasteriser، وحدّث كل <span class="ltr">(μ, q, s, α, c_lm)</span> بـ gradient descent. بعد حوالي ٣٠ ألف iteration الـ Gaussians بتلاقي مواضعها وأحجامها وألوانها الصح.</p>
+</section>
+
+<section id="d75-dens">
+  <div class="station-head"><span class="tag">05</span><h2>Densification و Pruning</h2></div>
+  <p>مجموعة ثابتة من الـ Gaussians مش هتغطي مشهد معقد. فالتدريب فيه آليتين تكيفيتين:</p>
+  <ul class="checklist">
+    <li><b>Clone:</b> انسخ Gaussian في مكانه لما الـ gradient بتاعه عالي لكن الـ scale صغير: إعادة البناء محتاجة تفاصيل أكتر هنا.</li>
+    <li><b>Split:</b> قسّم Gaussian كبير لاتنين أصغر لما الـ gradient عالي: Gaussian واحد كبير أنعم من إنه يطابق المنطقة.</li>
+    <li><b>Prune:</b> امسح الـ Gaussians اللي الـ opacity بتاعتها نزلت تحت threshold: مبتساهمش.</li>
+  </ul>
+  <p>الـ densification بتشتغل كل N iteration. المشهد بيكبر عادةً من حوالي ١٠٠ ألف Gaussian مبدئي (متزرعين من نقط الـ SfM) لـ ١–٥ مليون في الآخر.</p>
+  <div class="note"><strong>تشبيه:</strong> زي رسام بيرسم بالفرش: مكان فيه تفاصيل (عين، حروف) بيخلي فرشة صغيرة (clone)، ومكان واسع بيفتت فيه فرشة كبيرة لاتنين أصغر (split)، وفرشة مبتأثرش في الرسمة بيرميها (prune).</div>
+</section>
+
+<section id="d75-stack">
+  <div class="station-head"><span class="tag">06</span><h2>الـ stack في ٢٠٢٦ والمتغيرات 4D والـ generative</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>المرحلة</th><th>بتعمل إيه</th><th>أدوات الدرس</th></tr>
+    <tr><td>١. Capture</td><td>تصوير المشهد</td><td>موبايل، درون DJI، scanner يدوي</td></tr>
+    <tr><td>٢. SfM / MVS</td><td>استخراج أوضاع الكاميرات ونقط متفرقة</td><td>COLMAP أو GLOMAP</td></tr>
+    <tr><td>٣. Train 3DGS</td><td>تدريب الـ Gaussians (حوالي ١٠–٣٠ دقيقة على RTX 4090)</td><td>nerfstudio / gsplat / inria official / PostShot</td></tr>
+    <tr><td>٤. Edit</td><td>تنضيف الـ floaters والتقسيم</td><td>SuperSplat / SplatForge</td></tr>
+    <tr><td>٥. Export</td><td>.ply ← glTF KHR_gaussian_splatting أو .usd</td><td>OpenUSD 26.03</td></tr>
+    <tr><td>٦. View</td><td>العرض</td><td>Cesium / Unreal / Babylon.js / Three.js / Vision Pro</td></tr>
+  </table></div>
+  <ul class="checklist">
+    <li><b>4D Gaussian Splatting:</b> الـ Gaussians دوال في الزمن، للفيديو الحجمي (volumetric video).</li>
+    <li><b>Generative splats:</b> موديلات text-to-splat (Marble من World Labs) بتخيّل مشاهد كاملة.</li>
+    <li><b>3D Gaussian Unscented Transform:</b> نسخة NVIDIA NuRec لمحاكاة القيادة الذاتية.</li>
+  </ul>
+  <h3>صيغ الـ export اللي تهم</h3>
+  <ul class="checklist">
+    <li><code>.ply</code>: سحابة Gaussians خام (portable، أكبر ملف).</li>
+    <li><code>.splat</code>: صيغة PlayCanvas / SuperSplat المضغوطة (quantised).</li>
+    <li>glTF <code>KHR_gaussian_splatting</code>: معيار Khronos، portable عبر الـ viewers (RC في فبراير ٢٠٢٦ حسب الدرس).</li>
+    <li>OpenUSD <code>UsdVolParticleField3DGaussianSplat</code>: لـ NVIDIA Omniverse وVision Pro.</li>
+  </ul>
+</section>
+
+<section id="d75-code">
+  <div class="station-head"><span class="tag">07</span><h2>الكود: ابنِ الـ 2D Splatting بإيدك</h2></div>
+  <p>هنبني نسخة ثنائية الأبعاد الأول، والـ 3D بيتحول لنفس اللوب بعد الـ projection. اكتب كل بلوك بنفسك. الملف الأصلي: <span class="ltr">phases/04-computer-vision/22-3d-gaussian-splatting/code/main.py</span>.</p>
+
+  <h3>خطوة ١: Gaussian ثنائي الأبعاد</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def eval_2d_gaussian(means, covs, points):
+    <span class="c"># means (G,2) | covs (G,2,2) | points (H,W,2) -&gt; (G,H,W)</span>
+    G = means.size(0)
+    H, W, _ = points.shape
+    flat = points.view(-1, 2)                       <span class="c"># كل البكسلات في قايمة</span>
+    inv = torch.linalg.inv(covs)                    <span class="c"># Σ⁻¹ لكل Gaussian</span>
+    diff = flat[None, :, :] - means[:, None, :]     <span class="c"># (G, H*W, 2)</span>
+    d = torch.einsum("gpi,gij,gpj-&gt;gp", diff, inv, diff)   <span class="c"># diffᵀ Σ⁻¹ diff</span>
+    density = torch.exp(-0.5 * d)
+    return density.view(G, H, W)</pre></div>
+  <p>الـ <code>einsum</code> بيحسب الـ quadratic form <span class="ltr">diffᵀ Σ⁻¹ diff</span> لكل زوج (Gaussian، بكسل).</p>
+
+  <h3>خطوة ٢: الـ rasteriser بالـ alpha compositing</h3>
+  <p>العمق في 2D ملوش معنى، فبنستخدم scalar متعلَّم لكل Gaussian للترتيب.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def rasterise_2d(means, covs, colours, opacities, depths, image_size):
+    H, W = image_size
+    device = means.device
+    yy, xx = torch.meshgrid(
+        torch.arange(H, dtype=torch.float32, device=device),
+        torch.arange(W, dtype=torch.float32, device=device),
+        indexing="ij",
+    )
+    points = torch.stack([xx, yy], dim=-1)
+    densities = eval_2d_gaussian(means, covs, points)
+    alphas = opacities[:, None, None] * densities     <span class="c"># α = opacity × density</span>
+    alphas = alphas.clamp(0.0, 0.99)                  <span class="c"># متوصلش ١ بالظبط</span>
+
+    order = torch.argsort(depths)                     <span class="c"># الأقرب الأول</span>
+    alphas = alphas[order]
+    colours_sorted = colours[order]
+
+    T = torch.ones(H, W, device=device)               <span class="c"># transmittance مبدئيًا ١</span>
+    out = torch.zeros(H, W, 3, device=device)
+    for i in range(means.size(0)):
+        a = alphas[i]
+        out = out + (T * a)[..., None] * colours_sorted[i][None, None, :]
+        T = T * (1.0 - a)                             <span class="c"># اللي فاضل من الضوء</span>
+    return out</pre></div>
+  <p>مش سريع (النسخة الحقيقية بتستخدم CUDA kernels على tiles) لكن الرياضة صح بالظبط وdifferentiable بالكامل.</p>
+
+  <h3>خطوة ٣: مشهد splats قابل للتدريب</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class Splats2D(nn.Module):
+    def __init__(self, num_splats=64, image_size=64, seed=0):
+        super().__init__()
+        g = torch.Generator().manual_seed(seed)
+        H, W = image_size, image_size
+        self.means = nn.Parameter(torch.rand(num_splats, 2, generator=g) * torch.tensor([W, H]))
+        self.log_scale = nn.Parameter(torch.full((num_splats, 2), math.log(3.0)))
+        self.rot = nn.Parameter(torch.zeros(num_splats))               <span class="c"># زاوية واحدة في 2D</span>
+        self.colour_logits = nn.Parameter(torch.randn(num_splats, 3, generator=g) * 0.3)
+        self.opacity_logit = nn.Parameter(torch.zeros(num_splats))
+        self.depth = nn.Parameter(torch.rand(num_splats, generator=g))
+
+    def covs(self):
+        s = torch.exp(self.log_scale)                                  <span class="c"># exp عشان يفضل موجب</span>
+        c, si = torch.cos(self.rot), torch.sin(self.rot)
+        R = torch.stack([torch.stack([c, -si], dim=-1),
+                         torch.stack([si, c], dim=-1)], dim=-2)
+        S = torch.diag_embed(s ** 2)
+        return R @ S @ R.transpose(-1, -2)                             <span class="c"># R S Rᵀ</span>
+
+    def forward(self, image_size):
+        covs = self.covs()
+        colours = torch.sigmoid(self.colour_logits)                    <span class="c"># اللون بين ٠ و١</span>
+        opacities = torch.sigmoid(self.opacity_logit)                  <span class="c"># opacity بين ٠ و١</span>
+        return rasterise_2d(self.means, covs, colours, opacities, self.depth, image_size)</pre></div>
+  <p><code>log_scale</code> و<code>opacity_logit</code> و<code>colour_logits</code> كلها بارامترات حرة (unconstrained) بتمر على الـ activation المناسب وقت الـ render. ده النمط القياسي في كل implementation للـ 3DGS.</p>
+
+  <h3>خطوة ٤: فيت الـ Gaussians على صورة هدف</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_target(size=48):
+    yy, xx = np.meshgrid(np.arange(size), np.arange(size), indexing="ij")
+    img = np.ones((size, size, 3), dtype=np.float32)               <span class="c"># خلفية بيضا</span>
+    mask = (xx - 15) ** 2 + (yy - 15) ** 2 &lt; 8 ** 2                 <span class="c"># دايرة حمرا</span>
+    img[mask] = [0.95, 0.2, 0.15]
+    mask = (np.abs(xx - 34) &lt; 6) &amp; (np.abs(yy - 32) &lt; 6)          <span class="c"># مربع أزرق</span>
+    img[mask] = [0.2, 0.35, 0.95]
+    return torch.from_numpy(img)
+
+torch.manual_seed(0)
+target = make_target(48)
+model = Splats2D(num_splats=48, image_size=48)
+opt = torch.optim.Adam(model.parameters(), lr=0.08)
+
+for step in range(300):
+    pred = model((48, 48))
+    loss = F.mse_loss(pred, target)                                <span class="c"># MSE على البكسلات</span>
+    opt.zero_grad(); loss.backward(); opt.step()
+    if step % 50 == 0:
+        print(f"  step {step:3d}  mse {loss.item():.4f}")
+print(f"final mse: {F.mse_loss(model((48, 48)), target).item():.4f}")</pre></div>
+  <p>بعد ٣٠٠ خطوة الـ ٤٨ Gaussian بيستقروا على الشكلين. دي الفكرة كلها: gradient descent على primitives هندسية صريحة.</p>
+
+  <h3>خطوة ٥: Spherical Harmonics درجة ٣</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def sh_degree_3_basis(dirs):
+    x, y, z = dirs[..., 0], dirs[..., 1], dirs[..., 2]
+    x2, y2, z2 = x * x, y * y, z * z
+    xy, yz, xz = x * y, y * z, x * z
+    C0 = 0.282094791773878
+    C1 = 0.488602511902920
+    C2 = [1.092548430592079, 1.092548430592079, 0.315391565252520,
+          1.092548430592079, 0.546274215296039]
+    C3 = [0.590043589926644, 2.890611442640554, 0.457045799464465,
+          0.373176332590115, 0.457045799464465, 1.445305721320277,
+          0.590043589926644]
+    basis = torch.stack([
+        torch.full_like(x, C0),                                          <span class="c"># درجة ٠</span>
+        -C1 * y, C1 * z, -C1 * x,                                        <span class="c"># درجة ١</span>
+        C2[0] * xy, C2[1] * yz, C2[2] * (2 * z2 - x2 - y2), C2[3] * xz, C2[4] * (x2 - y2),   <span class="c"># درجة ٢</span>
+        -C3[0] * y * (3 * x2 - y2), C3[1] * xy * z, -C3[2] * y * (4 * z2 - x2 - y2),
+        C3[3] * z * (2 * z2 - 3 * x2 - 3 * y2), -C3[4] * x * (4 * z2 - x2 - y2),
+        C3[5] * z * (x2 - y2), -C3[6] * x * (x2 - 3 * y2),               <span class="c"># درجة ٣</span>
+    ], dim=-1)
+    return basis                                                         <span class="c"># (..., 16)</span>
+
+def eval_sh_degree_3(sh_coeffs, dirs):                                   <span class="c"># sh_coeffs (...,16,3)</span>
+    basis = sh_degree_3_basis(dirs)
+    return torch.einsum("...b,...bc-&gt;...c", basis, sh_coeffs)            <span class="c"># dot product مع الأساس</span>
+
+sh = torch.randn(1, 16, 3)
+dirs = F.normalize(torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), dim=-1)
+print(tuple(eval_sh_degree_3(sh, dirs).shape))</pre></div>
+  <div class="note"><strong>تنبيه:</strong> الـ docs في الدرس بتعرض نسخة SH مختصرة من غير حدود الدرجة ٣ («omitted for brevity»)، والنسخة الكاملة (١٦ حد) في ملف الكود. اللي فوق هو النسخة الكاملة من الملف.</div>
+  <p>أو شغّل الملف الجاهز من جذر الـ repo:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/22-3d-gaussian-splatting/code/main.py</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">Fitting 48 2D Gaussians to a red circle + blue square...
+  step   0  mse ...
+  step  50  mse ...
+  ...
+final mse: ...
+
+Spherical harmonics sanity check:
+  SH(16, 3) evaluated at 3 directions -> (3, 3)</pre><p>الأرقام الدقيقة للـ mse مش مكتوبة في الدرس، بس المفروض تنزل بوضوح مع الخطوات. تقدر تفتح <code>pred</code> وتحفظها كصورة وتشوف الدايرة والمربع.</p></details>
+
+  <h3>خطوة ٦: من 2D لـ 3D</h3>
+  <p>الـ 3D بيحافظ على نفس اللوب. الإضافات:</p>
+  <ol class="ex">
+    <li>الـ rotation لكل Gaussian بقى <b>quaternion</b> بدل زاوية واحدة.</li>
+    <li>الـ covariance هي <span class="ltr">R S Sᵀ Rᵀ</span> حيث R مبنية من الـ quaternion و<span class="ltr">S = diag(exp(log_scale))</span>.</li>
+    <li>الـ projection من <span class="ltr">(μ, Σ)</span> لـ <span class="ltr">(μ', Σ')</span> بيستخدم extrinsics الكاميرا والـ Jacobian للـ perspective عند μ.</li>
+    <li>اللون بقى SH expansion بتقيّمه عند اتجاه النظر.</li>
+    <li>الـ depth-sort من الـ z الفعلي في فراغ الكاميرا بدل scalar متعلَّم.</li>
+  </ol>
+  <p>كل implementation إنتاجي (<code>gsplat</code>، <code>inria/gaussian-splatting</code>، <code>nerfstudio</code>) بيعمل بالظبط ده على الـ GPU بـ CUDA kernels على tiles.</p>
+
+  <h3>خطوة ٧: الاستخدام الحقيقي</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>pip install nerfstudio gsplat
+ns-download-data example
+ns-train splatfacto --data path/to/data</pre></div>
+  <p><code>splatfacto</code> هو trainer الـ 3DGS في nerfstudio. بيحتاج GPU قوي (الدرس بيقول ١٠–٣٠ دقيقة على RTX 4090 لمشهد عادي). متحاولش على CPU.</p>
+</section>
+
+<section id="d75-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> شغّل الـ 2D trainer على صورة synthetic تانية. غيّر <code>num_splats</code> بين <span class="ltr">[16, 64, 256]</span> وارسم MSE ضد الخطوات لكل واحد. حدّد نقطة تناقص العائد.
+      <details><summary>تلميح</summary>سجّل <code>loss.item()</code> في list لكل run وارسمهم بـ matplotlib. توقع إن ١٦ Gaussian مش هيكفوا للشكلين بدقة، وإن ٢٥٦ بيبقى أحسن لكن أبطأ بكتير لأن الـ rasteriser بيعمل loop على الـ Gaussians وبيحسب density لكل بكسل (الذاكرة والوقت بيزيدوا مع G). نقطة التناقص هي حيث الـ MSE بيبطل ينزل كتير مقابل الوقت.</details></li>
+    <li><b>(متوسط)</b> وسّع الـ 2D rasteriser بحيث لون كل Gaussian يعتمد على «زاوية نظر» scalar عن طريق harmonic من الدرجة ٢. درّب على صورتين هدف وتأكد إنه بيعيد بناء الاتنين.
+      <details><summary>تلميح</summary>خلّي لكل Gaussian معاملات (٣ معاملات × ٣ قنوات لدرجة ٢ في 1D: الثابت + cos θ + sin θ مثلًا لو بتبسّط). وقت الـ render بتدخل زاوية الصورة وتحسب اللون = مجموع المعاملات × الأساس. صورتين بزاويتين مختلفتين، والـ loss هو مجموع MSE للاتنين. ملحوظة: ده تبسيط 1D للـ SH، مش الـ SH الكاملة على الكرة.</details></li>
+    <li><b>(صعب)</b> نزّل nerfstudio ودرّب <code>splatfacto</code> على ٢٠ صورة لأي مشهد عندك. اعمل export لـ glTF <code>KHR_gaussian_splatting</code> وافتحه في viewer (Three.js <code>GaussianSplats3D</code>، SuperSplat، Babylon.js V9). سجّل وقت التدريب وعدد الـ Gaussians والـ fps.
+      <details><summary>تلميح</summary>محتاج GPU، فاعمله على جهاز فيه NVIDIA أو على خدمة سحابية. صوّر المشهد من زوايا متداخلة (overlap كبير بين الصور) وإضاءة ثابتة. الأخطاء الأشهر: صور مهزوزة أو أجسام لامعة، وبيطلعوا floaters. استخدم أداة تنضيف زي SuperSplat قبل الـ export.</details></li>
+    <li><b>إضافة مني · جرّب تشيل الترتيب:</b> في الـ 2D rasteriser غيّر <code>order = torch.argsort(depths)</code> لترتيب ثابت (من غير ما تعتمد على depth). إيه اللي بيتغير في النتيجة وليه؟
+      <details><summary>الإجابة</summary>الـ alpha compositing <b>مش تبادلي</b>: ترتيب المزج بيفرق، لأن الـ T بيتحسب من الـ Gaussians اللي قبل. لو الـ Gaussians متراصة بترتيب ثابت من غير depth متعلَّم، الموديل مش هيقدر يقرر مين قدام مين، فهيحتاج يعوّض بالـ opacity والألوان وغالبًا بيلاقي حل أسوأ أو أبطأ. وفي النسخة 3D الترتيب لازم يبقى حسب z الفعلي، وإلا بتحصل artifacts (ظهور حاجات من ورا قدام).</details></li>
+  </ol>
+</section>
+
+<section id="d75-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: اللي الدرس مقالوش، وفين بيظهر في الـ LLMs والـ agents</h2></div>
+  <ul class="checklist">
+    <li><b>راجع حسبة الذاكرة بنفسك:</b> الدرس بيقول ٦٠ رقم للـ Gaussian و٢٤٠MB لمشهد ٥ مليون. الحسبة: ٦٠ رقم × ٤ بايت (float32) = ٢٤٠ بايت للـ Gaussian، يعني ٢٤٠MB لكل <b>مليون</b>، و١.٢GB لـ ٥ مليون. شغّل المعمل ٤ وتأكد. الفكرة العامة (أصغر من نقط بـ textures) صح، بس اعتمد على حسابك.</li>
+    <li><b>ليه exp وsigmoid؟</b> الـ scale لازم تبقى موجبة والـ opacity بين ٠ و١، فالبارامتر الخام حر والـ activation بيقيّده. ده بيخلّي الـ optimizer يشتغل من غير قيود. نفس الحيلة في أي موديل بتحتاج فيه بارامتر موجب أو محصور.</li>
+    <li><b>فخ الـ clamp(0, 0.99):</b> لو سيبت α توصل ١ بالظبط، الـ T بيبقى صفر والـ gradient للي وراه بيموت. الـ clamp بيحميك. لاحظ إنه بيقتل الـ gradient للقيم اللي فوق ٠.٩٩ نفسها لكن ده trade-off مقبول.</li>
+    <li><b>الـ floaters:</b> بقع طايرة في المشهد بتطلع لما الصور مش بتغطي زاوية. الـ pruning بيشيل الشفاف منها، لكن اللي معتم بيفضل ويحتاج تنضيف يدوي (SuperSplat).</li>
+    <li><b>الربط مع الدروس اللي قبل:</b> الـ NeRF (Lesson 13) وNeRF-like volumetric rendering هي نفس المعادلة. وفكرة «primitive متعلَّمة + differentiable renderer» هي نفس فكرة الـ differentiable programming عمومًا: أي حاجة تقدر ترسمها وتشتق منها تقدر تتعلمها.</li>
+    <li><b>في الـ LLMs والـ agents:</b> الـ 3DGS مش جزء من الـ LLMs نفسها، لكن الـ world models والـ simulation للـ agents (القيادة الذاتية، الروبوتات) بتستخدم مشاهد مبنية من splats كبيئات تدريب (زي ما الدرس ذكر NVIDIA NuRec). ومولدات 3D من النص (Marble) بتطلّع splats.</li>
+  </ul>
+</section>
+
+<section id="d75-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d75-quizBox"></div>
+</section>
+
+<section id="d75-done">
+  <div class="station-head"><span class="tag">11</span><h2>خلصت؟ اتأكد</h2></div>
+  <ul class="checklist" id="d75-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أسمّي الخمس بارامترات للـ Gaussian وأقول كل واحد بيعمل إيه</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم معادلة الـ alpha compositing ومعنى الـ T</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم الفرق بين clone وsplit وprune</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت الـ 2D rasteriser بإيدي وشفت الـ mse بينزل</label></li>
+    <li><label><input type="checkbox" data-ck="5"> أعرف إيه اللي بيتغير لما نروح من 2D لـ 3D</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Alpha compositing</td><td>كل rasteriser بيدعم الشفافية، والـ NeRF volumetric rendering</td></tr>
+    <tr><td>Covariance Σ = R S Sᵀ Rᵀ</td><td>أي Gaussian متباين الاتجاهات (anisotropic)، وكمان الإحصاء</td></tr>
+    <tr><td>Spherical harmonics</td><td>إضاءة الـ graphics الحقيقية، وlight probes</td></tr>
+    <tr><td>Densification / pruning</td><td>تدريب 3DGS، ومبدأ التكيّف أثناء التدريب عمومًا</td></tr>
+    <tr><td>glTF KHR_gaussian_splatting / OpenUSD</td><td>العقارات، المحاكاة، Vision Pro، محركات الألعاب</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Diffusion Transformers &amp; Rectified Flow: إزاي الـ U-Net اتبدل بـ transformer وإزاي الـ rectified flow بيخلّي التوليد أسرع.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F22-3d-gaussian-splatting" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/22-3d-gaussian-splatting</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=75,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d75-roadmap').closest('.day');
+
+const rm=$('d75-roadmap');
+for(let i=1;i<=28;i++){const s=document.createElement('span');s.textContent=i;if(i===22)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: pipeline flow ----
+L.flow($('d75-l1'),{height:300,
+ nodes:[{id:'sc',label:'3D Gaussians',x:0.0,y:0.5},{id:'pj',label:'Project',x:0.25,y:0.2},{id:'tl',label:'Tiles',x:0.5,y:0.8},{id:'so',label:'Sort',x:0.62,y:0.2},{id:'al',label:'Alpha',x:0.82,y:0.8},{id:'px',label:'Pixel',x:1.0,y:0.4}],
+ edges:[['sc','pj','μ, Σ'],['pj','tl','2D ellipses'],['tl','so','per tile'],['so','al','depth order'],['al','px','C = Σ α T c']],
+ steps:[
+  {active:['sc'],text:'<b>٠.</b> المشهد: ملايين الـ Gaussians (μ, q, s, α, SH).'},
+  {active:['sc','pj'],edges:[['sc','pj']],text:'<b>١.</b> Project: كل Gaussian 3D بيتحول لـ ellipse على الشاشة بـ Σ\' = J W Σ Wᵀ Jᵀ.'},
+  {active:['pj','tl'],edges:[['pj','tl']],text:'<b>٢.</b> Tiles: كل ellipse بيتوزع على بلاطات 16×16.'},
+  {active:['tl','so'],edges:[['tl','so']],text:'<b>٣.</b> Sort: ترتيب بالعمق جوه كل tile.'},
+  {active:['so','al'],edges:[['so','al']],text:'<b>٤.</b> Alpha-composite من الأمام للخلف.'},
+  {active:['al','px'],edges:[['al','px']],text:'<b>٥.</b> لون البكسل. وبعدين الـ loss والـ backprop راجع لكل بارامتر.'}]});
+
+// ---- Lab 2: 2D Gaussian shape ----
+L.heatmap($('d75-l2'),{rows:Array.from({length:21},(_,i)=>String(i)),cols:Array.from({length:21},(_,i)=>String(i)),fmt:1,
+ params:[{k:'sx',label:'σx',min:0.8,max:6,step:0.2,v:4},{k:'sy',label:'σy',min:0.8,max:6,step:0.2,v:1.6},{k:'th',label:'θ (درجة)',min:0,max:180,step:5,v:30}],
+ values:p=>{const t=p.th*Math.PI/180,c=Math.cos(t),s=Math.sin(t),g=[];for(let y=0;y<21;y++){const r=[];for(let x=0;x<21;x++){const dx=x-10,dy=y-10;const u=c*dx+s*dy,v=-s*dx+c*dy;r.push(Math.exp(-0.5*(u*u/(p.sx*p.sx)+v*v/(p.sy*p.sy))))}g.push(r)}return g},
+ readout:p=>[['σx / σy',(p.sx/p.sy).toFixed(2)],['θ',p.th+'°']],
+ note:p=>Math.abs(p.sx-p.sy)<0.25?'تقريبًا دايرة (isotropic)':'ellipse (anisotropic): الدوران هو اللي بيحدد اتجاهها'});
+
+// ---- Lab 3: alpha compositing ----
+L.calc($('d75-l3'),{
+ params:[{k:'a1',label:'α١ (الأقرب)',min:0,max:1,step:0.05,v:0.5},{k:'c1',label:'سطوع ١',min:0,max:1,step:0.05,v:1},{k:'a2',label:'α٢',min:0,max:1,step:0.05,v:0.5},{k:'c2',label:'سطوع ٢',min:0,max:1,step:0.05,v:0.5},{k:'a3',label:'α٣ (الأبعد)',min:0,max:1,step:0.05,v:0.8},{k:'c3',label:'سطوع ٣',min:0,max:1,step:0.05,v:0}],
+ compute:p=>{const T1=1,T2=1-p.a1,T3=T2*(1-p.a2);const w1=p.a1*T1,w2=p.a2*T2,w3=p.a3*T3;const C=w1*p.c1+w2*p.c2+w3*p.c3;const left=T3*(1-p.a3);
+  return [['T١ / T٢ / T٣',[T1,T2,T3].map(v=>v.toFixed(2)).join(' / ')],['weights α·T',[w1,w2,w3].map(v=>v.toFixed(3)).join(' / ')],['لون البكسل C',C.toFixed(3)],['الضوء الفاضل (الخلفية)',left.toFixed(3)]]},
+ note:p=>p.a1>0.9?'α١ عالي: الأول بيحجب الباقي (الـ T٢ قريب من صفر)':'جرّب ترفع α١ وشوف إزاي weights التانيين بتقل'});
+
+// ---- Lab 4: memory ----
+L.calc($('d75-l4'),{
+ params:[{k:'n',label:'عدد الـ Gaussians (مليون)',min:0.1,max:10,step:0.1,v:5},{k:'L',label:'درجة SH',min:0,max:3,step:1,v:3},{k:'misc',label:'أرقام إضافية',min:0,max:10,step:1,v:1}],
+ compute:p=>{const sh=3*(p.L+1)**2;const f=3+4+3+1+sh+p.misc;const mb=p.n*1e6*f*4/1e6;return [['أرقام SH (لون)',sh],['أرقام للـ Gaussian الواحد',f],['بايت للـ Gaussian',f*4],['الحجم (MB)',mb.toFixed(0)],['الحجم (GB)',(mb/1000).toFixed(2)]]},
+ note:p=>p.L===3&&p.misc===1?'٣+٤+٣+١+٤٨+١ = ٦٠ رقم. ٥ مليون × ٦٠ × ٤ بايت ≈ ١.٢ GB (مش ٢٤٠MB)':'قلّل درجة SH وشوف قد إيه الحجم بينزل: اللون هو أغلب الأرقام'});
+
+// ---- quiz ----
+AI.quiz($('d75-quizBox'),[
+ ['ليه الـ 3D Gaussian Splatting خد مكان الـ NeRF تقريبًا كـ default إنتاجي لإعادة بناء المشاهد الواقعية بحلول ٢٠٢٦؟',['الـ NeRF اتسحب من السجل البحثي','الـ 3DGS صريح (explicit، مفيش MLP لكل بكسل): الـ rendering هو GPU rasterisation بـ ١٠٠+ fps، التدريب دقايق مش ساعات، المشاهد قابلة للتعديل، وKhronos وOpenUSD وحّدوه في ٢٠٢٦','الـ Gaussian Splatting بيطلّع جودة أعلى من NeRF في كل الحالات','PyTorch وقفت دعم عمليات NeRF'],1,'الـ 3DGS بيبدّل الـ MLP الضمني بملايين الـ 3D Gaussians الصريحة. الـ rendering بيبقى alpha compositing مرتب بيشتغل ١٠٠+ fps على هاردوير عادي، والتدريب دقايق، وكل Gaussian قابل للتعديل. وفي ٢٠٢٦ Khronos اعتمدت امتداد glTF وOpenUSD 26.03 ضاف schema أصلي، فبقى format إنتاجي portable.'],
+ ['الـ 3D Gaussian في المشهد شايل position وrotation وscale وopacity، وإيه كمان عشان يتعامل مع اللون المتغير حسب زاوية النظر (زي اللمعة)؟',['texture RGB تاني','MLP صغير لكل Gaussian','معاملات Spherical Harmonics: لحد الدرجة ٣ بتدي ١٦ معامل لكل قناة لون، بيتقيّموا عند اتجاه النظر وقت الـ render','light probe cubemap'],2,'الـ Spherical harmonics هي أساس فورييه على الكرة. كل Gaussian بيخزن معاملات SH متعلَّمة بتشفّر إزاي لونه بيتغير مع اتجاه النظر. وقت الـ render بتقيّمهم مقابل المتجه الوحدة من البكسل لمركز الـ Gaussian، فبتطلع لمعة وانعكاسات خفيفة وتظليل متغير من غير textures ولا MLPs.'],
+ ['في تدريب الـ 3DGS الـ densification فيها «clone» و«split». إيه اللي بيشغّل كل واحدة؟',['مفيش حاجة: الـ Gaussians ثابتة بعد التهيئة','gradient عالي مع scale صغير بيشغّل clone (محتاج تفاصيل محلية أكتر)، وgradient عالي مع scale كبير بيشغّل split (Gaussian واحد أنعم من إنه يطابق المنطقة). والـ opacity تحت threshold بتشغّل pruning','الوقت من آخر checkpoint','أخذ عينات عشوائية في كل epoch'],1,'الـ densification التكيفية هي اللي بتخلّي الـ 3DGS يكبر من ~١٠٠ ألف Gaussian مزروعة من SfM لـ ١–٥ مليون عند التقارب. الـ clone بيكرر الـ Gaussians الصغيرة الغير كفاية، والـ split بيقسّم الكبيرة جدًا لاتنين أصغر، والـ prune بيمسح اللي الـ sigmoid opacity بتاعتها نزلت تحت threshold. التلات عمليات دول مع gradient descent على البارامترات هم ديناميكية التدريب كلها.'],
+ ['معادلة لون البكسل في NeRF و3DGS هي C = Σ αᵢ·Tᵢ·cᵢ حيث Tᵢ = Π_{j<i}(1 − αⱼ). المعادلة المشتركة دي بتقول إيه عن الطريقتين؟',['الـ NeRF أحسن بالمطلق','الاتنين بيعملوا integration لنفس معادلة الـ volumetric rendering؛ الفرق بس في التمثيل (عينات MLP ضمنية مقابل Gaussians صريحة متفرقة) وفي طريقة الـ rendering (ray marching مقابل rasterisation) وده سبب إن جودتهم قريبة','هم متطابقين رياضيًا من كل النواحي','الـ 3DGS أحسن بالمطلق'],1,'المعادلة المشتركة هي الـ volumetric render الكلاسيكية. الـ NeRF بيقيّمها بأخذ عينات على الأشعة وسؤال MLP. الـ 3DGS بيقيّمها بإسقاط الـ Gaussians لـ 2D ومزج الـ primitives المرتبة لكل بكسل. نفس الفيزياء ونفس الـ loss وبنية بيانات وخوارزمية rendering مختلفة. وده سبب إنهم بيوصلوا لـ PSNR / LPIPS قريب؛ الفرق العملي هو السرعة وقابلية التعديل.'],
+ ['عايز تشحن مشهد 3DGS على Unreal Engine وVision Pro وBlender وviewer Three.js في ٢٠٢٦. أنهي format أأمن اختيار؟',['blob ثنائي مخصص لكل viewer','شرايط PNG للـ Gaussians','ملف .ply لوحده','glTF مع امتداد KHR_gaussian_splatting (RC من Khronos في فبراير ٢٠٢٦) و/أو OpenUSD 26.03 مع UsdVolParticleField3DGaussianSplat؛ دول الصيغتين المعتمدتين/الموحدتين في ٢٠٢٦'],3,'لحد ٢٠٢٤ كل viewer كان له format خاص. Khronos اعتمدت KHR_gaussian_splatting لـ glTF في فبراير ٢٠٢٦ وOpenUSD 26.03 ضاف schema أصلي للـ 3DGS في أبريل ٢٠٢٦. التصدير لأي منهم بيدّيك portability عبر المحركات والـ viewers والـ pipelines. الـ .ply لسه هو lingua franca للأبحاث لكنه أقل تنظيمًا.'],
+ ['(سؤال مني) ليه بنخزن log_scale بدل scale مباشرة، وopacity_logit بدل opacity؟',['عشان الملف يبقى أصغر','عشان البارامتر الخام يكون حر من غير قيود وبيتحول بـ exp أو sigmoid لقيمة موجبة أو بين ٠ و١، فالـ optimizer ميطلعش قيم غلط','لأن CUDA مبتدعمش الأرقام الموجبة','عشان الـ SH يشتغل'],1,'exp بيضمن scale موجب وsigmoid بيضمن opacity بين ٠ و١. البارامتر الخام ممكن يتحرك بحرية بالـ gradient descent من غير clipping.'],
+ ['(سؤال مني) لو غيّرنا ترتيب المزج (alpha compositing) عشوائيًا بدل depth، إيه المتوقع؟',['مفيش فرق لأن الجمع تبادلي','النتيجة بتتغير لأن الـ T بيتحسب من اللي قبل: المزج مش تبادلي، فالترتيب الغلط بيطلّع artifacts','الـ loss بيبقى صفر','الـ Gaussians بتختفي'],1,'Tᵢ = Π(1−αⱼ) لـ j قبل i، فمين بيتحسب الأول بيفرق. الترتيب بالعمق هو اللي بيطابق الفيزياء (الأقرب بيحجب اللي وراه).'],
+ ['(سؤال مني) كام تقريبًا حجم مشهد ٥ مليون Gaussian لو كل واحد ٦٠ رقم float32؟',['٢٤٠ MB','١.٢ GB','١٢ GB','٣٠ MB'],1,'٥ مليون × ٦٠ رقم × ٤ بايت = ١,٢٠٠ مليون بايت ≈ ١.٢ GB. (٢٤٠ MB دي حجم مليون Gaussian واحد.)']
+],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+})();
+</script>

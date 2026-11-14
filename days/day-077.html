@@ -1,0 +1,313 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 24 · SAM 3 &amp; Open-Vocabulary Segmentation</span>
+  <h1>اليوم ٧٧: قول للموديل «باص مدرسة أصفر» وهو يرسم كل الباصات</h1>
+  <p class="lede">النهاردة هتفهم إزاي SAM 3 جمع الـ detection والـ segmentation وربط النص بالصورة في موديل واحد: <b>Promptable Concept Segmentation</b>. وهتشوف الـ presence head والـ Object Multiplex، وتكتب بإيدك الأدوات اللي حوالين الموديل (تقسيم الـ prompts، RLE، واجهة موحدة).</p>
+  <div class="meta"><span>الوقت: <b>~٦٠ دقيقة</b></span><span>اللغة: <b>Python</b></span><span>قبله: <b>Diffusion Transformers & Rectified Flow</b></span><span>بعده: <b>Vision-Language Models</b></span></div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 days</span>
+    <div class="roadmap" id="d77-roadmap" aria-label="خريطة الفيز"></div>
+  </div>
+</header>
+
+<section id="d77-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+<li>إيه الفرق بين diffusion U-Net (DDPM) والـ DiT؟
+      <details><summary>الإجابة</summary>الـ U-Net بيعتمد على convolutions (encoder, bottleneck, decoder)، والـ DiT بيقسم الصورة لـ patches ويعدّيها على transformer blocks وبعدين unpatchify.</details></li>
+<li>ليه rectified flow بيسمح بـ 20 خطوة sampling بدل 1000؟
+      <details><summary>الإجابة</summary>لأنه بيخلي المسار من الـ noise للـ data خط مستقيم تقريبًا، فتقدر تمشيه بخطوات كبيرة قليلة بدل خطوات صغيرة كتير.</details></li>
+<li>إيه الحاجة اللي استبدلها الـ MMDiT في SD3؟
+      <details><summary>الإجابة</summary>خلّى النص والصورة streams منفصلين بأوزان منفصلة لكن بـ joint attention بينهم، بدل ما الـ text يتحقن بس عن طريق cross-attention.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 دقايق</b>التسخين اللي فوق</div>
+    <div><b>15 دقيقة</b>المشكلة والأجيال التلاتة + معمل ١</div>
+    <div><b>15 دقيقة</b>المعمارية، التدريب، Multiplex + معمل ٢ و٣</div>
+    <div><b>15 دقيقة</b>الكود (٥ خطوات)</div>
+    <div><b>10 دقايق</b>التمارين، الإضافة، الكويز</div>
+  </div>
+</section>
+
+<section id="d77-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: من «اضغط على الحاجة» لـ «قولّي اسمها»</h2></div>
+
+  <p>أول SAM (2023) كان بياخد <b>visual prompt</b> بس: تضغط نقطة أو ترسم box وهو يرجعلك mask للحاجة دي. لو عايز «كل البرتقان في الصورة» كنت محتاج detector (زي Grounding DINO) يطلّع boxes، وبعدين SAM يعمل segment لكل box. ده اسمه <b>Grounded SAM</b>: موديلين متحطين ورا بعض (cascade)، وأي غلطة من الأول بتتنقل للتاني.</p>
+  <p>SAM 3 (من Meta، نوفمبر 2025) شال الـ cascade. بتدّيله <b>جملة اسمية قصيرة</b> (<span class="ltr">"yellow school bus"</span>) أو <b>صورة مثال</b> (image exemplar)، وبيرجعلك <b>كل</b> الـ masks المطابقة مع <b>instance ID</b> لكل واحد، في <b>forward pass واحد</b>. المهمة دي اسمها <b>Promptable Concept Segmentation (PCS)</b>.</p>
+  <div class="note"><strong>تشبيه:</strong> SAM الأول زي موظف استقبال لازم تشاور له على كل كرسي في القاعة. Grounded SAM زي موظفين: واحد يدوّر على الكراسي وواحد يرسمهم، ولو الأول فاته كرسي التاني مش هيعرف. SAM 3 موظف واحد تقوله «هاتلي كل الكراسي الحمرا» فيرجعلك القايمة كلها.</div>
+  <p>الدرس ده مش عن موديل جديد بس، ده عن <b>تحول هيكلي</b>: الـ segmentation والـ detection وربط النص بالصورة اتجمعوا في موديل واحد. السؤال في الإنتاج بقى «أنهي موديل promptable بيحل حالتي end-to-end؟» مش «أركّب أنهي pipeline؟».</p>
+  <p>كمان فيه تحديث <b>SAM 3.1 Object Multiplex</b> (مارس 2026) بيخلّي تتبّع (tracking) كذا instance من نفس المفهوم في الفيديو أسرع، وهنوصله بعدين.</p>
+
+</section>
+<section id="d77-gens">
+  <div class="station-head"><span class="tag">02</span><h2>الأجيال التلاتة</h2></div>
+
+  <div class="tablewrap"><table>
+    <tr><th>الجيل</th><th>الـ prompt</th><th>الـ pipeline</th><th>الناتج</th></tr>
+    <tr><td>SAM (2023)</td><td>نقطة / box</td><td>ViT encoder ← mask decoder</td><td>mask واحد للـ prompt ده</td></tr>
+    <tr><td>Grounded SAM 2 (2024)</td><td>نص</td><td>Grounding DINO ← boxes ← SAM 2</td><td>masks + tracking</td></tr>
+    <tr><td>SAM 3 (2025)</td><td>نص <b>أو</b> image exemplar</td><td>backbone مشترك ← detector + tracker + presence head</td><td>كل الـ masks + instance IDs</td></tr>
+  </table></div>
+  <h3>إيه هو الـ concept prompt؟</h3>
+  <p>جملة اسمية قصيرة (<span class="ltr">"striped red umbrella"</span>, <span class="ltr">"hand holding a mug"</span>) أو صورة مثال. مش جملة كاملة. الفرق عن SAM الكلاسيك في ٣ حاجات:</p>
+  <ol class="ex">
+    <li><b>مفيش prompt لكل instance:</b> prompt واحد بيرجّع كل المطابقات.</li>
+    <li><b>Open-vocabulary:</b> المفهوم أي حاجة تقدر توصفها بالكلام، مش قايمة labels ثابتة.</li>
+    <li><b>Multiple instances:</b> بيرجّع كذا instance مرة واحدة بدل mask واحد لكل prompt.</li>
+  </ol>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: شوف الـ pipeline بتتغير</h3>
+      <p>دوس «التالي» وشوف إزاي الجيل التالت بيشيل خطوات من النص. الدوائر المنوّرة هي اللي شغالة في كل خطوة.</p>
+      <div class="note ai"><strong>لاحظ:</strong> في Grounded SAM فيه عقدة detector منفصلة بين النص والـ mask. في SAM 3 العقدة دي اندمجت في الموديل نفسه.</div>
+    </div>
+    <div class="instrument"><div id="d77-flow1"></div></div>
+  </div>
+
+</section>
+<section id="d77-arch">
+  <div class="station-head"><span class="tag">03</span><h2>معمارية SAM 3: أجزاء الموديل</h2></div>
+
+  <ul class="checklist">
+    <li><b>Shared backbone:</b> ViT واحد بيعالج الصورة. الـ detector والـ tracker الاتنين بيقروا منه، فمفيش حساب مكرر.</li>
+    <li><b>Presence head:</b> بيتوقع «المفهوم ده موجود في الصورة أصلًا؟» <b>منفصل</b> عن «فين هو؟». ده بيقلل الـ false positives لما تسأل عن حاجة مش موجودة، ويخلّي الموديل يقول «مفيش» بنضافة.</li>
+    <li><b>Decoupled detector-tracker:</b> الكشف على مستوى الصورة والتتبع على مستوى الفيديو ليهم heads منفصلة، مش بيتخانقوا على نفس الأوزان.</li>
+    <li><b>Memory bank:</b> بيخزن features كل instance عبر الفريمات للتتبع (نفس فكرة SAM 2).</li>
+  </ul>
+  <div class="note"><strong>تشبيه الـ presence head:</strong> تخيل حارس بيسأل الأول «فيه قطط في الأوضة؟» قبل ما يبدأ يدوّر على مكانهم. موديل مجبر يطلّع boxes في كل الأحوال هيألّف قطة من أي حاجة قريبة منها. الـ presence head بيدّيله حق يقول «لأ».</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: الـ presence وحاجز الـ score</h3>
+      <p>فيه ٥ مرشحين (candidates) بـ score لكل واحد. كل نتيجة نهائية = score × احتمال وجود المفهوم. حرّك احتمال الـ presence وحاجز القبول وشوف مين بينجو.</p>
+      <div class="note ai"><strong>لاحظ:</strong> لما الـ presence يقل (المفهوم غالبًا مش موجود)، كل المرشحين بينزلوا مع بعض ويقعوا تحت الحاجز، فبتحصل «صفر detections» نضيفة. ده بالظبط اللي الـ presence head بيحققه.</div>
+    </div>
+    <div class="instrument"><div id="d77-bars"></div></div>
+  </div>
+
+</section>
+<section id="d77-train">
+  <div class="station-head"><span class="tag">04</span><h2>التدريب على نطاق ضخم: 4 مليون مفهوم</h2></div>
+
+  <p>SAM 3 اتدرّب على <b>4 مليون مفهوم مختلف</b> طلعتهم <b>data engine</b>: دورة بتعمل annotation بالـ AI وبعدين مراجعة وتصحيح بشري، وتتكرر. وفيه benchmark جديد اسمه <b>SA-CO</b> فيه <b>270 ألف مفهوم</b>، أكبر بـ 50 مرة من الـ benchmarks اللي قبله. SAM 3 بيوصل لـ 75-80% من أداء البشر على SA-CO، وبيضاعف أداء الأنظمة الموجودة في PCS للصور والفيديو.</p>
+  <div class="note"><strong>ليه الأرقام دي مهمة؟</strong> لأن «open-vocabulary» ملهاش معنى لو الموديل شاف 80 كلمة بس. كمية المفاهيم هي اللي بتخلي <span class="ltr">"striped red umbrella"</span> تشتغل مش بس <span class="ltr">"umbrella"</span>.</div>
+
+</section>
+<section id="d77-mux">
+  <div class="station-head"><span class="tag">05</span><h2>SAM 3.1 Object Multiplex</h2></div>
+
+  <p>قبل كده تتبع N instance كان معناه N memory banks منفصلة، فالتكلفة بتكبر خطيًا مع عدد الأجسام. <b>Object Multiplex</b> (مارس 2026) بيجمعهم في <b>ذاكرة واحدة مشتركة</b> مع <b>query لكل instance</b> بيسحب منها اللي يخصه. النتيجة: تتبع أسرع بكتير للأجسام الكتيرة من غير ما الدقة تقل. مهم للزحمة والمشاهد المتراصة.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: تكلفة الذاكرة، منفصلة ضد مشتركة</h3>
+      <p>الأرقام هنا <b>نموذج مبسّط للفكرة</b> (وحدات ذاكرة افتراضية)، مش قياسات حقيقية من الموديل. حرّك عدد الأجسام وحجم الذاكرة للفريم.</p>
+      <div class="note ai"><strong>لاحظ:</strong> في الطريقة القديمة التكلفة = N × M. في Multiplex ذاكرة واحدة M وبتضيف query صغيير لكل جسم. الفرق بيكبر مع N.</div>
+    </div>
+    <div class="instrument"><div id="d77-calc"></div></div>
+  </div>
+
+</section>
+<section id="d77-stack">
+  <div class="station-head"><span class="tag">06</span><h2>تختار إيه في 2026؟</h2></div>
+
+  <div class="tablewrap"><table>
+    <tr><th>الموديل</th><th>بيطلّع</th><th>متى؟</th></tr>
+    <tr><td>SAM 3</td><td>masks + tracking</td><td>الافتراضي لأي حاجة محتاجة masks أو tracking</td></tr>
+    <tr><td>Grounded SAM 2</td><td>masks + tracking</td><td>عايز تبدّل الـ detector (DINO-X, Florence-2)، أو رخصة SAM 3 (gated على HF) مشكلة، أو عايز تحكم أدق في threshold الـ detector، أو بحث وablation على الـ detector نفسه</td></tr>
+    <tr><td>YOLO-World</td><td>boxes بس، real-time</td><td>fps عالي من غير masks (robotics navigation، dashboards سريعة)</td></tr>
+    <tr><td>SAM-MI</td><td>masks أسرع</td><td>لما الـ decoder هو عنق الزجاجة</td></tr>
+  </table></div>
+  <h3>SAM-MI: الكفاءة</h3>
+  <ul class="checklist">
+    <li><b>Sparse point prompting:</b> نقط قليلة مختارة بدل prompts كثيفة، بيقلل نداءات الـ decoder بنسبة 96%.</li>
+    <li><b>Shallow mask aggregation:</b> بيدمج masks خشنة في mask واحد أحدّ.</li>
+    <li><b>Decoupled mask injection:</b> الـ decoder بيستلم mask features محسوبة قبل كده بدل ما يشتغل من الأول.</li>
+  </ul>
+  <p>النتيجة: حوالي <b>1.6×</b> أسرع من Grounded-SAM على benchmarks الـ open-vocabulary.</p>
+  <p><b>التبديل من Grounded SAM 2 لـ SAM 3:</b> الـ latency غالبًا متعادلة أو أسرع شوية (شلت forward pass للـ detector بس الموديل أتقل). الدقة أحسن بوضوح على المفاهيم النادرة والمركبة (<span class="ltr">"striped red umbrella"</span>) ومشابهة على الكلمات الشائعة. المرونة أقل: SAM 3 monolithic.</p>
+  <p>كل الموديلات بترجّع نفس الشكل تقريبًا (boxes + labels + scores + masks + IDs)، فالكود اللي بعدهم مش محتاج يفرّق بين مين اشتغل.</p>
+
+</section>
+<section id="d77-build">
+  <div class="station-head"><span class="tag">07</span><h2>الكود: افتح الملف واكتبه بإيدك</h2></div>
+
+  <p>اكتب كل مقطع بنفسك. النسخ بيخليك تحس إنك فاهم من غير ما تكون فاهم فعلًا.</p>
+  <h3>الخطوة ١: تقسيم الجملة لـ concepts</h3>
+  <p>الموديل بياخد <b>مفهوم واحد</b> في كل forward pass. لو المستخدم كتب «قطط وكلاب وبالونات» لازم نقسمها ونلف عليها.</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def split_concepts(sentence):
+    normalised = sentence
+    # نوحّد كل الفواصل في فاصلة واحدة
+    for sep in [" and ", " or ", "&amp;", ";"]:
+        normalised = normalised.replace(sep, ",")
+    if "," in normalised:
+        parts = [p.strip() for p in normalised.split(",")]
+        return [p for p in parts if p]
+    return [sentence.strip()]</pre></div>
+  <h3>الخطوة ٢: RLE، تخزين الـ mask بحجم صغير</h3>
+  <p>الـ mask مصفوفة 0/1. الـ run-length encoding بيخزن «كام صفر ورا بعض وكام واحد» بدل كل خانة، فالـ response يفضل خفيف حتى مع masks كتيرة عالية الدقة.</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def rle_encode(binary_mask):
+    flat = binary_mask.flatten().astype("uint8")
+    if flat.size == 0:
+        return ""
+    runs = []
+    prev = int(flat[0])
+    count = 0
+    for v in flat:
+        iv = int(v)
+        if iv == prev:
+            count += 1          # لسه نفس القيمة
+        else:
+            runs.append((prev, count))
+            prev, count = iv, 1 # بدأنا run جديدة
+    runs.append((prev, count))
+    return ";".join(f"{v}x{c}" for v, c in runs)</pre></div>
+  <h3>الخطوة ٣: واجهة موحدة لأي backend</h3>
+  <p>نلف أي موديل (SAM 3 أو Grounded SAM 2 أو YOLO-World + SAM 2) ورا method واحدة <span class="ltr">detect</span>. لما تبدّل الموديل الكود اللي بعده مبيتغيرش.</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import List
+import numpy as np
+
+@dataclass
+class ConceptDetection:
+    concept: str
+    instance_id: int
+    box: tuple          # (x1, y1, x2, y2)
+    score: float
+    mask_rle: str       # الـ mask مضغوط
+
+class OpenVocabSeg(ABC):
+    @abstractmethod
+    def detect(self, image: np.ndarray, concept: str) -&gt; List[ConceptDetection]:
+        ...</pre></div>
+  <p>الـ <span class="ltr">StubOpenVocabSeg</span> في الملف بيرجّع instance-ين ثابتين (mask مستطيل لكل واحد) عشان تختبر الـ pipeline من غير ما تحمّل موديل حقيقي.</p>
+  <h3>الخطوة ٤: شغّل الملف الأصلي</h3>
+  <p>من أول الـ repo:</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/24-sam3-open-vocab-segmentation/code/main.py</pre></div>
+  <p><b>اللي متوقع تشوفه:</b> قسم <span class="ltr">[split_concepts]</span> هيطلّع مثلًا <span class="ltr">"cats, dogs and balloons"</span> ← <span class="ltr">['cats', 'dogs', 'balloons']</span>، و<span class="ltr">"yellow school bus"</span> ← <span class="ltr">['yellow school bus']</span>، و<span class="ltr">"striped red umbrella; green hat"</span> ← <span class="ltr">['striped red umbrella', 'green hat']</span>. قسم الـ roundtrip هيطلّع <span class="ltr">roundtrip diff 0</span> (يعني الـ encode ثم decode رجّع نفس الـ mask بالظبط). وقسم <span class="ltr">[multi-concept detection on stub]</span> هيقول <span class="ltr">4 detections</span> (مفهومين × instance-ين).</p>
+  <h3>الخطوة ٥: الموديل الحقيقي (مرجع، محتاج GPU وموافقة الوصول على HF)</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>from transformers import Sam3Processor, Sam3Model
+import torch
+
+processor = Sam3Processor.from_pretrained("facebook/sam3")
+model = Sam3Model.from_pretrained("facebook/sam3").eval()
+
+inputs = processor(images=pil_image, return_tensors="pt")
+inputs = processor.set_text_prompt(inputs, "yellow school bus")
+
+with torch.no_grad():
+    outputs = model(**inputs)
+
+masks = processor.post_process_masks(
+    outputs.masks, inputs.original_sizes, inputs.reshaped_input_sizes
+)
+boxes = outputs.boxes
+scores = outputs.scores</pre></div>
+  <p>أو بـ Ultralytics (نفس واجهة YOLO وSAM 2):</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>from ultralytics import SAM
+
+model = SAM("sam3.pt")
+results = model(image_path, prompts="yellow school bus")</pre></div>
+  <div class="note"><strong>حالات استخدام في الإنتاج:</strong> pre-labeling في أدوات الـ annotation (الـ annotator يختار اسم label والموديل يعلّم كل الحالات وهو يراجع)، تحليل فيديو بـ Object Multiplex، robotics («pick up the red cup» كـ planning primitive)، وتصوير طبي بعد fine-tune على مفاهيم طبية (محتاج طلب وصول على HF).</div>
+
+</section>
+<section id="d77-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+
+  <ol class="ex">
+<li><b>(سهل)</b> شغّل SAM 3 على 10 صور بـ concept prompts من اختيارك. قارن مع SAM 2 + Grounding DINO 1.5 على نفس الصور. مين فاته مفاهيم إيه؟
+      <details><summary>الإجابة</summary><b>تلميح:</b> سجّل في جدول: الصورة، الـ prompt، عدد اللي لقاه كل موديل، وعدد اللي كان لازم يلاقيه (عدّه بإيدك). غالبًا الفرق هيظهر في المفاهيم المركبة (لون + نوع + حالة) أكتر من الكلمات الشائعة.</details></li>
+<li><b>(متوسط)</b> ابني UI «click-to-include / click-to-exclude» فوق SAM 3: الـ text prompt يرجّع candidates، والمستخدم يضغط يقرر مين يتحسب. اطلّع المفاهيم النهائية كـ JSON.
+      <details><summary>الإجابة</summary><b>تلميح:</b> خزّن لكل candidate الـ <span class='ltr'>instance_id</span> وحالة <span class='ltr'>included: true/false</span>. الضغطة بتقلب الحالة. الـ JSON النهائي = اللي <span class='ltr'>included</span> بس، بنفس هيكل <span class='ltr'>ConceptDetection</span>.</details></li>
+<li><b>(صعب)</b> اعمل fine-tune لـ SAM 3 على مفاهيم مخصصة (مثلًا 5 أنواع قطع إلكترونية) بـ 20 صورة لكل نوع. قارن بـ zero-shot على نفس الـ test set بقياس mask IoU.
+      <details><summary>الإجابة</summary><b>تلميح:</b> قسّم الصور train/test قبل ما تبدأ ومتلمسش الـ test. قيس IoU لكل mask وخد المتوسط لكل نوع، مش المتوسط الكلي بس، عشان تشوف أنهي نوع استفاد أكتر.</details></li>
+<li><b>تمرين مني · اختبر الـ presence:</b> اكتب prompt لحاجة مش موجودة أكيد في الصورة (مثلًا <code>zebra</code> في صورة مكتبك). إيه اللي تتوقعه ولو لقيت detections إيه تعمل؟
+      <details><summary>الإجابة</summary>الصح إن الـ presence head يرجّع «مش موجود» وصفر detections. لو رجّع detections بـ scores واطية، حط حاجز score (والـ presence score لو الـ API بيرجّعه) واعتبر أي نتيجة تحته غير موجودة. وسجّل الحالة دي كـ false positive لو حصلت بـ score عالي.</details></li>
+  </ol>
+
+</section>
+<section id="d77-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: حدس، أخطاء شائعة، وفين بتظهر</h2></div>
+
+  <ul class="checklist">
+    <li><b>الـ prompt بتاعك هو الـ API:</b> «noun phrase» مش جملة. <span class="ltr">"the cup that is on the left side of the laptop"</span> جملة علاقات مش مفهوم. جرّب <span class="ltr">"cup"</span> وبعدين فلتر بالـ boxes بنفسك.</li>
+    <li><b>متدمجش مفهومين في prompt:</b> <span class="ltr">"cats and dogs"</span> مش هيتقسم تلقائيًا جوه الموديل. استخدم <span class="ltr">split_concepts</span> والف على كل مفهوم.</li>
+    <li><b>RLE مش بتشتغل مع mask مفرود بترتيب مختلف:</b> لازم تفك بنفس الـ shape واترتيب الـ flatten (صفوف أولًا) اللي رمّزت بيه.</li>
+    <li><b>الحاجز ثابت مش ذكي:</b> score 0.5 مناسب لمفهوم شائع، مش لمفهوم نادر. راقب الـ distribution لكل مفهوم قبل ما تثبت threshold.</li>
+    <li><b>فين بيظهر في الـ LLMs والـ agents:</b> SAM 3 بيشتغل كـ <b>tool</b> للـ VLM أو الـ agent: الـ agent يقول «هات كل الـ buttons الحمرا»، SAM 3 يرجّع masks، والـ agent يقرر يضغط على أنهي. نفس فكرة open-vocabulary بتاعة CLIP بس بمخرجات pixel-level.</li>
+  </ul>
+
+</section>
+
+<section id="d77-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d77-quizBox"></div>
+</section>
+
+<section id="d77-done">
+  <div class="station-head"><span class="tag">✓</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d77-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أشرح الفرق بين SAM وGrounded SAM 2 وSAM 3</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم إيه هو الـ presence head وليه مهم</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم فكرة Object Multiplex والفرق عن memory لكل instance</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت split_concepts وrle_encode بإيدي وشغلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرين واحد على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>PCS / concept prompts</td><td>أدوات الـ annotation، robotics، تحليل الفيديو</td></tr>
+    <tr><td>Presence head</td><td>تقليل الـ hallucination في الكشف عن حاجات مش موجودة</td></tr>
+    <tr><td>Object Multiplex</td><td>تتبع الزحمة والمشاهد المتراصة</td></tr>
+    <tr><td>RLE</td><td>أي API بيرجّع masks كتير (SAM 2/3، Grounded SAM 2)</td></tr>
+    <tr><td>واجهة OpenVocabSeg</td><td>تبديل الـ backend من غير ما الكود اللي بعده يتغير</td></tr>
+    <tr><td>SAM كـ tool</td><td>الـ agents اللي بتشوف الشاشة أو الصورة وتختار أجسام بالاسم</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Vision-Language Models: نمط ViT-MLP-LLM اللي كل VLM بيستخدمه.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F24-sam3-open-vocab-segmentation" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/24-sam3-open-vocab-segmentation</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=77,$=id=>document.getElementById(id),css=AI.css,L=AI.lab;
+const root=$('d77-roadmap').closest('.day');
+const rm=$('d77-roadmap');
+for(let i=57;i<=81;i++){const s=document.createElement('span');s.textContent=i-56;if(i===N)s.className='now';rm.appendChild(s)}
+
+// معمل ١: flow
+L.flow($('d77-flow1'),{height:300,nodes:[
+ {id:'img',label:'Image',x:0,y:.15},{id:'txt',label:'Text',x:0,y:.55},
+ {id:'det',label:'Grounding DINO',x:.38,y:.55},{id:'sam',label:'SAM / SAM 2',x:.72,y:.3},
+ {id:'bb',label:'Shared backbone',x:.38,y:.15},{id:'s3',label:'SAM 3 (detector+tracker+presence)',x:.72,y:.8},
+ {id:'out',label:'Masks + IDs',x:1,y:.5}],
+ edges:[['img','sam'],['txt','det','نص'],['det','sam','boxes'],['sam','out'],['img','bb'],['txt','bb'],['bb','s3'],['s3','out']],
+ steps:[
+ {active:['img'],text:'SAM 2023: الـ prompt نقطة أو box بس. مفيش نص خالص.'},
+ {active:['txt','det','img','sam','out'],edges:[['txt','det'],['det','sam'],['sam','out']],text:'Grounded SAM 2: النص يروح لـ detector (Grounding DINO) يطلّع boxes، وبعدين SAM 2 يعمل mask لكل box. موديلين ورا بعض.'},
+ {active:['img','txt','bb','s3','out'],edges:[['bb','s3'],['s3','out']],text:'SAM 3: النص أو الصورة المثال يدخلوا backbone مشترك، وموديل واحد يطلّع كل الـ masks مع instance IDs في forward pass واحد.'}]});
+// معمل ٢: presence
+L.bars($('d77-bars'),{labels:['A','B','C','D','E'],names:['final score'],max:1,
+ params:[{k:'pres',label:'presence probability',min:0,max:1,step:0.05,v:0.9},{k:'thr',label:'حاجز القبول',min:0.1,max:0.9,step:0.05,v:0.5}],
+ values:p=>[0.95,0.8,0.6,0.4,0.2].map(s=>s*p.pres),
+ highlight:p=>[0.95,0.8,0.6,0.4,0.2].map(s=>s*p.pres).findIndex(v=>v>=p.thr),
+ readout:p=>{const v=[0.95,0.8,0.6,0.4,0.2].map(s=>s*p.pres);return [['مقبول',v.filter(x=>x>=p.thr).length+' / 5'],['presence',p.pres.toFixed(2)]]},
+ note:p=>[0.95,0.8,0.6,0.4,0.2].some(s=>s*p.pres>=p.thr)?'فيه مرشحين عدّوا الحاجز.':'صفر detections: الموديل قال «المفهوم مش موجود».'});
+// معمل ٣: calc
+L.calc($('d77-calc'),{params:[{k:'n',label:'عدد الأجسام N',min:1,max:100,step:1,v:20},{k:'m',label:'ذاكرة الفريم M (وحدات)',min:10,max:500,step:10,v:100},{k:'q',label:'حجم query لكل جسم',min:1,max:20,step:1,v:5}],
+ compute:p=>[['منفصلة: N × M',p.n*p.m],['مشتركة: M + N × q',p.m+p.n*p.q],['النسبة',((p.n*p.m)/(p.m+p.n*p.q)).toFixed(1)+'×']],
+ note:p=>'نموذج تعليمي مبسّط للفكرة، مش قياس حقيقي من SAM 3.1.'});
+
+AI.quiz($('d77-quizBox'),[["إيه هي Promptable Concept Segmentation (PCS) في SAM 3؟", ["سلسلة detector وبعده SAM", "عمل segmentation لكل الـ instances المطابقة لمفهوم (جملة اسمية أو صورة مثال) في forward pass واحد مع mask وID لكل واحد", "segmentation بنقطة أو box زي SAM الكلاسيك", "وضع tracking بس"], 1, "PCS هي القدرة الأساسية: بتدّي «yellow school bus» أو صورة باص وبترجّع كل المطابقات بـ mask وID لكل واحدة. SAM الكلاسيك كان محتاج prompt لكل instance."], ["ليه نحتفظ بـ Grounded SAM 2 في 2026 رغم وجود SAM 3؟", ["SAM 3 متاح على الـ cloud بس", "Grounded SAM 2 دايمًا أدق", "المرونة: تبدّل الـ detector (DINO-X, Florence-2, Grounding DINO 1.5) حسب الدومين أو الرخصة أو التحكم في الـ threshold، وSAM 3 monolithic", "SAM 3 مش بيدعم الفيديو"], 2, "Grounded SAM 2 تركيبة من detector وSAM 2. المودولارية دي أحيانًا هي المطلوب (detector طبي، رخصة، تحكم في threshold). SAM 3 أدق end-to-end في الغالب بس أصعب في التخصيص."], ["الـ presence head في SAM 3 بيطلّع إيه؟", ["احتمال إن المفهوم موجود في الصورة أصلًا، منفصل عن تحديد مكانه، فيقدر يقول «مش موجود» ويقلل الـ false positives", "قايمة الـ candidate boxes", "الـ memory bank", "الـ mask النهائي"], 0, "بيفصل «هل هو هنا؟» عن «فين هو؟». موديل مجبر يطلّع boxes دايمًا بيألّف مطابقات لمفاهيم مش موجودة."], ["SAM 3.1 Object Multiplex بيستبدل إيه؟", ["memory bank منفصل لكل instance، بذاكرة واحدة مشتركة مع query لكل instance، فتتبع N جسم أسرع بنفس الدقة", "الـ presence head كله", "SAM 2 تمامًا", "الـ ViT backbone"], 0, "قبل كده كان فيه memory bank لكل instance فالتكلفة بتكبر خطيًا مع العدد. Multiplex بيجمعهم في ذاكرة واحدة مع queries، وده أساسي للزحمة."], ["محتاج real-time open-vocabulary detection (boxes بس) على جهاز edge. تختار إيه؟", ["CLIP + detector مخصص", "SAM 3", "Grounded SAM 2", "YOLO-World وأمثاله: مصمم لـ boxes بـ fps عالي على hardware متواضع، وSAM 3 بيطلّع masks وأتقل"], 3, "YOLO-World وOV-DINO وLLMDet detectors real-time بدون masks. SAM 3 هو الاختيار لما الـ masks والـ tracking مهمين. وزّن الأداة حسب المهمة."], ["(سؤال مني) ليه بنقسّم «cats, dogs and balloons» قبل ما نبعتها للموديل؟", ["لأن الموديل مش بيفهم الإنجليزي", "لأن SAM 3 بياخد مفهوم واحد في كل forward pass، فنلف على كل مفهوم لوحده", "عشان نقلل حجم الصورة", "عشان نحوّل الـ mask لـ RLE"], 1, "الـ prompt مفهوم واحد (noun phrase). للاستعلام المتعدد: loop أو batch على المفاهيم، وده اللي بتعمله run_multi_concept."], ["(سؤال مني) mask أبعاده 16×16 اتعمله encode ثم decode والفرق طلع 0. ده معناه إيه؟", ["الـ RLE خسرت تفاصيل بسيطة", "الـ RLE lossless: رجّعت نفس الـ mask بالظبط", "الـ mask فاضي", "الـ decode غلط"], 1, "RLE ضغط من غير فقد (lossless). الفرق صفر = الـ roundtrip سليم، وده اللي الاختبار في main.py بيتأكد منه."]],4,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>

@@ -1,0 +1,428 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 48 · Distributed Data Parallel and FSDP from Scratch</span>
+  <h1>اليوم ٤٧٦: تدريب على كذا جهاز: اتنين collectives وقاعدة واحدة</h1>
+  <p class="lede">التدريب على كذا جهاز بيتلخّص في: <b>broadcast</b> للـ parameters في البداية، <b>all-reduce</b> للـ gradients بعد الـ backward، وقاعدة واحدة: متخلّيش الـ ranks تختلف على الـ step. النهاردة هتبني DDP مصغّر بإيدك على CPU باستخدام backend اسمه <b>gloo</b>، وتثبت إن متوسط الـ gradients على الأجهزة بيساوي الـ gradient على batch واحد كبير، وبعدين تشوف فكرة الـ <b>FSDP</b> اللي بيقسّم الـ parameters نفسها بين الأجهزة.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python (PyTorch)</b></span>
+    <span>قبله: <b>Checkpoint Save and Resume</b></span>
+    <span>بعده: <b>Language Model Evaluation Harness</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — Capstone Projects</span>
+    <div class="roadmap" id="d476-roadmap" aria-label="دروس الفيز ١٩"></div>
+  </div>
+</header>
+
+<section id="d476-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه الخمس سلال اللي لازم تتحفظ في الـ checkpoint؟
+      <details><summary>الإجابة</summary>الـ model، والـ optimizer state، والـ scheduler state، وعدّادات التدريب (step وepoch وbatch_in_epoch وتاريخ الـ loss)، وحالة الـ RNG.</details></li>
+    <li>ليه بنكتب على ملف مؤقت وبعدين <span class="ltr">os.replace</span>؟
+      <details><summary>الإجابة</summary>عشان الـ rename atomic على POSIX جوه نفس الـ file system. لو الجهاز اتقفل في نص الكتابة، الـ <span class="ltr">ckpt.pt</span> السليم القديم يفضل زي ما هو بدل ما يبقى نص مكتوب.</details></li>
+    <li>ليه بنحمّل بـ <span class="ltr">weights_only=True</span>؟
+      <details><summary>الإجابة</summary>ملف الـ <span class="ltr">.pt</span> pickle، وفك pickle من مصدر مش موثوق ممكن يشغّل كود. الـ weights-only loader بيقبل tensors وcontainers بدائية بس. (ومن PyTorch ٢.٦ فصاعدًا.)</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين اللي فوق</div>
+    <div><b>20 min</b>المشكلة + الـ collectives + المعمل ١</div>
+    <div><b>15 min</b>إثبات التكافؤ + المعمل ٢</div>
+    <div><b>15 min</b>الـ FSDP + المعمل ٣</div>
+    <div><b>25 min</b>الكود وتشغيله</div>
+    <div><b>10 min</b>التمارين + إضافتي + الكويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d476-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: الداتا كبيرة، والموديل (ساعات) كمان</h2></div>
+  <p>الموديل بيدخل جهاز واحد، لكن الداتا لا. وانت عايز تشوف أمثلة أكتر N مرة في نفس الوقت. أول مقبض: <b>Data Parallel</b>. كل <b>rank</b> (عملية) بيشغّل نفس الموديل على شريحة مختلفة من الـ batch، وبعدين الـ gradients بتتعمل لها متوسط قبل الـ optimizer step.</p>
+  <p>تاني مقبض: <b>FSDP</b> (Fully Sharded Data Parallel). الموديل نفسه مبيدخلش جهاز واحد، فكل rank بيمسك <b>جزء</b> من كل parameter، ويجمّع التنسور الكامل طبقة بطبقة وقت الـ forward.</p>
+  <div class="note"><strong>تشبيه:</strong> فريق من ٤ مدرّسين بيصححوا امتحان ٤٠٠ ورقة. كل واحد بياخد ١٠٠ ورقة (Data Parallel). في الآخر بيجمعوا متوسط الدرجات ويتفقوا كلهم على نفس النتيجة (all-reduce). ولو الدليل نفسه (الموديل) ضخم مينفعش كل واحد يشيله كله، كل واحد بيشيل فصل منه وبيبعتوه لبعض لما حد يحتاجه (FSDP).</div>
+  <p>الوجع في الـ bookkeeping: لو الـ parameters اختلفت بين الـ ranks، التدريب بايظ بصمت. لو عملت متوسط للـ gradients ومعملتش للـ loss، الـ dashboard بيكدب. ولو الـ backend مقدرش يتفق على topology، التدريب بيعلّق للأبد. الحل: اكتب الـ collectives بإيدك مرة، وماتثقش في wrapper مش قادر تعيد تكوينه.</p>
+  <p>الدرس بيشتغل على <b>CPU</b> ومن غير CUDA. الـ <span class="ltr">gloo</span> backend جاي مع أي PyTorch ويقبل workers من <span class="ltr">torch.multiprocessing</span>. على node فيها GPUs كتير نفس الكود بيتحوّل لـ <span class="ltr">nccl</span> من غير ما الهيكل يتغير.</p>
+
+  <h3>الـ collectives الثلاثة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Collective</th><th>بتعمل إيه</th><th>إمتى</th></tr>
+    <tr><td><span class="ltr">broadcast</span></td><td>تنسور من rank واحد لكل الباقي</td><td>init الـ parameters، حالة الـ scheduler، أي مزامنة من واحد للكل</td></tr>
+    <tr><td><span class="ltr">all_reduce</span></td><td>تجمع (أو متوسط أو max) تنسور عبر كل الـ ranks، وكل rank بياخد النتيجة</td><td>متوسط الـ gradients بعد الـ backward</td></tr>
+    <tr><td><span class="ltr">all_gather</span></td><td>كل rank بيساهم بتنسور، وكل rank بيستلم التجميعة كلها</td><td>جمع logits، وفك تجميع الـ parameters في FSDP (unshard)</td></tr>
+  </table></div>
+  <p>عقد الـ DDP: <span class="ltr">broadcast</span> وقت البناء + <span class="ltr">all_reduce</span> بعد الـ backward. والـ FSDP بيضيف <span class="ltr">all_gather</span> قبل forward كل طبقة.</p>
+  <div class="formula">init → broadcast من rank 0 → [لكل step: شريحة batch لكل rank → forward + backward محلي → all_reduce للـ grads ÷ world_size → optimizer.step على كل rank]</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: دورة الـ DDP</h3>
+      <p>اضغط «التالي» وتابع إيه اللي بيحصل بين rank 0 وrank 1 في بداية التدريب وفي كل step.</p>
+      <div class="note ai"><strong>لاحظ:</strong> بعد الـ all-reduce كل الـ ranks عندهم <b>نفس</b> الـ gradient، فنفس الـ optimizer step على نفس الـ parameters بتطلّع نفس النتيجة. عشان كده الـ parameters بتفضل متطابقة من غير ما نبعتها تاني.</div>
+    </div>
+    <div class="instrument"><div id="d476-lab1"></div></div>
+  </div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d476-equiv">
+  <div class="station-head"><span class="tag">02</span><h2>إثبات: متوسط الـ gradients = gradient الـ batch الكبير</h2></div>
+  <p>موديل متدرّب على batch حجمه B على N ranks لازم يطلّع نفس الـ gradient اللي عملية واحدة هتطلّعه على batch حجمه N×B. السبب: الـ cross entropy بـ <span class="ltr">mean reduction</span> على الـ batch الكامل = متوسط المتوسطات اللي حسبها كل rank. فجمع الـ gradients وقسمتها على N بيدّي متوسط gradient الـ loss بالظبط.</p>
+  <p>الاختبار <span class="ltr">manual_all_reduce_matches_single_process</span> بيبني نفس الموديل على rank 0 ويقارن الـ gradient بعد الـ all-reduce بالـ gradient المرجعي على input متجمّع. الفرق بيطلع حوالي <span class="ltr">1e-8</span> والـ assert عند <span class="ltr">1e-3</span>.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: المتوسط على الأجهزة</h3>
+      <p>عندنا ٨ أمثلة، لكل واحد gradient (أرقام ثابتة للتجربة). غيّر عدد الـ ranks. كل rank بيحسب متوسط شريحته، وفي الآخر بنعمل متوسط المتوسطات. قارنه بمتوسط الـ batch كله.</p>
+      <div class="note ai"><strong>لاحظ:</strong> لما الأمثلة تتقسم بالتساوي (١ و٢ و٤ و٨) المتوسطين بيتطابقوا. لو التقسيم مش متساوي (٣ مثلًا) المتوسط البسيط للمتوسطات بيختلف، لأن rank معاه أمثلة أكتر أخد وزن غلط. دي ملحوظة مني مش في الدرس: الدرس بيستخدم batches بنفس الحجم.</div>
+    </div>
+    <div class="instrument"><div id="d476-lab2"></div></div>
+  </div>
+</section>
+
+<!-- STATION 3 -->
+<section id="d476-fsdp">
+  <div class="station-head"><span class="tag">03</span><h2>FSDP: كل rank بيشيل شريحة من كل parameter</h2></div>
+  <p>كل parameter بيتقسم لـ N شرايح مسطّحة (flat) متساوية، وكل rank بيحتفظ بشريحته بس. قبل الـ forward بتاع طبقة، بنعمل <span class="ltr">all_gather</span> فكل rank بيبني التنسور الكامل. بعد الـ forward بنرمي النسخة الكاملة ونحتفظ بالشريحة بس.</p>
+  <p>مكسب الذاكرة <b>دقيق</b>: ذاكرة الـ parameters لكل rank تنزل لـ <span class="ltr">1/N</span>. التكلفة هي الـ gather اللي بتتدفع في كل forward. الـ FSDP الحقيقي بيغطي الـ gather بحساب الطبقة اللي قبلها (overlap) فتكلفة الوقت بتبقى أقل بكتير من الحساب الساذج.</p>
+  <div class="note"><strong>تشبيه:</strong> مكتبة ضخمة مفيش كشك واحد بيشيل كل الكتب. كل كشك بيشيل رف من كل قسم، ولما حد عايز كتاب من قسم بيتجمّع الرف من كل الأكشاك، يقراه، ويرجّع الرف.</div>
+  <p><b>تفصيلة الـ padding:</b> الـ <span class="ltr">all_gather</span> في gloo (وفي nccl كمان) بيتوقع تنسورات خرج بنفس الحجم من كل rank. لو طول الـ parameter مش بيقبل القسمة على <span class="ltr">world_size</span>، بنزوّد أصفار في الآخر (padding) لحد أقرب مضاعف، بنقسم، وبعد الـ gather بنشيل الـ padding. الدرس بيعمل round-trip على كل parameter وبيتأكد إن الـ reconstruction بيطابق الأصل.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: الـ shard والـ padding والذاكرة</h3>
+      <p>جرّب طول parameter وعدد ranks. شوف حجم الـ shard والـ padding المطلوب، وبعدها الحاسبة التانية للذاكرة: DDP (كل rank عنده نسخة كاملة) ضد FSDP (١/N من الـ parameters).</p>
+    </div>
+    <div class="instrument"><div id="d476-lab3"></div><div id="d476-lab3b" style="margin-top:12px"></div></div>
+  </div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: خطوات الـ unshard</h3>
+      <p>اضغط «التالي» وتابع طريق الـ parameter الواحد في الـ forward.</p>
+    </div>
+    <div class="instrument"><div id="d476-lab4"></div></div>
+  </div>
+
+  <h3>gloo ضد nccl</h3>
+  <p>الـ CUDA هو هدف الـ production، لكن نفس المسارات موجودة على CPU. الـ <span class="ltr">gloo</span> هو backend الـ CPU، وأبطأ من <span class="ltr">nccl</span> على الـ GPUs بمراحل، بس شكل الـ API نفسه. الدرس بيبدأ الـ process group بـ <span class="ltr">backend="gloo"</span> ويشغّل الـ ranks بـ <span class="ltr">torch.multiprocessing</span> بدل <span class="ltr">torchrun</span>، والاتنين بيوصلوا لنفس نداءات <span class="ltr">torch.distributed</span>. على node فيها GPUs: غيّر لـ <span class="ltr">backend="nccl"</span>، استخدم device tensors، وشغّل بـ <span class="ltr">torchrun</span>.</p>
+
+  <h3>إزاي ده بيتستخدم في الحقيقي</h3>
+  <ul>
+    <li>الـ <b>DistributedDataParallel</b> الحقيقي بيضيف: hooks بعد الـ backward بتغطي الـ all-reduce بباقي الـ backward، وbucketed all-reduce بيجمع عدة gradients صغيرة في collective واحد، والـ <span class="ltr">no_sync</span> اللي شفناها في درس ٤٧٤.</li>
+    <li>الـ <b>FSDP</b> الحقيقي بيضيف: view مسطّح لكل طبقة (buffer متصل)، وgather الطبقة الجاية بيتغطى بحساب الطبقة الحالية، وCPU offload اختياري للـ shards.</li>
+    <li>الشكل واحد: broadcast في البداية، reduce بعد الـ backward، وshard للـ parameters لما متبقاش تدخل.</li>
+  </ul>
+</section>
+
+<!-- STATION 4: CODE -->
+<section id="d476-code">
+  <div class="station-head"><span class="tag">04</span><h2>الكود خطوة خطوة</h2></div>
+  <p>شغّل الأصل الأول من جذر الريبو، وبعدين اكتب الخطوات <b>بإيدك</b> في ملف جديد <code>my_ddp.py</code>. محتاج <code>pip install torch</code> بس. مفيش GPU مطلوب.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+python3 phases/19-capstone-projects/48-distributed-fsdp-ddp/code/main.py
+<span class="c"># ٤ ranks بدل ٢:</span>
+python3 phases/19-capstone-projects/48-distributed-fsdp-ddp/code/main.py --world-size 4 --num-steps 6 --no-write</pre></div>
+  <p><b>الناتج المتوقع:</b> الـ world size الافتراضي ٢: عمليتين CPU بيتولدوا ويتكلموا عبر gloo ويخرجوا بكود صفر. وبيتكتب <span class="ltr">outputs/ddp-demo.json</span> فيه: <span class="ltr">param_sum_per_rank</span> (نفس الرقم على كل rank)، و<span class="ltr">param_sum_spread</span> (قريب من صفر)، و<span class="ltr">losses</span>، و<span class="ltr">grad_norm_after_all_reduce</span>، و<span class="ltr">manual_all_reduce_max_diff_vs_single_process</span> (حوالي <span class="ltr">1e-8</span>)، و<span class="ltr">fsdp_round_trip_all_ranks_ok: true</span>. أرقام الـ losses والـ norm بتتوقف على الـ seed والإعدادات.</p>
+
+  <h3>خطوة ١: بناء الـ process group</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import os, sys
+import torch
+import torch.distributed as dist
+from torch import nn
+
+def init_process_group(rank, world_size, backend, master_port):
+    os.environ["MASTER_ADDR"] = "127.0.0.1"     <span class="c"># كل rank بيطرق نفس الـ host</span>
+    os.environ["MASTER_PORT"] = str(master_port)   <span class="c"># ونفس الـ port (rendezvous)</span>
+    loopback = "lo0" if sys.platform == "darwin" else "lo"
+    os.environ.setdefault("GLOO_SOCKET_IFNAME", loopback)  <span class="c"># نخلي gloo يستخدم loopback</span>
+    os.environ.setdefault("TP_SOCKET_IFNAME", loopback)
+    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+
+def shutdown_process_group():
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+def free_port():                                 <span class="c"># نختار port فاضي بالـ bind-and-close</span>
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port</pre></div>
+
+  <h3>خطوة ٢: الموديل والـ broadcast</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def make_model(in_dim, hidden, out_dim):
+    return nn.Sequential(nn.Linear(in_dim, hidden), nn.GELU(),
+                         nn.Linear(hidden, out_dim))
+
+def broadcast_module(module, src=0):
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        dist.broadcast(tensor.data, src=src)     <span class="c"># قيم rank 0 هي الـ init الرسمي</span></pre></div>
+  <p>من غير الـ broadcast كل rank بيعمل init بـ seed بتاعه، والـ ranks بتبعد عن بعض من أول step.</p>
+
+  <h3>خطوة ٣: الـ all-reduce للـ gradients</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def all_reduce_grads_(module, world_size):
+    total_sq = 0.0
+    for p in module.parameters():
+        if p.grad is None:
+            p.grad = torch.zeros_like(p.data)    <span class="c"># لازم كل rank يشارك حتى لو grad فاضي</span>
+        dist.all_reduce(p.grad.data, op=dist.ReduceOp.SUM)   <span class="c"># اجمع</span>
+        p.grad.data.div_(world_size)                         <span class="c"># واقسم = متوسط</span>
+        total_sq += float(p.grad.data.pow(2).sum().item())
+    return total_sq ** 0.5                       <span class="c"># L2 norm للـ log</span></pre></div>
+  <p>لو rank ما شاركش في الـ all-reduce (مثلًا grad فاضي وما عملش الصفر) الباقيين هيعلّقوا. عشان كده الـ <span class="ltr">zeros_like</span>.</p>
+
+  <h3>خطوة ٤: تقسيم الـ batch والـ MinimalDDP</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def shard_for_rank(x, rank, world_size):
+    total = x.shape[0]
+    per = total // world_size
+    remainder = total - per * world_size
+    start = rank * per + min(rank, remainder)       <span class="c"># أول ranks بتاخد مثال زيادة</span>
+    end = start + per + (1 if rank &lt; remainder else 0)
+    return x[start:end]
+
+class MinimalDDP(nn.Module):
+    def __init__(self, module, world_size):
+        super().__init__()
+        self.module = module
+        self.world_size = world_size
+        if dist.is_initialized() and world_size &gt; 1:
+            broadcast_module(self.module, src=0)    <span class="c"># عقد ١: broadcast وقت البناء</span>
+
+    def forward(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
+
+    def sync_grads(self):                           <span class="c"># عقد ٢: بعد الـ backward</span>
+        if not dist.is_initialized() or self.world_size == 1:
+            return _grad_norm(self.module)
+        return all_reduce_grads_(self.module, self.world_size)
+
+def _grad_norm(module):
+    total_sq = 0.0
+    for p in module.parameters():
+        if p.grad is not None:
+            total_sq += float(p.grad.data.pow(2).sum().item())
+    return total_sq ** 0.5</pre></div>
+  <p>حلقة التدريب في كل rank بتبقى: خُد شريحتك بـ <span class="ltr">shard_for_rank</span>، <span class="ltr">loss.backward()</span>، <span class="ltr">ddp.sync_grads()</span>، <span class="ltr">optimizer.step()</span>. الـ <span class="ltr">rank_main</span> في الأصل بيعمل ده وبيرجّع <span class="ltr">RankResult</span> فيها param sums وlosses. والـ <span class="ltr">run_distributed_demo</span> بتولّد الـ ranks بـ <span class="ltr">torch.multiprocessing</span>.</p>
+
+  <h3>خطوة ٥: الـ FSDP round trip</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def fsdp_round_trip_sketch(module, world_size, rank):
+    ok = True
+    for p in module.parameters():
+        full = p.data.detach().clone()
+        flat = full.flatten()
+        total = flat.numel()
+        per = (total + world_size - 1) // world_size      <span class="c"># ceil</span>
+        pad = per * world_size - total
+        padded = torch.cat([flat, torch.zeros(pad, dtype=flat.dtype)]) if pad &gt; 0 else flat
+        my_slice = padded[rank * per:(rank + 1) * per].clone()   <span class="c"># شريحتي بس</span>
+        gathered = [torch.empty(per, dtype=flat.dtype) for _ in range(world_size)]
+        dist.all_gather(gathered, my_slice)               <span class="c"># unshard</span>
+        rebuilt = torch.cat(gathered)[:total].view_as(full)   <span class="c"># شيل الـ padding</span>
+        if not torch.allclose(rebuilt, full):
+            ok = False
+            break
+    return ok</pre></div>
+  <p>ده الـ unshard. الـ re-shard العكسي (بعد الـ forward) هو مجرد slice تاني من التنسور المجمّع.</p>
+
+  <h3>خطوة ٦: إثبات التكافؤ</h3>
+  <p>الفكرة في <span class="ltr">manual_all_reduce_matches_single_process</span> (اكتب نسختك):</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre><span class="c"># على كل rank: نفس الـ seed → نفس الموديل (بعد الـ broadcast) ونفس الـ batch الكامل x, y</span>
+my_x = shard_for_rank(x, rank, world_size)
+my_y = shard_for_rank(y, rank, world_size)
+loss = nn.CrossEntropyLoss()(ddp(my_x), my_y)
+loss.backward()
+ddp.sync_grads()                                  <span class="c"># المتوسط عبر الـ ranks</span>
+
+<span class="c"># على rank 0: الـ gradient المرجعي من عملية واحدة على الـ batch كله</span>
+ref = make_model(...); ref.load_state_dict(ddp.module.state_dict())
+nn.CrossEntropyLoss()(ref(x), y).backward()
+diff = max((a.grad - b.grad).abs().max().item()
+           for a, b in zip(ddp.module.parameters(), ref.parameters()))
+assert diff &lt; 1e-3                                <span class="c"># في الأصل بيطلع حوالي 1e-8</span></pre></div>
+  <div class="note ai"><strong>جرّب بنفسك:</strong> أطفي سطر <span class="ltr">ddp.sync_grads()</span> وشوف الـ <span class="ltr">param_sum_spread</span> بيكبر مع الـ steps إزاي. وبعدين أطفي الـ broadcast وشوف الـ ranks بتتباعد من أول step.</div>
+</section>
+
+<!-- EXERCISES -->
+<section id="d476-ex">
+  <div class="station-head"><span class="tag">05</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li>شغّل بـ <span class="ltr">--world-size 4</span> وتأكد إن فرق الـ parameters بين الـ ranks فاضل تحت <span class="ltr">1e-3</span> طول التدريب.
+      <details><summary>تلميح / إجابة</summary>شغّل الأمر من الأعلى بدون <span class="ltr">--no-write</span> وافتح <span class="ltr">outputs/ddp-demo.json</span>، وبص على <span class="ltr">param_sum_spread</span>. المفروض قريب من صفر. لو كبر، يبقى أحد العقدين (broadcast أو all-reduce) مش شغّال.</details></li>
+    <li>استبدل المتوسط اليدوي بـ <span class="ltr">dist.all_reduce(op=dist.ReduceOp.AVG)</span> وقِس الفرق في الوقت.
+      <details><summary>تلميح / إجابة</summary>اكتب النسختين وقِس بـ <span class="ltr">time.perf_counter()</span> حوالين ١٠٠ استدعاء. ممكن الـ AVG مدعوم في backends معينة وغير مدعوم في غيرها (جرّبه على gloo وشوف). الأرقام هتختلف حسب الجهاز، فاعتمد على قياسك.</details></li>
+    <li>ضيف hook بعد الـ backward في الـ wrapper عشان الـ all-reduce يتغطى بباقي الـ backward، وقِس التحسّن في وقت الـ wallclock.
+      <details><summary>تلميح / إجابة</summary>استخدم <span class="ltr">p.register_post_accumulate_grad_hook(fn)</span> على كل parameter (في PyTorch الحديث) واعمل <span class="ltr">dist.all_reduce(p.grad, async_op=True)</span> واحتفظ بالـ handles. قبل الـ optimizer step اعمل <span class="ltr">wait()</span> لكلهم وبعدين اقسم على <span class="ltr">world_size</span>. على CPU التغطية ممكن تبقى محدودة.</details></li>
+    <li>نفّذ خطوة الـ re-shard في FSDP: بعد الـ forward استبدل التنسور الكامل بالشريحة المحلية وتأكد إن الذاكرة لكل rank بتنزل.
+      <details><summary>تلميح / إجابة</summary>خزّن <span class="ltr">p.data = my_slice</span> بعد الـ forward واحتفظ بالشكل الأصلي لوحده. قبل الـ forward الجاية اعمل <span class="ltr">all_gather</span> وارجع الشكل. قيس <span class="ltr">numel()</span> للـ parameters المخزّنة على كل rank: لازم يبقى حوالي <span class="ltr">1/world_size</span>.</details></li>
+    <li>غيّر الـ backend لـ <span class="ltr">nccl</span> على جهاز CUDA. إيه متغيرات البيئة اللي بتتغير واللي بتفضل؟
+      <details><summary>تلميح / إجابة</summary>الـ <span class="ltr">MASTER_ADDR</span> و<span class="ltr">MASTER_PORT</span> بيفضلوا. متغيرات الـ gloo زي <span class="ltr">GLOO_SOCKET_IFNAME</span> مش بتفيد، وnccl ليه متغيراته (زي <span class="ltr">NCCL_SOCKET_IFNAME</span>). كمان التنسورات لازم تبقى على الـ GPU بـ <span class="ltr">.cuda()</span>. وفي الـ production بتشغّل بـ <span class="ltr">torchrun</span> اللي بيحدد الـ rank والـ world size من البيئة.</details></li>
+    <li><b>تمرين إضافي مني:</b> اعمل سيناريو «rank واحد بيعلّق» عن قصد: خلّي rank 1 يتخطى <span class="ltr">sync_grads()</span> في step معيّن، وشوف إيه اللي يحصل (ضيف timeout).
+      <details><summary>تلميح / إجابة</summary>مرّر <span class="ltr">timeout=datetime.timedelta(seconds=10)</span> لـ <span class="ltr">init_process_group</span>. الـ rank 0 هيستنّى في الـ all-reduce لحد ما الـ timeout يخلص ويطلّع إيرور (أو يعلّق لو الـ timeout كبير). ده بيوريك ليه كل الـ ranks لازم تنده نفس الـ collectives بنفس الترتيب.</details></li>
+  </ol>
+</section>
+
+<!-- OWN ADDITION -->
+<section id="d476-extra">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني (مش في الدرس الأصلي)</h2></div>
+  <div class="note ai"><strong>القسم ده من عندي</strong> عشان يكمّل الصورة. مش جزء من docs الدرس.</div>
+  <ul>
+    <li><b>ليه الـ ranks بتفضل متطابقة من غير ما نبعت الـ parameters؟</b> لأن الـ optimizer step دالة حتمية في (الـ parameters، الـ gradient، حالة الـ optimizer). لو الثلاثة متطابقين في البداية، والـ gradient متطابق بعد الـ all-reduce، فالنتيجة متطابقة. مصدر الـ drift الوحيد هو عدم التطابق في أي واحدة منهم، ومنها العشوائية (dropout مثلًا) لو الـ seeds اختلفت بين الـ ranks فلازم الـ batch والـ gradient يتعاملوا بحذر.</li>
+    <li><b>الـ world_size يدخل في الـ effective batch:</b> الـ <span class="ltr">effective_batch = micro_batch × accum_steps × world_size</span> (درس ٤٧٤). والـ DDP + الـ accumulation معاهم <span class="ltr">no_sync</span> بيوفروا N-1 all-reduce.</li>
+    <li><b>الـ checkpoint (درس ٤٧٥):</b> في DDP عادةً rank 0 هو اللي بيكتب الـ checkpoint (لأن الكل متطابق) ويعمل barrier قبل ما الباقي يكمّلوا. في FSDP كل rank عنده شريحة بس، فإما تجمّعها قبل الحفظ أو كل rank يكتب shard بتاعه.</li>
+    <li><b>ما تخلطش بين الأنواع:</b> الـ Data Parallel بيوزّع <b>الداتا</b> ويكرر الموديل. الـ FSDP بيوزّع <b>الموديل (والـ optimizer والـ gradients بحسب الإعداد)</b> كمان. وفيه أنواع تانية (tensor وpipeline parallel) الدرس مبيغطيهاش.</li>
+    <li><b>الـ communication cost:</b> الـ all-reduce بيبعت حجم الـ gradients كله عبر الشبكة في كل step (الخوارزميات زي الـ ring بتخلي التكلفة لكل rank تقريبًا ثابتة مع زيادة عدد الـ ranks). عشان كده الـ accumulation مع <span class="ltr">no_sync</span> بيخفض التكرار.</li>
+    <li><b>أخطاء شائعة:</b> نسيان الـ broadcast فالـ ranks بتبدأ بقيم مختلفة، عدم تساوي عدد الـ collectives بين الـ ranks فالتدريب بيعلّق، استخدام نفس الـ batch على كل الـ ranks بدل شرايح مختلفة فبتضيّع الـ speedup، وحساب الـ loss المعروض على rank 0 بس وتفتكره متوسط الكل.</li>
+    <li><b>في الـ LLMs:</b> موديلات اللغة الكبيرة (مليارات الـ parameters) بتتدرب بمزيج من الـ data parallel وsharding زي الـ FSDP، لأن الـ optimizer state والـ gradients بياخدوا ذاكرة أكتر من الـ weights نفسها (شوف المعمل في درس ٤٧٥).</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d476-quiz">
+  <div class="station-head"><span class="tag">07</span><h2>كويز سريع</h2></div>
+  <div class="quiz" id="d476-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d476-done">
+  <div class="station-head"><span class="tag">08</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d476-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم الفرق بين broadcast وall_reduce وall_gather</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم عقد DDP: broadcast وقت البناء + all_reduce بعد الـ backward</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم ليه متوسط الـ gradients = gradient الـ batch الكبير</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم فكرة FSDP والـ padding في all_gather وتوفير الذاكرة ١/N</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت الكود بإيدي وشغّلت الـ demo بـ world size ٢ و٤</label></li>
+    <li><label><input type="checkbox" data-ck="6"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="7"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>broadcast + all_reduce</td><td>PyTorch DDP، وأي تدريب data-parallel</td></tr>
+    <tr><td>all_gather + sharding</td><td>FSDP وDeepSpeed ZeRO (نفس الفكرة العامة)</td></tr>
+    <tr><td>gloo / nccl</td><td>اختيار الـ backend حسب الجهاز (CPU أو GPU)</td></tr>
+    <tr><td>no_sync (درس ٤٧٤)</td><td>الـ gradient accumulation على cluster</td></tr>
+    <tr><td>Param parity بين الـ ranks</td><td>الفحص الأساسي لو حسّيت إن تدريب موزع بيتصرف غريب</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Language Model Evaluation Harness. هتبني أداة تقيس بيها الموديل بعد ما تدرّبه.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F48-distributed-fsdp-ddp" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/48-distributed-fsdp-ddp</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=476,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d476-roadmap').closest('.day');
+
+const rm=$('d476-roadmap');
+for(let i=1;i<=87;i++){const s=document.createElement('span');s.textContent=i;if(i===48)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: DDP cycle ----
+L.flow($('d476-lab1'),{
+  nodes:[
+    {id:'r0',label:'rank 0',x:0.1,y:0.15},
+    {id:'r1',label:'rank 1',x:0.9,y:0.15},
+    {id:'pg',label:'process group (gloo)',x:0.5,y:0.5},
+    {id:'g0',label:'grad 0',x:0.1,y:0.85},
+    {id:'g1',label:'grad 1',x:0.9,y:0.85}
+  ],
+  edges:[['r0','pg','rendezvous'],['r1','pg','rendezvous'],['pg','r1','broadcast params'],['r0','g0','backward'],['r1','g1','backward'],['g0','pg','all_reduce'],['g1','pg','all_reduce']],
+  steps:[
+    {active:['r0','r1','pg'],edges:[['r0','pg'],['r1','pg']],text:'كل rank بيطرق نفس MASTER_ADDR:MASTER_PORT وبيدخل الـ process group.'},
+    {active:['r0','pg','r1'],edges:[['pg','r1']],text:'broadcast: قيم rank 0 للـ parameters والـ buffers بتنسخ لكل الباقي. بداية متطابقة.'},
+    {active:['r0','r1','g0','g1'],edges:[['r0','g0'],['r1','g1']],text:'كل rank بياخد شريحته من الـ batch ويعمل forward + backward محلي. الـ gradients لسه مختلفة.'},
+    {active:['g0','g1','pg'],edges:[['g0','pg'],['g1','pg']],text:'all_reduce(SUM) وبعدين ÷ world_size: كل rank بيطلع بنفس الـ gradient المتوسط.'},
+    {active:['r0','r1'],text:'optimizer.step() على كل rank بنفس الـ gradient، فالـ parameters بتفضل متطابقة. ارجع لخطوة ٣ للـ step الجاية.'}
+  ]
+});
+
+// ---- Lab 2: gradient averaging ----
+const G=[0.9,-0.4,1.3,0.2,-0.8,0.6,1.1,-0.3];
+const mean=a=>a.reduce((s,v)=>s+v,0)/a.length;
+function ranksMeans(ws){
+  const per=Math.floor(G.length/ws),rem=G.length-per*ws,out=[];
+  for(let r=0;r<ws;r++){const st=r*per+Math.min(r,rem),en=st+per+(r<rem?1:0);out.push(mean(G.slice(st,en)))}
+  return out;
+}
+L.bars($('d476-lab2'),{
+  labels:p=>{const a=[];for(let r=0;r<p.ws;r++)a.push('rank '+r);a.push('متوسط الـ ranks');a.push('batch كامل');return a},
+  params:[{k:'ws',label:'world size',min:1,max:8,step:1,v:4}],
+  values:p=>{const m=ranksMeans(p.ws);return [...m,mean(m),mean(G)]},
+  colors:['a'],
+  max:1.1,
+  highlight:p=>p.ws+1,
+  readout:p=>{const m=ranksMeans(p.ws);return [['متوسط الـ ranks',mean(m).toFixed(4)],['متوسط الـ batch كامل',mean(G).toFixed(4)],['الفرق',Math.abs(mean(m)-mean(G)).toExponential(1)]]},
+  note:p=>(G.length%p.ws===0)?'الأمثلة اتقسمت بالتساوي: المتوسطين متطابقين.':'التقسيم مش متساوي: الـ ranks الأكبر لازم تاخد وزن أكبر، المتوسط البسيط بيطلع فرق صغير.'
+});
+
+// ---- Lab 3: shard / padding / memory ----
+L.calc($('d476-lab3'),{
+  params:[
+    {k:'len',label:'عدد عناصر الـ parameter',min:1,max:50,step:1,v:10},
+    {k:'ws',label:'world size',min:1,max:8,step:1,v:4}
+  ],
+  compute:p=>{
+    const per=Math.ceil(p.len/p.ws),pad=per*p.ws-p.len;
+    return [['حجم الـ shard (per)',per],['الـ padded total',per*p.ws],['الـ padding (أصفار)',pad],['شريحة rank 0','['+0+':'+per+']']];
+  },
+  note:p=>(p.len%p.ws===0)?'القسمة بالتساوي: مفيش padding.':'الطول مش بيقبل القسمة: بنزوّد أصفار قبل الـ all_gather ونشيلها بعده.'
+});
+L.calc($('d476-lab3b'),{
+  params:[
+    {k:'B',label:'حجم الـ parameters (GB)',min:1,max:200,step:1,v:28},
+    {k:'ws',label:'world size',min:1,max:64,step:1,v:8}
+  ],
+  compute:p=>[
+    ['DDP: parameters لكل rank (GB)',p.B.toFixed(1)],
+    ['FSDP: parameters لكل rank (GB)',(p.B/p.ws).toFixed(2)],
+    ['التوفير',((1-1/p.ws)*100).toFixed(0)+'%']
+  ],
+  note:p=>'ده الجزء الخاص بالـ parameters بس، وبتتحسب بدون ذاكرة الـ activations (والـ gather المؤقت أثناء الـ forward بيزوّد قمة مؤقتة).'
+});
+
+// ---- Lab 4: unshard steps ----
+L.stepper($('d476-lab4'),{
+  height:150,
+  steps:[
+    {title:'١. شريحتي بس',text:'كل rank بيحتفظ بـ 1/N من الـ parameter (flat). الذاكرة ١/N.'},
+    {title:'٢. all_gather',text:'قبل forward الطبقة: كل rank بيبعت شريحته ويستلم الباقي. كل rank دلوقتي عنده التنسور كامل (بعد شيل الـ padding).'},
+    {title:'٣. forward',text:'الطبقة بتشتغل بالتنسور الكامل.'},
+    {title:'٤. رمي النسخة الكاملة',text:'بنرمي التنسور الكامل ونحتفظ بالشريحة بس. الذاكرة راجعة ١/N.'}
+  ],
+  draw:(ctx,W,H,i)=>{
+    const a=AI.css('--vec-a'),b=AI.css('--vec-b'),ink=AI.css('--ink');
+    const n=4,w=Math.min(60,(W-40)/n),x0=(W-n*w)/2;
+    for(let k=0;k<n;k++){
+      const full=(i===1||i===2);
+      ctx.globalAlpha=full||k===0?1:0.25;
+      ctx.fillStyle=k===0?a:b;
+      ctx.fillRect(x0+k*w+2,40,w-4,40);
+    }
+    ctx.globalAlpha=1;ctx.fillStyle=ink;ctx.font='12px sans-serif';ctx.textAlign='center';
+    ctx.fillText('rank 0 يشوف: '+((i===1||i===2)?'التنسور كامل':'شريحته بس'),W/2,24);
+    ctx.fillText('الشرايح 0..3 (الأوضح = اللي موجود عند rank 0)',W/2,110);
+  }
+});
+
+// ---- Quiz ----
+AI.quiz($('d476-quizBox'),[
+ ['أنهي collectiveين هما قلب DDP wrapper مكتوب من الصفر؟',['reduce_scatter بس','barrier وbarrier','send وrecv','broadcast وقت البناء عشان كل rank يبدأ من نفس الـ parameters، وall_reduce بعد الـ backward عشان كل rank ينتهي بمتوسط الـ gradient'],3,'الـ broadcast في البداية بيخلي الـ ranks متطابقة في step صفر. والـ all-reduce بعد الـ backward بيحافظ على التطابق في كل step بعدها.'],
+ ['ليه الدرس ده بيشتغل على CPU من غير CUDA؟',['بيستخدم tensors محاكاة','مش بيستخدم torch.distributed','لأن torch.distributed جاي معاه gloo backend بيشغّل الـ collectives على sockets عادية، فـ workers من torch.multiprocessing على CPU بيكوّنوا process group حقيقي، ومجرد الـ device tag هو اللي بيتغير على GPU','ده stub'],2,'gloo هو backend الـ CPU. نفس نداءات الـ API بتشتغل مع nccl على GPU، وشكل الـ API متطابق.'],
+ ['الاختبار manual_all_reduce_matches_single_process بيثبت إيه؟',['إن CUDA مش ضروري','إن الـ optimizer بيتقارب','مفيش حاجة','إن جمع الـ gradients لكل rank وقسمتها على world_size بيرجّع الـ gradient اللي عملية واحدة هتحسبه على الـ input المتجمّع، لحد ضوضاء الأرقام العشرية'],3,'الـ cross entropy بـ mean reduction على الـ batch الكامل = متوسط متوسطات الـ ranks. جمع وقسمة هي العملية الصح، والاختبار بيوريها.'],
+ ['الـ FSDP sketch في الدرس بيعمل إيه لكل parameter؟',['بيحسب hash','بيعيد init للـ parameter','مفيش حاجة','بيعمل padding للـ flat parameter لمضاعف world_size، بيقسم، بيعمل all_gather للشرايح على كل rank، بيشيل الـ padding، وبيتأكد إن الـ reconstruction بتطابق الأصل'],3,'كل rank عنده ١/world_size من كل parameter. الـ gather بيبني التنسور الكامل للحساب، والـ FSDP الحقيقي بيغطي الـ gather بشغل الطبقة السابقة.'],
+ ['ليه الـ all_gather في gloo بيتوزّع لـ world_size شرايح متساوية حتى لو طول الـ parameter مش بيقبل القسمة؟',['بيسرّع الشبكة','اختيار عشوائي','ده bug','لأن all_gather في gloo بيتطلب تنسورات خرج بنفس الحجم من كل rank، فبنعمل right-pad للـ flat parameter لمضاعف world_size قبل التقسيم ونشيل الـ padding بعد الـ gather'],3,'gloo (وnccl) بيتوقع نفس الحجم. الـ padding أرخص حل، والـ sketch بيقص النتيجة للطول الأصلي.'],
+ ['وانت بتقرا ناتج الـ demo، لما param_sum_spread يبقى قريب من صفر عبر الـ ranks ده معناه إيه؟',['مفيش معنى','إن كل rank خلّص الـ run بنفس قيم الـ parameters، يعني الـ broadcast وقت البناء والـ all-reduce بعد كل backward شغّالين تمام، ولو أي واحد فيهم بايظ الـ spread كان هيكبر مع الـ steps','إن الـ loss قليل','إن الشبكة سريعة'],1,'ثابت الـ DDP هو تطابق الـ parameters بين الـ ranks. الـ spread هو الفحص، والـ demo بيعمل assert إنه تحت 1e-3.'],
+ ['(سؤال مني) rank واحد من أربعة قرر يتخطى all_reduce في step معيّن. إيه اللي غالبًا هيحصل؟',['مفيش حاجة، الباقيين يكمّلوا عادي','الـ ranks التانية هتستنّى للـ collective ده وتعلّق (أو تتعمل timeout) لأن كل rank لازم ينده نفس الـ collectives بنفس الترتيب','الـ gradient هيبقى صفر تلقائيًا','PyTorch هيعمل الـ all-reduce بدله'],1,'الـ collectives بتحتاج مشاركة كل الـ ranks في الـ group. غياب واحد بيخلي الباقي ينتظر، وده من أشهر أسباب «التدريب علّق».'],
+ ['(سؤال مني) ليه مش كفاية نعمل broadcast للـ parameters مرة في البداية من غير all_reduce للـ gradients بعد كده؟',['لأن الـ parameters بتتغير بحسب الـ gradient، فلو كل rank استخدم gradient بتاع شريحته بس، الـ parameters هتتباعد بسرعة بين الـ ranks','لأن broadcast بطيء','لأن الـ optimizer بيمسح الـ parameters','مفيش داعي أصلًا للـ broadcast'],0,'الـ broadcast بيضمن بداية متطابقة بس. من غير متوسط الـ gradients كل rank بياخد step مختلفة، فالتطابق بيضيع من أول step.']
+],6,()=>{const c=root.querySelector('input[data-ck="7"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+})();
+</script>

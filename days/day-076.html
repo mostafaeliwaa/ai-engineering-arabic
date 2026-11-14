@@ -1,0 +1,457 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 23 · Diffusion Transformers &amp; Rectified Flow</span>
+  <h1>اليوم ٧٦: الـ U-Net مش سر الـ diffusion</h1>
+  <p class="lede">النهاردة هتفهم إزاي كل موديلات توليد الصور في ٢٠٢٦ (SD3 وFLUX وغيرهم) بدّلت الـ U-Net بـ <b>transformer</b> (DiT)، وبدّلت الـ noise schedule بـ <b>مسار مستقيم</b> اسمه <b>rectified flow</b> بيخلّي التوليد بـ ٢٠ خطوة بدل ١٠٠٠. وهتبني بإيدك DiT block بـ <b>AdaLN-Zero</b> وتدريب rectified flow وEuler sampler.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٧٥ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (PyTorch)</span>
+    <span>قبله: <b>3D Gaussian Splatting</b></span>
+    <span>بعده: <b>الدرس ٢٤</b> في نفس الفيز</span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 4 — Computer Vision · 28 lesson</span>
+    <div class="roadmap" id="d76-roadmap" aria-label="دروس فيز الرؤية بالكمبيوتر"></div>
+  </div>
+</header>
+
+<section id="d76-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>امبارح كان الـ 3D Gaussian Splatting. جاوب في دماغك وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>إيه معادلة لون البكسل في الـ alpha compositing؟ وإيه معنى الـ T؟
+      <details><summary>الإجابة</summary><span class="ltr">C = Σ αᵢ·Tᵢ·cᵢ</span> و<span class="ltr">Tᵢ = Π(1 − αⱼ)</span> لكل j قبل i. الـ T هو الضوء اللي لسه فاضل (transmittance) بعد ما اللي قدام خدوا حصتهم.</details></li>
+    <li>الفرق بين clone وsplit في الـ densification؟
+      <details><summary>الإجابة</summary>Clone: gradient عالي مع scale صغير (محتاج تفاصيل أكتر فتنسخ). Split: gradient عالي مع scale كبير (Gaussian واحد أنعم من إنه يطابق، فتقسمه لاتنين أصغر). والـ prune بيمسح اللي الـ opacity بتاعتها واطية.</details></li>
+    <li>ليه بنخزن log_scale وopacity_logit بدل القيم المباشرة؟
+      <details><summary>الإجابة</summary>عشان البارامتر الخام يبقى حر من غير قيود، وبنمرره على exp (للـ scale الموجب) أو sigmoid (للـ opacity بين ٠ و١). النهاردة هتشوف فكرة شبه دي (zero-init) في الـ AdaLN.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٧٥ دقيقة</h2>
+  <div class="plan">
+    <div><b>5 min</b>التسخين</div>
+    <div><b>20 min</b>من U-Net لـ DiT لـ MMDiT لـ FLUX</div>
+    <div><b>20 min</b>Rectified flow + المعامل</div>
+    <div><b>20 min</b>اكتب الكود وشغّله</div>
+    <div><b>10 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<section id="d76-why">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة</h2></div>
+  <p>في الدرس ١٠ بنينا DDPM بـ U-Net كـ denoiser. الوصفة دي سيطرت من ٢٠٢٠ لـ ٢٠٢٣: U-Net + beta schedule + noise-prediction loss، وطلعت منها Stable Diffusion 1.5 و2.1 وDALL-E 2.</p>
+  <p>كل موديل SOTA لتوليد الصور في ٢٠٢٦ (Stable Diffusion 3، FLUX، SD4، Z-Image، Qwen-Image، Hunyuan-Image) <b>عدّى</b> الوصفة دي ومفيش فيهم U-Net. كلهم <b>Diffusion Transformers (DiT)</b>. وSD3 وFLUX كمان بدّلوا الـ DDPM noise schedule بـ <b>rectified flow</b>، اللي بيعدّل المسار من الـ noise للداتا ويخلّي inference بـ ١–٤ خطوات ممكن مع نسخ الـ consistency/distilled.</p>
+  <p>ده مهم لأنه سبب إن التوليد بقى قابل للتحكم، ودقيق في اتباع الـ prompt (SD3/SD4 حلّوا كتابة النص جوه الصور)، وسريع في الإنتاج.</p>
+  <div class="note"><strong>تشبيه:</strong> زي ما انتقلنا في اللغة من RNNs لـ transformers: الاتنين بيحلّوا نفس المشكلة، بس الـ transformer بيكبر (scales) أحسن فسيطر. نفس الحكاية هنا مع الـ U-Net والـ DiT.</div>
+</section>
+
+<section id="d76-arch">
+  <div class="station-head"><span class="tag">02</span><h2>من U-Net لـ Transformer</h2></div>
+  <ul class="checklist">
+    <li><b>DDPM U-Net (٢٠٢٠):</b> conv encoder ← conv bottleneck ← conv decoder.</li>
+    <li><b>DiT (٢٠٢٣، Peebles &amp; Xie):</b> بتبدّل الـ U-Net بـ transformer شبه ViT على <b>patches</b> من الـ latent: patch embed ← transformer blocks ← unpatchify. الـ conditioning بـ <b>AdaLN</b>.</li>
+    <li><b>MMDiT (SD3، Esser وآخرين ٢٠٢٤):</b> streamين بأوزان <b>منفصلة</b> للنص وللصورة، بيتشاركوا في <b>joint attention</b>.</li>
+    <li><b>FLUX (Black Forest Labs ٢٠٢٤):</b> أول N blocks double-stream زي SD3، والـ blocks اللي بعدها بتدمج التوكنات (concat) وبتتشارك الأوزان (single-stream) لكفاءة أعلى في العمق.</li>
+    <li><b>Z-Image (٢٠٢٥):</b> DiT كفء single-stream بـ 6B بارامتر بيتحدى فكرة «كبّر بأي تمن».</li>
+  </ul>
+  <p>ليه الـ transformer؟ حسب أسئلة الدرس: بيكبر بشكل متوقع أكتر (نفس scaling regime بتاع الـ LLMs)، وبيتعامل أحسن مع الاعتماديات المكانية البعيدة، وبيتجوز بشكل طبيعي مع الـ text encoders عن طريق cross أو joint attention.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: خريطة التطور</h3>
+      <p>دوس «الخطوة الجاية» وشوف الـ denoiser بيتغير من جيل للتاني. ركّز على إيه اللي بيدخل: صورة بس، ولا صورة + نص بأوزان منفصلة، ولا دمج.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ objective (إيه اللي بنتوقعه) ممكن يفضل قريب، لكن الـ backbone هو اللي اتغير. وبعدها اتغير الـ objective لـ rectified flow.</div>
+    </div>
+    <div class="instrument"><div id="d76-l1"></div></div>
+  </div>
+
+  <h3>الـ AdaLN: إزاي الـ conditioning بيدخل</h3>
+  <p>الـ DiT بيتأثر بالـ timestep والـ class/text عن طريق <b>adaptive layer norm</b>: بنتوقع <span class="ltr">scale</span> و<span class="ltr">shift</span> (و<span class="ltr">gate</span>) من متجه الـ conditioning وبنطبقهم بعد الـ LayerNorm. حسب الدرس ده أنضف من modulation من نوع FiLM في الـ U-Nets، وهو الافتراضي في كل DiT حديث.</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cond -&gt; MLP -&gt; (scale, shift, gate)
+h = norm(x) * (1 + scale) + shift     <span class="c"># modulation</span>
+x = x + gate * block(h)               <span class="c"># residual بـ gate</span></pre></div>
+  <p>و«Zero» في <b>AdaLN-Zero</b> معناها إن الـ MLP بيتهيّأ بأصفار، فالـ gate بيبدأ صفر والـ block بيبدأ كـ <b>identity</b>. التدريب بيبعده شوية شوية عن الـ identity، وده بيثبّت الـ transformers العميقة جدًا في الـ diffusion. حسب الدرس هو نظير الـ zero-init في الـ ResNet.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ gate زي صنبور بيبدأ مقفول: الـ block مش بيأثر على الإشارة في أول التدريب، وبعدين التدريب بيفتحه براحة بدل ما كل الـ blocks تصرخ مرة واحدة.</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: الـ AdaLN-Zero بيبدأ identity</h3>
+      <p>خد قيمة <span class="ltr">x</span> وناتج الـ attention <span class="ltr">a</span>. الـ block بيطلّع <span class="ltr">x + gate·a</span>. اترك الـ gate صفر وشوف إن الخرج = x. وبعدين افتحه.</p>
+      <ol class="ex">
+        <li>gate = 0، scale = 0، shift = 0: الخرج = x (identity). ده وضع بداية التدريب.</li>
+        <li>زوّد الـ gate: مساهمة الـ block بتبان.</li>
+      </ol>
+    </div>
+    <div class="instrument"><div id="d76-l2"></div></div>
+  </div>
+
+  <h3>الـ text encoders</h3>
+  <ul class="checklist">
+    <li><b>SD3:</b> تلات text encoders: موديلين CLIP + T5-XXL. الـ embeddings بتتدمج وبتدخل لـ stream الصورة كـ text conditioning.</li>
+    <li><b>FLUX:</b> واحد CLIP-L + T5-XXL.</li>
+    <li><b>Qwen-Image / Z-Image:</b> text encoders خاصة بيهم متظبطة مع الـ LLMs الأساسية.</li>
+  </ul>
+  <p>الـ text encoder جزء كبير من سبب إن SD3/FLUX بيفهموا الـ prompts أحسن بكتير من SD1.5. الـ T5-XXL لوحده ٤.٧B بارامتر.</p>
+</section>
+
+<section id="d76-rf">
+  <div class="station-head"><span class="tag">03</span><h2>Rectified Flow في فقرة</h2></div>
+  <p>في الـ DDPM الـ forward process هو SDE فيها ضوضاء بتزيد، والـ reverse المتعلَّم هو SDE تانية بتتحل بـ ١٠٠٠ خطوة صغيرة.</p>
+  <p>الـ <b>rectified flow</b> بيعرّف interpolation <b>خط مستقيم</b> بين الداتا النضيفة والـ noise الصافي:</p>
+  <div class="formula">x_t = (1 − t)·x₀ + t·ε        ،   t ∈ [0, 1]</div>
+  <p>بندرّب الشبكة تتوقع الـ <b>velocity</b>:</p>
+  <div class="formula">v_θ(x_t, t) = ε − x₀        ← اتجاه الحركة على الخط المستقيم من الداتا للـ noise (dx_t/dt)</div>
+  <p>وقت الـ sampling بنعمل integration للـ velocity <b>للخلف</b> من الـ noise ناحية الداتا. الـ ODE الناتجة أقرب بكتير لخط مستقيم، فمحتاج خطوات أقل بكتير.</p>
+  <div class="note"><strong>تشبيه:</strong> تخيل تروح من نقطة لنقطة. لو الطريق مستقيم، تقدر تقيس اتجاه واحد وتمشي فيه ٢٠ خطوة كبيرة. لو الطريق ملفوف (زي DDPM) لازم تعدّل اتجاهك كل خطوة صغيرة، وإلا هتخرج عن الطريق.</div>
+  <p>SD3 بيسمي ده <b>Rectified Flow Matching</b>، وFLUX وZ-Image ومعظم موديلات ٢٠٢٦ بتستخدم نفس الـ objective. الـ inference النموذجي: ٢٠–٣٠ خطوة Euler (deterministic) مقابل ٥٠+ خطوة DDIM في عالم DDPM القديم. والنسخ الـ distilled/turbo/schnell/LCM بتنزل بيها لـ ١–٤ خطوات.</p>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: المسار المستقيم والـ velocity</h3>
+      <p>الخط الأزرق هو <span class="ltr">x_t = (1−t)·x₀ + t·ε</span> (مسار rectified flow) لقيمة واحدة. غيّر x₀ (الداتا) وε (الـ noise). الميل (slope) ثابت وهو الـ velocity <span class="ltr">ε − x₀</span>.</p>
+      <ol class="ex">
+        <li>لاحظ إن الميل ثابت على طول t: ده معناه إن الـ velocity الحقيقية ثابتة، والـ Euler بخطوة واحدة كان هيوصل صح لو الموديل مثالي.</li>
+        <li>اقلب الإشارة (خلي ε أصغر من x₀) والميل بيبقى سالب.</li>
+      </ol>
+    </div>
+    <div class="instrument"><div id="d76-l3"></div></div>
+  </div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٤: ليه الخطوات تقل لما المسار يستقيم؟</h3>
+      <p>نموذج تعليمي (من عندي مش من الدرس): المسار الحقيقي سرعته <span class="ltr">v(t) = 1 + k·t²</span>. لما k = 0 المسار مستقيم (سرعة ثابتة). الرسم بيوضّح خطأ Euler لو مشيت N خطوة بدل الحل الدقيق. المحور الأفقي هو N.</p>
+      <ol class="ex">
+        <li>k = 0 (مستقيم): الخطأ صفر حتى من خطوة واحدة.</li>
+        <li>k = 3 (ملفوف): الخطأ كبير مع N صغير وبيقل ببطء مع زيادة N.</li>
+      </ol>
+      <div class="note ai"><strong>لاحظ:</strong> ده تشبيه مبسّط 1D للفكرة (الخطأ ≈ k/(2N) لـ N كبير). مش موديل diffusion حقيقي.</div>
+    </div>
+    <div class="instrument"><div id="d76-l4"></div></div>
+  </div>
+
+  <h3>Classifier-free guidance لسه شغال</h3>
+  <p>الـ rectified flow بيغيّر الـ <b>sampler</b> مش الـ conditioning. الـ CFG (بتسقط النص بنسبة ١٠٪ وقت التدريب، وبتمزج التوقع المشروط وغير المشروط وقت الـ inference) بتشتغل بنفس الشكل. معظم موديلات ٢٠٢٦ بتستخدم guidance scale بين ٣.٥ و٥: أقل من ٧.٥ بتاعة SD1.5 لأن موديلات الـ rectified flow بتتبع الـ prompt بشكل أضيق افتراضيًا.</p>
+
+  <h3>Consistency / Turbo / Schnell / LCM</h3>
+  <p>أربع أسامي لنفس الفكرة: <b>distil</b> موديل بطيء متعدد الخطوات لموديل سريع قليل الخطوات.</p>
+  <ul class="checklist">
+    <li><b>LCM (Latent Consistency Model):</b> بتدرّب student يتوقع الـ <span class="ltr">x₀</span> النهائي من أي <span class="ltr">x_t</span> وسطي في خطوة واحدة.</li>
+    <li><b>SDXL Turbo / FLUX schnell:</b> موديلات ١–٤ خطوات مدربة بـ adversarial diffusion distillation.</li>
+    <li><b>SD Turbo:</b> Consistency Models على طريقة OpenAI متكيّفة مع latent diffusion.</li>
+  </ul>
+  <p>أي موديل جديد في الإنتاج بيتشحن بنسختين: «full quality» و«turbo/schnell». Schnell يعني «سريع» بالألماني (اصطلاح Black Forest Labs) وبيشتغل بـ ١–٤ خطوات.</p>
+
+  <h3>خريطة الموديلات في ٢٠٢٦ (حسب الدرس)</h3>
+  <div class="tablewrap"><table>
+    <tr><th>الموديل</th><th>الحجم</th><th>المعمارية</th><th>الترخيص</th></tr>
+    <tr><td>Stable Diffusion 3 Medium</td><td>2B</td><td>MMDiT</td><td>SAI Community</td></tr>
+    <tr><td>Stable Diffusion 3.5 Large</td><td>8B</td><td>MMDiT</td><td>SAI Community</td></tr>
+    <tr><td>FLUX.1-dev</td><td>12B</td><td>Double + Single Stream DiT</td><td>non-commercial</td></tr>
+    <tr><td>FLUX.1-schnell</td><td>12B</td><td>نفسه، distilled</td><td>Apache 2.0</td></tr>
+    <tr><td>FLUX.2</td><td>—</td><td>FLUX.1 متطور</td><td>mixed</td></tr>
+    <tr><td>Z-Image</td><td>6B</td><td>S3-DiT (Scalable Single-Stream)</td><td>permissive</td></tr>
+    <tr><td>Qwen-Image</td><td>~20B</td><td>DiT + Qwen text tower</td><td>Apache 2.0</td></tr>
+    <tr><td>Hunyuan-Image-3.0</td><td>~80B</td><td>DiT</td><td>research</td></tr>
+    <tr><td>SD4 Turbo</td><td>3B</td><td>DiT + distillation</td><td>SAI Commercial</td></tr>
+  </table></div>
+  <p>حسب الدرس: FLUX.1-schnell هو الافتراضي المفتوح المصدر في ٢٠٢٦، وZ-Image هو قائد الكفاءة، وFLUX.2 وSD4 هم أعلى جودة حاليًا. (جدول الأحجام والتراخيص من الدرس، راجع الصفحات الرسمية قبل ما تبني قرار تجاري عليه.)</p>
+
+  <h3>ليه التحول ده مهم؟</h3>
+  <p>DDPM + U-Net اشتغل. أما DiT + rectified flow فبيشتغل <b>أحسن وأسرع وبيكبر بنضافة أكتر</b>. كل ورقة في ٢٠٢٦ عن توليد صور أو فيديو أو 3D بتستخدم denoiser على شكل DiT وغالبًا objective من نوع rectified flow. والـ U-Net DDPM بقى تعليمي أساسًا (الدرس ١٠).</p>
+</section>
+
+<section id="d76-code">
+  <div class="station-head"><span class="tag">04</span><h2>الكود: ابنِ DiT صغير بإيدك</h2></div>
+  <p>اكتب كل بلوك بنفسك وشغّله. الملف الأصلي: <span class="ltr">phases/04-computer-vision/23-diffusion-transformers-rectified-flow/code/main.py</span>. الدرس بيقول إن الاتنين (DiT block وتدريب rectified flow) أقل من ١٠٠ سطر.</p>
+
+  <h3>خطوة ١: DiT block بـ AdaLN</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class AdaLNZero(nn.Module):
+    def __init__(self, dim, cond_dim):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim, elementwise_affine=False)
+        self.mlp = nn.Linear(cond_dim, dim * 3)          <span class="c"># يتوقع scale وshift وgate</span>
+        nn.init.zeros_(self.mlp.weight)                  <span class="c"># zero-init: البلوك يبدأ identity</span>
+        nn.init.zeros_(self.mlp.bias)
+
+    def forward(self, x, cond):
+        scale, shift, gate = self.mlp(cond).chunk(3, dim=-1)
+        h = self.norm(x) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+        return h, gate.unsqueeze(1)
+
+class DiTBlock(nn.Module):
+    def __init__(self, dim=96, heads=3, mlp_ratio=4, cond_dim=96):
+        super().__init__()
+        self.adaln1 = AdaLNZero(dim, cond_dim)
+        self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
+        self.adaln2 = AdaLNZero(dim, cond_dim)
+        self.mlp = nn.Sequential(nn.Linear(dim, dim * mlp_ratio), nn.GELU(),
+                                 nn.Linear(dim * mlp_ratio, dim))
+
+    def forward(self, x, cond):
+        h, gate1 = self.adaln1(x, cond)
+        a, _ = self.attn(h, h, h, need_weights=False)    <span class="c"># self-attention على الـ patches</span>
+        x = x + gate1 * a                                <span class="c"># residual بـ gate</span>
+        h, gate2 = self.adaln2(x, cond)
+        x = x + gate2 * self.mlp(h)
+        return x</pre></div>
+  <p>الـ <code>AdaLNZero</code> بيبدأ identity لأن أوزان الـ MLP بتاعته صفر. التدريب بيبعده عن الـ identity، وده بيثبّت الـ transformers العميقة.</p>
+
+  <h3>خطوة ٢: DiT صغير كامل</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def timestep_embedding(t, dim):
+    half = dim // 2
+    freqs = torch.exp(-math.log(10000) * torch.arange(half, device=t.device) / half)
+    args = t[:, None].float() * freqs[None]
+    return torch.cat([args.sin(), args.cos()], dim=-1)   <span class="c"># sinusoidal زي الـ positional encoding</span>
+
+class TinyDiT(nn.Module):
+    def __init__(self, image_size=16, patch_size=2, in_channels=3, dim=96, depth=4, heads=3):
+        super().__init__()
+        self.patch_size = patch_size
+        self.image_size = image_size
+        self.num_patches = (image_size // patch_size) ** 2
+        self.in_channels = in_channels
+        self.patch = nn.Conv2d(in_channels, dim, kernel_size=patch_size, stride=patch_size)
+        self.pos = nn.Parameter(torch.zeros(1, self.num_patches, dim))
+        self.time_mlp = nn.Sequential(nn.Linear(dim, dim * 2), nn.SiLU(), nn.Linear(dim * 2, dim))
+        self.blocks = nn.ModuleList([DiTBlock(dim, heads, cond_dim=dim) for _ in range(depth)])
+        self.norm_out = nn.LayerNorm(dim, elementwise_affine=False)
+        self.head = nn.Linear(dim, patch_size * patch_size * in_channels)
+        nn.init.trunc_normal_(self.pos, std=0.02)
+
+    def forward(self, x, t):
+        n = x.size(0)
+        x = self.patch(x)                                       <span class="c"># patch embed: (N,dim,H/p,W/p)</span>
+        x = x.flatten(2).transpose(1, 2) + self.pos             <span class="c"># (N, patches, dim)</span>
+        t_emb = self.time_mlp(timestep_embedding(t, self.pos.size(-1)))
+        for blk in self.blocks:
+            x = blk(x, t_emb)                                   <span class="c"># الـ timestep بيدخل بالـ AdaLN</span>
+        x = self.head(self.norm_out(x))
+        return self._unpatchify(x, n)
+
+    def _unpatchify(self, x, n):
+        p = self.patch_size
+        h = w = int(self.num_patches ** 0.5)
+        x = x.view(n, h, w, p, p, self.in_channels).permute(0, 5, 1, 3, 2, 4)
+        return x.reshape(n, self.in_channels, h * p, w * p)</pre></div>
+
+  <h3>خطوة ٣: تدريب Rectified Flow</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def rectified_flow_train_step(model, x0, optimizer, device):
+    model.train()
+    x0 = x0.to(device)
+    n = x0.size(0)
+    t = torch.rand(n, device=device)                            <span class="c"># t عشوائي في [0,1]</span>
+    epsilon = torch.randn_like(x0)                              <span class="c"># الـ noise</span>
+    x_t = (1 - t[:, None, None, None]) * x0 + t[:, None, None, None] * epsilon
+    target_v = epsilon - x0                                     <span class="c"># velocity المطلوبة</span>
+    pred_v = model(x_t, t)
+    loss = F.mse_loss(pred_v, target_v)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    return loss.item()</pre></div>
+  <p>قارنها بـ loss الـ DDPM (الدرس ١٠): نفس الهيكل، هدف مختلف. بدل ما نتوقع الـ noise <span class="ltr">ε</span> بنتوقع الـ <b>velocity</b> <span class="ltr">ε − x₀</span> اللي بتشاور من الداتا للـ noise على الخط المستقيم.</p>
+
+  <h3>خطوة ٤: Euler sampler</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>@torch.no_grad()
+def rectified_flow_sample(model, shape, steps=20, device="cpu"):
+    model.eval()
+    x = torch.randn(shape, device=device)                       <span class="c"># نبدأ من noise صافي (t=1)</span>
+    dt = 1.0 / steps
+    t = torch.ones(shape[0], device=device)
+    for _ in range(steps):
+        v = model(x, t)
+        x = x - dt * v                                          <span class="c"># ماشيين للخلف ناحية الداتا</span>
+        t = t - dt
+    return x</pre></div>
+  <p>الـ rectified flow ODE، وEuler هو أبسط طريقة. حسب الدرس لموديل متدرب كويس هو قريب في الدقة من solvers أعلى عند ٢٠+ خطوة.</p>
+
+  <h3>خطوة ٥: اختبار شامل على داتا synthetic</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def synthetic_blobs(num=200, size=16, seed=0):
+    rng = np.random.default_rng(seed)
+    out = np.zeros((num, 3, size, size), dtype=np.float32)
+    yy, xx = np.meshgrid(np.arange(size), np.arange(size), indexing="ij")
+    for i in range(num):
+        cx, cy = rng.uniform(4, size - 4, size=2)               <span class="c"># مركز البقعة</span>
+        r = rng.uniform(2, 4)                                   <span class="c"># نصف القطر</span>
+        mask = (xx - cx) ** 2 + (yy - cy) ** 2 &lt; r ** 2
+        colour = rng.uniform(-1, 1, size=3)
+        for c in range(3):
+            out[i, c][mask] = colour[c]
+    return torch.from_numpy(out)
+
+torch.manual_seed(0)
+data = synthetic_blobs(num=128, size=16)
+model = TinyDiT(image_size=16, patch_size=2, in_channels=3, dim=96, depth=4, heads=3)
+print(f"params: {sum(p.numel() for p in model.parameters()):,}")
+opt = torch.optim.Adam(model.parameters(), lr=3e-4)
+
+for step in range(300):
+    idx = np.random.choice(len(data), 32)
+    loss = rectified_flow_train_step(model, data[idx], opt, "cpu")
+    if step % 50 == 0:
+        print(f"step {step:3d}  rf_mse {loss:.4f}")
+
+for steps in (20, 4):
+    s = rectified_flow_sample(model, (4, 3, 16, 16), steps=steps)
+    print(f"steps={steps}: range [{s.min():.2f}, {s.max():.2f}] shape {tuple(s.shape)}")</pre></div>
+  <p>أو الملف الجاهز من جذر الـ repo:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/23-diffusion-transformers-rectified-flow/code/main.py</pre></div>
+  <details><summary>الناتج المتوقع</summary><pre class="term">data shape: (128, 3, 16, 16)
+params: ...
+step   0  rf_mse ...
+step  50  rf_mse ...
+...
+[sample] steps=20
+  samples range [..., ...]  shape (4, 3, 16, 16)
+[sample] steps=4 (schnell-like)
+  samples range [..., ...]  shape (4, 3, 16, 16)</pre><p>الأرقام بالظبط مش مكتوبة في الدرس، لكن الـ <code>rf_mse</code> المفروض ينزل. الدرس بيقول بعد ٥٠٠ خطوة العينات تبان كبقع ألوان باهتة. وده موديل صغير جدًا على داتا synthetic، فمتتوقعش صور حقيقية.</p></details>
+
+  <h3>خطوة ٦: الاستخدام الحقيقي بـ diffusers</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>from diffusers import FluxPipeline, StableDiffusion3Pipeline
+import torch
+
+pipe = FluxPipeline.from_pretrained(
+    "black-forest-labs/FLUX.1-schnell",
+    torch_dtype=torch.bfloat16,
+).to("cuda")
+
+out = pipe(
+    prompt="a golden retriever surfing a tsunami, hyperrealistic, studio lighting",
+    guidance_scale=0.0,           <span class="c"># schnell اتدرّب من غير CFG</span>
+    num_inference_steps=4,
+    max_sequence_length=256,
+).images[0]
+out.save("surf.png")</pre></div>
+  <p>FLUX.1-schnell في ٤ خطوات. غيّر الـ id لـ <code>black-forest-labs/FLUX.1-dev</code> لجودة أعلى بـ ٢٠–٣٠ خطوة مع CFG. ومحتاج GPU قوي وتحميل أوزان كبيرة، فاعمله على جهاز مناسب (مش CPU). ولـ SD3:</p>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>pipe = StableDiffusion3Pipeline.from_pretrained(
+    "stabilityai/stable-diffusion-3.5-large",
+    torch_dtype=torch.bfloat16,
+).to("cuda")
+out = pipe(prompt, guidance_scale=3.5, num_inference_steps=28).images[0]</pre></div>
+  <div class="note ai"><strong>اكتب بإيدك:</strong> جرّب تعدّل <code>depth</code> و<code>dim</code> وشوف الـ params بتتغير قد إيه، وقارن عدد الخطوات في الـ sampler (٤ ضد ٢٠) على نفس الموديل.</div>
+</section>
+
+<section id="d76-ex">
+  <div class="station-head"><span class="tag">05</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li><b>(سهل)</b> درّب الـ TinyDiT على داتا الـ blobs لـ ٥٠٠ خطوة. قارن العينات بـ ١٠ و٢٠ و٥٠ خطوة Euler.
+      <details><summary>تلميح</summary>درّب مرة واحدة واحفظ الموديل، وبعدين نادي <code>rectified_flow_sample(model, shape, steps=...)</code> بنفس الـ seed (<code>torch.manual_seed</code> قبل كل نداء) عشان تقارن بنفس الـ noise. شوف المدى (min/max) وشكل العينات بـ matplotlib. توقع إن الفرق يقل بعد ٢٠ خطوة تقريبًا، لكن قيّمه بنفسك.</details></li>
+    <li><b>(متوسط)</b> ضيف class conditioning: دمج embedding متعلَّم للـ class مع الـ time embedding (١٠ «classes» حسب اللون). اعمل sampling لـ class 0 و5 و9 وتأكد إن الألوان بتطابق.
+      <details><summary>تلميح</summary>اعمل <code>nn.Embedding(10, dim)</code> وخلّي <code>cond = time_emb + class_emb</code> بدل <code>t_emb</code>. الداتا لازم يبقى معاها label: خلّي لون البقعة تابع للـ class (مثلًا ١٠ ألوان ثابتة) بدل اللون العشوائي. وقت الـ sampling مرّر نفس الـ class لكل العينات. لو عايز CFG: اعمل class «فاضي» (index ١٠ مثلًا) واسقط الـ label بنسبة ١٠٪ وقت التدريب.</details></li>
+    <li><b>(صعب)</b> احسب Fréchet distance (بديل FID) بين عينات rectified-flow وعينات DDPM لشبكة بنفس الحجم ونفس الداتا ونفس عدد الخطوات. قول مين بيتقارب أسرع.
+      <details><summary>تلميح</summary>هتحتاج DDPM بسيط (الدرس ١٠) بنفس الـ TinyDiT كـ backbone عشان المقارنة عادلة. للـ Fréchet distance على الـ pixels المسطحة: <span class="ltr">‖μ₁−μ₂‖² + Tr(Σ₁+Σ₂−2(Σ₁Σ₂)^½)</span>. عدد العينات صغير فهتبقى رقم تقريبي، فكرّر بـ seeds مختلفة وخد المتوسط قبل ما تحكم.</details></li>
+    <li><b>إضافة مني · اتأكد إن الـ AdaLN-Zero فعلًا identity:</b> أنشئ <code>DiTBlock</code> جديد (من غير تدريب) ومرّر <code>x</code> عشوائي و<code>cond</code> عشوائي. إيه المتوقع للخرج؟ وإيه اللي هيتغير بعد خطوة تدريب واحدة؟
+      <details><summary>الإجابة</summary>الخرج = <code>x</code> بالظبط (أو قريب جدًا بحدود الـ float)، لأن الـ gate صفر في الاتنين residual branches. اتأكد بـ <code>torch.allclose(blk(x, cond), x)</code>. بعد خطوة تدريب الـ gradient بيحرّك أوزان الـ MLP بتاعة الـ AdaLN (لأن gate=0 بيدي gradient لأوزان الـ MLP نفسها مش للـ attention في أول خطوة) فالخرج بيبدأ يختلف عن x.</details></li>
+  </ol>
+</section>
+
+<section id="d76-extra">
+  <div class="station-head"><span class="tag">06</span><h2>إضافة مني: اللي الدرس مقالوش، وفين بيظهر في الـ LLMs والـ agents</h2></div>
+  <ul class="checklist">
+    <li><b>اتجاه الزمن بيلخبط:</b> في الـ rectified flow حسب الدرس t=0 داتا وt=1 noise، وكل الـ sampler بيمشي من t=1 لـ t=0 بـ <code>x = x - dt * v</code>. لو اتلخبطت وعملت <code>+</code> هتبعد عن الداتا. أول حاجة تتأكد منها لو العينات طلعت noise.</li>
+    <li><b>الـ velocity مش الـ noise:</b> لو انت متعود على DDPM (توقع ε)، الهدف هنا مختلف. شكل الكود شبه بعض جدًا، فالغلط هنا بيعدي من غير error: بتدرب على الهدف الغلط.</li>
+    <li><b>الـ guidance scale بتتغير بتغير الموديل:</b> schnell بيستخدم <code>guidance_scale=0.0</code> (اتدرب من غير CFG)، وSD3.5 بيستخدم ٣.٥ حسب مثال الدرس. استخدام قيمة SD1.5 (٧.٥) على موديل rectified flow ممكن يعمل صور مفرطة التشبع. اتبع model card كل موديل.</li>
+    <li><b>التكلفة الحسابية للـ CFG (استنتاج مني):</b> الـ CFG بيمزج توقعين (مشروط وغير مشروط)، ففي التطبيق العادي ده غالبًا forward passes أكتر لكل خطوة. وده سبب إن الـ distilled models اللي من غير CFG (زي schnell) أرخص بجانب إنها أقل خطوات. قيس الوقت على جهازك بدل ما تفترض.</li>
+    <li><b>الربط باللغة:</b> الـ DiT هو نفس الـ transformer اللي في الـ LLMs: tokens (patches) + attention + MLP. الفرق إن الـ conditioning بيدخل بـ AdaLN والـ attention غير causal (كل الـ patches بتشوف بعض). عشان كده نفس أدوات الـ scaling والـ serving بتنفع.</li>
+    <li><b>في الـ agents:</b> الـ text encoder (T5 / LLM) هو اللي بيفهم الـ prompt، ودمج LLM كـ text tower (زي Qwen-Image) معناه إن فهم التعليمات اللي في الـ agents بقى جزء من توليد الصور مباشرة.</li>
+  </ul>
+</section>
+
+<section id="d76-quiz">
+  <div class="station-head"><span class="tag">07</span><h2>كويز</h2></div>
+  <div class="quiz" id="d76-quizBox"></div>
+</section>
+
+<section id="d76-done">
+  <div class="station-head"><span class="tag">08</span><h2>خلصت؟ اتأكد</h2></div>
+  <ul class="checklist" id="d76-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أحكي تطور U-Net ← DiT ← MMDiT ← FLUX</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم rectified flow والـ velocity <code>ε − x₀</code> وليه الخطوات أقل</label></li>
+    <li><label><input type="checkbox" data-ck="3"> فاهم AdaLN-Zero وليه بيبدأ identity</label></li>
+    <li><label><input type="checkbox" data-ck="4"> كتبت DiTBlock وrectified_flow_train_step وEuler sampler بإيدي</label></li>
+    <li><label><input type="checkbox" data-ck="5"> فاهم schnell/turbo/LCM على إنها distillation</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>DiT (patches + transformer)</td><td>SD3، FLUX، Z-Image، Qwen-Image، ومعظم موديلات الفيديو والـ 3D</td></tr>
+    <tr><td>AdaLN / AdaLN-Zero</td><td>كل DiT حديث لدمج الـ timestep والـ conditioning</td></tr>
+    <tr><td>MMDiT / double-single stream</td><td>SD3 وFLUX</td></tr>
+    <tr><td>Rectified flow + Euler</td><td>SD3 وFLUX وZ-Image</td></tr>
+    <tr><td>Distillation (schnell / turbo / LCM)</td><td>التوليد الفوري في الإنتاج</td></tr>
+    <tr><td>CFG</td><td>أغلب موديلات الـ text-to-image (إلا اللي اتدرب من غيره زي schnell)</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> الدرس ٢٤ في فيز الـ Computer Vision. افتح اليوم ٧٧ من الـ hub.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F23-diffusion-transformers-rectified-flow" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/23-diffusion-transformers-rectified-flow</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=76,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d76-roadmap').closest('.day');
+
+const rm=$('d76-roadmap');
+for(let i=1;i<=28;i++){const s=document.createElement('span');s.textContent=i;if(i===23)s.className='now';rm.appendChild(s)}
+
+// ---- Lab 1: evolution ----
+L.flow($('d76-l1'),{height:320,
+ nodes:[{id:'un',label:'U-Net DDPM',x:0.0,y:0.15},{id:'dit',label:'DiT',x:0.33,y:0.15},{id:'mm',label:'MMDiT (SD3)',x:0.66,y:0.15},{id:'fx',label:'FLUX',x:1.0,y:0.15},{id:'rf',label:'Rectified flow',x:0.5,y:0.85}],
+ edges:[['un','dit','conv → transformer'],['dit','mm','نص + صورة'],['mm','fx','double → single'],['rf','dit','objective'],['rf','fx','objective']],
+ steps:[
+  {active:['un'],text:'<b>٢٠٢٠:</b> DDPM بـ U-Net: conv encoder / bottleneck / decoder + noise schedule.'},
+  {active:['un','dit'],edges:[['un','dit']],text:'<b>٢٠٢٣:</b> DiT: transformer على patches من الـ latent، conditioning بـ AdaLN.'},
+  {active:['dit','mm'],edges:[['dit','mm']],text:'<b>٢٠٢٤ (SD3):</b> MMDiT: streamين بأوزان منفصلة للنص والصورة وjoint attention.'},
+  {active:['mm','fx'],edges:[['mm','fx']],text:'<b>٢٠٢٤ (FLUX):</b> أول blocks double-stream وبعدها single-stream (concat + أوزان مشتركة).'},
+  {active:['rf','mm','fx'],edges:[['rf','mm'],['rf','fx']],text:'<b>الـ objective:</b> SD3 وFLUX بدّلوا الـ noise schedule بـ rectified flow (مسار مستقيم).'}]});
+
+// ---- Lab 2: AdaLN zero ----
+L.calc($('d76-l2'),{
+ params:[{k:'x',label:'x (الإشارة)',min:-2,max:2,step:0.1,v:1},{k:'a',label:'a (خرج الـ attention)',min:-2,max:2,step:0.1,v:1.5},{k:'gate',label:'gate',min:0,max:1,step:0.05,v:0}],
+ compute:p=>{const out=p.x+p.gate*p.a;return [['الخرج x + gate·a',out.toFixed(3)],['الفرق عن x',(out-p.x).toFixed(3)],['الحالة',p.gate===0?'identity':'البلوك بيساهم']]},
+ note:p=>p.gate===0?'gate = 0: الـ block مش بيغيّر الإشارة. ده وضع بداية التدريب (zero-init).':'التدريب فتح الـ gate شوية: البلوك بدأ يضيف تأثيره.'});
+
+// ---- Lab 3: straight path ----
+L.plot($('d76-l3'),{x:[0,1],y:'auto',height:300,
+ params:[{k:'x0',label:'x₀ (داتا)',min:-2,max:2,step:0.1,v:-1},{k:'eps',label:'ε (noise)',min:-2,max:2,step:0.1,v:1.5}],
+ curves:[{f:(t,p)=>(1-t)*p.x0+t*p.eps,label:'x_t',color:'a'}],
+ marks:p=>[{x:0,y:p.x0,label:'x₀',color:'ok'},{x:1,y:p.eps,label:'ε',color:'bad'}],
+ readout:p=>[['velocity ε − x₀',(p.eps-p.x0).toFixed(2)],['x عند t=0.5',((p.x0+p.eps)/2).toFixed(2)]],
+ note:p=>'الميل ثابت = الـ velocity. الـ sampler بيمشي من t=1 (ε) لـ t=0 (x₀) بـ x ← x − dt·v.'});
+
+// ---- Lab 4: Euler error ----
+L.plot($('d76-l4'),{x:[1,50],y:'auto',height:300,
+ params:[{k:'k',label:'k (التقوس)',min:0,max:6,step:0.5,v:3}],
+ curves:[{f:(n,p)=>p.k*(3*n-1)/(6*n*n),label:'خطأ Euler',color:'a'}],
+ marks:p=>[{x:4,y:p.k*(11)/(96),label:'N=4',color:'bad'},{x:20,y:p.k*59/2400,label:'N=20',color:'ok'}],
+ readout:p=>[['خطأ N=1',(p.k*2/6).toFixed(3)],['خطأ N=4',(p.k*11/96).toFixed(3)],['خطأ N=20',(p.k*59/2400).toFixed(3)]],
+ note:p=>p.k===0?'k = 0: مسار مستقيم، الخطأ صفر حتى بخطوة واحدة':'كل ما المسار أكتر تقوسًا محتاج خطوات أكتر عشان الخطأ ينزل'});
+
+// ---- quiz ----
+AI.quiz($('d76-quizBox'),[
+ ['ليه موديلات text-to-image الـ SOTA من ٢٠٢٤ وطالع (SD3 وFLUX وZ-Image) بدّلت الـ U-Net بـ Diffusion Transformer (DiT)؟',['الـ U-Net مبقاش مدعوم على الـ GPUs','الـ DiT بيكبر بشكل أكتر توقعًا من الـ U-Net (نفس scaling regime بتاع الـ LLMs)، وبيتعامل أحسن مع الاعتماديات المكانية البعيدة لتوليد دقيق في اتباع الـ prompt، وبيتجوز طبيعيًا مع الـ text encoders بـ cross أو joint attention','الـ transformers أسهل في الكتابة','الـ DiT فيه بارامترات أقل'],1,'الـ DiT بيعامل الـ diffusion زي أي مهمة sequence modelling. بيكبر زي موديلات اللغة، وبيتفادى الـ inductive bias الثابت للـ convolutions اللي ممكن يعمل bottleneck للبنية بعيدة المدى، وبيتكامل بنضافة مع الـ transformer text encoders. كل موديل SOTA في ٢٠٢٦ (SD3، FLUX.1، FLUX.2، SD4، Z-Image، Qwen-Image) هو DiT.'],
+ ['الـ rectified flow بيدرّب الموديل يتوقع الـ velocity v = ε − x₀ على interpolation خط مستقيم بين الداتا والـ noise. ليه ده بيخلّي الـ sampling بـ ٢٠ خطوة بدل ١٠٠٠؟',['بيحتاج موديل أكبر','الـ ODE المتعلَّمة أقرب لخط مستقيم من الـ SDE المنحنية بتاعة DDPM، فـ Euler بخطوات قليلة بيطلّع عينات دقيقة؛ ومع الـ distillation بتاخد نسخ ١–٤ خطوات زي FLUX schnell','الـ Euler أحسن بالمطلق من DDIM','مش بيعمل كده؛ الـ rectified flow كمان محتاج ١٠٠٠ خطوة'],1,'الـ reverse process في DDPM مسار عشوائي منحني محتاج خطوات صغيرة كتير. الـ rectified flow بيعرّف interpolation مستقيم والـ velocity المتعلَّمة تقريبًا ثابتة على المسار. عمل integration لـ ODE شبه مستقيمة محتاج خطوات قليلة. SD3 وFLUX بيعملوا sampling بـ ٢٠–٣٠ خطوة بجودة كاملة، وschnell/turbo/LCM بيختزلوها لـ ١–٤ خطوات.'],
+ ['الـ MMDiT (SD3) بيستخدم مجموعتين أوزان، واحدة لتوكنات النص وواحدة لتوكنات الصورة، بيتشاركوا في طبقة joint attention واحدة. ليه؟',['عشان يوفر ذاكرة','embeddings النص والصورة توزيعات مختلفة مفاهيميًا؛ الأوزان المنفصلة بتخلّي كل modality يعالج تمثيله، والـ joint attention بتخليهم يتفاعلوا؛ والنتيجة محاذاة نص-صورة واتباع prompt أحسن من stream مشترك واحد','ده تصميم قديم','بس توكنات الصورة هي اللي بتعدي على الـ attention'],1,'الـ MMDiT في SD3 بيحافظ على stream أوزان لكل modality عشان يحافظ على إحصائيات النص والصورة المختلفة، بينما joint self-attention بتخليهم يندمجوا. ده أكتر تعبيرية هيكليًا من concatenate-and-share، وبيرفع اتباع الـ prompt وكتابة النص في الصور. FLUX بيوسّع الفكرة لـ blocks متبادلة double-stream / single-stream للكفاءة.'],
+ ['يعني إيه AdaLN-Zero في DiT block، وليه بيفيد؟',['LayerNorm بتتطبق ٥٠٪ من الوقت بس','Adaptive LayerNorm الـ MLP بتاع الـ modulation فيه متهيأ بأصفار فالـ block بيبدأ identity؛ وبعدين التدريب بيتعلم الـ scale/shift/gate، وده بيثبّت الـ diffusion transformers العميقة جدًا','LayerNorm بـ epsilon صفر','LayerNorm بـ mean صفر'],1,'الـ AdaLN بيتوقع scale وshift وgate من متجه الـ conditioning. «Zero» يعني الـ MLP متهيأ بأصفار فالـ gate بيبدأ صفر والـ block بيتصرف كـ identity. الـ gradients بتبعد الـ modulation عن الصفر بالتدريج، وده بيمنع الـ stack العميق من الانهيار بدري. ده نظير الـ zero-init في الـ ResNet وبيستخدم في كل diffusion transformer حديث.'],
+ ['FLUX.1-schnell بيطلّع صورة في ٤ خطوات. أنهي تقنية خلّته يعمل كده؟',['أوزان بدقة أقل','عدد بارامترات أصغر','Distillation: الـ schnell اتدرّب من teacher بطيء متعدد الخطوات بأهداف adversarial / consistency-style بحيث ١–٤ خطوات denoising تطابق مخرج الـ teacher بـ ٢٠–٣٠ خطوة','معمارية أساسية مختلفة عن FLUX.1-dev'],2,'نسخ Schnell / Turbo / LCM بتستخدم step distillation. الـ student القليل الخطوات بيتعلم يطابق مخرج الـ teacher الكتير الخطوات. المعمارية الأساسية وعدد البارامترات غالبًا زي بعض (FLUX.1-dev وschnell الاتنين 12B). الـ distillation هي اللي بتخلّي inference أقل من ثانية عملي. نفس فكرة SDXL Turbo وSD Turbo وLatent Consistency Models.'],
+ ['(سؤال مني) في Euler sampler للـ rectified flow بنبدأ من t=1 ونعمل x = x − dt·v. ليه الإشارة سالب؟',['عشان v دايمًا سالبة','لأن v = ε − x₀ بتشاور من الداتا للـ noise، وإحنا عايزين نمشي من الـ noise ناحية الداتا يعني عكس اتجاه v','عشان نقلل الـ learning rate','لأن t بيزيد مع الـ sampling'],1,'الـ velocity بتشاور في اتجاه t الزايد (من الداتا للـ noise). الـ sampling بيرجع t من ١ لـ ٠، فبنطرح dt·v في كل خطوة.'],
+ ['(سؤال مني) AdaLN-Zero معمولة بحيث الـ block يبدأ identity. لو اتهيّأت أوزان الـ MLP بقيم عشوائية كبيرة بدل الأصفار، إيه المتوقع غالبًا؟',['مفيش فرق','الـ blocks هتساهم بقوة من أول خطوة، وفي شبكة عميقة ده ممكن يخلّي التدريب غير مستقر','الموديل هيبقى أسرع','الـ gate هيبقى صفر برضه'],1,'الـ zero-init بيبدأ الـ residual branches مقفولة. بقيم كبيرة كل block بيضيف تأثير كبير فوق بعض، والـ stack العميق ممكن يخرج عن السيطرة بدري (ده السبب اللي الدرس قاله لـ AdaLN-Zero).']
+],5,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+})();
+</script>

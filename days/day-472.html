@@ -1,0 +1,363 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 19 · Lesson 44 · Cosine LR with Linear Warmup</span>
+  <h1>اليوم ٤٧٢: الـ learning rate مش رقم ثابت، ده منحنى لازم تتحكم فيه</h1>
+  <p class="lede">النهاردة بنبني الـ schedule الأشهر في تدريب الـ LLMs: <b>linear warmup</b> بيطلّع الـ learning rate من صفر لـ <span class="ltr">lr_max</span>، وبعدين <b>cosine decay</b> بينزّله بنعومة لـ <span class="ltr">lr_min</span>. هنوصله بـ <b>AdamW</b>، ونسجّل الـ gradient norm جنب الـ lr في كل خطوة، ونثبت بالتست إن الحدود (boundaries) سليمة. ده مشروع (capstone) فاليوم مقسوم لـ milestones.</p>
+  <div class="meta">
+    <span>الوقت: <b>~٩٠ دقيقة</b></span>
+    <span>اللغة: <b>Python</b> (PyTorch + stdlib)</span>
+    <span>قبله: <b>HDF5 Tokenized Corpus</b></span>
+    <span>بعده: <b>Gradient Clipping and Mixed Precision</b></span>
+  </div>
+  <div>
+    <span class="eyebrow">Phase 19 — مشاريع التخرج (دروس ٤٠–٥٠ من ٨٧)</span>
+    <div class="roadmap" id="d472-roadmap" aria-label="دروس مشاريع التخرج"></div>
+  </div>
+</header>
+
+<section id="d472-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر الـ HDF5؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+    <li>ليه بنكتب الـ tokens بـ buffer بحجم الـ chunk قبل كل resize؟
+      <details><summary>الإجابة</summary>عشان الكتابة تبقى contiguous ومتحاذية مع الـ chunks، من غير الـ fragmentation اللي بيحصل لو عملنا resize لكل token. والـ shard مقسوم عشان أي crash يخسّرنا shard واحد بس.</details></li>
+    <li>الـ dataloader بيرجّع إيه بالظبط لكل عينة؟
+      <details><summary>الإجابة</summary><span class="ltr">(input, target) = (tokens[:-1], tokens[1:])</span> من window طوله <span class="ltr">window_size + 1</span>، أخدناه من start عشوائي في الـ global token stream.</details></li>
+    <li>ليه بنقصّ الـ reader عند <span class="ltr">token_count</span>؟
+      <details><summary>الإجابة</summary>لأن آخر chunk ممكن يبقى جزئي، ولو قرينا لآخر الـ dataset ممكن ندخل على أصفار والموديل يتعلم يتوقع صفر.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الـ ٩٠ دقيقة</h2>
+  <div class="plan">
+    <div><b>10 min</b>التسخين + ليه الـ warmup</div>
+    <div><b>25 min</b>الصيغ والحدود + المعامل</div>
+    <div><b>35 min</b>الكود milestone-ي</div>
+    <div><b>20 min</b>تمارين + كويز</div>
+  </div>
+</section>
+
+<!-- STATION 1 -->
+<section id="d472-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: أول ألف update هما الأعلى صوتًا</h2></div>
+  <p>في أول الألف خطوة تدريب: الـ weights لسه قريبة من الـ initialization، وتقدير الـ optimizer للـ second moment لسه ما استقرّش، والـ gradient norm كبير ومتذبذب. لو الـ learning rate على القمة في اللحظات دي، الموديل يا بيـ<b>diverge</b> خالص، يا بيستقر في <b>plateau</b> ما بيطلعش منه.</p>
+  <p>فيه علاجين معروفين: <b>gradient clipping</b> (موضوع درس بكرة)، و<b>schedule</b> بيبدأ صغير ويكبر. ده اللي بنبنيه النهاردة.</p>
+  <div class="note"><strong>تشبيه:</strong> بتسوق عربية باردة في الشتا. ما بتدوسش بنزين للآخر من أول ثانية. بتبدأ بشويش لحد ما الموتور يسخن (warmup)، وبعدين بتمشي بسرعتك العالية (peak)، وقرب الوصول بتهدّى تدريجيًا (cosine decay) مش بتفرمل مرة واحدة.</div>
+  <h3>المناطق التلاتة</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المنطقة</th><th>الـ step</th><th>الـ learning rate</th></tr>
+    <tr><td>Warmup</td><td><span class="ltr">0 → warmup_steps</span></td><td>بيطلع خطيًا من 0 لـ <span class="ltr">lr_max</span></td></tr>
+    <tr><td>Cosine decay</td><td><span class="ltr">warmup_steps → total_steps</span></td><td>نص الـ cosine الأعلى: بينزل من <span class="ltr">lr_max</span> لـ <span class="ltr">lr_min</span></td></tr>
+    <tr><td>Floor</td><td><span class="ltr">&gt; total_steps</span></td><td>ثابت على <span class="ltr">lr_min</span> (من غير error ومن غير extrapolation)</td></tr>
+  </table></div>
+</section>
+
+<!-- STATION 2 -->
+<section id="d472-formulas">
+  <div class="station-head"><span class="tag">02</span><h2>الصيغ بالظبط (ومعاها كل الحدود)</h2></div>
+  <h3>Warmup</h3>
+  <p>لـ <span class="ltr">step</span> في <span class="ltr">[0, warmup_steps]</span> مع <span class="ltr">warmup_steps &gt; 0</span>:</p>
+  <div class="formula">lr = lr_max * step / warmup_steps</div>
+  <p>لو <span class="ltr">warmup_steps = 0</span> يعني «من غير warmup»: الـ schedule بيبدأ من <span class="ltr">lr_max</span> عند step صفر ويدخل في الـ cosine على طول.</p>
+  <h3>Cosine</h3>
+  <p>لـ <span class="ltr">step</span> في <span class="ltr">(warmup_steps, total_steps]</span>:</p>
+  <div class="formula">progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(pi * progress))</div>
+  <p>عند <span class="ltr">step = warmup_steps</span> الـ progress = 0 فـ <span class="ltr">cos(0)=1</span> فالـ lr = <span class="ltr">lr_max</span>، وده بيطابق نهاية الـ warmup بالظبط. وعند <span class="ltr">step = total_steps</span> الـ progress = 1 فـ <span class="ltr">cos(pi) = -1</span> فالـ lr = <span class="ltr">lr_min</span>، وده بيطابق نهاية الـ decay.</p>
+  <div class="note ai"><strong>ليه دالة واحدة مش تلات دوال ملزوقين؟</strong> الاتصال (continuity) عند الحدين مش صدفة: هو ناتج إن الصيغة closed-form واحدة على <span class="ltr">step</span>. لو لزقت ٣ دوال، أول ما تغيّر <span class="ltr">lr_max</span> تخسر حد منهم. (دي إجابة سؤال من الكويز.)</div>
+  <h3>الـ Floor</h3>
+  <p>لـ <span class="ltr">step &gt; total_steps</span> الـ lr بيثبت على <span class="ltr">lr_min</span>. العقد صريح: الـ schedule ما بيعملش error ولا extrapolation، بيثبت عند الأرضية، والـ trainer يسجّل warning. لو عايز تكمّل تدريب، غيّر <span class="ltr">total_steps</span> في الـ schedule، مش في الـ loop.</p>
+  <div class="note"><strong>تنبيه على الـ off-by-one:</strong> الـ schedules سهل تغلط فيها بـ step واحد، والغلطة بتظهر بعد ٦ ساعات تدريب كـ lr أعلى أو أقل بـ 1% في اللحظة اللي الموديل بيبدأ فيها overfit. وده بيتكشف بس باختبار الحدود بشكل شامل (فيه test في الدرس لده).</div>
+
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ارسم الـ schedule</h3>
+      <p>حرّك الـ warmup والـ total و<span class="ltr">lr_max</span> و<span class="ltr">lr_min</span> (كنسبة من الـ max). المحور الأفقي ممتد لبعد الـ <span class="ltr">total_steps</span> عشان تشوف الـ floor.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الـ lr عند <span class="ltr">step = warmup</span> بيساوي <span class="ltr">lr_max</span> بالظبط، وعند <span class="ltr">step = total</span> بيساوي <span class="ltr">lr_min</span>، وبعدها خط أفقي. جرّب <span class="ltr">warmup = 0</span> وشوف إن المنحنى بيبدأ من القمة.</div>
+    </div>
+    <div class="instrument"><div id="d472-lab1"></div></div>
+  </div>
+  <p><b>ملاحظة على step صفر:</b> حسب تعريف الدرس، الـ lr عند step صفر = 0 بالظبط (لو فيه warmup). يعني أول update عمليًا ما بيغيّرش الـ weights. ده طبيعي وده معنى «الـ warmup بيبدأ من الصفر».</p>
+</section>
+
+<!-- STATION 3 -->
+<section id="d472-gradnorm">
+  <div class="station-head"><span class="tag">03</span><h2>الـ gradient norm: نص صحة التدريب التاني</h2></div>
+  <p>الـ schedule هو نص صحة التدريب. النص التاني هو <b>الـ gradient L2 norm</b>: الطول الإقليدي للـ gradient vector كله (كل الـ parameters ملصوقة في vector واحد). الـ loop بيسجّل الاتنين في كل step:</p>
+  <ul class="checklist">
+    <li>التدريب اللي بيـ diverge بيعمل <b>spike في الـ norm قبل ما الـ loss يبوّظ</b>.</li>
+    <li>warmup كويس بيخلي الـ norm يطلع مع الـ rate.</li>
+    <li>peak عالي زيادة بيبان كـ norm بيفضل عالي بعد انتهاء الـ warmup.</li>
+  </ul>
+  <p>الـ CSV بتاع الـ log شكله ثابت: <span class="ltr">step, lr, grad_l2_norm, loss</span>. وده السجل الدائم الوحيد.</p>
+  <div class="formula">grad_l2_norm = sqrt( sum over all params of sum(grad²) )</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: خطوة تدريب واحدة، ترتيب الأحداث</h3>
+      <p>دوس «التالي» وشوف إيه اللي بيحصل في <span class="ltr">TrainState.step</span> بالترتيب، ومين بيلمس مين.</p>
+    </div>
+    <div class="instrument"><div id="d472-lab2"></div></div>
+  </div>
+</section>
+
+<!-- STATION 4 -->
+<section id="d472-prod">
+  <div class="station-head"><span class="tag">04</span><h2>٤ أنماط production + قواعد الاستخدام</h2></div>
+  <div class="tablewrap"><table>
+    <tr><th>النمط</th><th>الفكرة</th></tr>
+    <tr><td>الـ schedule في config</td><td><span class="ltr">warmup_steps, total_steps, lr_max, lr_min</span> من YAML/JSON متحط في git. بيبقى reproducible ومظهر في الـ PR diff.</td></tr>
+    <tr><td>الـ step counter monotonic ومفصول عن الـ epochs</td><td>الـ schedule بيقرا <span class="ltr">global_step</span> من الـ checkpoint، مش counter محلي. التدريب المستأنف (resumed) يكمل من المكان الصح.</td></tr>
+    <tr><td>رسمة الـ schedule في run directory</td><td>أي run بيكتب <span class="ltr">outputs/lr_schedule.png</span> (أو text plot هنا) عشان المراجع يتأكد من غير ما يعيد التشغيل.</td></tr>
+    <tr><td>شكل الـ log ثابت</td><td><span class="ltr">step, lr, grad_l2_norm, loss</span> بالترتيب ده. تغيير اسم عمود من غير version bump بيبوّظ كل الـ dashboards.</td></tr>
+  </table></div>
+  <h3>قواعد عملية من الدرس</h3>
+  <ul class="checklist">
+    <li><b>جرّب الـ peak الأول:</b> <span class="ltr">lr_max</span> هو أكتر knob حساسية. اعمل sweep عليه على موديل صغير أول، لأن الـ optimal <span class="ltr">lr_max</span> بيتغيّر ببطء مع حجم الموديل فالـ sweep الصغير بيدّيك prior قوي.</li>
+    <li><b>الـ warmup نسبة من الـ total مش رقم مطلق:</b> run بـ 200 مليون step و2,000 warmup بيبدأ على القمة تقريبًا فورًا، لكن run بـ 20,000 step بنفس الـ 2,000 بيعمل warmup 10%. اضبطه كنسبة (عادةً 1–3%).</li>
+    <li><b>الـ <span class="ltr">lr_min</span> مش صفر قصدًا:</b> أرضية بـ 10% من <span class="ltr">lr_max</span> بتخلّي الـ optimizer يفضل يتعلم في الذيل الطويل. <span class="ltr">lr_min = 0</span> بيعمل منحنى حلو في الرسم وموديل ما خلّصش تدريب فعلًا.</li>
+  </ul>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: الـ warmup كنسبة، وسلوك الـ slope</h3>
+      <p>اضبط الـ total والنسبة. هتشوف كام step warmup، وبتقارن الـ slope بتاع الـ warmup بأشد slope في الـ cosine (ده اللي تمرين ٣ بيستخدمه كـ bound للـ continuity).</p>
+      <div class="note ai"><strong>لاحظ:</strong> لو الـ decay segment قصير (warmup كبير جدًا)، الـ cosine ممكن يبقى أشد من الـ warmup ramp. عشان كده الـ bound في التمرين بيستخدم الأكبر بينهم.</div>
+    </div>
+    <div class="instrument"><div id="d472-lab3"></div></div>
+  </div>
+</section>
+
+<!-- STATION 5 -->
+<section id="d472-adamw">
+  <div class="station-head"><span class="tag">05</span><h2>إضافة مني: AdamW في ٣ دقايق</h2></div>
+  <p>الـ schedule بيتحكم في الـ lr، لكن اللي بيستخدمه هو <b>AdamW</b>. مرجعه الورقي: Loshchilov &amp; Hutter, <i>Decoupled Weight Decay Regularization</i> (الدرس بيذكرها). الفكرة: بدل ما الـ weight decay يتحط جوه الـ gradient (فيتأثر بتقديرات Adam)، AdamW بيطبّقه <b>مفصول</b> مباشرة على الـ weights.</p>
+  <p>في الكود: <span class="ltr">betas=(0.9, 0.95)</span> و<span class="ltr">weight_decay=0.01</span> و<span class="ltr">eps=1e-8</span> كـ defaults في <span class="ltr">TrainState</span>. وفيه helper اسمه <span class="ltr">split_decay_groups</span> بيقسّم الـ parameters لمجموعتين: الـ weight matrices <b>بـ decay</b>، والـ biases وLayerNorm gains <b>من غير decay</b> (لأن decay عليهم مش مفيد في العُرف المعتاد لتدريب الـ transformers).</p>
+  <p>الملف الأصلي فيه كمان <span class="ltr">LinearWarmupConstant</span> و<span class="ltr">InverseSqrtWarmup</span> (schedules بديلة)، و<span class="ltr">EWMA</span> (متوسط متحرك أسّي) و<span class="ltr">summarize_step_log</span>. افتح الأصل وشوفهم بعد ما تخلّص الأساسيات، وهتحتاجهم في تمرين ١.</p>
+</section>
+
+<!-- STATION 6: code -->
+<section id="d472-code">
+  <div class="station-head"><span class="tag">06</span><h2>الكود: milestones، كل واحد وله check</h2></div>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>cd ai-engineering-from-scratch
+pip install torch
+python3 phases/19-capstone-projects/44-cosine-lr-warmup/code/main.py
+<span class="c"># المتوقع: exit code صفر + log لكل step (lr, grad norm, loss) + رسمة نصية للـ schedule</span></pre></div>
+  <p><b>القاعدة:</b> افتح <code>my_schedule.py</code> واكتب بإيدك. الـ Copy للمقارنة بس. الكود مقتطف ومبسّط من <code>code/main.py</code>.</p>
+
+  <h3>Milestone 1: الـ CosineWithWarmup (دالة stateless)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>import math
+from dataclasses import dataclass
+
+@dataclass
+class CosineWithWarmup:
+    warmup_steps: int
+    total_steps: int
+    lr_max: float
+    lr_min: float = 0.0
+
+    def __post_init__(self):               <span class="c"># validation للمدخلات</span>
+        if self.warmup_steps &lt; 0: raise ValueError("warmup_steps must be non-negative")
+        if self.total_steps &lt;= 0: raise ValueError("total_steps must be positive")
+        if self.warmup_steps &gt;= self.total_steps:
+            raise ValueError("warmup_steps must be less than total_steps")
+        if self.lr_max &lt;= 0: raise ValueError("lr_max must be positive")
+        if self.lr_min &lt; 0: raise ValueError("lr_min must be non-negative")
+        if self.lr_min &gt; self.lr_max: raise ValueError("lr_min must not exceed lr_max")
+
+    def lr(self, step):
+        if step &lt; 0:
+            raise ValueError("step must be non-negative")
+        if self.warmup_steps &gt; 0 and step &lt;= self.warmup_steps:
+            return self.lr_max * (step / self.warmup_steps)    <span class="c"># warmup خطي</span>
+        if step &gt;= self.total_steps:
+            return self.lr_min                                 <span class="c"># الأرضية</span>
+        decay_span = max(1, self.total_steps - self.warmup_steps)
+        progress = (step - self.warmup_steps) / decay_span
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return self.lr_min + (self.lr_max - self.lr_min) * cosine</pre></div>
+  <p><b>Check:</b> لـ <span class="ltr">CosineWithWarmup(100, 1000, 3e-4, 3e-5)</span>: <code>lr(0) == 0</code>، <code>lr(100) == 3e-4</code>، <code>lr(1000) == 3e-5</code>، <code>lr(5000) == 3e-5</code>. واتأكد إنه بيرمي <span class="ltr">ValueError</span> لما <span class="ltr">warmup_steps &gt;= total_steps</span>.</p>
+
+  <h3>Milestone 2: قياس الـ gradient norm</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>def gradient_l2_norm(parameters):
+    <span class="c"># نجمع مربعات كل الـ gradients ونجذّر الناتج: global norm</span>
+    ...  <span class="c"># اكتبها بنفسك، الفكرة في الصيغة اللي فوق</span></pre></div>
+  <p>(الأصل بيتجاهل الـ parameters اللي <span class="ltr">grad</span> بتاعها <span class="ltr">None</span>. افتح <code>gradient_l2_norm</code> في الملف وقارن.) <b>Check:</b> قارنها بـ <code>torch.nn.utils.clip_grad_norm_(params, float("inf"))</code> اللي بترجّع الـ norm من غير ما تقصّ: لازم الرقمين يتطابقوا.</p>
+
+  <h3>Milestone 3: TrainState (الموديل + AdamW + schedule)</h3>
+  <div class="codebox"><button class="copy" type="button">Copy</button><pre>class TrainState:
+    def __init__(self, model, schedule, loss_fn,
+                 weight_decay=0.01, betas=(0.9, 0.95), eps=1e-8):
+        self.model, self.schedule, self.loss_fn = model, schedule, loss_fn
+        self.optimizer = torch.optim.AdamW(
+            model.parameters(), lr=schedule.lr(0),
+            betas=betas, eps=eps, weight_decay=weight_decay)
+        self.global_step = 0              <span class="c"># المحور الدائم للـ schedule</span>
+        self._log = []
+
+    def set_lr(self, lr):
+        for group in self.optimizer.param_groups:
+            group["lr"] = lr
+
+    def step(self, batch_inputs, batch_targets):
+        self.model.train()
+        self.optimizer.zero_grad(set_to_none=True)
+        loss = self.loss_fn(self.model(batch_inputs), batch_targets)
+        loss.backward()
+        grad_norm = gradient_l2_norm(self.model.parameters())  <span class="c"># قبل الـ step</span>
+        rate = self.schedule.lr(self.global_step)
+        self.set_lr(rate)                 <span class="c"># نضبط الـ lr قبل optimizer.step</span>
+        self.optimizer.step()
+        record = StepLog(step=self.global_step, lr=rate,
+                         grad_l2_norm=grad_norm, loss=float(loss.detach().item()))
+        self._log.append(record)
+        self.global_step += 1
+        return record</pre></div>
+  <p><b>Check:</b> درّب <span class="ltr">nn.Linear</span> صغير ٢٠ step على batch ثابت: الـ loss لازم ينزل بشكل عام، والـ <span class="ltr">lr</span> في الـ log لازم يطابق <span class="ltr">schedule.lr(step)</span> بالظبط.</p>
+
+  <h3>Milestone 4: خرج الـ schedule (text plot + CSV)</h3>
+  <p>الأصل فيه <span class="ltr">plot_schedule_ascii</span> (رسمة نصية تتقري بالعين) و<span class="ltr">write_schedule_csv</span> / <span class="ltr">write_step_log_csv</span> (صف لكل step). اكتب نسختك: <code>csv.writer</code> + الـ header ثابت <span class="ltr">step,lr,grad_l2_norm,loss</span>. <b>Check:</b> افتح الـ CSV في أي أداة وارسم عمود <span class="ltr">lr</span>. لازم تطلع نفس شكل معمل ١.</p>
+
+  <h3>Milestone 5: الـ tests على الحدود</h3>
+  <p>الدرس فيه <code>code/tests/test_schedule.py</code>. اكتب بنفسك الأول اختبارات الحدود: <span class="ltr">lr(0)</span>، <span class="ltr">lr(warmup)</span>، <span class="ltr">lr(total)</span>، <span class="ltr">lr(total+1)</span>، و<span class="ltr">warmup_steps=0</span>. بعدين قارن بالملف الأصلي. دي بالظبط الاختبارات اللي بتصطاد الـ off-by-one.</p>
+</section>
+
+<!-- EXERCISES -->
+<section id="d472-ex">
+  <div class="station-head"><span class="tag">07</span><h2>التمارين</h2></div>
+  <ol class="ex">
+    <li>أضف نسخة inverse-square-root من الـ schedule وقارنها على تدريب toy بـ 200 step. أنهي منحنى بيطلّع loss نهائي أقل؟
+      <details><summary>تلميح</summary>الأصل فيه كلاس <span class="ltr">InverseSqrtWarmup</span> تقدر تبص عليه. شغّل نفس الموديل ونفس الـ seed ونفس الـ batch مرتين، مرة بكل schedule، وقارن آخر loss (وكمان منحنى الـ loss كله). متنساش إن النتيجة على toy مش بالضرورة تتعمم على موديل كبير.</details></li>
+    <li>أضف flag <span class="ltr">--restart</span> بيضيف warmup تاني عند <span class="ltr">total_steps / 2</span>. دافع: الـ warm restarts بتفيد ولا بتضر على الـ toy run؟
+      <details><summary>تلميح</summary>الفكرة تيجي من ورقة SGDR (Loshchilov &amp; Hutter). اعمل الـ schedule يبقى دالة على <span class="ltr">step mod (total/2)</span> لحد نص التدريب، وقارن الـ loss. الإجابة بتعتمد على الداتا، فالمهم تعرض الأرقام وتقول رأيك بناءً عليها.</details></li>
+    <li>أضف unit test إن الـ schedule متصل (continuous): مع <span class="ltr">warmup_steps &gt; 0</span>، لكل step في <span class="ltr">[0, total_steps]</span> الفرق <span class="ltr">|lr(step+1) - lr(step)|</span> محدود بالأكبر من slope الـ warmup (<span class="ltr">lr_max / warmup_steps</span>) وأشد slope في الـ cosine (<span class="ltr">pi * (lr_max - lr_min) / (2 * (total_steps - warmup_steps))</span>).
+      <details><summary>تلميح</summary>احسب الـ bound ده في test، ولف على كل الـ steps وتأكد <span class="ltr">abs(diff) &lt;= bound + 1e-12</span> (الـ 1e-12 للـ floating point). والدرس نفسه بيقول إن slope الـ warmup لوحده مش bound آمن لأن الـ cosine القصير ممكن يبقى أشد. استخدم معمل ٣ تشوف ده.</details></li>
+    <li>اربط الـ schedule بـ <span class="ltr">torch.optim.lr_scheduler.LambdaLR</span> عشان يتركّب مع كود الـ frameworks. الـ wrapper بيغيّر إيه؟
+      <details><summary>تلميح</summary><span class="ltr">LambdaLR</span> بياخد دالة <span class="ltr">step → multiplier</span> بتضرب في الـ lr الأساسي للـ optimizer، يعني ممكن تديه <span class="ltr">lambda s: schedule.lr(s) / schedule.lr_max</span> وتحط الـ <span class="ltr">lr</span> بتاع الـ optimizer = <span class="ltr">lr_max</span>. الفرق: الـ scheduler هو اللي بيملك الـ counter (<span class="ltr">scheduler.step()</span>) ويتحفظ في الـ <span class="ltr">state_dict</span>، بدل ما تنادي <span class="ltr">set_lr</span> بإيدك.</details></li>
+    <li>أضف flag <span class="ltr">--plot-png</span> بيكتب رسمة حقيقية بـ <span class="ltr">matplotlib</span>. دافع: الـ text plot ولا الـ PNG أحسن كـ default للـ CI؟
+      <details><summary>تلميح</summary>الـ text plot ما بيحتاجش dependency زيادة وبيتقري في log الـ CI وبيتعمل diff. الـ PNG أوضح للبني آدم بس بيحتاج matplotlib وبيتخزن كـ artifact. حجتك المهم تبقى واضحة.</details></li>
+    <li><b>تمرين مني · احسب بإيدك:</b> لـ <span class="ltr">warmup=100, total=1000, lr_max=3e-4, lr_min=3e-5</span> احسب <span class="ltr">lr(550)</span> بإيدك ثم اتأكد بالكود.
+      <details><summary>الإجابة</summary>progress = (550-100)/900 = 0.5 فـ <span class="ltr">cos(pi/2) = 0</span> فـ cosine = 0.5. إذن lr = 3e-5 + (2.7e-4)(0.5) = 3e-5 + 1.35e-4 = <b>1.65e-4</b>. يعني نص المسافة بين الحدين بالظبط عند نص الـ decay.</details></li>
+  </ol>
+</section>
+
+<!-- EXTRA -->
+<section id="d472-extra">
+  <div class="station-head"><span class="tag">08</span><h2>إضافة مني: أخطاء، وفين ده بيظهر في الـ LLMs</h2></div>
+  <ul class="checklist">
+    <li><b>تنسى تضبط الـ lr قبل <span class="ltr">optimizer.step()</span>:</b> لو ضبطته بعدها، كل step بيستخدم lr الـ step اللي قبله. الـ loop بتاع الدرس بيعمل <span class="ltr">set_lr</span> قبل الـ step.</li>
+    <li><b>تحسب الـ step من الـ epoch أو counter محلي:</b> بعد resume من checkpoint الـ schedule هيرجع للبداية. المحور الدائم هو <span class="ltr">global_step</span>.</li>
+    <li><b>الـ warmup بالـ steps المطلقة:</b> لو غيّرت طول التدريب، الـ warmup بقى نسبة مختلفة تمامًا. اضبطه كنسبة.</li>
+    <li><b>تحتاج warmup أكبر لو الـ batch كبير:</b> تقدير الـ second moment في Adam بياخد وقت يستقر، وكل ما الـ peak أعلى كل ما الـ warmup أهم. (ده مبدأ عام ملاحظ في الممارسة، مش رقم من الدرس.)</li>
+    <li><b>فين بيظهر:</b> تقريبًا كل pretraining لـ LLM بيستخدم warmup + decay (cosine أو غيره) مع AdamW وgradient clipping. ولما تشوف loss curve فيه spike في أول التدريب، أول حاجة تشك فيها هي الـ warmup القصير أو الـ peak العالي.</li>
+  </ul>
+</section>
+
+<!-- QUIZ -->
+<section id="d472-quiz">
+  <div class="station-head"><span class="tag">09</span><h2>كويز</h2></div>
+  <div class="quiz" id="d472-quizBox"></div>
+</section>
+
+<!-- WRAP -->
+<section id="d472-done">
+  <div class="station-head"><span class="tag">10</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d472-checklist">
+    <li><label><input type="checkbox" data-ck="1"> أقدر أكتب صيغتي الـ warmup والـ cosine من الذاكرة</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه الـ schedule دالة واحدة والـ floor بعد total</label></li>
+    <li><label><input type="checkbox" data-ck="3"> كتبت CosineWithWarmup بإيدي ونجحت اختبارات الحدود</label></li>
+    <li><label><input type="checkbox" data-ck="4"> شغّلت TrainState وشفت الـ lr والـ grad norm جنب بعض</label></li>
+    <li><label><input type="checkbox" data-ck="5"> حليت تمرينين على الأقل</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٦ من ٨ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Linear warmup</td><td>أول آلاف الـ steps في أي pretraining</td></tr>
+    <tr><td>Cosine decay + <span class="ltr">lr_min</span> غير صفر</td><td>الـ schedule الافتراضي الحديث لتدريب الـ LLMs</td></tr>
+    <tr><td>AdamW + decay groups</td><td>معظم تدريب الـ transformers</td></tr>
+    <tr><td>Gradient norm logging</td><td>اكتشاف الـ divergence بدري</td></tr>
+    <tr><td><span class="ltr">global_step</span> في الـ checkpoint</td><td>الاستئناف الصحيح بعد انقطاع</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Gradient Clipping and Mixed Precision: الحزامين الأمان اللي بيخلّوا الـ loop ده ما يموتش من batch واحد سيء.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F19-capstone-projects%2F44-cosine-lr-warmup" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/19-capstone-projects/44-cosine-lr-warmup</span>
+</footer>
+
+<script>
+(function(){
+const N=472,$=id=>document.getElementById(id),L=AI.lab;
+const root=$('d472-roadmap').closest('.day');
+const rm=$('d472-roadmap');
+for(let i=40;i<=50;i++){const s=document.createElement('span');s.textContent=i;if(i===44)s.className='now';rm.appendChild(s)}
+
+function sched(s,p){
+  const W=p.warmup,T=p.total,mx=p.lrmax,mn=mx*p.minr;
+  if(W>0&&s<=W)return mx*s/W;
+  if(s>=T)return mn;
+  const pr=(s-W)/Math.max(1,T-W);
+  return mn+(mx-mn)*0.5*(1+Math.cos(Math.PI*pr));
+}
+// Lab 1
+L.plot($('d472-lab1'),{
+  x:[0,1200],y:[0,3.2],
+  params:[
+    {k:'warmup',label:'warmup_steps',min:0,max:500,step:10,v:100},
+    {k:'total',label:'total_steps',min:600,max:1000,step:50,v:1000},
+    {k:'lrmax',label:'lr_max (×1e-4)',min:1,max:3,step:0.1,v:3},
+    {k:'minr',label:'lr_min / lr_max',min:0,max:0.5,step:0.05,v:0.1}
+  ],
+  curves:[{f:(x,p)=>sched(x,p),label:'lr (×1e-4)',color:'a'}],
+  marks:p=>[{x:p.warmup,y:sched(p.warmup,p),label:'warmup end'},{x:p.total,y:sched(p.total,p),label:'total'}],
+  readout:p=>[['lr(0)',sched(0,p).toFixed(3)],['lr(warmup)',sched(p.warmup,p).toFixed(3)],['lr(mid decay)',sched((p.warmup+p.total)/2,p).toFixed(3)],['lr(total)',sched(p.total,p).toFixed(3)],['lr(1200)',sched(1200,p).toFixed(3)]],
+  note:p=>p.minr===0?'lr_min = 0: المنحنى حلو بس الذيل ما بيتعلمش حاجة':'الأرضية فوق الصفر: الـ optimizer بيفضل يتعلم في الذيل'
+});
+
+// Lab 2
+L.flow($('d472-lab2'),{
+  nodes:[
+    {id:'b',label:'batch',x:0,y:.15},{id:'f',label:'forward+loss',x:.5,y:.15},{id:'g',label:'backward',x:1,y:.15},
+    {id:'n',label:'grad L2 norm',x:1,y:.85},{id:'l',label:'lr(global_step)',x:.5,y:.85},{id:'o',label:'AdamW.step',x:0,y:.85}
+  ],
+  edges:[['b','f','inputs'],['f','g','loss'],['g','n','grads'],['n','l','log'],['l','o','set_lr'],['g','o','grads']],
+  steps:[
+    {active:['b'],text:'zero_grad(set_to_none=True) وبعدها batch جديد يدخل.'},
+    {active:['b','f'],edges:[['b','f']],text:'forward pass وحساب الـ loss.'},
+    {active:['f','g'],edges:[['f','g']],text:'loss.backward() بيملّي الـ gradients.'},
+    {active:['g','n'],edges:[['g','n']],text:'بنحسب الـ global gradient L2 norm قبل أي تغيير.'},
+    {active:['n','l'],edges:[['n','l']],text:'بنسأل الـ schedule عن lr الـ global_step الحالي.'},
+    {active:['l','o'],edges:[['l','o']],text:'set_lr على كل param_groups، وبعدين optimizer.step(). وبنسجّل (step, lr, grad_norm, loss) ونزوّد global_step بواحد.'}
+  ]
+});
+
+// Lab 3
+L.calc($('d472-lab3'),{
+  params:[
+    {k:'total',label:'total_steps',min:1000,max:200000,step:1000,v:20000},
+    {k:'frac',label:'warmup fraction %',min:0.5,max:50,step:0.5,v:2}
+  ],
+  compute:p=>{
+    const W=Math.round(p.total*p.frac/100),lrmax=3e-4,lrmin=3e-5;
+    const ws=lrmax/W,cs=Math.PI*(lrmax-lrmin)/(2*(p.total-W));
+    return [['warmup_steps',W.toLocaleString()],['warmup slope (per step)',ws.toExponential(2)],['steepest cosine slope',cs.toExponential(2)],['bound = max of both',Math.max(ws,cs).toExponential(2)],['steeper segment',ws>=cs?'warmup':'cosine']];
+  },
+  note:p=>p.frac>=20?'warmup كبير جدًا: لاحظ إن الـ cosine بقى قصير فأشد':'warmup 1–3% هو المعتاد حسب الدرس'
+});
+
+AI.quiz($('d472-quizBox'),[
+ ['ليه الـ cosine-with-warmup schedule بيبدأ من صفر مش من lr_max؟',['تقليد عشوائي','لأن lr_max ممنوع عند step صفر','لأن أول ألف update مليانة noise؛ الـ ramp الخطي من الصفر لـ lr_max بيدّي الـ optimizer step size فعّال صغير لحد ما تقديراته تستقر','لأن Adam بيشترط كده'],2,'الـ warmup بيخلي الـ updates الهشة الأولى صغيرة؛ من غيره الموديل يا بيـ diverge يا بيـ plateau.'],
+ ['ليه الـ schedule دالة واحدة على step مش ٣ segments ملزوقين؟',['الدالة الواحدة بتقيّم نفس الصيغة closed-form فبتحافظ على الاتصال عند حدي warmup وtotal؛ الـ glued بيخسر حد أول ما تغيّر lr_max','الـ linters بتطلب كده','عشوائي','الدوال الواحدة أصغر'],0,'الاتصال عند lr(warmup_steps) وlr(total_steps) ناتج من الصيغة closed-form.'],
+ ['إيه اللي بيحصل لـ step > total_steps؟',['بيرجّع nan','بيرمي exception','بيلف من الأول','بيثبت عند lr_min؛ الـ schedule ما بيعملش extrapolation، ولو محتاج تكمّل تدريب بتغيّر total_steps صراحة'],3,'الأرضية الثابتة بتخلي الـ trainer اللي تعدّى الحد في حالة موثّقة بدل ما ينهار.'],
+ ['ليه بنسجّل gradient L2 norm جنب الـ learning rate؟',['تقليد','الـ norm هو نص صحة التدريب التاني: الـ run اللي بيـ diverge بيعمل spike في الـ norm قبل الـ loss، والـ peak العالي زيادة بيبان كـ norm فاضل عالي بعد الـ warmup','عشان الشكل','Adam بيشترطه'],1,'التسجيل المشترك بيخلي الـ schedules المعيوبة تبان وقت التشغيل، مش بعد ما يخلص.'],
+ ['ليه بنضبط warmup_steps كنسبة من total_steps في production؟',['النسب أنضف','عدد warmup ثابت مناسب لـ run بـ 20k step بيبقى تقريبًا من غير warmup في run بـ 200M step؛ النسبة (عادةً 1–3%) بتتناسب مع مدة التدريب','شرط hardware','تفضيل عشوائي'],1,'الأعداد المطلقة للـ warmup بتتصرف غلط على مقاييس تدريب مختلفة.'],
+ ['ليه lr_min غير صفر في الغالب في production؟',['أرضية قرب 10% من lr_max بتخلي الـ optimizer يتعلم في الذيل الطويل؛ lr_min = 0 بيطلّع منحنى حلو وموديل ما خلّصش','استقرار رقمي','توافق للخلف','Adam بيحتاج غير صفر'],0,'الذيل هو مكان التحسينات المتأخرة؛ تصفيره بيضيّع الإشارة دي.'],
+ ['(سؤال مني) لـ warmup=100, total=1000, lr_max=3e-4, lr_min=3e-5: كام lr(550)؟',['3e-4','1.65e-4','3e-5','1.5e-4'],1,'progress=0.5 فـ cosine=0.5، يعني نص المسافة بين lr_max وlr_min بالظبط: 3e-5 + 0.5×2.7e-4 = 1.65e-4.'],
+ ['(سؤال مني) التدريب اتوقف وكمّلته من checkpoint بس الـ schedule رجع يبدأ warmup من الأول. السبب الأرجح؟',['الـ schedule بيقرا counter محلي بدل global_step المحفوظ في الـ checkpoint','AdamW فقد الـ weights','الـ cosine بيرجع لـ 1','الـ dataloader بوّظ الـ seed'],0,'المحور الدائم للـ schedule لازم يتحفظ ويتحمّل من الـ checkpoint.']
+],6,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+
+AI.checklist(N,root);
+})();
+</script>
+</div>

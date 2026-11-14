@@ -1,0 +1,316 @@
+<div class="day">
+<header class="top">
+  <span class="eyebrow">Phase 4 · Lesson 26 · Monocular Depth &amp; Geometry Estimation</span>
+  <h1>اليوم ٧٩: من صورة واحدة تعرف كل جسم بعيد قد إيه</h1>
+  <p class="lede">النهاردة هتفهم إزاي موديل بياخد <b>صورة RGB واحدة</b> ويطلّع depth map، الفرق بين <b>relative وmetric</b> depth، وليه Depth Anything V3 بيستخدم DINOv2 مجمد. وهتكتب بإيدك مقاييس التقييم والـ scale-and-shift alignment ورفع العمق لـ <b>point cloud</b> بمعادلة الـ pinhole.</p>
+  <div class="meta"><span>الوقت: <b>~٦٠ دقيقة</b></span><span>اللغة: <b>Python</b></span><span>قبله: <b>Vision-Language Models</b></span><span>بعده: <b>Multi-Object Tracking & Video Memory</b></span></div>
+  <div>
+    <span class="eyebrow">Phase 4 — 25 days</span>
+    <div class="roadmap" id="d79-roadmap" aria-label="خريطة الفيز"></div>
+  </div>
+</header>
+
+<section id="d79-warm">
+  <div class="station-head"><span class="tag">00</span><h2>تسخين ٥ دقايق: فاكر امبارح؟</h2></div>
+  <p>جاوب في دماغك الأول، وبعدين افتح الإجابة.</p>
+  <ol class="ex">
+<li>إيه الـ 3 مكونات الأساسية في أي VLM؟
+      <details><summary>الإجابة</summary>vision encoder (ViT)، projector (MLP)، وLLM decoder-only.</details></li>
+<li>إيه هو الـ CMER؟
+      <details><summary>الإجابة</summary>نسبة الـ outputs اللي الـ text confidence فيها عالي والـ image-text similarity واطي: مقياس هلوسة.</details></li>
+<li>ليه DeepStack بيحسّن الـ grounding؟
+      <details><summary>الإجابة</summary>لأنه بيرص features من أعماق مختلفة: العميقة للدلالة والضحلة للمكان والملمس.</details></li>
+  </ol>
+</section>
+
+<section>
+  <h2>خطة الجلسة</h2>
+  <div class="plan">
+    <div><b>5 دقايق</b>التسخين</div>
+    <div><b>15 دقيقة</b>المشكلة، relative/metric، النمط + الـ cues</div>
+    <div><b>15 دقيقة</b>الموديلات، pinhole + معمل ١</div>
+    <div><b>15 دقيقة</b>التقييم + معمل ٢ و٣</div>
+    <div><b>10 دقايق</b>الكود، التمارين، الكويز</div>
+  </div>
+</section>
+
+<section id="d79-problem">
+  <div class="station-head"><span class="tag">01</span><h2>المشكلة: البُعد الناقص في الرؤية</h2></div>
+
+  <p>الـ depth map صورة بقناة واحدة، كل pixel فيها = المسافة من الكاميرا. من RGB بس بتعرف الأجسام <b>فين على مستوى الصورة</b> لكن مش <b>بعدها كام</b>. حساسات العمق (stereo rig، LiDAR، time-of-flight) بتحل ده مباشرة لكنها غالية وهشّة ومداها محدود.</p>
+  <p>تقدير العمق من فريم RGB واحد (<b>monocular depth</b>) كان بيطلّع نتايج ضبابية ومش موثوقة. في 2026 الـ encoders الكبيرة المتدربة غيّرت ده: Depth Anything V3 بيستخدم backbone DINOv2 مجمد وبيطلّع depth maps بتتعمم على داخلي وخارجي وطبي وأقمار صناعية. Marigold بيعيد صياغة المشكلة كـ conditional diffusion. وZoeDepth بيعمل regression لمسافات حقيقية بالمتر.</p>
+  <p>العمق هو الكوبري بين الـ 2D detection والفهم 3D: اضرب pixels الـ box في العمق وتحوّل الجسم لنقاط 3D (point cloud). ده قلب أي نظام AR occlusion وتفادي عوائق وروبوت «هات الكوباية».</p>
+
+</section>
+<section id="d79-relmet">
+  <div class="station-head"><span class="tag">02</span><h2>Relative ضد Metric depth</h2></div>
+
+  <ul class="checklist">
+    <li><b>Relative depth:</b> قيم z مرتبة من غير وحدة حقيقية. «النقطة A أقرب من B» لكن النسبة مش مربوطة بالأمتار.</li>
+    <li><b>Metric depth:</b> مسافة مطلقة بالمتر من الكاميرا. محتاج الموديل يكون اتعلم العلاقة الإحصائية بين الـ cues والمسافة الحقيقية.</li>
+  </ul>
+  <div class="tablewrap"><table>
+    <tr><th>الموديل</th><th>النوع</th></tr>
+    <tr><td>MiDaS، Depth Anything V3، Marigold</td><td>Relative</td></tr>
+    <tr><td>ZoeDepth، UniDepth، Metric3D</td><td>Metric</td></tr>
+  </table></div>
+  <p>الموديلات الـ metric حساسة لـ camera intrinsics، والـ relative مش حساسة.</p>
+  <div class="note"><strong>تشبيه:</strong> relative depth زي ترتيب ناس في طابور من الأقرب للأبعد من غير ما تعرف كام متر بينهم. metric depth زي إن حد معاه شريط قياس.</div>
+
+</section>
+<section id="d79-pattern">
+  <div class="station-head"><span class="tag">03</span><h2>نمط الـ encoder-decoder</h2></div>
+
+  <div class="formula">Image (H×W×3) → Frozen ViT (DINOv2/DINOv3) → Dense features (H/14, W/14, d) → DPT-style decoder (conv upsampler) → Depth map (H×W×1)</div>
+  <p>Depth Anything V3 بيجمّد الـ encoder وبيدرّب الـ decoder (<b>DPT</b>: Dense Prediction Transformer) بس. الـ encoder بيدّي features غنية، والـ decoder بيكبّرها لدقة الصورة ويعمل regression للعمق.</p>
+  <h3>ليه صورة واحدة تكفي؟</h3>
+  <p>الصورة 2D فيها <b>monocular cues</b> مرتبطة بالعمق:</p>
+  <ul class="checklist">
+    <li><b>Perspective:</b> الخطوط المتوازية في 3D بتتقابل في الصورة.</li>
+    <li><b>Texture gradient:</b> السطوح البعيدة ملمسها أصغر وأكثف.</li>
+    <li><b>Occlusion order:</b> الأقرب بيغطي الأبعد.</li>
+    <li><b>Size constancy:</b> أجسام معروفة (عربيات، بشر) بتدّي حجم تقريبي.</li>
+    <li><b>Atmospheric perspective:</b> البعيد أضبب وأزرق في المشاهد الخارجية.</li>
+  </ul>
+  <p>الـ ViT المتدرب على مليارات الصور بيستوعب الـ cues دي، فمع داتا كفاية وbackbone قوي بيوصل لدقة معقولة من غير supervision 3D صريح.</p>
+  <h3>اللي مينفعش monocular depth يعمله</h3>
+  <ul class="checklist">
+    <li><b>المقياس المطلق (metric scale)</b> من غير intrinsics أو جسم معروف: الشبكة تقول «الكوباية ضعف بُعد المعلقة» من غير ما تعرف هل هو متر ولا عشرة.</li>
+    <li><b>الهندسة المحجوبة:</b> ضهر الكرسي مش ظاهر ومينفعش يتخمّن بثقة.</li>
+    <li><b>الأسطح المصقولة أو من غير ملمس:</b> مرايا، زجاج، حيطان ملساء. الشبكة بتطلّع عمق معقول بس غلط.</li>
+  </ul>
+
+</section>
+<section id="d79-models">
+  <div class="station-head"><span class="tag">04</span><h2>Depth Anything V3 وMarigold وباقي الموديلات</h2></div>
+
+  <ul class="checklist">
+    <li><b>Depth Anything V3:</b> encoder DINOv2 ViT-L/14 مجمد + DPT decoder. بيتنبأ بهندسة متسقة مكانيًا من عدد اختياري من المدخلات البصرية، مع أو من غير camera poses معروفة. SOTA في monocular depth، any-view geometry، visual rendering وcamera pose estimation. الافتراضي لما تحتاج depth في 2026.</li>
+    <li><b>Marigold (ETH، CVPR 2024):</b> depth كـ conditional image-to-image diffusion. الشرط RGB والهدف depth map. بيستخدم U-Net من Stable Diffusion 2. الحدود حادة جدًا عند حواف الأجسام. المقابل: أبطأ (10-50 خطوة denoising).</li>
+    <li><b>UniDepth (ETH، 2024):</b> metric depth مع تقدير الـ intrinsics.</li>
+    <li><b>ZoeDepth (Intel، 2023):</b> metric، أقدم ولسه موثوق.</li>
+    <li><b>MiDaS v3.1:</b> قديم لكن ثابت، baseline كويس للمقارنة.</li>
+  </ul>
+  <p>للـ real-time: Depth Anything V2 Small بـ INT8 quantisation بيوصل حوالي 30 fps على GPU استهلاكي بدقة 518×518.</p>
+
+</section>
+<section id="d79-pinhole">
+  <div class="station-head"><span class="tag">05</span><h2>الكاميرا الـ pinhole: من pixel لنقطة 3D</h2></div>
+
+  <p>عشان تحوّل pixel <span class="ltr">(u, v)</span> بعمق <span class="ltr">d</span> لنقطة <span class="ltr">(X, Y, Z)</span> في إحداثيات الكاميرا:</p>
+  <div class="formula">X = (u − cx) · d / fx
+Y = (v − cy) · d / fy
+Z = d</div>
+  <p>الـ <span class="ltr">fx, fy</span> هما الـ focal lengths بالـ pixels، و<span class="ltr">cx, cy</span> الـ principal point (غالبًا قريب من نص الصورة). الـ intrinsics بتيجي من EXIF، أو نمط معايرة (calibration)، أو مقدّر intrinsics من صورة واحدة (Perspective Fields، UniDepth). من غيرهم تقدر تعرض point cloud بافتراض FOV حوالي 60-70° ونقطة رئيسية في نص الصورة: يكفي للعرض مش للقياس.</p>
+  <div class="note"><strong>تشبيه:</strong> الـ pixel بيقولك «الاتجاه» اللي الجسم فيه، والعمق بيقولك «اتمشي كام» في الاتجاه ده. الـ fx بتحوّل «كام pixel بعيد عن النص» لـ «زاوية»، وبعدين d بتحوّل الزاوية لمسافة جانبية.</div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ١: ارفع pixel لـ 3D</h3>
+      <p>اختار pixel وعمق وintrinsics وشوف الـ X, Y, Z. ده نفس سطر <span class="ltr">depth_to_point_cloud</span>.</p>
+      <div class="note ai"><strong>لاحظ:</strong> pixel في نص الصورة (u=cx) ليه X = 0 مهما كان العمق. وزيادة fx (زووم أكتر) بتصغّر X لنفس الـ pixel.</div>
+    </div>
+    <div class="instrument"><div id="d79-calc1"></div></div>
+  </div>
+
+</section>
+<section id="d79-eval">
+  <div class="station-head"><span class="tag">06</span><h2>التقييم: AbsRel وdelta، والـ alignment</h2></div>
+
+  <ul class="checklist">
+    <li><b>AbsRel:</b> <span class="ltr">mean(|d_pred − d_gt| / d_gt)</span>. الأقل أحسن. 0.05-0.1 للموديلات الإنتاجية.</li>
+    <li><b>delta &lt; 1.25:</b> نسبة الـ pixels اللي <span class="ltr">max(d_pred/d_gt, d_gt/d_pred) &lt; 1.25</span>. الأعلى أحسن. 0.9+ للـ SOTA.</li>
+  </ul>
+  <p>للـ relative depth (Depth Anything V3، MiDaS) التقييم بنسخ <b>scale-and-shift invariant</b>: تعمل alignment بـ least-squares لـ <span class="ltr">a * pred + b = target</span> قبل ما تحسب المقاييس. من غير alignment إنت بتقيس اختلاف المقياس مش جودة الموديل. وبتعمل <b>mask</b> للـ pixels غير الصالحة (صفر، NaN، saturated) قبل التقييم.</p>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٢: الـ alignment بيصلّح المقياس</h3>
+      <p>ground truth هو العمق المصطنع (أرضية متدرجة + صندوق في النص). التنبؤ = الحقيقة × scale + shift + ضوضاء. شوف AbsRel قبل وبعد الـ alignment.</p>
+      <div class="note ai"><strong>لاحظ:</strong> حتى لو الضوضاء صفر، الـ AbsRel قبل الـ alignment كبير لأن المقياس مختلف. بعد الـ alignment بيقع لقيمة الضوضاء الحقيقية. ده بالظبط ليه الـ relative models بتتقيّم كده. (الحساب هنا بنسخة JS من نفس معادلات الدرس.)</div>
+    </div>
+    <div class="instrument"><div id="d79-calc2"></div></div>
+  </div>
+  <div class="bench">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h3>معمل ٣: شوف المشهد المصطنع</h3>
+      <p>الخريطة دي هي نفس <span class="ltr">synthetic_depth</span> (مصغّرة): الأرضية بتبعد كل ما تنزل، والصندوق في النص أقرب (عمق 2). زوّد الضوضاء وشوف المشهد بيتلخبط.</p>
+      <div class="note ai"><strong>لاحظ:</strong> الصندوق بيبان كجزيرة «أقرب» وسط التدرج. الضوضاء بتبوّظ الحواف الأول.</div>
+    </div>
+    <div class="instrument"><div id="d79-heat"></div></div>
+  </div>
+
+</section>
+<section id="d79-build">
+  <div class="station-head"><span class="tag">07</span><h2>الكود: اكتب المقاييس والـ point cloud بإيدك</h2></div>
+
+  <h3>الخطوة ١: مقاييس العمق</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>import torch
+
+def abs_rel_error(pred, target, mask=None):
+    if mask is not None:
+        pred = pred[mask]
+        target = target[mask]
+    return (torch.abs(pred - target) / target.clamp(min=1e-6)).mean().item()
+
+
+def delta_accuracy(pred, target, threshold=1.25, mask=None):
+    if mask is not None:
+        pred = pred[mask]
+        target = target[mask]
+    ratio = torch.maximum(pred / target.clamp(min=1e-6), target / pred.clamp(min=1e-6))
+    return (ratio &lt; threshold).float().mean().item()</pre></div>
+  <p>دايمًا اعمل mask للـ pixels غير الصالحة قبل التقييم.</p>
+  <h3>الخطوة ٢: Scale-and-shift alignment</h3>
+  <p>اعمل least-squares fit لـ <span class="ltr">a * pred + b = target</span> قبل <span class="ltr">abs_rel_error</span> لما تقيّم MiDaS / Depth Anything.</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def align_scale_shift(pred, target, mask=None):
+    if mask is not None:
+        p = pred[mask]
+        t = target[mask]
+    else:
+        p = pred.flatten()
+        t = target.flatten()
+    A = torch.stack([p, torch.ones_like(p)], dim=1)   # عمود pred وعمود آحاد
+    sol = torch.linalg.lstsq(A, t.unsqueeze(-1))
+    a, b = sol.solution[:2, 0]
+    return a * pred + b</pre></div>
+  <h3>الخطوة ٣: العمق ← Point cloud</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+
+def depth_to_point_cloud(depth, intrinsics):
+    H, W = depth.shape
+    fx, fy, cx, cy = intrinsics
+    v, u = np.meshgrid(np.arange(H), np.arange(W), indexing="ij")
+    z = depth
+    x = (u - cx) * z / fx
+    y = (v - cy) * z / fy
+    return np.stack([x, y, z], axis=-1)</pre></div>
+  <p>دالة واحدة لكل تطبيق 3D. صدّر النتيجة لـ <span class="ltr">.ply</span> وافتحها في MeshLab أو CloudCompare.</p>
+  <h3>الخطوة ٤: Smoke test بمشهد مصطنع</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>def synthetic_depth(size=96):
+    yy, xx = np.meshgrid(np.arange(size), np.arange(size), indexing="ij")
+    depth = 1.0 + (yy / size) * 4.0                     # أرضية: قريبة فوق، بعيدة تحت
+    mask = (np.abs(xx - size / 2) &lt; size / 6) &amp; (np.abs(yy - size * 0.6) &lt; size / 6)
+    depth[mask] = 2.0                                   # صندوق أقرب
+    return depth.astype(np.float32)</pre></div>
+  <p>الملف الأصلي بيعمل كمان <span class="ltr">write_ply</span> بيكتب الـ point cloud في ملف ASCII PLY. من أول الـ repo:</p>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>python phases/04-computer-vision/26-monocular-depth/code/main.py</pre></div>
+  <p><b>اللي متوقع تشوفه:</b> قسم <span class="ltr">[metrics]</span> بيطبع سطر <span class="ltr">pred</span> وسطر <span class="ltr">scaled</span> (التنبؤ × 3 + 0.7) وسطر <span class="ltr">aligned</span>: الـ <span class="ltr">scaled</span> هيبقى أسوأ بكتير والـ <span class="ltr">aligned</span> هيرجع لقيمة قريبة من <span class="ltr">pred</span>. قسم <span class="ltr">[depth -&gt; point cloud]</span> هيطبع <span class="ltr">point cloud shape: (96, 96, 3)</span>، وبعدها مدى x وy وz، وبعدين بيكتب <span class="ltr">depth_demo.ply</span> في مجلد temp بـ 9216 نقطة.</p>
+  <h3>الخطوة ٥: الموديل الحقيقي (مرجع)</h3>
+<div class="codebox"><button class="copy" type="button">Copy</button><pre>import numpy as np
+from transformers import pipeline
+from PIL import Image
+
+pipe = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Large-hf")
+
+image = Image.open("street.jpg").convert("RGB")
+out = pipe(image)
+depth_np = np.array(out["depth"])</pre></div>
+  <p>ثلاث سطور. <span class="ltr">out["depth"]</span> صورة PIL رمادية، حوّلها لـ numpy. Depth Anything 3 (نوفمبر 2025) مش بيتحمّل بالـ pipeline ده: بييجي بحزمة خاصة <span class="ltr">depth_anything_3</span>، و<span class="ltr">DepthAnything3.from_pretrained("depth-anything/DA3MONO-LARGE")</span> بيحمّل الموديل الـ relative، و<span class="ltr">model.inference(images).depth</span> بيرجّع array شكله <span class="ltr">[N, H, W]</span>.</p>
+  <h3>نمط الدمج في الإنتاج</h3>
+  <ol class="ex">
+    <li>يوصل فريم RGB.</li>
+    <li>موديل العمق يطلّع depth map.</li>
+    <li>الـ detector يطلّع boxes.</li>
+    <li>ارفع مراكز الـ boxes عبر العمق لـ 3D، وادمج مع point cloud لو موجود.</li>
+    <li>بعدها: AR occlusion، path planning، تقدير حجم الأجسام، بديل للـ stereo.</li>
+  </ol>
+
+</section>
+<section id="d79-ex">
+  <div class="station-head"><span class="tag">08</span><h2>التمارين</h2></div>
+
+  <ol class="ex">
+<li><b>(سهل)</b> شغّل Depth Anything V2 على 10 صور من مكتبك. احفظ العمق كـ PNG رمادي وافحصه. حدد جسم عمقه طالع غلط وفسّر ليه الـ monocular cues فشلت.
+      <details><summary>الإجابة</summary><b>تلميح:</b> ابحث عن زجاج، شاشة لامعة، أو حيطة ملساء. الأسباب المتوقعة: انعكاسات، من غير ملمس، أو جسم محجوب جزئيًا.</details></li>
+<li><b>(متوسط)</b> من RGB + depth من Depth Anything V2، ارفع point cloud وارسمه بـ <span class='ltr'>open3d</span>. قارن مشهدين (داخلي/خارجي) وقول أنهي شكله أصدق.
+      <details><summary>الإجابة</summary><b>تلميح:</b> افترض intrinsics بـ FOV ~60° ونقطة رئيسية في النص. المقياس مش حقيقي، فقارن الشكل العام والتناسق مش الأمتار.</details></li>
+<li><b>(صعب)</b> خد 5 أزواج صور تختلف بس في مكان جسم معروف (مثلًا زجاجة اتقدمت 30 سم). استخدم UniDepth لتوقع metric depth على الاتنين. اعمل تقرير: فرق المسافة المتوقع ضد الـ 30 سم الحقيقية.
+      <details><summary>الإجابة</summary><b>تلميح:</b> قيس عمق مركز الجسم (متوسط pixels جوه الـ mask) في الصورتين وطرحهم. كرر على الـ 5 أزواج واحسب متوسط الخطأ، واحذر من حواف الجسم.</details></li>
+<li><b>تمرين مني · الحساب بإيدك:</b> pixel عند <span class='ltr'>(u, v) = (200, 100)</span>، عمق <span class='ltr'>d = 2.0</span>، intrinsics <span class='ltr'>(fx, fy, cx, cy) = (320, 320, 160, 120)</span>. احسب (X, Y, Z).
+      <details><summary>الإجابة</summary>X = (200 − 160) × 2 / 320 = <b>0.25</b>، Y = (100 − 120) × 2 / 320 = <b>−0.125</b>، Z = <b>2.0</b>. الـ Y سالب لأن الـ pixel فوق نص الصورة (v أقل من cy). اتأكد منها في معمل ١.</details></li>
+  </ol>
+
+</section>
+<section id="d79-extra">
+  <div class="station-head"><span class="tag">09</span><h2>إضافة مني: حدس، أخطاء شائعة، وفين بتظهر</h2></div>
+
+  <ul class="checklist">
+    <li><b>قارنت relative بـ metric من غير alignment:</b> النتيجة هتبان كارثة. قبل ما تحكم على موديل relative اعمل scale-and-shift أول.</li>
+    <li><b>Depth Anything V3 «مش بيعطيك أمتار»:</b> لو عايز قياسات حقيقية استخدم موديل metric (UniDepth، ZoeDepth) أو راجع الـ relative بجسم معروف الحجم في المشهد.</li>
+    <li><b>الـ intrinsics الغلط بتشوّه الـ point cloud:</b> الجدران بتتحني والأجسام بتتمدد. لو الصورة اتقصّت (crop) أو اتغير حجمها لازم تعدّل fx, fy, cx, cy بنفس النسبة.</li>
+    <li><b>متثقش في الزجاج والمرايا:</b> الموديل بيرد بثقة وهو غلطان. لو مواد زي دي مهمة ادمج مع stereo أو LiDAR.</li>
+    <li><b>فين بيظهر في الـ VLMs والـ agents:</b> درس امبارح قال إن الـ VLM ضعيف في التفكير المكاني (50-60%). الـ depth map بيدّيك الحل: بدل ما تسأل الـ VLM «أنهي أقرب؟»، احسب المسافة من العمق وادّيها للـ agent كمعلومة. نفس الفكرة في روبوت «هات الكوباية»: السطر الأخير هو ارفع النقطة لـ 3D.</li>
+  </ul>
+
+</section>
+
+<section id="d79-quiz">
+  <div class="station-head"><span class="tag">10</span><h2>كويز</h2></div>
+  <div class="quiz" id="d79-quizBox"></div>
+</section>
+
+<section id="d79-done">
+  <div class="station-head"><span class="tag">✓</span><h2>خلصت النهاردة؟</h2></div>
+  <ul class="checklist" id="d79-checklist">
+    <li><label><input type="checkbox" data-ck="1"> فاهم الفرق بين relative وmetric وبعرف أنهي موديل بيعمل إيه</label></li>
+    <li><label><input type="checkbox" data-ck="2"> فاهم ليه صورة واحدة بتدّي عمق وإيه حدود الطريقة</label></li>
+    <li><label><input type="checkbox" data-ck="3"> حسبت (X, Y, Z) بإيدي وجربتها في المعمل</label></li>
+    <li><label><input type="checkbox" data-ck="4"> فاهم الـ alignment وليه ضروري قبل التقييم</label></li>
+    <li><label><input type="checkbox" data-ck="5"> كتبت دوال المقاييس والـ point cloud وشغلت الملف</label></li>
+    <li><label><input type="checkbox" data-ck="6"> جبت ٥ من ٧ أو أكتر في الكويز</label></li>
+  </ul>
+  <h3>بيظهر فين؟</h3>
+  <div class="tablewrap"><table>
+    <tr><th>المفهوم</th><th>بيظهر فين</th></tr>
+    <tr><td>Relative depth</td><td>AR، المؤثرات البصرية، ترتيب الأجسام</td></tr>
+    <tr><td>Metric depth</td><td>روبوتات، قياس مسافات، تفادي عوائق</td></tr>
+    <tr><td>Depth → point cloud</td><td>أي pipeline 3D، MeshLab، CloudCompare</td></tr>
+    <tr><td>AbsRel وdelta</td><td>مقارنة موديلات العمق</td></tr>
+    <tr><td>Frozen DINOv2 + decoder</td><td>نمط «backbone قوي + head خفيف» في مهام كثيفة كتير</td></tr>
+    <tr><td>عمق + detection</td><td>أنظمة «هات الكوباية» وAR occlusion</td></tr>
+  </table></div>
+  <p><b>بكرة:</b> Multi-Object Tracking & Video Memory: إزاي تتابع أجسام كتير عبر فريمات الفيديو.</p>
+</section>
+
+<footer>
+  <span>المحتوى مبني على الدرس الأصلي من <a href="https://aiengineeringfromscratch.com/lesson?path=phases%2F04-computer-vision%2F26-monocular-depth" target="_blank" rel="noopener">AI Engineering from Scratch</a> (MIT)، مبسط بالعربي ومعاه إضافات.</span>
+  <span class="ltr">phases/04-computer-vision/26-monocular-depth</span>
+</footer>
+</div>
+
+<script>
+(function(){
+const N=79,$=id=>document.getElementById(id),css=AI.css,L=AI.lab;
+const root=$('d79-roadmap').closest('.day');
+const rm=$('d79-roadmap');
+for(let i=57;i<=81;i++){const s=document.createElement('span');s.textContent=i-56;if(i===N)s.className='now';rm.appendChild(s)}
+
+// معمل ١: lift
+L.calc($('d79-calc1'),{params:[{k:'u',label:'u (pixel x)',min:0,max:640,step:1,v:200},{k:'v',label:'v (pixel y)',min:0,max:480,step:1,v:100},{k:'d',label:'depth d',min:0.5,max:10,step:0.1,v:2},{k:'fx',label:'fx = fy',min:100,max:1000,step:10,v:320},{k:'cx',label:'cx',min:0,max:640,step:10,v:160},{k:'cy',label:'cy',min:0,max:480,step:10,v:120}],
+ compute:p=>[['X',((p.u-p.cx)*p.d/p.fx).toFixed(3)],['Y',((p.v-p.cy)*p.d/p.fx).toFixed(3)],['Z',(+p.d).toFixed(3)]],
+ note:p=>'X = (u−cx)·d/fx، Y = (v−cy)·d/fy، Z = d (هنا fx = fy للتبسيط).'});
+// synthetic depth + seeded noise
+function synth(n){const g=[];for(let y=0;y<n;y++){const r=[];for(let x=0;x<n;x++){let d=1+(y/n)*4;if(Math.abs(x-n/2)<n/6&&Math.abs(y-n*0.6)<n/6)d=2;r.push(d)}g.push(r)}return g}
+function rng(seed){let s=seed;return()=>{s=(s*1664525+1013904223)%4294967296;return s/4294967296}}
+function gauss(r){return Math.sqrt(-2*Math.log(r()+1e-9))*Math.cos(2*Math.PI*r())}
+function evalDepth(p,n){const gt=synth(n).flat(),r=rng(7);
+ const pred=gt.map(v=>(v+p.noise*gauss(r))*p.a+p.b);
+ const absrel=(a,b)=>a.reduce((s,v,i)=>s+Math.abs(v-b[i])/Math.max(b[i],1e-6),0)/a.length;
+ const m=pred.length,sp=pred.reduce((s,v)=>s+v,0),st=gt.reduce((s,v)=>s+v,0);
+ const spp=pred.reduce((s,v)=>s+v*v,0),spt=pred.reduce((s,v,i)=>s+v*gt[i],0);
+ const a=(m*spt-sp*st)/(m*spp-sp*sp||1e-9),b=(st-a*sp)/m;
+ const al=pred.map(v=>a*v+b);
+ const dl=(x,y)=>x.filter((v,i)=>Math.max(v/Math.max(y[i],1e-6),y[i]/Math.max(v,1e-6))<1.25).length/x.length;
+ return {before:absrel(pred,gt),after:absrel(al,gt),dB:dl(pred,gt),dA:dl(al,gt),a,b}}
+L.calc($('d79-calc2'),{params:[{k:'a',label:'scale (a)',min:0.5,max:5,step:0.1,v:3},{k:'b',label:'shift (b)',min:-2,max:3,step:0.1,v:0.7},{k:'noise',label:'ضوضاء',min:0,max:0.8,step:0.05,v:0.3}],
+ compute:p=>{const e=evalDepth(p,48);return [['AbsRel قبل الـ alignment',e.before.toFixed(3)],['AbsRel بعد الـ alignment',e.after.toFixed(3)],['delta<1.25 قبل',e.dB.toFixed(3)],['delta<1.25 بعد',e.dA.toFixed(3)]]},
+ note:p=>'تنبؤ = (حقيقة + ضوضاء) × a + b. الـ alignment بيلاقي a وb بالتربيع الأصغر.'});
+// heatmap
+const gn=12,gt0=synth(gn);
+L.heatmap($('d79-heat'),{rows:gt0.map((_,i)=>'y'+i),cols:gt0[0].map((_,i)=>'x'+i),params:[{k:'nz',label:'ضوضاء',min:0,max:1.5,step:0.05,v:0}],fmt:1,
+ values:p=>{const r=rng(3);return gt0.map(row=>row.map(v=>v+p.nz*gauss(r)))},
+ note:p=>p.nz>0.8?'الضوضاء غطّت الصندوق.':'الصندوق (عمق 2) ظاهر وسط تدرج الأرضية.'});
+
+AI.quiz($('d79-quizBox'),[["إيه الفرق الأساسي بين relative وmetric depth؟", ["Relative بيدّي مسافات مرتبة من غير وحدات حقيقية، وmetric بيدّي مسافات بالمتر وبيحتاج الموديل يكون اتعلم المقياس المطلق", "Metric رمادي وrelative ملوّن", "Relative دقته أقل دايمًا", "مفيش فرق"], 0, "Relative بيحافظ على الترتيب والنسب بس مربوط بوحدات حقيقية. محتاج alignment قبل المقارنة بالأمتار. Metric (ZoeDepth, UniDepth, Metric3D) بيطلّع مسافات معايرة، بس حساس لـ intrinsics وتغطية داتا التدريب."], ["Depth Anything V3 بيستخدم DINOv2 مجمد + DPT decoder. ليه نجمّد الـ encoder؟", ["DINOv2 هيتعلم features وحشة", "التجميد شرط قانوني", "توفير compute وقت التدريب بس", "features DINOv2 الـ self-supervised فيها بالفعل بنية المشهد والملمس والدلالة المرتبطين بالعمق، فتدرب head صغير بداتا عمق محدودة وتحتفظ بتعميم الـ encoder القوي"], 3, "الـ ViTs الـ self-supervised زي DINOv2/DINOv3 features بتاعتها بتنتقل للمهام الكثيفة بأقل fine-tuning. Encoder مجمد + decoder خفيف = باراميترات قليلة للتدريب وتعميم عبر الدومينات. Fine-tune للـ backbone أحيانًا بيضر لو داتا العمق أضيق."], ["لرفع pixel (u, v) بعمق d لـ 3D: X = (u − cx)·d/fx، Y = (v − cy)·d/fy، Z = d. إيه fx, fy, cx, cy؟", ["أوزان loss", "ثوابت normalisation", "pinhole camera intrinsics: الـ focal lengths والـ principal point بالـ pixels، من EXIF أو معايرة الكاميرا", "أوزان بيتعلمها الـ decoder"], 2, "المعادلة محتاجة intrinsics. من غيرهم تفترض FOV عام (~60°) يكفي للعرض مش للقياس. كتير من pipelines 2026 بتقدّرها تلقائيًا (Perspective Fields، UniDepth)."], ["ليه بنعمل scale-and-shift alignment قبل AbsRel لما نقيّم موديل relative (MiDaS, Depth Anything)؟", ["التنبؤات النسبية مقياسها وإزاحتها عشوائيين، والـ fit بـ least-squares لـ a·pred+b=target بيدّي قياس عادل لجودة الترتيب اللي الموديل بيتدرب عليه", "عشان نضخّم النتيجة", "PyTorch مش بيحسب AbsRel من غيره", "عشان نشغّل GPU"], 0, "مخرجات نمط MiDaS بس الترتيب والنسب ليهم معنى. حساب AbsRel مباشرة بيقيس اختلاف المقياس مش جودة الموديل. الـ residual بعد الـ alignment هو اللي بيتبلّغ."], ["تنبؤ Depth Anything على مكتب استقبال زجاجي بيدّي عمق معقول بس غلط للزجاج. ليه؟", ["دقة الصورة غلط", "الموديل باظ", "الموديل اتدرب من غير زجاج", "الزجاج والمرايا والأسطح العاكسة بتبوّظ الـ cues اللي الموديل معتمد عليها، فبيشوف المحتوى اللي ورا الزجاج ويدّي عمقه هو، مش مسافة سطح الزجاج"], 3, "الـ cues (ملمس، occlusion، perspective) بتتلخبط مع الشفاف والعاكس: المرايا فيها مشهد بعمقه الخاص. الموديل بيملا عمق معقول وهو غلطان بثقة. ده حد أساسي مش bug: ادمج مع stereo أو LiDAR أو polarisation."], ["(سؤال مني) pixel في نص الصورة بالظبط (u = cx). إيه قيمة X بغض النظر عن العمق؟", ["يساوي d", "صفر", "يساوي fx", "سالب دايمًا"], 1, "X = (u − cx)·d/fx = 0 لما u = cx. الجسم على المحور البصري مفيش إزاحة جانبية."], ["(سؤال مني) موديل relative بيطلّع قيم من 0 لـ 1. ينفع تقول «الكرسي على بعد 0.4 متر»؟", ["أيوه", "لأ: القيم نسبية مش بالمتر، لازم موديل metric أو جسم معروف الحجم عشان تحوّلها لأمتار", "أيوه لو الصورة كبيرة", "لأ: لأن الموديل مش دقيق"], 1, "Relative depth مفيهوش وحدة. القيمة 0.4 تعني «في الترتيب» مش أمتار."]],4,()=>{const c=root.querySelector('input[data-ck="6"]');if(c&&!c.checked){c.checked=true;c.dispatchEvent(new Event('change'))}});
+AI.checklist(N,root);
+})();
+</script>
